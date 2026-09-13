@@ -1,0 +1,60 @@
+name: denylist
+
+# Invariant I4: this workflow must never filter its triggers — no `paths`, no
+# `paths-ignore`, no branch or tag filters of any kind. The denylist scan runs
+# on every push and every pull_request, without exception.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  denylist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5
+      - name: Install pinned gitleaks v8.30.1 (digest-pinned)
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP:-/tmp}"
+          tarball="gitleaks_8.30.1_linux_x64.tar.gz"
+          # sha256 of the v8.30.1 linux_x64 release tarball, pinned here so a
+          # replaced release asset cannot substitute a different binary; the
+          # version is pinned the same way.
+          digest="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          curl -fsSL -o "${tarball}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/${tarball}"
+          echo "${digest}  ${tarball}" | sha256sum -c -
+          tar -xzf "${tarball}" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Denylist tree scan
+        run: ./scripts/denylist-scan
+      - name: Denylist self-test
+        run: ./scripts/denylist-scan --self-test
+
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5
+      - name: Fetch patterns.yml from cq-toolkit main
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "${RUNNER_TEMP:-/tmp}/upstream-patterns.yml" \
+            "https://raw.githubusercontent.com/camerontaylor/cq-toolkit/main/policy/denylist/patterns.yml"
+      - name: Diff comment-stripped content (our provenance header comment is expected to differ)
+        run: |
+          set -euo pipefail
+          strip() {
+            grep -vE '^[[:space:]]*#' "$1" | grep -vE '^[[:space:]]*$'
+          }
+          strip policy/denylist/patterns.yml > "${RUNNER_TEMP:-/tmp}/ours.norm"
+          strip "${RUNNER_TEMP:-/tmp}/upstream-patterns.yml" > "${RUNNER_TEMP:-/tmp}/upstream.norm"
+          if ! diff -u "${RUNNER_TEMP:-/tmp}/upstream.norm" "${RUNNER_TEMP:-/tmp}/ours.norm"; then
+            echo "::error::policy/denylist/patterns.yml has drifted from cq-toolkit@main; re-copy the upstream file (keeping our provenance header comment) and explain the change in the PR."
+            exit 1
+          fi

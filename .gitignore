@@ -1,0 +1,10 @@
+.gjc/
+.paseo/
+.claude/
+node_modules/
+dist/
+*.env*
+reports/*
+!reports/README.md
+tmp/
+.DS_Store

@@ -17,6 +17,9 @@
     "node_modules",
     "dist",
     "reports",
-    "tmp"
+    "tmp",
+    ".gjc",
+    ".paseo",
+    ".claude"
   ]
 }

@@ -1,6 +1,6 @@
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/', 'reports/', 'tmp/', 'node_modules/'] },
+  { ignores: ['.gjc/', '.paseo/', '.claude/', 'dist/', 'reports/', 'tmp/', 'node_modules/'] },
   ...tseslint.configs.recommended,
 );

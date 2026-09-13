@@ -65,11 +65,13 @@ const RULE_KEYS = [...REQUIRED_RULE_KEYS, 'path'];
 // self-test failure. Entries are `(^|/)`-style because gitleaks matches them
 // against full paths.
 // fixtures delta vs the cq-toolkit copy this was taken from: this repo's
-// .gitignore adds .paseo/, .claude/ and tmp/ (machine-local, never committed)
-// — mirrored here per the invariant stated above. reports/ is deliberately
-// NOT allowlisted even though its contents are gitignored (except README.md):
-// rendered reports are publish-adjacent, so they stay scanned, exactly like
-// the *.env* exception above.
+// .gitignore adds .paseo/ and .claude/ (agent-tool state that legitimately
+// names env vars) — mirrored here per the invariant stated above. tmp/ and
+// reports/ are deliberately NOT allowlisted even though they are gitignored:
+// scratch and rendered artifacts are publish-adjacent, so they stay scanned,
+// exactly like the *.env* exception above. (A path pattern for tmp/ cannot be
+// distinguished from this scanner's own os.tmpdir() self-test fixture trees,
+// whose absolute paths start with /tmp/ — the CI self-test proved it.)
 const TREE_ALLOWLIST_PATHS = [
   '(^|/)\\.git/',
   '(^|/)node_modules/',
@@ -77,7 +79,6 @@ const TREE_ALLOWLIST_PATHS = [
   '(^|/)\\.gjc/',
   '(^|/)\\.paseo/',
   '(^|/)\\.claude/',
-  '(^|/)tmp/',
   '(^|/)\\.DS_Store$',
 ];
 // Trigger-filter keys banned by invariant I4 (workflow leg).

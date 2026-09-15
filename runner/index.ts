@@ -176,7 +176,12 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           // check cannot fix anything, so tools-none/read-only would score
           // every real fixer case 0 by construction.
           workspace = mkdtempSync(join(tmpdir(), 'cq-fixture-'));
-          cpSync(join(repoRoot, c.fixture), workspace, { recursive: true });
+          // verbatimSymlinks copies relative symlinks RELATIVE (their stored
+          // target is preserved byte-for-byte), so a fixture's in-repo link
+          // resolves inside the workspace copy. The default dereferences
+          // relative links into ABSOLUTE paths at the pristine fixture —
+          // a copied workspace would silently read the untouched original.
+          cpSync(join(repoRoot, c.fixture), workspace, { recursive: true, verbatimSymlinks: true });
           invocation = {
             prompt: `${c.task.prompt}\nworkspace: ${workspace}`,
             modelSpec: { model: opts.model, provider: opts.provider },

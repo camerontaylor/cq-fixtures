@@ -129,6 +129,10 @@ jobs:
           set -euo pipefail
           if [ -z "$(find suites -name suite.json -print -quit)" ]; then
             echo "no suites yet — populated by phase-3 goal J3; the matrix cell is a no-op until then"
+            # The eval-reports artifact must ALWAYS exist: the snapshot job's
+            # download step no longer tolerates a missing artifact (M2).
+            mkdir -p reports/eval
+            touch reports/eval/.keep
             exit 0
           fi
           # The runner exits 1 when a suite SCORED ZERO or was BUDGET-GATED —
@@ -163,6 +167,11 @@ jobs:
               echo "::warning::suite ${rel_dir} scored zero or was budget-gated"
             fi
           done < <(find suites -name suite.json | sort)
+          # The artifact must exist on every path — even when suites ran but
+          # every run hard-failed pre-output — so the snapshot job's download
+          # can never 404 on a missing artifact.
+          mkdir -p reports/eval
+          touch reports/eval/.keep
           exit "${hard_fail}"
       - name: Upload eval reports
         if: always()
@@ -197,11 +206,10 @@ jobs:
           # commit/push, and no model code runs here.
           persist-credentials: true
       - name: Download eval reports
-        # continue-on-error: pre-J3 there is nothing to download — the eval
-        # cell exits 0 at its no-suites gate without creating reports/, and
-        # if-no-files-found: ignore creates NO artifact. The commit step
-        # already no-ops on no tables.
-        continue-on-error: true
+        # No continue-on-error: the matrix eval cell touches reports/eval/.keep
+        # on every path, so the eval-reports artifact ALWAYS exists and this
+        # download cannot fail on a missing artifact. A real download failure
+        # must fail this job loudly.
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: eval-reports

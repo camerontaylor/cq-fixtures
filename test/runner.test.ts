@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readlinkSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -347,6 +347,43 @@ describe('writable workspace (fixer fixture round-trip)', () => {
     // The pristine fixture under repoRoot was never touched.
     expect(readFileSync(join(root, 'fixture', 'state.txt'), 'utf8')).toBe('broken');
     assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('materializes relative symlinks verbatim — the copied link still points inside the workspace', async () => {
+    // Fixture with a relative symlink: sub/link.js -> ../../src/module.js.
+    // cpSync's default rewrites such links to ABSOLUTE paths into the
+    // pristine fixture; verbatimSymlinks preserves the stored target
+    // byte-for-byte so it resolves inside the workspace copy (M1).
+    mkdirSync(join(root, 'fixture', 'sub'), { recursive: true });
+    mkdirSync(join(root, 'fixture', 'src'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'src', 'module.js'), 'export {};\n');
+    symlinkSync('../../src/module.js', join(root, 'fixture', 'sub', 'link.js'));
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    const dir = writeSuite('symlink-suite', {
+      name: 'symlink-suite',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-link', fixture: 'fixture', task: { prompt: 'Fix the fault.' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+
+    const copiedLinkTargets: string[] = [];
+    const linkReader: Driver = {
+      async run(invocation: OpInvocation): Promise<WorkerResult> {
+        const workspace = /workspace: (.+)$/m.exec(invocation.prompt)?.[1];
+        if (workspace !== undefined) copiedLinkTargets.push(readlinkSync(join(workspace, 'sub', 'link.js'), 'utf8'));
+        return {
+          model: invocation.modelSpec.model,
+          structuredOutput: { verdict: 'resolved' },
+          usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+          denials: [],
+          stopReason: 'complete',
+        };
+      },
+    };
+    const result = await runSuite(opts(dir, { driver: linkReader }));
+
+    expect(copiedLinkTargets).toEqual(['../../src/module.js']);
+    expect(result.rows[0]).toMatchObject({ case: 'fix-link', outcome: { score: 1 } });
   }, 15_000);
 
   it('review-classifier invocations stay tools-none / read-only with no workspace line', async () => {

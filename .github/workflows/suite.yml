@@ -230,6 +230,12 @@ jobs:
             git switch -C snapshots
           fi
           snap_dir="reports/snapshots/$(date -u +%F)"
+          # A same-day re-dispatch after a suite is removed or renamed must
+          # not leave the old suite's stale tables behind: clear this run's
+          # dated dir (tracked on the snapshots branch) before recopying.
+          # set -u safe — snap_dir is assigned one line above; rm -rf on a
+          # missing dir is a silent no-op.
+          rm -rf "${snap_dir}"
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir: eval writes
           # reports/eval/<role>/<suite>/<role>.table.json, and flattening to

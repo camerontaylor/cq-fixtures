@@ -83,6 +83,9 @@ export interface RunSuiteResult {
   tables: ComparisonTable[];
   /** True when the run's budget gated undispatched cases (honest stop). */
   gatedByBudget: boolean;
+  /** Per-case diagnostics: probe failures, scorer complaints, and
+   * materialization failures — everything stderr also carries. */
+  diagnostics: string[];
 }
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -139,6 +142,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   await append({ type: 'run-started', runId, at: now(), planId: suite.name });
 
   const rows: ResultRow[] = [];
+  const caseDiagnostics: string[] = [];
   let gatedByBudget = false;
   for (const c of suite.cases) {
     const admission = governor.admit(c.id);
@@ -155,6 +159,36 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     }
     await append({ type: 'job-started', runId, at: now(), jobId: c.id, op: suite.role, attempt: admission.attempt });
 
+    // T2: materialization is its own guarded step BEFORE the scored path.
+    // A fixture that cannot be copied is an infrastructure failure — the
+    // driver never ran — so the case emits NO row (rows exist only for cases
+    // that ran, like budget-refused cases), the journal records the honest
+    // indeterminate finish, and the failure surfaces via stderr + the
+    // result's diagnostics.
+    let workspace: string | undefined;
+    if (isFixerCase(c)) {
+      try {
+        workspace = mkdtempSync(join(tmpdir(), 'cq-fixture-'));
+        // verbatimSymlinks copies relative symlinks RELATIVE (their stored
+        // target is preserved byte-for-byte), so a fixture's in-repo link
+        // resolves inside the workspace copy. The default dereferences
+        // relative links into ABSOLUTE paths at the pristine fixture —
+        // a copied workspace would silently read the untouched original.
+        cpSync(join(repoRoot, c.fixture), workspace, { recursive: true, verbatimSymlinks: true });
+      } catch (e) {
+        if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
+        const detail = `fixture materialization failed for '${c.fixture}': ${e instanceof Error ? e.message : String(e)}`;
+        await append({
+          type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
+          inputsHash: hashInputs(suite.role, { caseId: c.id, fixture: c.fixture, task: c.task }),
+          result: { status: 'indeterminate', detail },
+        });
+        console.error(`  case ${c.id}: not scored — ${detail}`);
+        caseDiagnostics.push(`case ${c.id}: ${detail}`);
+        continue;
+      }
+    }
+
     const startedMs = Date.now();
     // The invocation is built per case because a fixer-worker case runs
     // against its OWN materialized workspace copy — the copy's absolute path
@@ -162,26 +196,12 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     // W1: the whole dispatch/score/journal section sits in a try/finally so
     // a mid-case throw (journal append, scoring) can never leak the
     // materialized cq-fixture-* workspace into the OS temp dir.
-    let invocation: OpInvocation | undefined;
-    let workspace: string | undefined;
-    let worker: WorkerResult | undefined;
-    let thrown: unknown;
     try {
+      let invocation: OpInvocation | undefined;
+      let worker: WorkerResult | undefined;
+      let thrown: unknown;
       try {
         if (isFixerCase(c)) {
-          // A fixer must be able to MODIFY the fixture: run against a writable
-          // per-case copy under the OS temp dir (removed after the case); the
-          // pristine fixture under repoRoot is never touched. read/edit/run is
-          // the full harness tool surface — a worker that cannot edit or run a
-          // check cannot fix anything, so tools-none/read-only would score
-          // every real fixer case 0 by construction.
-          workspace = mkdtempSync(join(tmpdir(), 'cq-fixture-'));
-          // verbatimSymlinks copies relative symlinks RELATIVE (their stored
-          // target is preserved byte-for-byte), so a fixture's in-repo link
-          // resolves inside the workspace copy. The default dereferences
-          // relative links into ABSOLUTE paths at the pristine fixture —
-          // a copied workspace would silently read the untouched original.
-          cpSync(join(repoRoot, c.fixture), workspace, { recursive: true, verbatimSymlinks: true });
           invocation = {
             prompt: `${c.task.prompt}\nworkspace: ${workspace}`,
             modelSpec: { model: opts.model, provider: opts.provider },
@@ -271,6 +291,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         journalResult = { status: 'ok', value: outcome };
         diagnostics = s.diagnostics;
       }
+      if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);
       await append({
         type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
         // If materialization failed before an invocation existed, hash the case
@@ -320,7 +341,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       throw new Error(`comparison table for role '${role}' failed schema validation: ${ajv.errorsText(validateTable.errors)}`);
     }
   }
-  return { rows, tables, gatedByBudget };
+  return { rows, tables, gatedByBudget, diagnostics: caseDiagnostics };
 }
 
 // --- CLI entry: node --experimental-strip-types runner/index.ts [flags]

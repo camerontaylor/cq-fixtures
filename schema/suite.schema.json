@@ -93,7 +93,7 @@
               "expected": {
                 "type": "string",
                 "enum": ["actionable", "responded", "resolved", "blocked", "skip"],
-                "description": "Expected review-classifier verdict (kind \"expected-verdict\"), from the toolkit's exported classifyThreads vocabulary."
+                "description": "Verdict from the classifier's structured output, compared against the classifyThreads vocabulary (actionable|responded|resolved|blocked|skip) as mirrored locally by the runner — the toolkit does not export it."
               }
             },
             "allOf": [

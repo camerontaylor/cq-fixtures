@@ -397,6 +397,55 @@ describe('writable workspace (fixer fixture round-trip)', () => {
   }, 15_000);
 });
 
+describe('fixture materialization honesty (T2)', () => {
+  it('a fixture that cannot be materialized emits no row, journals indeterminate, and surfaces diagnostics', async () => {
+    // Honest reproduction of the T2 guard: the broken case's fixture entry
+    // names a plain FILE. The runner's workspace is the already-created
+    // mkdtemp DIRECTORY, and cpSync refuses to overwrite a directory with a
+    // non-directory (ERR_FS_CP_NON_DIR_TO_DIR, verified on node 24) — an
+    // infrastructure failure where the driver never ran. (A dangling symlink
+    // does NOT trigger the guard: verbatimSymlinks copies the link verbatim
+    // without dereferencing.) The healthy sibling case proves the run
+    // continues with the other cases.
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    writeFileSync(join(root, 'fixture-file'), 'not a directory\n');
+    const journalPath = join(root, 'journal');
+    const dir = writeSuite('mat-fail', {
+      name: 'mat-fail',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [
+        { id: 'fix-broken', fixture: 'fixture-file', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } },
+        { id: 'fix-healthy', fixture: 'fixture', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } },
+      ],
+    });
+
+    const result = await runSuite(opts(dir, { journalPath }));
+
+    // The unmaterializable case emitted NO row (rows exist only for cases
+    // that ran); the run continued and scored the healthy case.
+    expect(result.rows.map((r) => r.case)).toEqual(['fix-healthy']);
+    expect(result.diagnostics).toEqual([
+      expect.stringMatching(/^case fix-broken: fixture materialization failed for 'fixture-file'/),
+    ]);
+    assertSchemaValid(result.rows, result.tables);
+
+    // The journal folds the failed case as honestly indeterminate (no
+    // verdict exists — the driver never ran) while the healthy case is ok.
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.filter((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    const broken = finished.find((e) => e.jobId === 'fix-broken');
+    expect(broken?.result).toEqual({
+      status: 'indeterminate',
+      detail: expect.stringMatching(/^fixture materialization failed for 'fixture-file'/),
+    });
+    const healthy = finished.find((e) => e.jobId === 'fix-healthy');
+    expect(healthy?.result.status).toBe('ok');
+  }, 15_000);
+});
+
 describe('budget honesty (I9)', () => {
   it('a tripped token cap gates admission: rows carry ONLY admitted cases and the journal records the honest stop', async () => {
     const dir = reviewSuite('budget-suite', 'budget-suite', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);

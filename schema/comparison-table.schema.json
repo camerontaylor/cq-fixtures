@@ -29,7 +29,17 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["model", "driver", "runs", "passed", "total", "score"],
+        "required": [
+          "model",
+          "driver",
+          "runs",
+          "passed",
+          "total",
+          "score",
+          "costUSD",
+          "wallTimeMs",
+          "tokens"
+        ],
         "properties": {
           "model": {
             "type": "string",
@@ -70,7 +80,7 @@
           "costBasis": {
             "type": "string",
             "enum": ["billed", "modeled"],
-            "description": "Optional basis of a non-null costUSD, mirroring the toolkit's WorkerResult.costBasis, so a modeled number is never silently reported as actual spend."
+            "description": "Optional basis of a non-null costUSD, mirroring the toolkit's WorkerResult.costBasis, so a modeled number is never silently reported as actual spend; forbidden when costUSD is null (DD-9)."
           },
           "wallTimeMs": {
             "type": "integer",
@@ -105,7 +115,16 @@
               }
             }
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "costUSD": { "const": null } },
+              "required": ["costUSD"]
+            },
+            "then": { "not": { "required": ["costBasis"] } }
+          }
+        ]
       }
     }
   }

@@ -69,7 +69,7 @@
     "costBasis": {
       "type": "string",
       "enum": ["billed", "modeled"],
-      "description": "Optional basis of a non-null costUSD, mirroring the toolkit's WorkerResult.costBasis: \"billed\" is provider-reported spend, \"modeled\" is an estimate from published rates. It exists so a modeled number is never silently reported as actual spend."
+      "description": "Optional basis of a non-null costUSD, mirroring the toolkit's WorkerResult.costBasis: \"billed\" is provider-reported spend, \"modeled\" is an estimate from published rates. It exists so a modeled number is never silently reported as actual spend, and it is forbidden when costUSD is null (DD-9)."
     },
     "wallTimeMs": {
       "type": "integer",
@@ -114,5 +114,14 @@
       "format": "date-time",
       "description": "When the invocation completed (RFC 3339 date-time)."
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "costUSD": { "const": null } },
+        "required": ["costUSD"]
+      },
+      "then": { "not": { "required": ["costBasis"] } }
+    }
+  ]
 }

@@ -1,13 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { Ajv2020 } from 'ajv/dist/2020';
+import ajvFormats from 'ajv-formats';
 import { describe, expect, it } from 'vitest';
 
 // Schema contract for the three JSON Schemas in schema/ (plan §8 field list,
 // ADR-0001 eval axes, served-id decision 2026-09-14, DD-9 null cost).
-// ajv 8 strict mode throws on the unregistered "date-time" format, and no
-// format packages may be added, so formats are compiled but not validated;
-// samples still use well-formed RFC 3339 timestamps.
-const ajv = new Ajv2020({ allErrors: true, validateFormats: false });
+// ajv-formats registers "date-time", so format: "date-time" is enforced.
+const ajv = ajvFormats(new Ajv2020({ allErrors: true }));
 
 function loadSchema(name: string): object {
   return JSON.parse(readFileSync(new URL(`../schema/${name}`, import.meta.url), 'utf8')) as object;
@@ -66,6 +65,22 @@ describe('result-row schema (plan §8 field list)', () => {
     expect(rowSchema(row)).toBe(true);
   });
 
+  it('rejects a row pairing a null costUSD with a costBasis — basis is only defined for non-null cost', () => {
+    expect(rowSchema(validRow({ costUSD: null, costBasis: 'billed' }))).toBe(false);
+  });
+
+  it('accepts a row pairing a numeric costUSD with its costBasis', () => {
+    expect(rowSchema(validRow({ costUSD: 0.01, costBasis: 'billed' }))).toBe(true);
+  });
+
+  it('rejects a row whose timestamp is not a valid RFC 3339 date-time', () => {
+    expect(rowSchema(validRow({ timestamp: 'not-a-date' }))).toBe(false);
+  });
+
+  it('accepts a row with a valid RFC 3339 date-time timestamp', () => {
+    expect(rowSchema(validRow({ timestamp: '2026-09-15T12:34:56Z' }))).toBe(true);
+  });
+
   it('rejects a row with costUSD removed — the field is required even when null', () => {
     const row = validRow();
     delete row.costUSD;
@@ -111,6 +126,8 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
           total: 4,
           score: 0.5,
           costUSD: null,
+          wallTimeMs: 152_000,
+          tokens: { input: 5200, output: 1100 },
         },
       ],
     };
@@ -124,6 +141,38 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
     const table = validTable();
     table.cells[0]!.score = 1.25;
     expect(tableSchema(table)).toBe(false);
+  });
+
+  it('rejects a cell missing costUSD — absent cost is not distinguishable from a DD-9 null', () => {
+    const table = validTable();
+    delete (table.cells[0] as { costUSD?: number | null }).costUSD;
+    expect(tableSchema(table)).toBe(false);
+  });
+
+  it('accepts a cell whose costUSD is an explicit DD-9 null', () => {
+    const table = validTable();
+    const cell = table.cells[0] as { costUSD?: number | null; costBasis?: string };
+    cell.costUSD = null;
+    delete cell.costBasis;
+    expect(tableSchema(table)).toBe(true);
+  });
+
+  it('rejects a cell missing its summed tokens', () => {
+    const table = validTable();
+    delete (table.cells[0] as { tokens?: unknown }).tokens;
+    expect(tableSchema(table)).toBe(false);
+  });
+
+  it('rejects a table whose generatedAt is not a real date-time (month 13, day 99)', () => {
+    const table = validTable();
+    table.generatedAt = '2026-13-99T00:00:00Z';
+    expect(tableSchema(table)).toBe(false);
+  });
+
+  it('accepts a table with a valid RFC 3339 generatedAt', () => {
+    const table = validTable();
+    table.generatedAt = '2026-09-15T12:34:56Z';
+    expect(tableSchema(table)).toBe(true);
   });
 
   it('rejects an empty cells array', () => {
@@ -158,6 +207,7 @@ describe('suite schema (ws-j item 3)', () => {
     return {
       name: 'thread-verdicts',
       role: 'review-classifier',
+      provenance: { origin: 'hand-labeled' },
       cases: [
         {
           id: 'thread-001',
@@ -193,6 +243,18 @@ describe('suite schema (ws-j item 3)', () => {
     const suite = validClassifierSuite();
     const firstCase = suite.cases[0] as { fixture?: string };
     delete firstCase.fixture;
+    expect(suiteSchema(suite)).toBe(false);
+  });
+
+  it('rejects a check-rerun probe that also carries an expected verdict — variants are exclusive', () => {
+    const suite = validFixerSuite();
+    (suite.cases[0]!.probe as { expected?: string }).expected = 'resolved';
+    expect(suiteSchema(suite)).toBe(false);
+  });
+
+  it('rejects a suite missing its provenance marker', () => {
+    const suite = validClassifierSuite();
+    delete (suite as { provenance?: unknown }).provenance;
     expect(suiteSchema(suite)).toBe(false);
   });
 });

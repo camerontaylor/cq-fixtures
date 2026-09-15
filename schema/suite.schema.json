@@ -5,7 +5,7 @@
   "description": "A suite is a directory of task cases, each pairing a fixture reference with a task spec and the scoring probe used to grade it (ws-j item 3). fixer-worker suites seed faults into fixture repos and grade by re-running a seeded check; review-classifier suites pair thread payloads with expected verdicts from the toolkit's classifyThreads vocabulary.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "role", "cases"],
+  "required": ["name", "role", "cases", "provenance"],
   "properties": {
     "name": {
       "type": "string",
@@ -15,7 +15,7 @@
     "role": {
       "type": "string",
       "enum": ["fixer-worker", "review-classifier"],
-      "description": "The plan §9 role whose worker executes this suite's cases."
+      "description": "The plan §9 role whose worker executes this suite's cases. Binding convention (a cross-object constraint role → cases[].probe.kind that JSON Schema cannot express; enforced by the J2 runner): fixer-worker suites use \"check-rerun\" probes; review-classifier suites use \"expected-verdict\" probes."
     },
     "servedModel": {
       "type": "string",
@@ -25,10 +25,12 @@
     "provenance": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["origin"],
       "description": "Where the cases came from, for contamination transparency. Contamination posture: provenance is marked, and generated or mutated faults are preferred over verbatim public benchmark instances so scores measure fixing and classification skill rather than benchmark recall.",
       "properties": {
         "origin": {
           "type": "string",
+          "minLength": 1,
           "description": "How the suite was produced, e.g. \"hand-seeded\", \"generated\", \"adapted\"."
         },
         "reference": {
@@ -100,14 +102,20 @@
                   "properties": { "kind": { "const": "check-rerun" } },
                   "required": ["kind"]
                 },
-                "then": { "required": ["check"] }
+                "then": {
+                  "required": ["check"],
+                  "not": { "required": ["expected"] }
+                }
               },
               {
                 "if": {
                   "properties": { "kind": { "const": "expected-verdict" } },
                   "required": ["kind"]
                 },
-                "then": { "required": ["expected"] }
+                "then": {
+                  "required": ["expected"],
+                  "not": { "required": ["check"] }
+                }
               }
             ]
           }

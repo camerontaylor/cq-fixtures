@@ -290,6 +290,30 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     expect(outcome.diagnostics).not.toMatch(/timed out/);
   });
 
+  it('an uncopyable fixture emits NO row, counts a materialization failure, and journals indeterminate', async () => {
+    // A fixture path that does not exist makes cpSync fail (ENOENT): the
+    // driver never ran, so the case emits no row — infrastructure, not a
+    // scored zero. (loadSuite checks path SHAPE only, so a missing dir is a
+    // runtime materialization failure by design; no chmod games — a locked
+    // dir crashes the worker in a C++ directory iterator, uncatchable.)
+    const journalPath = join(root, 'journal');
+    const dir = writeSuite('uncopyable', {
+      name: 'uncopyable',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-uncopyable', fixture: 'does-not-exist', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'does-not-exist/check.js' } }],
+    });
+    const result = await runSuite(opts(dir, { journalPath }));
+    expect(result.rows).toEqual([]);
+    expect(result.materializationFailures).toBe(1);
+    expect(result.tables[0]?.cells).toEqual([]); // empty-but-valid table
+    expect(result.diagnostics.some((d) => d.includes('fixture materialization failed'))).toBe(true);
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result.status).toBe('indeterminate');
+  }, 15_000);
+
   it('a probe handed the wrong probe.kind throws (programming error, caught by loadSuite first)', () => {
     expect(() =>
       scoreFixerWorker(

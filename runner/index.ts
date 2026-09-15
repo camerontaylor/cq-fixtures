@@ -86,6 +86,9 @@ export interface RunSuiteResult {
   /** Per-case diagnostics: probe failures, scorer complaints, and
    * materialization failures — everything stderr also carries. */
   diagnostics: string[];
+  /** Cases whose fixture could not be materialized (infrastructure — the
+   * driver never ran for them). Callers must hard-fail, not warn. */
+  materializationFailures: number;
 }
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -143,6 +146,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
 
   const rows: ResultRow[] = [];
   const caseDiagnostics: string[] = [];
+  let materializationFailures = 0;
   let gatedByBudget = false;
   for (const c of suite.cases) {
     const admission = governor.admit(c.id);
@@ -185,6 +189,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         });
         console.error(`  case ${c.id}: not scored — ${detail}`);
         caseDiagnostics.push(`case ${c.id}: ${detail}`);
+        materializationFailures += 1;
         continue;
       }
     }
@@ -341,7 +346,13 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       throw new Error(`comparison table for role '${role}' failed schema validation: ${ajv.errorsText(validateTable.errors)}`);
     }
   }
-  return { rows, tables, gatedByBudget, diagnostics: caseDiagnostics };
+  return {
+    rows,
+    tables,
+    gatedByBudget,
+    diagnostics: caseDiagnostics,
+    materializationFailures,
+  };
 }
 
 // --- CLI entry: node --experimental-strip-types runner/index.ts [flags]

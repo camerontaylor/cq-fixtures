@@ -165,6 +165,16 @@ describe('gate checks (B2 axes, B3 servedModel, B4 same-role collision, B7 requi
     const dir = writeSuite('aidriver-suite', { name: 'aidriver-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await expect(cliMain(['--suite', dir, '--driver', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(0);
   }, 15_000);
+  it('a run whose only case fails materialization exits 2 (infrastructure — the driver never ran)', async () => {
+    // Fixture path does not exist: cpSync fails ENOENT inside runSuite, the
+    // case emits no row, and cliMain maps the materialization failure to 2.
+    const dir = writeSuite('cli-uncopyable', {
+      name: 'cli-uncopyable',
+      role: 'fixer-worker',
+      cases: [{ id: 'fix-u', fixture: 'does-not-exist', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'does-not-exist/check.js' } }],
+    });
+    await expect(cliMain(['--suite', dir, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
+  }, 15_000);
 });
 
 describe('role-dependent AiSdkDriver construction (F3/G6 — one driver PER SUITE)', () => {

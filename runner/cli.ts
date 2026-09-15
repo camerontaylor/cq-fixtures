@@ -167,6 +167,10 @@ async function main(argv: readonly string[]): Promise<number> {
   const rows: ResultRow[] = [];
   const tables: ComparisonTable[] = [];
   let anyFailed = false;
+  let materializationFailures = 0;
+  const materializationDiagnostics: string[] = [];
+  // Run + score phase: a scored-zero or budget-gated result — or a failure
+  // thrown here — is exit 1 (a benign eval outcome the workflow warns on).
   try {
     for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
       const driver: Driver = opts.driver === 'ai-sdk'
@@ -181,6 +185,10 @@ async function main(argv: readonly string[]): Promise<number> {
       });
       rows.push(...result.rows);
       tables.push(...result.tables);
+      if (result.materializationFailures > 0) {
+        materializationFailures += result.materializationFailures;
+        materializationDiagnostics.push(...result.diagnostics.filter((d) => d.includes('fixture materialization failed')));
+      }
       const passed = result.rows.reduce((n, r) => n + r.outcome.passed, 0);
       const total = result.rows.reduce((n, r) => n + r.outcome.total, 0);
       if (result.rows.some((r) => r.outcome.passed === 0)) anyFailed = true;
@@ -190,15 +198,6 @@ async function main(argv: readonly string[]): Promise<number> {
       const runSuffix = result.rows[0] !== undefined ? `, run ${result.rows[0].runId}` : '';
       const suiteName = result.rows[0]?.suite ?? suiteDir;
       console.log(`suite ${suiteName}: ${passed}/${total} probes passed across ${result.rows.length} case(s)${runSuffix}`);
-    }
-    if (opts.out !== undefined) {
-      mkdirSync(opts.out, { recursive: true });
-      // Same-role collisions were refused before any dispatch (see above).
-      for (const t of tables) {
-        writeFileSync(join(opts.out, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');
-      }
-      writeFileSync(join(opts.out, 'rows.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length > 0 ? '\n' : ''));
-      console.log(`wrote ${opts.out}/rows.jsonl and ${tables.length} table(s)`);
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -210,9 +209,35 @@ async function main(argv: readonly string[]): Promise<number> {
       console.error(`required env ${envVar} missing (add this repo's Actions secret and map it onto the toolkit's ${envVar} env): ${message}`);
       return 2;
     }
-    // Post-load failures (row/table validation, output writing) stay exit 1.
+    // Run-phase failures (row/table validation of a scored run) stay exit 1.
     console.error(message);
     return 1;
+  }
+  // X2: materialization failures are infrastructure — the driver never ran
+  // for those cases — so they hard-fail (exit 2) with the count and the
+  // affected case ids (already carried in the diagnostics), instead of a
+  // benign scored-zero warning.
+  if (materializationFailures > 0) {
+    console.error(`${materializationFailures} case(s) failed fixture materialization (the driver never ran):`);
+    for (const d of materializationDiagnostics) console.error(`  ${d}`);
+    return 2;
+  }
+  // X1: report/emit phase — row/table validation of our own output, journal
+  // I/O, out-dir creation, writeFileSync. Infrastructure errors here are
+  // exit 2, never a benign scored-zero warning.
+  try {
+    if (opts.out !== undefined) {
+      mkdirSync(opts.out, { recursive: true });
+      // Same-role collisions were refused before any dispatch (see above).
+      for (const t of tables) {
+        writeFileSync(join(opts.out, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');
+      }
+      writeFileSync(join(opts.out, 'rows.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length > 0 ? '\n' : ''));
+      console.log(`wrote ${opts.out}/rows.jsonl and ${tables.length} table(s)`);
+    }
+  } catch (e) {
+    console.error(`report/emit failure: ${e instanceof Error ? e.message : String(e)}`);
+    return 2;
   }
   return anyFailed ? 1 : 0;
 }

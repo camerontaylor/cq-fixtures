@@ -181,6 +181,12 @@ jobs:
     needs: matrix
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    # Serialize snapshot-branch updates: two overlapping dispatch/schedule
+    # runs would race the `snapshots` tip and one push would fail
+    # non-fast-forward. Queued-not-cancelled keeps EVERY run's tables landing.
+    concurrency:
+      group: snapshots
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:

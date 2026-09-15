@@ -53,9 +53,13 @@ export function scoreFixerWorker(
   }
   const checkAbs = join(repoRoot, suiteCase.probe.check);
   const res = spawnSync('node', [checkAbs], { cwd: workspace, encoding: 'utf8', timeout: timeoutMs });
-  // A timeout surfaces as the kill signal (and/or an ETIMEDOUT error) — the
-  // probe was killed, not honestly failed, so say exactly that.
-  const timedOut = res.signal !== null || (res.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
+  // Node's own timeout machinery is the ONLY thing that sets ETIMEDOUT
+  // (verified on node 24: a timeout kill reports signal SIGTERM + error
+  // ETIMEDOUT, while a script self-killing SIGTERM reports the signal with
+  // no error) — so ETIMEDOUT alone classifies a timeout. Any other signal
+  // (SIGKILL, SIGSEGV, a self-sent SIGTERM, …) is a plain failure that
+  // names the signal and never claims "timed out".
+  const timedOut = (res.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
   if (timedOut) {
     return {
       score: 0,
@@ -76,7 +80,7 @@ export function scoreFixerWorker(
   if (passed) return { score: 1, passed: 1, total: 1 };
   const why =
     res.status === null
-      ? `terminated by signal ${res.signal ?? 'unknown'}`
+      ? `killed by signal ${res.signal ?? 'unknown'}`
       : `exit code ${res.status}`;
   const output = [tail(res.stdout ?? ''), tail(res.stderr ?? '')].filter(Boolean).join('\n');
   return {

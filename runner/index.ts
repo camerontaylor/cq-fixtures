@@ -159,120 +159,134 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     // The invocation is built per case because a fixer-worker case runs
     // against its OWN materialized workspace copy — the copy's absolute path
     // rides in the prompt and is therefore part of the journaled input hash.
+    // W1: the whole dispatch/score/journal section sits in a try/finally so
+    // a mid-case throw (journal append, scoring) can never leak the
+    // materialized cq-fixture-* workspace into the OS temp dir.
     let invocation: OpInvocation | undefined;
     let workspace: string | undefined;
     let worker: WorkerResult | undefined;
     let thrown: unknown;
     try {
-      if (isFixerCase(c)) {
-        // A fixer must be able to MODIFY the fixture: run against a writable
-        // per-case copy under the OS temp dir (removed after the case); the
-        // pristine fixture under repoRoot is never touched. read/edit/run is
-        // the full harness tool surface — a worker that cannot edit or run a
-        // check cannot fix anything, so tools-none/read-only would score
-        // every real fixer case 0 by construction.
-        workspace = mkdtempSync(join(tmpdir(), 'cq-fixture-'));
-        cpSync(join(repoRoot, c.fixture), workspace, { recursive: true });
-        invocation = {
-          prompt: `${c.task.prompt}\nworkspace: ${workspace}`,
-          modelSpec: { model: opts.model, provider: opts.provider },
-          toolPolicy: { allow: [...FIXER_TOOL_NAMES], mode: 'allowlist' },
-          sandboxPolicy: { level: 'workspace-write' },
-          budget,
-        };
+      try {
+        if (isFixerCase(c)) {
+          // A fixer must be able to MODIFY the fixture: run against a writable
+          // per-case copy under the OS temp dir (removed after the case); the
+          // pristine fixture under repoRoot is never touched. read/edit/run is
+          // the full harness tool surface — a worker that cannot edit or run a
+          // check cannot fix anything, so tools-none/read-only would score
+          // every real fixer case 0 by construction.
+          workspace = mkdtempSync(join(tmpdir(), 'cq-fixture-'));
+          cpSync(join(repoRoot, c.fixture), workspace, { recursive: true });
+          invocation = {
+            prompt: `${c.task.prompt}\nworkspace: ${workspace}`,
+            modelSpec: { model: opts.model, provider: opts.provider },
+            toolPolicy: { allow: [...FIXER_TOOL_NAMES], mode: 'allowlist' },
+            sandboxPolicy: { level: 'workspace-write' },
+            budget,
+          };
+        } else {
+          // Review-classifier: tools-none / read-only. The fixture (thread
+          // payload) is not wired into the prompt yet — payload content
+          // injection is J3 scope.
+          invocation = {
+            prompt: c.task.prompt,
+            modelSpec: { model: opts.model, provider: opts.provider },
+            toolPolicy: { allow: [], mode: 'none' },
+            sandboxPolicy: { level: 'read-only' },
+            budget,
+          };
+        }
+        worker = await opts.driver.run(invocation);
+      } catch (e) {
+        // A pre-dispatch missing-credential throw is infrastructure
+        // configuration, NOT an eval outcome — scoring it 0 would publish
+        // zeros-while-green. The toolkit's requireKey fails uniformly with
+        // "provider '<p>' requires <ENV> in the environment", so the predicate
+        // matches every provider lane, not just zai.
+        if (e instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(e.message)) {
+          await append({
+            type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
+            inputsHash: hashInputs(suite.role, invocation ?? { caseId: c.id, fixture: c.fixture, task: c.task }),
+            result: { status: 'indeterminate', detail: `aborted: ${e.message}` },
+          });
+          // W3: the run-level journal is deliberately left WITHOUT a
+          // run-finished event on this abort path. The toolkit's journal
+          // schema requires earlyStopReason: 'budget' whenever stoppedEarly
+          // is true (its only early-stop value), which would be a false
+          // claim for an error abort — and stoppedEarly: false would be a
+          // lie of the opposite kind. A journal that ends after the
+          // job-finished:indeterminate IS the honest record of an aborted
+          // run: deriveJobStatuses folds it, and the missing run-finished
+          // marks the run as never having completed. cliMain maps the
+          // rethrown error to exit 2.
+          throw e;
+        }
+        thrown = e;
+      }
+      const wallTimeMs = Math.max(0, Date.now() - startedMs);
+
+      const usage: Usage = worker?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      // Observed served id wins (the served-id decision); the requested id is
+      // the fallback a lane that cannot observe it leaves us.
+      const model = worker?.model ?? opts.model;
+      // DD-9: cost is derived ONLY via the toolkit price map over usage —
+      // never invented; null when the (observed) model has no price. The
+      // driver's own costUSD is not used: the runner owns derivation.
+      const cost = computeCostUSD({ model, provider: opts.provider }, usage);
+      governor.observeResult(c.id, { usage, costUSD: cost });
+
+      let outcome: { score: number; passed: number; total: number };
+      let journalResult: OpResult<unknown>;
+      let diagnostics: string | undefined;
+      if (worker === undefined) {
+        outcome = zeroOutcome();
+        journalResult = { status: 'failed', error: String(thrown) };
+        diagnostics = `driver threw: ${String(thrown)}`;
+      } else if (worker.stopReason === 'budget') {
+        outcome = zeroOutcome(); // honest budget-exhausted: no fabricated credit
+        journalResult = { status: 'budget-exhausted' };
+        diagnostics = 'driver stopped on budget';
+      } else if (worker.stopReason === 'error') {
+        outcome = zeroOutcome();
+        journalResult = { status: 'failed', error: 'driver stopReason: error' };
+        diagnostics = 'driver stopReason: error';
+      } else if (worker.stopReason === 'aborted') {
+        outcome = zeroOutcome();
+        journalResult = { status: 'indeterminate', detail: 'driver stopReason: aborted' };
+        diagnostics = 'driver stopReason: aborted';
       } else {
-        // Review-classifier: tools-none / read-only. The fixture (thread
-        // payload) is not wired into the prompt yet — payload content
-        // injection is J3 scope.
-        invocation = {
-          prompt: c.task.prompt,
-          modelSpec: { model: opts.model, provider: opts.provider },
-          toolPolicy: { allow: [], mode: 'none' },
-          sandboxPolicy: { level: 'read-only' },
-          budget,
-        };
+        const s: ScoreOutcome = isFixerCase(c)
+          ? // The workspace is always set on the fixer path (materialized
+            // above, before the driver ran) — it is what the probe grades.
+            // The probe ceiling is checkTimeoutMs, an independent knob from
+            // the run's budget caps.
+            scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.checkTimeoutMs)
+          : scoreReviewClassifier(c, worker);
+        outcome = { score: s.score, passed: s.passed, total: s.total };
+        journalResult = { status: 'ok', value: outcome };
+        diagnostics = s.diagnostics;
       }
-      worker = await opts.driver.run(invocation);
-    } catch (e) {
-      // A pre-dispatch missing-credential throw is infrastructure
-      // configuration, NOT an eval outcome — scoring it 0 would publish
-      // zeros-while-green. The toolkit's requireKey fails uniformly with
-      // "provider '<p>' requires <ENV> in the environment", so the predicate
-      // matches every provider lane, not just zai. Close the journal
-      // honestly (no verdict exists), clean the scratch workspace, and
-      // abort the run; cliMain maps the rethrown error to exit 2.
-      if (e instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(e.message)) {
-        await append({
-          type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
-          inputsHash: hashInputs(suite.role, invocation ?? { caseId: c.id, fixture: c.fixture, task: c.task }),
-          result: { status: 'indeterminate', detail: `aborted: ${e.message}` },
-        });
-        if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
-        throw e;
-      }
-      thrown = e;
+      await append({
+        type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
+        // If materialization failed before an invocation existed, hash the case
+        // facts so the journal still identifies WHAT failed to dispatch.
+        inputsHash: hashInputs(suite.role, invocation ?? { caseId: c.id, fixture: c.fixture, task: c.task }),
+        result: journalResult,
+        ...(worker !== undefined ? { usage } : {}),
+      });
+      rows.push({
+        role: suite.role, suite: suite.name, case: c.id, model, driver: driverName,
+        outcome, costUSD: cost ?? null,
+        ...(cost !== undefined ? { costBasis: 'modeled' as const } : {}),
+        wallTimeMs, tokens: tokensOf(usage), runId, timestamp: now(),
+      });
+      console.error(`  case ${c.id}: score ${outcome.score}${diagnostics !== undefined ? ` — ${diagnostics.split('\n')[0]}` : ''}`);
+    } finally {
+      // The materialized workspace is the driver's scratch: graded against,
+      // then removed — even when the case aborts mid-flight. The pristine
+      // fixture under repoRoot is never touched.
+      if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
     }
-    const wallTimeMs = Math.max(0, Date.now() - startedMs);
-
-    const usage: Usage = worker?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    // Observed served id wins (the served-id decision); the requested id is
-    // the fallback a lane that cannot observe it leaves us.
-    const model = worker?.model ?? opts.model;
-    // DD-9: cost is derived ONLY via the toolkit price map over usage —
-    // never invented; null when the (observed) model has no price. The
-    // driver's own costUSD is not used: the runner owns derivation.
-    const cost = computeCostUSD({ model, provider: opts.provider }, usage);
-    governor.observeResult(c.id, { usage, costUSD: cost });
-
-    let outcome: { score: number; passed: number; total: number };
-    let journalResult: OpResult<unknown>;
-    let diagnostics: string | undefined;
-    if (worker === undefined) {
-      outcome = zeroOutcome();
-      journalResult = { status: 'failed', error: String(thrown) };
-      diagnostics = `driver threw: ${String(thrown)}`;
-    } else if (worker.stopReason === 'budget') {
-      outcome = zeroOutcome(); // honest budget-exhausted: no fabricated credit
-      journalResult = { status: 'budget-exhausted' };
-      diagnostics = 'driver stopped on budget';
-    } else if (worker.stopReason === 'error') {
-      outcome = zeroOutcome();
-      journalResult = { status: 'failed', error: 'driver stopReason: error' };
-      diagnostics = 'driver stopReason: error';
-    } else if (worker.stopReason === 'aborted') {
-      outcome = zeroOutcome();
-      journalResult = { status: 'indeterminate', detail: 'driver stopReason: aborted' };
-      diagnostics = 'driver stopReason: aborted';
-    } else {
-      const s: ScoreOutcome = isFixerCase(c)
-        ? // The workspace is always set on the fixer path (materialized
-          // above, before the driver ran) — it is what the probe grades.
-          // The probe ceiling is checkTimeoutMs, an independent knob from
-          // the run's budget caps.
-          scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.checkTimeoutMs)
-        : scoreReviewClassifier(c, worker);
-      outcome = { score: s.score, passed: s.passed, total: s.total };
-      journalResult = { status: 'ok', value: outcome };
-      diagnostics = s.diagnostics;
-    }
-    await append({
-      type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
-      // If materialization failed before an invocation existed, hash the case
-      // facts so the journal still identifies WHAT failed to dispatch.
-      inputsHash: hashInputs(suite.role, invocation ?? { caseId: c.id, fixture: c.fixture, task: c.task }),
-      result: journalResult,
-      ...(worker !== undefined ? { usage } : {}),
-    });
-    rows.push({
-      role: suite.role, suite: suite.name, case: c.id, model, driver: driverName,
-      outcome, costUSD: cost ?? null,
-      ...(cost !== undefined ? { costBasis: 'modeled' as const } : {}),
-      wallTimeMs, tokens: tokensOf(usage), runId, timestamp: now(),
-    });
-    console.error(`  case ${c.id}: score ${outcome.score}${diagnostics !== undefined ? ` — ${diagnostics.split('\n')[0]}` : ''}`);
-    // The materialized workspace is the driver's scratch: graded against,
-    // then removed. The pristine fixture under repoRoot is never touched.
-    if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
   }
   await append({
     type: 'run-finished', runId, at: now(), stoppedEarly: gatedByBudget,

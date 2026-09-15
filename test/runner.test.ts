@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Ajv2020 } from 'ajv/dist/2020.js';
@@ -231,8 +232,11 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     // env — infrastructure configuration, not an eval outcome. runSuite must
     // REJECT (cliMain maps it to exit 2), never publish scored-zero rows.
     // Literal ZAI_API_KEY case (the common path).
+    const marker = `ws-marker-${randomUUID()}.txt`;
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    writeFileSync(join(root, 'fixture', marker), 'x');
+    const journalPath = join(root, 'journal');
     const dir = writeSuite('missing-key', {
       name: 'missing-key',
       role: 'fixer-worker',
@@ -244,8 +248,47 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
         throw new Error("ai-sdk driver: provider 'zai' requires ZAI_API_KEY in the environment");
       },
     };
-    await expect(runSuite(opts(dir, { driver: missingKeyDriver }))).rejects.toThrow(/ZAI_API_KEY/);
+    await expect(runSuite(opts(dir, { driver: missingKeyDriver, journalPath }))).rejects.toThrow(/ZAI_API_KEY/);
+
+    // W3: the aborted run's journal closes its job indeterminate (no verdict
+    // exists) and carries NO run-finished event. The toolkit's journal schema
+    // requires earlyStopReason: 'budget' whenever stoppedEarly is true — a
+    // false claim for an error abort — so the missing run-finished IS the
+    // honest record of an aborted run (and deriveJobStatuses still folds the
+    // job events).
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result.status).toBe('indeterminate');
+    expect(events.some((e) => e.type === 'run-finished')).toBe(false);
+
+    // W1: the materialized workspace was removed even though the case
+    // aborted mid-flight — no cq-fixture-* dir in tmpdir holds our unique
+    // fixture marker.
+    const leftovers: string[] = [];
+    for (const entry of readdirSync(tmpdir())) {
+      if (!entry.startsWith('cq-fixture-')) continue;
+      if (existsSync(join(tmpdir(), entry, marker))) leftovers.push(entry);
+    }
+    expect(leftovers).toEqual([]);
   }, 15_000);
+
+  it('a check killed by its own signal reports failure-with-signal, never "timed out"', () => {
+    // W2: only the spawn timeout machinery (ETIMEDOUT) may claim "timed
+    // out" — a script dying by its own SIGKILL is a plain failure that
+    // names the signal.
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check-selfkill.js'), 'process.kill(process.pid, "SIGKILL");\n');
+    const outcome = scoreFixerWorker(
+      { fixture: 'fixture', probe: { kind: 'check-rerun', check: 'fixture/check-selfkill.js' } },
+      {} as WorkerResult,
+      root,
+      join(root, 'fixture'),
+    );
+    expect(outcome.score).toBe(0);
+    expect(outcome.diagnostics).toMatch(/killed by signal SIGKILL/);
+    expect(outcome.diagnostics).not.toMatch(/timed out/);
+  });
 
   it('a probe handed the wrong probe.kind throws (programming error, caught by loadSuite first)', () => {
     expect(() =>

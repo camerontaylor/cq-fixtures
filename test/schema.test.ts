@@ -35,6 +35,9 @@ interface RowSample {
   };
   runId: string;
   timestamp: string;
+  // Optional at schema grain (not in required); typed here so the acceptance
+  // test can pass it through validRow's overrides.
+  case?: string;
 }
 
 function validRow(overrides: Partial<RowSample> = {}): RowSample {
@@ -57,6 +60,10 @@ function validRow(overrides: Partial<RowSample> = {}): RowSample {
 describe('result-row schema (plan §8 field list)', () => {
   it('accepts a fully-populated result row', () => {
     expect(rowSchema(validRow({ role: 'review-classifier', driver: 'acp' }))).toBe(true);
+  });
+
+  it('accepts a row carrying the optional case id linking back to its scored case', () => {
+    expect(rowSchema(validRow({ case: 'case-1' }))).toBe(true);
   });
 
   it('accepts a subscription-lane row whose costUSD is null (DD-9)', () => {

@@ -4,6 +4,8 @@
 .paseo/
 node_modules/
 dist/
+# Packed toolkit tarballs are build artifacts, never committed.
+vendor/
 *.env*
 reports/*
 !reports/README.md

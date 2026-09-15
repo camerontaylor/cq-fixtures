@@ -2,6 +2,7 @@
   "name": "cq-fixtures",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "Scored per-role task suites, fixtures, schemas and eval runner for cq-toolkit.",
   "license": "MIT",
   "engines": {
@@ -11,6 +12,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@camerontaylor/cq-toolkit": "file:vendor/cq-toolkit-0.0.0.tgz"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",

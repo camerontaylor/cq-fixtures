@@ -6,7 +6,7 @@
   "description": "Scored per-role task suites, fixtures, schemas and eval runner for cq-toolkit.",
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=23.6"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

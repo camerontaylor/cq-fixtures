@@ -1,16 +1,21 @@
 name: suite
 
-# Invariant I4: this workflow never filters its triggers — no `paths`, no
-# `paths-ignore`, no branch or tag filters. Push and pull_request run the
+# Invariant I4: the `on:` block below carries NO filter keys — no `paths`, no
+# `paths-ignore`, no branch or tag filters. push and pull_request run the
 # `smoke` job unfiltered (the denylist self-test's workflow sanity scan reads
-# this `on:` block, and unfiltered push runs keep the smoke green on main).
-# The `matrix` job is the ONE deliberate exception and it restricts itself
-# with a JOB-LEVEL `if:` (dispatch/schedule only), never with a trigger
-# filter — the `on:` block above stays untouched.
+# this block, and unfiltered push runs keep the smoke green on main);
+# `workflow_dispatch` and the nightly `schedule` declare the real-driver
+# matrix's triggers. Declaring events is not filtering: the `matrix` job
+# ADDITIONALLY self-restricts to dispatch/schedule via its job-level `if`, so
+# push/PR runs never attempt a live eval while the `on:` block itself stays
+# free of filters.
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
@@ -20,9 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -50,7 +55,7 @@ jobs:
           printf 'found smoke dirs:\n%s\n' "${smoke_dirs}"
           exit 1
       - name: Upload smoke reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: smoke-reports
           path: reports/smoke/
@@ -77,13 +82,13 @@ jobs:
       contents: write
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Persist the checkout token: the snapshot commit at the bottom of
           # this job pushes with it.
           persist-credentials: true
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -105,9 +110,17 @@ jobs:
             echo "no suites yet — populated by phase-3 goal J3; the matrix cell is a no-op until then"
             exit 0
           fi
+          # The runner exits 1 when a suite SCORED ZERO or was BUDGET-GATED —
+          # a normal eval outcome, not an infra failure — and 2 for
+          # usage/validation errors. So: rc>=2 is a hard failure collected
+          # below; rc==1 appends a warning and the loop continues. Tables
+          # from scored-zero runs are still valid artifacts and still land
+          # in the upload/snapshot steps below.
+          hard_fail=0
           while IFS= read -r suite_file; do
             suite_dir="$(dirname "${suite_file}")"
             name="$(basename "${suite_dir}")"
+            rc=0
             node --experimental-strip-types runner/index.ts \
               --suite "${suite_dir}" \
               --driver ai-sdk \
@@ -115,11 +128,18 @@ jobs:
               --model glm-5.3-flash \
               --provider zai \
               --max-usd 1 \
-              --out "reports/eval/${name}"
+              --out "reports/eval/${name}" || rc=$?
+            if [ "${rc}" -ge 2 ]; then
+              echo "::error::suite ${name}: runner usage/validation failure (exit ${rc})"
+              hard_fail=1
+            elif [ "${rc}" -eq 1 ]; then
+              echo "::warning::suite ${name} scored zero or was budget-gated"
+            fi
           done < <(find suites -name suite.json | sort)
+          exit "${hard_fail}"
       - name: Upload eval reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: eval-reports
           path: reports/
@@ -132,8 +152,16 @@ jobs:
           set -euo pipefail
           snap_dir="reports/snapshots/$(date -u +%F)"
           mkdir -p "${snap_dir}"
-          find reports -name '*.table.json' -not -path 'reports/snapshots/*' \
-            -exec cp '{}' "${snap_dir}/" \;
+          # Snapshot IDENTITY preserves the suite dir: eval writes
+          # reports/eval/<suite>/<role>.table.json, and flattening to the
+          # basename would collide the moment two suites share a role —
+          # snapshots/<date>/<suite>/<role>.table.json is the stable form.
+          while IFS= read -r table; do
+            rel="${table#reports/eval/}"
+            suite_name="$(dirname "${rel}")"
+            mkdir -p "${snap_dir}/${suite_name}"
+            cp "${table}" "${snap_dir}/${suite_name}/"
+          done < <(find reports/eval -name '*.table.json' 2>/dev/null | sort)
           if [ -z "$(ls -A "${snap_dir}")" ]; then
             echo "no tables to snapshot — nothing committed"
             exit 0

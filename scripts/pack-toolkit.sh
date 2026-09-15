@@ -47,6 +47,11 @@ npm ci            # dist/ must be built before packing or the export map dangles
 npm run build
 
 mkdir -p "$REPO_ROOT/vendor"
+# A previous run's tarball must never satisfy the verification below: a stale
+# pass would silently install the WRONG toolkit version. Remove this
+# package's tarballs (both npm's scoped name and our flat expected name)
+# before packing, so existence checks can only pass on a fresh pack.
+rm -f "$REPO_ROOT"/vendor/camerontaylor-cq-toolkit-*.tgz "$REPO_ROOT"/vendor/cq-toolkit-*.tgz
 npm pack --pack-destination "$REPO_ROOT/vendor/"
 
 if [ ! -f "$REPO_ROOT/vendor/$PACKED" ]; then

@@ -41,8 +41,8 @@
     },
     "cases": {
       "type": "array",
-      "minItems": 1,
-      "description": "The task cases in this suite.",
+      "minItems": 0,
+      "description": "The task cases in this suite. cases: [] is the empty-suite form; the runner emits an empty-but-valid table for it.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -78,7 +78,7 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["kind"],
-            "description": "Scoring probe, discriminated by `kind`: \"check-rerun\" re-runs a seeded check probe for scoring (reusing the toolkit's baselineProbe mechanics, sweep-agnostic); \"expected-verdict\" compares the classifier output against a verdict from the toolkit's exported classifyThreads vocabulary (actionable | responded | resolved | blocked | skip).",
+            "description": "Scoring probe, discriminated by `kind`: \"check-rerun\" re-runs the case's seeded check probe for scoring by executing it with node directly against the case's materialized workspace copy (sweep-agnostic — no toolkit probe machinery involved); \"expected-verdict\" compares the classifier output against a verdict from the classifyThreads vocabulary (actionable | responded | resolved | blocked | skip; mirrored locally by the runner — the toolkit does not export it).",
             "properties": {
               "kind": {
                 "type": "string",
@@ -93,7 +93,7 @@
               "expected": {
                 "type": "string",
                 "enum": ["actionable", "responded", "resolved", "blocked", "skip"],
-                "description": "Expected review-classifier verdict (kind \"expected-verdict\"), from the toolkit's exported classifyThreads vocabulary."
+                "description": "Verdict from the classifier's structured output, compared against the classifyThreads vocabulary (actionable|responded|resolved|blocked|skip) as mirrored locally by the runner — the toolkit does not export it."
               }
             },
             "allOf": [

@@ -258,10 +258,10 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
     expect(tableSchema(table)).toBe(true);
   });
 
-  it('rejects an empty cells array', () => {
+  it('accepts an empty cells array — an empty suite yields an empty-but-valid table (J2)', () => {
     const table = validTable();
     table.cells = [];
-    expect(tableSchema(table)).toBe(false);
+    expect(tableSchema(table)).toBe(true);
   });
 });
 

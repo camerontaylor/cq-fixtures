@@ -1,0 +1,253 @@
+// CLI wiring for the eval runner: flag parsing, driver construction, output
+// writing, and the I1 exit-code discipline — 0 clean; 1 a case scored zero,
+// the run was budget-gated, or a post-load run/validation error; 2 usage
+// error or suite load/validation failure (the suite.yml workflow hard-fails
+// its rc>=2 branch). Invoked via runner/index.ts.
+
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { AiSdkDriver, type Driver } from '@camerontaylor/cq-toolkit';
+import { z } from 'zod';
+import { runSuite } from './index.ts';
+import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
+import { loadSuite, type Suite } from './suite.ts';
+import { FakeDriver } from './fake-driver.ts';
+
+const LANES = new Set(['ai-sdk', 'claude-agent', 'subprocess', 'acp']);
+// ADR-0001 eval axes (the per-cell constraint in
+// schema/comparison-table.schema.json): axis 1 — models vary on the ai-sdk
+// driver; axis 2 — drivers vary on the fixed GLM served id. A paid ai-sdk
+// run labeled as another lane is the same misattribution, so --driver
+// ai-sdk always pairs with --driver-name ai-sdk (fake runs with an explicit
+// lane label stay legal — that is the smoke story).
+const FIXED_GLM_SERVED_ID = 'glm-5.3-flash';
+const USAGE =
+  'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
+  '--driver fake|ai-sdk --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
+  '[--max-usd <n>] [--max-tokens <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>]\n' +
+  `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
+  'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure';
+
+export class UsageError extends Error {}
+
+// Real-lane review-classifier runs NEED structured output: without a schema
+// the ai-sdk lane never produces structuredOutput.verdict and every
+// classifier case scores 0 regardless of model behavior. The vocabulary is
+// mirrored locally (classifyThreads is not on the toolkit's export surface;
+// enum-identical to schema/suite.schema.json).
+const VERDICT_OUTPUT_SCHEMA = z.object({
+  verdict: z.enum(['actionable', 'responded', 'resolved', 'blocked', 'skip']),
+});
+
+function nextValue(argv: readonly string[], i: number, flag: string): string {
+  const v = argv[i + 1];
+  if (v === undefined) throw new UsageError(`flag ${flag} requires a value\n${USAGE}`);
+  return v;
+}
+
+interface CliOptions {
+  suites: string[];
+  driver: 'fake' | 'ai-sdk';
+  model: string;
+  provider: string;
+  maxUsd?: number;
+  maxTokens?: number;
+  checkTimeoutMs: number;
+  journal?: string;
+  out?: string;
+  driverName: string;
+}
+
+function parseArgs(argv: readonly string[]): CliOptions {
+  // No cap default-injection: absent --max-usd/--max-tokens mean ABSENT
+  // caps, so a token-only cap can bind an unpriced lane (DD-9). --driver is
+  // REQUIRED: a silent fake default would make synthetic rows
+  // indistinguishable from real-lane rows.
+  let driver: 'fake' | 'ai-sdk' | undefined;
+  const suites: string[] = [];
+  let model = '';
+  let provider = '';
+  let driverName = '';
+  let maxUsd: number | undefined;
+  let maxTokens: number | undefined;
+  let checkTimeoutMs = 60_000;
+  let journal: string | undefined;
+  let out: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const flag = argv[i]!;
+    switch (flag) {
+      case '--suite': suites.push(nextValue(argv, i, flag)); i++; break;
+      case '--driver': {
+        const v = nextValue(argv, i, flag);
+        if (v !== 'fake' && v !== 'ai-sdk') throw new UsageError(`--driver must be fake|ai-sdk, got '${v}'`);
+        driver = v; i++; break;
+      }
+      case '--model': model = nextValue(argv, i, flag); i++; break;
+      case '--provider': provider = nextValue(argv, i, flag); i++; break;
+      case '--driver-name': driverName = nextValue(argv, i, flag); i++; break;
+      case '--journal': journal = nextValue(argv, i, flag); i++; break;
+      case '--out': out = nextValue(argv, i, flag); i++; break;
+      case '--max-usd': case '--max-tokens': case '--check-timeout-ms': {
+        const n = Number(nextValue(argv, i, flag));
+        if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
+        if (flag === '--max-usd') maxUsd = n;
+        else if (flag === '--max-tokens') maxTokens = n;
+        else checkTimeoutMs = n;
+        i++; break;
+      }
+      default: throw new UsageError(`unknown flag '${flag}'\n${USAGE}`);
+    }
+  }
+  if (driver === undefined) throw new UsageError(`--driver is required (fake|ai-sdk)\n${USAGE}`);
+  if (suites.length === 0 || model === '' || provider === '') {
+    throw new UsageError(`--suite, --model and --provider are required\n${USAGE}`);
+  }
+  driverName = driverName === '' ? driver : driverName;
+  if (!LANES.has(driverName)) {
+    throw new UsageError(`--driver-name '${driverName}' is not a toolkit lane (${[...LANES].join('|')}) — pass one so rows validate`);
+  }
+  // T1: a paid ai-sdk run labeled as another lane is a silent
+  // misattribution — refuse it. Fake runs with an explicit lane label stay
+  // legal (the smoke story).
+  if (driver === 'ai-sdk' && driverName !== 'ai-sdk') {
+    throw new UsageError(`--driver ai-sdk with --driver-name '${driverName}' mislabels paid ai-sdk results as another lane — drop --driver-name or use --driver fake`);
+  }
+  // ADR-0001 eval axes: fail at parse time, before any spend, rather than
+  // after a full paid run misreported as an eval outcome.
+  if (driverName !== 'ai-sdk' && model !== FIXED_GLM_SERVED_ID) {
+    throw new UsageError(
+      `--model '${model}' on lane '${driverName}' violates the ADR-0001 eval axes: ` +
+        `models vary on the ai-sdk driver; drivers vary on the fixed served id '${FIXED_GLM_SERVED_ID}' ` +
+        '(schema/comparison-table.schema.json)',
+    );
+  }
+  return { suites, driver, model, provider, maxUsd, maxTokens, checkTimeoutMs, journal, out, driverName };
+}
+
+async function main(argv: readonly string[]): Promise<number> {
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(argv);
+  } catch (e) {
+    if (e instanceof UsageError) { console.error(e.message); return 2; }
+    throw e;
+  }
+  // Suites load BEFORE driver construction: load/validation failures map to
+  // exit 2 (hard-fail in the workflow), and the loaded roles decide whether
+  // the ai-sdk lane needs a verdict output schema.
+  let suites: Suite[];
+  try {
+    suites = opts.suites.map((d) => loadSuite(d));
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : e);
+    return 2;
+  }
+  // B3: enforce suite.servedModel at the seam (served-id decision
+  // 2026-09-14) — a mismatch means the operator is pointing the suite at a
+  // wire that does not serve the pinned id; refuse before any dispatch
+  // rather than misrecord rows.
+  const mismatched = suites.find((s) => s.servedModel !== undefined && s.servedModel !== opts.model);
+  if (mismatched !== undefined) {
+    console.error(`suite '${mismatched.name}' pins servedModel '${mismatched.servedModel}' but --model is '${opts.model}' — point the run at the wire that serves the pinned id`);
+    return 2;
+  }
+  // B4: same-role suites collide on <role>.table.json in the shared --out
+  // dir — refuse here, before ANY dispatch burns spend.
+  const seenRoles = new Set<SuiteRole>();
+  for (const s of suites) {
+    if (seenRoles.has(s.role)) {
+      console.error(`two suites share role '${s.role}' (<role>.table.json would collide) — run one suite per role per invocation`);
+      return 2;
+    }
+    seenRoles.add(s.role);
+  }
+  // One driver PER SUITE: a mixed invocation (fixer + classifier suites)
+  // must not force the verdict outputSchema onto fixer cases nor withhold it
+  // from classifier cases — each suite's role decides its own construction.
+  const rows: ResultRow[] = [];
+  const tables: ComparisonTable[] = [];
+  let anyFailed = false;
+  let materializationFailures = 0;
+  const materializationDiagnostics: string[] = [];
+  // Run + score phase: a scored-zero or budget-gated result — or a failure
+  // thrown here — is exit 1 (a benign eval outcome the workflow warns on).
+  try {
+    for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
+      const driver: Driver = opts.driver === 'ai-sdk'
+        ? new AiSdkDriver(suite.role === 'review-classifier' ? { outputSchema: VERDICT_OUTPUT_SCHEMA } : undefined)
+        : new FakeDriver();
+      const result = await runSuite({
+        suiteDir, driver,
+        model: opts.model, provider: opts.provider,
+        maxUsd: opts.maxUsd, maxTokens: opts.maxTokens,
+        checkTimeoutMs: opts.checkTimeoutMs,
+        journalPath: opts.journal, driverName: opts.driverName,
+      });
+      rows.push(...result.rows);
+      tables.push(...result.tables);
+      if (result.materializationFailures > 0) {
+        materializationFailures += result.materializationFailures;
+        materializationDiagnostics.push(...result.diagnostics.filter((d) => d.includes('fixture materialization failed')));
+      }
+      const passed = result.rows.reduce((n, r) => n + r.outcome.passed, 0);
+      const total = result.rows.reduce((n, r) => n + r.outcome.total, 0);
+      if (result.rows.some((r) => r.outcome.passed === 0)) anyFailed = true;
+      // A budget-gated run did not complete: never report it as clean (the
+      // gated cases are also visible on the run-finished journal event).
+      if (result.gatedByBudget) anyFailed = true;
+      const runSuffix = result.rows[0] !== undefined ? `, run ${result.rows[0].runId}` : '';
+      const suiteName = result.rows[0]?.suite ?? suiteDir;
+      console.log(`suite ${suiteName}: ${passed}/${total} probes passed across ${result.rows.length} case(s)${runSuffix}`);
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    // A pre-dispatch missing-credential throw is infrastructure (the secret
+    // is absent), not an eval outcome — hard-fail so CI never publishes
+    // zero tables while green. Name the env var the toolkit asked for.
+    const envVar = message.match(/requires ([A-Z0-9_]+_API_KEY) in the environment/)?.[1];
+    if (envVar !== undefined) {
+      console.error(`required env ${envVar} missing (add this repo's Actions secret and map it onto the toolkit's ${envVar} env): ${message}`);
+      return 2;
+    }
+    // Run-phase failures (row/table validation of a scored run) stay exit 1.
+    console.error(message);
+    return 1;
+  }
+  // X2: materialization failures are infrastructure — the driver never ran
+  // for those cases — so they hard-fail (exit 2) with the count and the
+  // affected case ids (already carried in the diagnostics), instead of a
+  // benign scored-zero warning.
+  if (materializationFailures > 0) {
+    console.error(`${materializationFailures} case(s) failed fixture materialization (the driver never ran):`);
+    for (const d of materializationDiagnostics) console.error(`  ${d}`);
+    return 2;
+  }
+  // X1: report/emit phase — row/table validation of our own output, journal
+  // I/O, out-dir creation, writeFileSync. Infrastructure errors here are
+  // exit 2, never a benign scored-zero warning.
+  try {
+    if (opts.out !== undefined) {
+      mkdirSync(opts.out, { recursive: true });
+      // Same-role collisions were refused before any dispatch (see above).
+      for (const t of tables) {
+        writeFileSync(join(opts.out, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');
+      }
+      writeFileSync(join(opts.out, 'rows.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length > 0 ? '\n' : ''));
+      console.log(`wrote ${opts.out}/rows.jsonl and ${tables.length} table(s)`);
+    }
+  } catch (e) {
+    console.error(`report/emit failure: ${e instanceof Error ? e.message : String(e)}`);
+    return 2;
+  }
+  return anyFailed ? 1 : 0;
+}
+
+/** Process entry: returns the exit code, never throws past the CLI boundary. */
+export async function cliMain(argv: readonly string[]): Promise<number> {
+  try {
+    return await main(argv);
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : e);
+    return 1;
+  }
+}

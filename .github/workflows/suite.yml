@@ -1,0 +1,279 @@
+name: suite
+
+# Invariant I4: the `on:` block below carries NO filter keys — no `paths`, no
+# `paths-ignore`, no branch or tag filters. push and pull_request run the
+# `smoke` job unfiltered (the denylist self-test's workflow sanity scan reads
+# this block, and unfiltered push runs keep the smoke green on main);
+# `workflow_dispatch` and the nightly `schedule` declare the real-driver
+# matrix's triggers. Declaring events is not filtering: the `matrix` job
+# ADDITIONALLY self-restricts to dispatch/schedule via its job-level `if`, so
+# push/PR runs never attempt a live eval while the `on:` block itself stays
+# free of filters.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Pack cq-toolkit at toolkit.lock tag
+        run: ./scripts/pack-toolkit.sh
+      - name: Install dependencies
+        run: npm ci
+      - name: Run the runner over suites/**/smoke/
+        # The empty set IS the phase-2 state: smoke suite dirs under
+        # suites/<role>/<name>/smoke/ are populated by phase-3 goal J3, so a
+        # find with no hits is a pass, not a failure. When a smoke dir DOES
+        # exist we hard-fail rather than run it: the FAKE driver's row needs
+        # a --driver-name lane label, and which lane a fake run should claim
+        # is a phase-3 decision (the row schema's driver enum admits only the
+        # four real toolkit lanes — see suites/README.md). Failing keeps that
+        # question from being silently papered over in this skeleton.
+        run: |
+          set -euo pipefail
+          smoke_dirs="$(find suites -type d -name smoke | sort)"
+          if [ -z "${smoke_dirs}" ]; then
+            echo "no smoke suites yet — populated by phase-3 goal J3"
+            exit 0
+          fi
+          echo "::error::smoke suites exist but lane labeling is owned by phase-3 goal J3 — see suites/README.md"
+          printf 'found smoke dirs:\n%s\n' "${smoke_dirs}"
+          exit 1
+      - name: Upload smoke reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-reports
+          path: reports/smoke/
+          if-no-files-found: ignore
+
+  # BLOCKED: needs secrets — Z_AI_API_KEY exists only in the cq-toolkit repo's
+  # Actions secrets (owner/conductor set). Until the same secret NAME is added
+  # to cq-fixtures' Actions settings, dispatching this workflow hard-fails:
+  # the runner maps the toolkit's missing-credential throw to exit 2 instead
+  # of publishing zero-scored tables. The secret is added as Z_AI_API_KEY and
+  # mapped here onto the toolkit's required ZAI_API_KEY env name; this is
+  # recorded, not faked.
+  #
+  # Real drivers, dispatch/schedule ONLY: the job-level `if` is the one
+  # allowed restriction here (the `on:` block above remains unfiltered — a
+  # job-level `if` removes whole runs by event, which is queue/mechanics
+  # territory, not an I4 trigger filter).
+  matrix:
+    needs: smoke
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    # Model-driven code runs here and this job pushes nothing (the snapshot
+    # publisher is the dedicated `snapshot` job), so read is enough.
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Model-driven code runs in this job (fixer cells get read/edit/run
+          # tools) — it must not see persisted checkout credentials; report
+          # tables leave via artifact, and the snapshot push lives in the
+          # dedicated `snapshot` job below.
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Pack cq-toolkit at toolkit.lock tag
+        run: ./scripts/pack-toolkit.sh
+      - name: Install dependencies
+        run: npm ci
+      # Served-id decision (2026-09-14): the GLM coding wire serves
+      # glm-5.3-flash, so this cell requests exactly that served id
+      # (--model glm-5.3-flash --provider zai) and the runner records the
+      # OBSERVED served id from the wire — a gateway remap surfaces as data,
+      # never silently rewritten.
+      #
+      # Budget by TOKENS (--max-tokens 200000): glm-5.3-flash on the zai
+      # coding-plan lane is ABSENT from the toolkit price map, and the
+      # governor fails closed on unpriced usage under a USD cap — it would
+      # refuse admission after the first case of any multi-case suite. Per
+      # DD-9's disposition, the cap on this unpriced lane is a token cap;
+      # the USD cap is reserved for priced lanes.
+      #
+      # ACCEPTED RISK (recorded): the provider API key sits in this job's
+      # env — and fixer cells hand model-driven workers read/edit/run tools
+      # — so a prompt-injected worker could exfiltrate the key from the
+      # process environment. Accepted because suite prompts are first-party
+      # fixtures (provenance-marked, no third-party content). Owner action
+      # tracked: move cells to a spend-capped, ephemeral eval key. The
+      # credential split already keeps repo write access out of this job
+      # (persist-credentials: false).
+      - name: Eval cell — ai-sdk, glm-5.3-flash @ zai
+        env:
+          # The secret is added to this repo under the name Z_AI_API_KEY and
+          # mapped onto the toolkit driver's required ZAI_API_KEY env name.
+          ZAI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(find suites -name suite.json -print -quit)" ]; then
+            echo "no suites yet — populated by phase-3 goal J3; the matrix cell is a no-op until then"
+            # The eval-reports artifact must ALWAYS exist: the snapshot job's
+            # download step no longer tolerates a missing artifact (M2).
+            # EMPTY (not a dot-file): upload-artifact v4 drops hidden files
+            # unless include-hidden-files is set.
+            mkdir -p reports/eval
+            touch reports/eval/EMPTY
+            exit 0
+          fi
+          # The runner exits 1 when a suite SCORED ZERO or was BUDGET-GATED —
+          # a normal eval outcome, not an infra failure — and 2 for
+          # usage/validation errors (incl. a missing ZAI_API_KEY env, which
+          # aborts the run pre-dispatch instead of scoring zeros). So: rc>=2
+          # is a hard failure collected below; rc==1 appends a warning and
+          # the loop continues. Tables from scored-zero runs are still valid
+          # artifacts and still land in the upload/snapshot steps below.
+          hard_fail=0
+          while IFS= read -r suite_file; do
+            suite_dir="$(dirname "${suite_file}")"
+            # G7: out dir mirrors the suite path relative to suites/ so two
+            # suites sharing a basename cannot collide; the NDJSON journal
+            # (incl. the honest-stop record) lands inside the same subtree.
+            rel_dir="$(dirname "${suite_file#suites/}")"
+            out_dir="reports/eval/${rel_dir}"
+            rc=0
+            node --experimental-strip-types runner/index.ts \
+              --suite "${suite_dir}" \
+              --driver ai-sdk \
+              --driver-name ai-sdk \
+              --model glm-5.3-flash \
+              --provider zai \
+              --max-tokens 200000 \
+              --journal "${out_dir}/journal" \
+              --out "${out_dir}" || rc=$?
+            if [ "${rc}" -ge 2 ]; then
+              echo "::error::suite ${rel_dir}: runner usage/validation failure (exit ${rc})"
+              hard_fail=1
+            elif [ "${rc}" -eq 1 ]; then
+              echo "::warning::suite ${rel_dir} scored zero or was budget-gated"
+            fi
+          done < <(find suites -name suite.json | sort)
+          # The artifact must exist on every path — even when suites ran but
+          # every run hard-failed pre-output — so the snapshot job's download
+          # can never 404 on a missing artifact. EMPTY (not a dot-file):
+          # upload-artifact v4 drops hidden files unless
+          # include-hidden-files is set.
+          mkdir -p reports/eval
+          touch reports/eval/EMPTY
+          exit "${hard_fail}"
+      - name: Upload eval reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: eval-reports
+          path: reports/
+          if-no-files-found: ignore
+
+  # Snapshot publisher: NO model code runs here — it only downloads the
+  # eval-reports artifact and commits tables. Split from `matrix` so the
+  # run-tool surface of fixer cells never coexists with persisted checkout
+  # credentials, and the push is a pure data operation. Same
+  # dispatch/schedule restriction as `matrix` (plan §9 designed flow).
+  snapshot:
+    needs: matrix
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    # Serialize snapshot-branch updates: two overlapping dispatch/schedule
+    # runs would race the `snapshots` tip and one push would fail
+    # non-fast-forward. Queued-not-cancelled keeps EVERY run's tables landing.
+    concurrency:
+      group: snapshots
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Persist the checkout token: this job's only write is the snapshot
+          # commit/push, and no model code runs here.
+          persist-credentials: true
+      - name: Download eval reports
+        # No continue-on-error: the matrix eval cell touches reports/eval/EMPTY
+        # on every path, so the eval-reports artifact ALWAYS exists and this
+        # download cannot fail on a missing artifact. A real download failure
+        # must fail this job loudly.
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: eval-reports
+          path: reports/
+      - name: Commit report snapshots
+        # Plan §9: report snapshots are committed as reviewable data.
+        # `[skip ci]` keeps the push from re-triggering the gate workflows
+        # (no looping on our own commits).
+        run: |
+          set -euo pipefail
+          # WHY the snapshots branch: main is hook-protected (required checks
+          # static+denylist, enforce_admins) — a direct push can never land
+          # once suites exist. Plan-§9 snapshots therefore land on the
+          # dedicated `snapshots` branch; an owner decision to mirror them
+          # onto main can come later.
+          #
+          # The branch setup happens BEFORE the copy: on a same-day
+          # re-dispatch, `git switch` would otherwise overwrite freshly
+          # copied (gitignored) files with the branch's old tracked content.
+          git config user.name "cq-fixtures snapshot bot"
+          git config user.email "actions@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin snapshots >/dev/null 2>&1; then
+            git fetch origin snapshots
+            git switch -C snapshots origin/snapshots
+          else
+            git switch -C snapshots
+          fi
+          snap_dir="reports/snapshots/$(date -u +%F)"
+          # A same-day re-dispatch after a suite is removed or renamed must
+          # not leave the old suite's stale tables behind: clear this run's
+          # dated dir (tracked on the snapshots branch) before recopying.
+          # set -u safe — snap_dir is assigned one line above; rm -rf on a
+          # missing dir is a silent no-op.
+          rm -rf "${snap_dir}"
+          mkdir -p "${snap_dir}"
+          # Snapshot IDENTITY preserves the suite dir: eval writes
+          # reports/eval/<role>/<suite>/<role>.table.json, and flattening to
+          # the basename would collide the moment two suites share a role —
+          # snapshots/<date>/<role>/<suite>/<role>.table.json is the stable
+          # form.
+          while IFS= read -r table; do
+            rel="${table#reports/eval/}"
+            suite_name="$(dirname "${rel}")"
+            mkdir -p "${snap_dir}/${suite_name}"
+            cp "${table}" "${snap_dir}/${suite_name}/"
+          done < <(find reports/eval -name '*.table.json' 2>/dev/null | sort)
+          # Add runs BEFORE any early exit, so removals publish too: the
+          # rm -rf above cleared the worktree, and `git add` stages the
+          # removal of previously tracked tables as deletions — a run that
+          # follows the removal of ALL suites therefore commits and pushes
+          # its deletions instead of leaving the stale dated dir on
+          # origin/snapshots. reports/* is gitignored for LOCAL runs;
+          # committed snapshots are the designed exception, hence the
+          # force-add.
+          git add -f "${snap_dir}"
+          # "Snapshots unchanged" is the ONLY no-op path: staged deletions
+          # are a diff, so they commit and push exactly like adds.
+          if git diff --cached --quiet; then
+            echo "snapshots unchanged — nothing to commit"
+          else
+            git commit -m "report snapshots $(date -u +%F) [skip ci]"
+          fi
+          git push origin HEAD:snapshots

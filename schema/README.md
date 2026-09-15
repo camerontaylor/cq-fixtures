@@ -8,9 +8,10 @@ Result-row + per-role comparison-table JSON schemas (plan §3.2; ws-j item 2, fi
   fills cells with the fixed served GLM id (`glm-5.3-flash`) across all four drivers
   (`ai-sdk`, `claude-agent`, `subprocess`, `acp`). Cell score is the aggregate passed/total.
 - `suite.schema.json` — a suite is a directory of task cases: `{id, fixture, task{prompt}, probe}`
-  per case. Probes are discriminated by `kind`: `check-rerun` (re-run a seeded check, reusing the
-  toolkit's baselineProbe mechanics) or `expected-verdict` (toolkit `classifyThreads` vocabulary:
-  `actionable | responded | resolved | blocked | skip`).
+  per case. Probes are discriminated by `kind`: `check-rerun` (the runner re-runs the seeded check
+  with node directly against the case's materialized workspace copy — no toolkit probe machinery)
+  or `expected-verdict` (classifyThreads vocabulary — mirrored locally by the runner, since the
+  toolkit does not export it: `actionable | responded | resolved | blocked | skip`).
 
 Served-id rule for `model` fields: every `model` id is the id the wire actually served. The eval
 wires request the served id (GLM coding wire → `glm-5.3-flash`; anthropic-compat and deepseek keep
@@ -22,5 +23,6 @@ DD-9 null-cost rule: subscription lanes have no per-invocation USD, so `costUSD`
 mirroring the toolkit's `WorkerResult.costBasis`) marks whether it is actual spend or an estimate,
 so a modeled number is never silently reported as spend.
 
-Validation: `test/schema.test.ts` compiles all three with ajv draft 2020-12 (`ajv/dist/2020`).
-Later goals wire this validation into CI.
+Validation: `test/schema.test.ts` compiles all three with ajv draft 2020-12 (`ajv/dist/2020`) and
+runs in CI via the static check's vitest suite; the runner additionally validates every emitted
+row and table against these schemas at runtime before results leave `runSuite`.

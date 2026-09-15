@@ -5,11 +5,14 @@ Each suite directory carries a `suite.json` validated by `schema/suite.schema.js
 ## Scoring
 
 - **fixer-worker — automatic.** The runner re-runs the seeded check probe named by the case's
-  `check-rerun` probe, reusing the toolkit's baselineProbe mechanics (kept sweep-agnostic).
-  The case passes iff the probe passes on the worker's result.
+  `check-rerun` probe directly with `node`, cwd = the case's materialized writable workspace copy
+  (the check script itself resolves from the repo root, so a worker cannot rewrite its own judge;
+  sweep-agnostic — no toolkit probe machinery involved). The case passes iff the probe passes.
 - **review-classifier — verdict match.** The runner compares the classifier's verdict against the
-  case's expected verdict in the toolkit's exported `classifyThreads` vocabulary:
+  case's expected verdict in the classifyThreads vocabulary —
   `actionable | responded | resolved | blocked | skip` (ws-j item 3; UC §2 row 34).
+  `classifyThreads` itself is not on the toolkit's export surface, so the vocabulary is mirrored
+  locally, enum-identical to `schema/suite.schema.json`.
 
 ## Result rows
 

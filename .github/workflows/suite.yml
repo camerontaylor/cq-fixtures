@@ -260,15 +260,17 @@ jobs:
             mkdir -p "${snap_dir}/${suite_name}"
             cp "${table}" "${snap_dir}/${suite_name}/"
           done < <(find reports/eval -name '*.table.json' 2>/dev/null | sort)
-          if [ -z "$(ls -A "${snap_dir}")" ]; then
-            echo "no tables to snapshot — nothing committed"
-            exit 0
-          fi
-          # reports/* is gitignored for LOCAL runs; committed snapshots are
-          # the designed exception, hence the force-add. A same-day
-          # re-dispatch can produce byte-identical content: no staged diff,
-          # no commit, exit 0.
+          # Add runs BEFORE any early exit, so removals publish too: the
+          # rm -rf above cleared the worktree, and `git add` stages the
+          # removal of previously tracked tables as deletions — a run that
+          # follows the removal of ALL suites therefore commits and pushes
+          # its deletions instead of leaving the stale dated dir on
+          # origin/snapshots. reports/* is gitignored for LOCAL runs;
+          # committed snapshots are the designed exception, hence the
+          # force-add.
           git add -f "${snap_dir}"
+          # "Snapshots unchanged" is the ONLY no-op path: staged deletions
+          # are a diff, so they commit and push exactly like adds.
           if git diff --cached --quiet; then
             echo "snapshots unchanged — nothing to commit"
           else

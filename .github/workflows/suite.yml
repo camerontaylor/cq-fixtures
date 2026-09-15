@@ -1,0 +1,147 @@
+name: suite
+
+# Invariant I4: this workflow never filters its triggers — no `paths`, no
+# `paths-ignore`, no branch or tag filters. Push and pull_request run the
+# `smoke` job unfiltered (the denylist self-test's workflow sanity scan reads
+# this `on:` block, and unfiltered push runs keep the smoke green on main).
+# The `matrix` job is the ONE deliberate exception and it restricts itself
+# with a JOB-LEVEL `if:` (dispatch/schedule only), never with a trigger
+# filter — the `on:` block above stays untouched.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Pack cq-toolkit at toolkit.lock tag
+        run: ./scripts/pack-toolkit.sh
+      - name: Install dependencies
+        run: npm ci
+      - name: Run the runner over suites/**/smoke/
+        # The empty set IS the phase-2 state: smoke suite dirs under
+        # suites/<role>/<name>/smoke/ are populated by phase-3 goal J3, so a
+        # find with no hits is a pass, not a failure. When a smoke dir DOES
+        # exist we hard-fail rather than run it: the FAKE driver's row needs
+        # a --driver-name lane label, and which lane a fake run should claim
+        # is a phase-3 decision (the row schema's driver enum admits only the
+        # four real toolkit lanes — see suites/README.md). Failing keeps that
+        # question from being silently papered over in this skeleton.
+        run: |
+          set -euo pipefail
+          smoke_dirs="$(find suites -type d -name smoke | sort)"
+          if [ -z "${smoke_dirs}" ]; then
+            echo "no smoke suites yet — populated by phase-3 goal J3"
+            exit 0
+          fi
+          echo "::error::smoke suites exist but lane labeling is owned by phase-3 goal J3 — see suites/README.md"
+          printf 'found smoke dirs:\n%s\n' "${smoke_dirs}"
+          exit 1
+      - name: Upload smoke reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-reports
+          path: reports/smoke/
+          if-no-files-found: ignore
+
+  # BLOCKED: needs secrets — Z_AI_API_KEY exists only in the cq-toolkit repo's
+  # Actions secrets (owner/conductor set). Until the same secret is added to
+  # cq-fixtures, dispatching this workflow fails at the API-call step; this is
+  # recorded, not faked.
+  #
+  # Real drivers, dispatch/schedule ONLY: the job-level `if` is the one
+  # allowed restriction here (the `on:` block above remains unfiltered — a
+  # job-level `if` removes whole runs by event, which is queue/mechanics
+  # territory, not an I4 trigger filter). Schedule/dispatch are also the only
+  # events under which a credentials-carrying job may push snapshots without
+  # racing PR ref checkouts.
+  matrix:
+    needs: smoke
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    # Committed report snapshots are the plan-§9 designed flow: write is
+    # scoped to this job alone (the workflow default stays contents: read).
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5
+        with:
+          # Persist the checkout token: the snapshot commit at the bottom of
+          # this job pushes with it.
+          persist-credentials: true
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Pack cq-toolkit at toolkit.lock tag
+        run: ./scripts/pack-toolkit.sh
+      - name: Install dependencies
+        run: npm ci
+      # Served-id decision (2026-09-14): the GLM coding wire serves
+      # glm-5.3-flash, so this cell requests exactly that served id
+      # (--model glm-5.3-flash --provider zai) and the runner records the
+      # OBSERVED served id from the wire — a gateway remap surfaces as data,
+      # never silently rewritten.
+      - name: Eval cell — ai-sdk, glm-5.3-flash @ zai
+        env:
+          Z_AI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(find suites -name suite.json -print -quit)" ]; then
+            echo "no suites yet — populated by phase-3 goal J3; the matrix cell is a no-op until then"
+            exit 0
+          fi
+          while IFS= read -r suite_file; do
+            suite_dir="$(dirname "${suite_file}")"
+            name="$(basename "${suite_dir}")"
+            node --experimental-strip-types runner/index.ts \
+              --suite "${suite_dir}" \
+              --driver ai-sdk \
+              --driver-name ai-sdk \
+              --model glm-5.3-flash \
+              --provider zai \
+              --max-usd 1 \
+              --out "reports/eval/${name}"
+          done < <(find suites -name suite.json | sort)
+      - name: Upload eval reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports
+          path: reports/
+          if-no-files-found: ignore
+      - name: Commit report snapshots
+        # Plan §9: report snapshots are committed as reviewable data.
+        # `[skip ci]` keeps the push from re-triggering the gate workflows
+        # (no looping on our own commits).
+        run: |
+          set -euo pipefail
+          snap_dir="reports/snapshots/$(date -u +%F)"
+          mkdir -p "${snap_dir}"
+          find reports -name '*.table.json' -not -path 'reports/snapshots/*' \
+            -exec cp '{}' "${snap_dir}/" \;
+          if [ -z "$(ls -A "${snap_dir}")" ]; then
+            echo "no tables to snapshot — nothing committed"
+            exit 0
+          fi
+          # reports/* is gitignored for LOCAL runs; committed snapshots are
+          # the designed exception, hence the force-add.
+          git config user.name "cq-fixtures snapshot bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -f "${snap_dir}"
+          git commit -m "report snapshots $(date -u +%F) [skip ci]"
+          git push

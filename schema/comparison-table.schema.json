@@ -24,8 +24,8 @@
     },
     "cells": {
       "type": "array",
-      "minItems": 1,
-      "description": "One cell per (model, driver) pair with at least one result row.",
+      "minItems": 0,
+      "description": "One cell per (model, driver) pair with at least one result row; an empty suite yields an empty-but-valid table (cells: []) — the J2 runner's conformance property.",
       "items": {
         "type": "object",
         "additionalProperties": false,

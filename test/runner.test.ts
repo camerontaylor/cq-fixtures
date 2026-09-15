@@ -1,0 +1,312 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Ajv2020 } from 'ajv/dist/2020.js';
+import ajvFormats from 'ajv-formats';
+import {
+  computeCostUSD,
+  openRunLog,
+  priceOf,
+  type JobFinishedJournalEvent,
+  type RunFinishedJournalEvent,
+  type WorkerResult,
+} from '@camerontaylor/cq-toolkit';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { runSuite, type RunSuiteOptions } from '../runner/index.ts';
+import { loadSuite } from '../runner/suite.ts';
+import { scoreFixerWorker } from '../runner/score/fixerWorker.ts';
+import { scoreReviewClassifier } from '../runner/score/reviewClassifier.ts';
+import { FakeDriver } from '../runner/fake-driver.ts';
+import type { ResultRow, SuiteRole } from '../runner/aggregate.ts';
+
+// Runner tests: no network, no live keys — the FakeDriver stands in for a
+// toolkit lane. Fixture paths inside suite.json are repo-root-relative in
+// SHAPE (the runner's semantic rule) and are resolved against repoRoot,
+// which points at the per-test tmp dir.
+
+const ajv = ajvFormats(new Ajv2020({ allErrors: true }));
+const validateRow = ajv.compile(
+  JSON.parse(readFileSync(new URL('../schema/result-row.schema.json', import.meta.url), 'utf8')) as object,
+);
+const validateTable = ajv.compile(
+  JSON.parse(readFileSync(new URL('../schema/comparison-table.schema.json', import.meta.url), 'utf8')) as object,
+);
+
+let root: string;
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'cq-fixture-runner-'));
+});
+
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+function writeSuite(dirName: string, suite: object): string {
+  const dir = join(root, dirName);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'suite.json'), JSON.stringify(suite, null, 2) + '\n');
+  return dir;
+}
+
+function reviewCase(id: string, expected: string): object {
+  return {
+    id,
+    fixture: 'fixture',
+    task: { prompt: 'Classify the review thread.' },
+    probe: { kind: 'expected-verdict', expected },
+  };
+}
+
+function reviewSuite(dirName: string, name: string, cases: object[]): string {
+  return writeSuite(dirName, {
+    name,
+    role: 'review-classifier',
+    servedModel: 'deepseek-chat',
+    provenance: { origin: 'hand-seeded' },
+    cases,
+  });
+}
+
+interface OverSpec {
+  model?: string;
+  provider?: string;
+  maxUsd?: number;
+  maxTokens?: number;
+  journalPath?: string;
+}
+
+function opts(suiteDir: string, over: OverSpec = {}): RunSuiteOptions {
+  return {
+    suiteDir,
+    driver: new FakeDriver(),
+    // Priced pair by default: the fake's 120 tokens/case cost ~0.0000364 USD,
+    // far under the 1 USD cap, so the governor does not gate ordinary runs.
+    model: 'deepseek-chat',
+    provider: 'deepseek',
+    maxUsd: 1,
+    repoRoot: root,
+    ...over,
+  };
+}
+
+function assertSchemaValid(rows: ResultRow[], tables: unknown[]): void {
+  for (const row of rows) expect(validateRow(row), `row ${row.case}: ${ajv.errorsText(validateRow.errors)}`).toBe(true);
+  for (const table of tables) expect(validateTable(table), `table: ${ajv.errorsText(validateTable.errors)}`).toBe(true);
+}
+
+describe('empty suite (empty-but-valid table)', () => {
+  it('loadSuite accepts cases: [] and runSuite emits one empty-cells table that validates', async () => {
+    const dir = reviewSuite('empty-suite', 'empty-suite', []);
+    const suite = loadSuite(dir);
+    expect(suite.cases).toEqual([]);
+
+    const result = await runSuite(opts(dir));
+    expect(result.rows).toEqual([]);
+    expect(result.gatedByBudget).toBe(false);
+    expect(result.tables).toHaveLength(1);
+    expect(result.tables[0]).toMatchObject({ role: 'review-classifier', suite: 'empty-suite', cells: [] });
+    expect(validateTable(result.tables[0]), ajv.errorsText(validateTable.errors)).toBe(true);
+  }, 15_000);
+});
+
+describe('driver conformance (adding a case changes no runner code)', () => {
+  it('one case -> one scored row; a second case in the SAME suite dir -> two rows via the SAME runner call', async () => {
+    const dir = reviewSuite('conf-suite', 'conf-suite', [reviewCase('rev-1', 'resolved')]);
+    const first = await runSuite(opts(dir));
+    expect(first.rows).toHaveLength(1);
+    expect(first.rows[0]).toMatchObject({ case: 'rev-1', outcome: { score: 1, passed: 1, total: 1 } });
+    assertSchemaValid(first.rows, first.tables);
+
+    // The conformance property: the suite is DATA — adding a case and
+    // re-running the identical runner call scores it with zero runner change.
+    writeSuite('conf-suite', {
+      name: 'conf-suite',
+      role: 'review-classifier',
+      servedModel: 'deepseek-chat',
+      provenance: { origin: 'hand-seeded' },
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')],
+    });
+    const second = await runSuite(opts(dir));
+    expect(second.rows).toHaveLength(2);
+    expect(second.rows.map((r) => r.case)).toEqual(['rev-1', 'rev-2']);
+    expect(second.rows.every((r) => r.outcome.score === 1)).toBe(true);
+    expect(second.tables[0]?.cells).toEqual([
+      expect.objectContaining({ model: 'deepseek-chat', driver: 'ai-sdk', runs: 2, passed: 2, total: 2, score: 1 }),
+    ]);
+    assertSchemaValid(second.rows, second.tables);
+  }, 15_000);
+});
+
+describe('review-classifier scoring (fake verdict: resolved)', () => {
+  it('expected actionable vs verdict resolved scores 0 with no fabricated credit', async () => {
+    const dir = reviewSuite('rev-miss', 'rev-miss', [reviewCase('rev-miss-1', 'actionable')]);
+    const result = await runSuite(opts(dir));
+    expect(result.rows[0]).toMatchObject({ outcome: { score: 0, passed: 0, total: 1 } });
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('missing or out-of-vocabulary structuredOutput scores 0 with diagnostics and never throws', () => {
+    const noOutput = {} as WorkerResult;
+    const missing = scoreReviewClassifier({ probe: { kind: 'expected-verdict', expected: 'resolved' } }, noOutput);
+    expect(missing).toMatchObject({ score: 0, passed: 0, total: 1 });
+    expect(missing.diagnostics).toMatch(/missing or unparseable/);
+
+    const offVocab = { structuredOutput: { verdict: 'maybe' } } as WorkerResult;
+    const off = scoreReviewClassifier({ probe: { kind: 'expected-verdict', expected: 'resolved' } }, offVocab);
+    expect(off.score).toBe(0);
+    expect(off.diagnostics).toMatch(/outside the classifyThreads vocabulary/);
+  });
+});
+
+describe('fixer-worker scoring (re-run the seeded check)', () => {
+  it('check exit 0 scores 1, check exit 1 scores 0', async () => {
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check-pass.js'), 'process.exit(0);\n');
+    writeFileSync(join(root, 'fixture', 'check-fail.js'), 'process.exit(1);\n');
+    const dir = writeSuite('fix-suite', {
+      name: 'fix-suite',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [
+        { id: 'fix-pass', fixture: 'fixture', task: { prompt: 'Fix the fault.' }, probe: { kind: 'check-rerun', check: 'fixture/check-pass.js' } },
+        { id: 'fix-fail', fixture: 'fixture', task: { prompt: 'Fix the fault.' }, probe: { kind: 'check-rerun', check: 'fixture/check-fail.js' } },
+      ],
+    });
+    const result = await runSuite(opts(dir));
+    expect(result.rows.map((r) => [r.case, r.outcome.score])).toEqual([['fix-pass', 1], ['fix-fail', 0]]);
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('a missing check script scores 0 with diagnostics and never throws', () => {
+    const outcome = scoreFixerWorker(
+      { fixture: 'fixture', probe: { kind: 'check-rerun', check: 'fixture/does-not-exist.js' } },
+      {} as WorkerResult,
+      root,
+    );
+    expect(outcome.score).toBe(0);
+    expect(outcome.passed).toBe(0);
+    expect(outcome.total).toBe(1);
+    expect(outcome.diagnostics).toBeDefined();
+  });
+
+  it('a probe handed the wrong probe.kind throws (programming error, caught by loadSuite first)', () => {
+    expect(() =>
+      scoreFixerWorker(
+        { fixture: 'fixture', probe: { kind: 'expected-verdict', expected: 'resolved' } } as never,
+        {} as WorkerResult,
+        root,
+      ),
+    ).toThrow(/must be 'check-rerun'/);
+  });
+});
+
+describe('budget honesty (I9)', () => {
+  it('a tripped token cap gates admission: rows carry ONLY admitted cases and the journal records the honest stop', async () => {
+    const dir = reviewSuite('budget-suite', 'budget-suite', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
+    // The fake reports 100 input + 20 output = 120 tokens; the governor's
+    // token cap trips when the fold EXCEEDS maxTokens (BudgetGovernor
+    // .d.ts), so case 1 runs and case 2 is refused admission.
+    const journalPath = join(root, 'journal');
+    const result = await runSuite(opts(dir, { maxTokens: 100, journalPath }));
+
+    expect(result.gatedByBudget).toBe(true);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
+    expect(result.tables[0]?.cells).toEqual([expect.objectContaining({ runs: 1 })]);
+    assertSchemaValid(result.rows, result.tables);
+
+    const log = openRunLog(journalPath);
+    const runs = await log.runs();
+    expect(runs).toEqual([result.rows[0]!.runId]);
+    const events = await log.read(runs[0]!);
+    const dispatched = events.filter((e) => e.type === 'job-started').map((e) => (e as { jobId: string }).jobId);
+    expect(dispatched).toEqual(['rev-1']); // no fabricated dispatch for rev-2
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result.status).toBe('ok');
+    const runFinished = events.find((e): e is RunFinishedJournalEvent => e.type === 'run-finished');
+    expect(runFinished).toMatchObject({ stoppedEarly: true, earlyStopReason: 'budget' });
+  }, 15_000);
+});
+
+describe('DD-9 cost derivation', () => {
+  it('a priced model yields a positive costUSD with costBasis modeled', async () => {
+    const dir = reviewSuite('cost-priced', 'cost-priced', [reviewCase('rev-1', 'resolved')]);
+    const result = await runSuite(opts(dir, { model: 'deepseek-chat', provider: 'deepseek' }));
+    const row = result.rows[0]!;
+    expect(typeof row.costUSD).toBe('number');
+    expect(row.costUSD).toBeGreaterThan(0);
+    expect(row.costBasis).toBe('modeled');
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('an unpriced model yields costUSD null with no costBasis (never invented)', async () => {
+    // Verified against the toolkit price map directly: glm-5.3-flash on the
+    // zai handle has no entry (checked anthropic too — also absent).
+    const spec = { model: 'glm-5.3-flash', provider: 'zai' };
+    expect(priceOf(spec)).toBeUndefined();
+    expect(computeCostUSD(spec, { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 })).toBeUndefined();
+
+    const dir = reviewSuite('cost-unpriced', 'cost-unpriced', [reviewCase('rev-1', 'resolved')]);
+    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai' }));
+    const row = result.rows[0]!;
+    expect(row.costUSD).toBeNull();
+    expect('costBasis' in row).toBe(false);
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+});
+
+describe('schema validation of emitted artifacts', () => {
+  it('every row and table from a mixed two-suite run validates', async () => {
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    const fixer = writeSuite('mix-fixer', {
+      name: 'mix-fixer',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-1', fixture: 'fixture', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+    const review = reviewSuite('mix-review', 'mix-review', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'actionable')]);
+    const a = await runSuite(opts(fixer));
+    const b = await runSuite(opts(review));
+    const roles = new Set<SuiteRole>([...a.rows, ...b.rows].map((r) => r.role));
+    expect([...roles].sort()).toEqual(['fixer-worker', 'review-classifier']);
+    assertSchemaValid([...a.rows, ...b.rows], [...a.tables, ...b.tables]);
+  }, 15_000);
+});
+
+describe('semantic layer (issue #4 enforcement in loadSuite)', () => {
+  it('rejects a role/probe-kind mismatch', () => {
+    const dir = writeSuite('bad-pairing', {
+      name: 'bad-pairing',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [reviewCase('z', 'resolved')],
+    });
+    expect(() => loadSuite(dir)).toThrow(/requires probe.kind 'check-rerun'/);
+  });
+
+  it('rejects duplicate case ids', () => {
+    const dir = reviewSuite('bad-dup', 'bad-dup', [reviewCase('x', 'resolved'), reviewCase('x', 'resolved')]);
+    expect(() => loadSuite(dir)).toThrow(/duplicate case id 'x'/);
+  });
+
+  it('rejects a fixture path escaping the repo', () => {
+    const dir = writeSuite('bad-escape', {
+      name: 'bad-escape',
+      role: 'review-classifier',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'y', fixture: '../outside', task: { prompt: 'p' }, probe: { kind: 'expected-verdict', expected: 'resolved' } }],
+    });
+    expect(() => loadSuite(dir)).toThrow(/repo-root-relative/);
+  });
+
+  it('rejects a suite failing the JSON Schema (missing provenance)', () => {
+    const dir = writeSuite('bad-schema', {
+      name: 'bad-schema',
+      role: 'review-classifier',
+      cases: [reviewCase('x', 'resolved')],
+    });
+    expect(() => loadSuite(dir)).toThrow(/failed schema validation/);
+  });
+});

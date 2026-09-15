@@ -143,6 +143,14 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
     expect(tableSchema(table)).toBe(false);
   });
 
+  it('rejects a cell with total 0 — rows require outcome.total >= 1, so 0 is degenerate', () => {
+    const table = validTable();
+    table.cells[0]!.passed = 0;
+    table.cells[0]!.total = 0;
+    table.cells[0]!.score = 0;
+    expect(tableSchema(table)).toBe(false);
+  });
+
   it('rejects a cell missing costUSD — absent cost is not distinguishable from a DD-9 null', () => {
     const table = validTable();
     delete (table.cells[0] as { costUSD?: number | null }).costUSD;

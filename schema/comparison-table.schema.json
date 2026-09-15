@@ -63,8 +63,8 @@
           },
           "total": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Scoring probes total, summed over the cell's rows."
+            "minimum": 1,
+            "description": "Scoring probes total, summed over the cell's rows (each row requires outcome.total >= 1, so an aggregate of 0 is unreachable)."
           },
           "score": {
             "type": "number",

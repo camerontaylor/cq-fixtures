@@ -10,7 +10,12 @@ import { cliMain } from '../runner/cli.ts';
 // only AiSdkDriver is replaced by a mock that records its constructor
 // options, so no network and no live keys are ever touched.
 
-const captured = vi.hoisted(() => ({ constructorOptions: [] as unknown[] }));
+const captured = vi.hoisted(() => ({
+  constructorOptions: [] as unknown[],
+  // When set, the mocked ai-sdk driver throws this pre-dispatch (the
+  // toolkit's requireKey missing-env shape).
+  driverThrow: null as Error | null,
+}));
 
 vi.mock('@camerontaylor/cq-toolkit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@camerontaylor/cq-toolkit')>();
@@ -19,6 +24,7 @@ vi.mock('@camerontaylor/cq-toolkit', async (importOriginal) => {
       captured.constructorOptions.push(options);
     }
     async run(invocation: OpInvocation): Promise<WorkerResult> {
+      if (captured.driverThrow !== null) throw captured.driverThrow;
       return {
         model: invocation.modelSpec.model,
         structuredOutput: { verdict: 'resolved' },
@@ -36,6 +42,7 @@ let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'cq-fixture-cli-'));
   captured.constructorOptions.length = 0;
+  captured.driverThrow = null;
 });
 
 afterEach(() => {
@@ -104,9 +111,16 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     const dir = writeSuite('usage-suite', { name: 'usage-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await expect(cliMain([...cliArgs(dir), '--bogus'])).resolves.toBe(2);
   }, 15_000);
+
+  it('a driver missing-credential throw (ZAI_API_KEY) exits 2 — never zeros-while-green', async () => {
+    const dir = writeSuite('key-suite', { name: 'key-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    captured.driverThrow = new Error('provider zai requires env ZAI_API_KEY (pre-dispatch)');
+    await expect(cliMain(cliArgs(dir))).resolves.toBe(2);
+    // The run aborted: no tables/rows were published for the aborted suite.
+  }, 15_000);
 });
 
-describe('role-dependent AiSdkDriver construction (F3)', () => {
+describe('role-dependent AiSdkDriver construction (F3/G6 — one driver PER SUITE)', () => {
   it('a review-classifier run constructs the driver WITH the verdict output schema', async () => {
     const dir = writeSuite('clf-suite', { name: 'clf-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await cliMain(cliArgs(dir));
@@ -129,5 +143,21 @@ describe('role-dependent AiSdkDriver construction (F3)', () => {
     });
     await cliMain(cliArgs(dir));
     expect(captured.constructorOptions.at(-1)).toBeUndefined();
+  }, 15_000);
+
+  it('a MIXED invocation constructs per suite: fixer bare, classifier with schema', async () => {
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    const fixer = writeSuite('mix-fixer', {
+      name: 'mix-fixer',
+      role: 'fixer-worker',
+      cases: [{ id: 'fix-1', fixture: 'fixture', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+    const clf = writeSuite('mix-clf', { name: 'mix-clf', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await cliMain([...cliArgs(fixer), '--suite', clf]);
+    expect(captured.constructorOptions).toHaveLength(2);
+    expect(captured.constructorOptions[0]).toBeUndefined(); // fixer suite: bare driver
+    const clfOptions = captured.constructorOptions[1] as { outputSchema?: unknown };
+    expect(clfOptions.outputSchema).toBeDefined(); // classifier suite: verdict schema
   }, 15_000);
 });

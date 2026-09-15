@@ -68,10 +68,6 @@ export interface RunSuiteOptions {
    * alone (DD-9). Absent flag = absent cap — no default injection. */
   maxUsd?: number;
   maxTokens?: number;
-  /** Invocation/governor wall-clock budget. Does NOT bound the check probe —
-   * that is checkTimeoutMs (decoupled so a small run wall clock cannot
-   * silently re-score a fixer case via probe timeout). */
-  wallClockMs?: number;
   /** Ceiling for one check-probe execution (default: scorer's 60_000). */
   checkTimeoutMs?: number;
   /** Directory for the toolkit NDJSON journal; omitted = no persistence. */
@@ -122,7 +118,6 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const budget: Budget = {};
   if (opts.maxUsd !== undefined) budget.maxUsd = opts.maxUsd;
   if (opts.maxTokens !== undefined) budget.maxTokens = opts.maxTokens;
-  if (opts.wallClockMs !== undefined) budget.wallClockMs = opts.wallClockMs;
 
   // The toolkit governor owns the run's caps: the admission gate runs per
   // case, then usage/cost observation — which trips the cap fail-loud (an
@@ -199,6 +194,21 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       }
       worker = await opts.driver.run(invocation);
     } catch (e) {
+      // A pre-dispatch missing-credential throw (e.g. the toolkit's
+      // requireKey failing on a missing ZAI_API_KEY env) is infrastructure
+      // configuration, NOT an eval outcome — scoring it 0 would publish
+      // zeros-while-green. Close the journal honestly (no verdict exists),
+      // clean the scratch workspace, and abort the run; cliMain maps the
+      // rethrown error to exit 2.
+      if (e instanceof Error && /ZAI_API_KEY/.test(e.message)) {
+        await append({
+          type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
+          inputsHash: hashInputs(suite.role, invocation ?? { caseId: c.id, fixture: c.fixture, task: c.task }),
+          result: { status: 'indeterminate', detail: `aborted: ${e.message}` },
+        });
+        if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
+        throw e;
+      }
       thrown = e;
     }
     const wallTimeMs = Math.max(0, Date.now() - startedMs);
@@ -236,8 +246,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       const s: ScoreOutcome = isFixerCase(c)
         ? // The workspace is always set on the fixer path (materialized
           // above, before the driver ran) — it is what the probe grades.
-          // The probe ceiling is checkTimeoutMs, decoupled from the run's
-          // wall-clock budget.
+          // The probe ceiling is checkTimeoutMs, an independent knob from
+          // the run's budget caps.
           scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.checkTimeoutMs)
         : scoreReviewClassifier(c, worker);
       outcome = { score: s.score, passed: s.passed, total: s.total };

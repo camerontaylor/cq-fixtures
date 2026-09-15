@@ -71,11 +71,11 @@ function reviewSuite(dirName: string, name: string, cases: object[]): string {
 }
 
 interface OverSpec {
+  driver?: Driver;
   model?: string;
   provider?: string;
   maxUsd?: number;
   maxTokens?: number;
-  wallClockMs?: number;
   checkTimeoutMs?: number;
   journalPath?: string;
 }
@@ -211,7 +211,7 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
 
   it('the probe ceiling is --check-timeout-ms through the run path, independent of wallClockMs', async () => {
     // An 800ms check: capped at 300ms it times out (score 0); uncapped it
-    // completes (score 1). wallClockMs is NOT involved — F2 decoupling.
+    // completes (score 1). Only --check-timeout-ms bounds the probe.
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'check-800ms.js'), 'setTimeout(() => process.exit(0), 800);\n');
     const dir = writeSuite('slow-check-suite', {
@@ -226,20 +226,24 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     expect(uncapped.rows[0]).toMatchObject({ case: 'fix-slow', outcome: { score: 1 } });
   }, 15_000);
 
-  it('a small wallClockMs does NOT constrain the check probe (decoupled knobs)', async () => {
-    // wallClockMs is the invocation budget only; the probe ceiling is
-    // checkTimeoutMs (default 60s), so a fast check scores 1 even with a
-    // 50ms run wall clock.
+  it('a driver missing-credential throw aborts the run instead of scoring zeros', async () => {
+    // The toolkit's requireKey throws pre-dispatch on a missing ZAI_API_KEY
+    // env — infrastructure configuration, not an eval outcome. runSuite must
+    // REJECT (cliMain maps it to exit 2), never publish scored-zero rows.
     mkdirSync(join(root, 'fixture'), { recursive: true });
-    writeFileSync(join(root, 'fixture', 'check-fast.js'), 'process.exit(0);\n');
-    const dir = writeSuite('small-wallclock', {
-      name: 'small-wallclock',
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    const dir = writeSuite('missing-key', {
+      name: 'missing-key',
       role: 'fixer-worker',
       provenance: { origin: 'hand-seeded' },
-      cases: [{ id: 'fix-fast', fixture: 'fixture', task: { prompt: 'Fix the fault.' }, probe: { kind: 'check-rerun', check: 'fixture/check-fast.js' } }],
+      cases: [{ id: 'fix-1', fixture: 'fixture', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
     });
-    const result = await runSuite(opts(dir, { wallClockMs: 50 }));
-    expect(result.rows[0]).toMatchObject({ case: 'fix-fast', outcome: { score: 1 } });
+    const missingKeyDriver: Driver = {
+      async run(): Promise<WorkerResult> {
+        throw new Error('provider zai requires env ZAI_API_KEY (pre-dispatch)');
+      },
+    };
+    await expect(runSuite(opts(dir, { driver: missingKeyDriver }))).rejects.toThrow(/ZAI_API_KEY/);
   }, 15_000);
 
   it('a probe handed the wrong probe.kind throws (programming error, caught by loadSuite first)', () => {

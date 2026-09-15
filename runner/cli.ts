@@ -17,8 +17,8 @@ const LANES = new Set(['ai-sdk', 'claude-agent', 'subprocess', 'acp']);
 const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
   '--driver fake|ai-sdk --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
-  '[--max-usd <n>] [--max-tokens <n>] [--wall-clock-ms <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>]\n' +
-  'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage or suite load failure';
+  '[--max-usd <n>] [--max-tokens <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>]\n' +
+  'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure';
 
 export class UsageError extends Error {}
 
@@ -44,7 +44,6 @@ interface CliOptions {
   provider: string;
   maxUsd?: number;
   maxTokens?: number;
-  wallClockMs?: number;
   checkTimeoutMs: number;
   journal?: string;
   out?: string;
@@ -52,8 +51,8 @@ interface CliOptions {
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
-  // No cap default-injection: absent --max-usd/--max-tokens/--wall-clock-ms
-  // mean ABSENT caps, so a token-only cap can bind an unpriced lane (DD-9).
+  // No cap default-injection: absent --max-usd/--max-tokens mean ABSENT
+  // caps, so a token-only cap can bind an unpriced lane (DD-9).
   const o: CliOptions = { suites: [], driver: 'fake', model: '', provider: '', checkTimeoutMs: 60_000, driverName: '' };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]!;
@@ -69,12 +68,11 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--driver-name': o.driverName = nextValue(argv, i, flag); i++; break;
       case '--journal': o.journal = nextValue(argv, i, flag); i++; break;
       case '--out': o.out = nextValue(argv, i, flag); i++; break;
-      case '--max-usd': case '--max-tokens': case '--wall-clock-ms': case '--check-timeout-ms': {
+      case '--max-usd': case '--max-tokens': case '--check-timeout-ms': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
         if (flag === '--max-usd') o.maxUsd = n;
         else if (flag === '--max-tokens') o.maxTokens = n;
-        else if (flag === '--wall-clock-ms') o.wallClockMs = n;
         else o.checkTimeoutMs = n;
         i++; break;
       }
@@ -109,24 +107,21 @@ async function main(argv: readonly string[]): Promise<number> {
     console.error(e instanceof Error ? e.message : e);
     return 2;
   }
-  // ai-sdk constructs minimally for fixer-only runs; a review-classifier run
-  // gets the verdict output schema so the lane can produce
-  // structuredOutput.verdict at all. It is never the default: --driver picks
-  // explicitly.
-  const driver: Driver = opts.driver === 'ai-sdk'
-    ? new AiSdkDriver(
-        suites.some((s) => s.role === 'review-classifier') ? { outputSchema: VERDICT_OUTPUT_SCHEMA } : undefined,
-      )
-    : new FakeDriver();
+  // One driver PER SUITE: a mixed invocation (fixer + classifier suites)
+  // must not force the verdict outputSchema onto fixer cases nor withhold it
+  // from classifier cases — each suite's role decides its own construction.
   const rows: ResultRow[] = [];
   const tables: ComparisonTable[] = [];
   let anyFailed = false;
   try {
-    for (const suiteDir of opts.suites) {
+    for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
+      const driver: Driver = opts.driver === 'ai-sdk'
+        ? new AiSdkDriver(suite.role === 'review-classifier' ? { outputSchema: VERDICT_OUTPUT_SCHEMA } : undefined)
+        : new FakeDriver();
       const result = await runSuite({
         suiteDir, driver,
         model: opts.model, provider: opts.provider,
-        maxUsd: opts.maxUsd, maxTokens: opts.maxTokens, wallClockMs: opts.wallClockMs,
+        maxUsd: opts.maxUsd, maxTokens: opts.maxTokens,
         checkTimeoutMs: opts.checkTimeoutMs,
         journalPath: opts.journal, driverName: opts.driverName,
       });
@@ -156,9 +151,16 @@ async function main(argv: readonly string[]): Promise<number> {
       console.log(`wrote ${opts.out}/rows.jsonl and ${seenRoles.size} table(s)`);
     }
   } catch (e) {
-    // Errors after suites loaded (row/table validation, output writing):
-    // post-load failures stay exit 1, not the hard-fail exit 2.
-    console.error(e instanceof Error ? e.message : e);
+    const message = e instanceof Error ? e.message : String(e);
+    // A pre-dispatch missing-credential throw is infrastructure (the secret
+    // is absent), not an eval outcome — hard-fail so CI never publishes
+    // zero tables while green.
+    if (/ZAI_API_KEY/.test(message)) {
+      console.error(`required env ZAI_API_KEY missing (add this repo's Actions secret Z_AI_API_KEY; it is mapped to the toolkit's ZAI_API_KEY env): ${message}`);
+      return 2;
+    }
+    // Post-load failures (row/table validation, output writing) stay exit 1.
+    console.error(message);
     return 1;
   }
   return anyFailed ? 1 : 0;

@@ -62,24 +62,25 @@ jobs:
           if-no-files-found: ignore
 
   # BLOCKED: needs secrets — Z_AI_API_KEY exists only in the cq-toolkit repo's
-  # Actions secrets (owner/conductor set). Until the same secret is added to
-  # cq-fixtures, dispatching this workflow fails at the API-call step; this is
+  # Actions secrets (owner/conductor set). Until the same secret NAME is added
+  # to cq-fixtures' Actions settings, dispatching this workflow hard-fails:
+  # the runner maps the toolkit's missing-credential throw to exit 2 instead
+  # of publishing zero-scored tables. The secret is added as Z_AI_API_KEY and
+  # mapped here onto the toolkit's required ZAI_API_KEY env name; this is
   # recorded, not faked.
   #
   # Real drivers, dispatch/schedule ONLY: the job-level `if` is the one
   # allowed restriction here (the `on:` block above remains unfiltered — a
   # job-level `if` removes whole runs by event, which is queue/mechanics
-  # territory, not an I4 trigger filter). Schedule/dispatch are also the only
-  # events under which a credentials-carrying job may push snapshots without
-  # racing PR ref checkouts.
+  # territory, not an I4 trigger filter).
   matrix:
     needs: smoke
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
-    # Committed report snapshots are the plan-§9 designed flow: write is
-    # scoped to this job alone (the workflow default stays contents: read).
+    # Model-driven code runs here and this job pushes nothing (the snapshot
+    # publisher is the dedicated `snapshot` job), so read is enough.
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check out the repo
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -112,7 +113,9 @@ jobs:
       # the USD cap is reserved for priced lanes.
       - name: Eval cell — ai-sdk, glm-5.3-flash @ zai
         env:
-          Z_AI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
+          # The secret is added to this repo under the name Z_AI_API_KEY and
+          # mapped onto the toolkit driver's required ZAI_API_KEY env name.
+          ZAI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
         run: |
           set -euo pipefail
           if [ -z "$(find suites -name suite.json -print -quit)" ]; then
@@ -121,14 +124,19 @@ jobs:
           fi
           # The runner exits 1 when a suite SCORED ZERO or was BUDGET-GATED —
           # a normal eval outcome, not an infra failure — and 2 for
-          # usage/validation errors. So: rc>=2 is a hard failure collected
-          # below; rc==1 appends a warning and the loop continues. Tables
-          # from scored-zero runs are still valid artifacts and still land
-          # in the upload/snapshot steps below.
+          # usage/validation errors (incl. a missing ZAI_API_KEY env, which
+          # aborts the run pre-dispatch instead of scoring zeros). So: rc>=2
+          # is a hard failure collected below; rc==1 appends a warning and
+          # the loop continues. Tables from scored-zero runs are still valid
+          # artifacts and still land in the upload/snapshot steps below.
           hard_fail=0
           while IFS= read -r suite_file; do
             suite_dir="$(dirname "${suite_file}")"
-            name="$(basename "${suite_dir}")"
+            # G7: out dir mirrors the suite path relative to suites/ so two
+            # suites sharing a basename cannot collide; the NDJSON journal
+            # (incl. the honest-stop record) lands inside the same subtree.
+            rel_dir="$(dirname "${suite_file#suites/}")"
+            out_dir="reports/eval/${rel_dir}"
             rc=0
             node --experimental-strip-types runner/index.ts \
               --suite "${suite_dir}" \
@@ -137,12 +145,13 @@ jobs:
               --model glm-5.3-flash \
               --provider zai \
               --max-tokens 200000 \
-              --out "reports/eval/${name}" || rc=$?
+              --journal "${out_dir}/journal" \
+              --out "${out_dir}" || rc=$?
             if [ "${rc}" -ge 2 ]; then
-              echo "::error::suite ${name}: runner usage/validation failure (exit ${rc})"
+              echo "::error::suite ${rel_dir}: runner usage/validation failure (exit ${rc})"
               hard_fail=1
             elif [ "${rc}" -eq 1 ]; then
-              echo "::warning::suite ${name} scored zero or was budget-gated"
+              echo "::warning::suite ${rel_dir} scored zero or was budget-gated"
             fi
           done < <(find suites -name suite.json | sort)
           exit "${hard_fail}"
@@ -186,9 +195,10 @@ jobs:
           snap_dir="reports/snapshots/$(date -u +%F)"
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir: eval writes
-          # reports/eval/<suite>/<role>.table.json, and flattening to the
-          # basename would collide the moment two suites share a role —
-          # snapshots/<date>/<suite>/<role>.table.json is the stable form.
+          # reports/eval/<role>/<suite>/<role>.table.json, and flattening to
+          # the basename would collide the moment two suites share a role —
+          # snapshots/<date>/<role>/<suite>/<role>.table.json is the stable
+          # form.
           while IFS= read -r table; do
             rel="${table#reports/eval/}"
             suite_name="$(dirname "${rel}")"
@@ -199,10 +209,22 @@ jobs:
             echo "no tables to snapshot — nothing committed"
             exit 0
           fi
+          # WHY the snapshots branch: main is hook-protected (required checks
+          # static+denylist, enforce_admins) — a direct push can never land
+          # once suites exist. Plan-§9 snapshots therefore land on the
+          # dedicated `snapshots` branch; an owner decision to mirror them
+          # onto main can come later. Build on the branch when it exists,
+          # start it from the current HEAD on the first snapshot run.
           # reports/* is gitignored for LOCAL runs; committed snapshots are
           # the designed exception, hence the force-add.
           git config user.name "cq-fixtures snapshot bot"
           git config user.email "actions@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin snapshots >/dev/null 2>&1; then
+            git fetch origin snapshots
+            git switch -C snapshots origin/snapshots
+          else
+            git switch -C snapshots
+          fi
           git add -f "${snap_dir}"
           git commit -m "report snapshots $(date -u +%F) [skip ci]"
-          git push
+          git push origin HEAD:snapshots

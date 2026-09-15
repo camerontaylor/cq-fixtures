@@ -101,6 +101,13 @@ jobs:
       # (--model glm-5.3-flash --provider zai) and the runner records the
       # OBSERVED served id from the wire — a gateway remap surfaces as data,
       # never silently rewritten.
+      #
+      # Budget by TOKENS (--max-tokens 200000): glm-5.3-flash on the zai
+      # coding-plan lane is ABSENT from the toolkit price map, and the
+      # governor fails closed on unpriced usage under a USD cap — it would
+      # refuse admission after the first case of any multi-case suite. Per
+      # DD-9's disposition, the cap on this unpriced lane is a token cap;
+      # the USD cap is reserved for priced lanes.
       - name: Eval cell — ai-sdk, glm-5.3-flash @ zai
         env:
           Z_AI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
@@ -127,7 +134,7 @@ jobs:
               --driver-name ai-sdk \
               --model glm-5.3-flash \
               --provider zai \
-              --max-usd 1 \
+              --max-tokens 200000 \
               --out "reports/eval/${name}" || rc=$?
             if [ "${rc}" -ge 2 ]; then
               echo "::error::suite ${name}: runner usage/validation failure (exit ${rc})"

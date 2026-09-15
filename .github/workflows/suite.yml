@@ -131,8 +131,10 @@ jobs:
             echo "no suites yet — populated by phase-3 goal J3; the matrix cell is a no-op until then"
             # The eval-reports artifact must ALWAYS exist: the snapshot job's
             # download step no longer tolerates a missing artifact (M2).
+            # EMPTY (not a dot-file): upload-artifact v4 drops hidden files
+            # unless include-hidden-files is set.
             mkdir -p reports/eval
-            touch reports/eval/.keep
+            touch reports/eval/EMPTY
             exit 0
           fi
           # The runner exits 1 when a suite SCORED ZERO or was BUDGET-GATED —
@@ -169,9 +171,11 @@ jobs:
           done < <(find suites -name suite.json | sort)
           # The artifact must exist on every path — even when suites ran but
           # every run hard-failed pre-output — so the snapshot job's download
-          # can never 404 on a missing artifact.
+          # can never 404 on a missing artifact. EMPTY (not a dot-file):
+          # upload-artifact v4 drops hidden files unless
+          # include-hidden-files is set.
           mkdir -p reports/eval
-          touch reports/eval/.keep
+          touch reports/eval/EMPTY
           exit "${hard_fail}"
       - name: Upload eval reports
         if: always()
@@ -206,7 +210,7 @@ jobs:
           # commit/push, and no model code runs here.
           persist-credentials: true
       - name: Download eval reports
-        # No continue-on-error: the matrix eval cell touches reports/eval/.keep
+        # No continue-on-error: the matrix eval cell touches reports/eval/EMPTY
         # on every path, so the eval-reports artifact ALWAYS exists and this
         # download cannot fail on a missing artifact. A real download failure
         # must fail this job loudly.

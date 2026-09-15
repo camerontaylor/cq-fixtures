@@ -9,15 +9,20 @@ import { join } from 'node:path';
 import { AiSdkDriver, type Driver } from '@camerontaylor/cq-toolkit';
 import { z } from 'zod';
 import { runSuite } from './index.ts';
-import type { ComparisonTable, ResultRow } from './aggregate.ts';
+import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
 import { loadSuite, type Suite } from './suite.ts';
 import { FakeDriver } from './fake-driver.ts';
 
 const LANES = new Set(['ai-sdk', 'claude-agent', 'subprocess', 'acp']);
+// ADR-0001 eval axes (the per-cell constraint in
+// schema/comparison-table.schema.json): axis 1 — models vary on the ai-sdk
+// driver; axis 2 — drivers vary on the fixed GLM served id.
+const FIXED_GLM_SERVED_ID = 'glm-5.3-flash';
 const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
   '--driver fake|ai-sdk --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
   '[--max-usd <n>] [--max-tokens <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>]\n' +
+  `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
   'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure';
 
 export class UsageError extends Error {}
@@ -52,41 +57,62 @@ interface CliOptions {
 
 function parseArgs(argv: readonly string[]): CliOptions {
   // No cap default-injection: absent --max-usd/--max-tokens mean ABSENT
-  // caps, so a token-only cap can bind an unpriced lane (DD-9).
-  const o: CliOptions = { suites: [], driver: 'fake', model: '', provider: '', checkTimeoutMs: 60_000, driverName: '' };
+  // caps, so a token-only cap can bind an unpriced lane (DD-9). --driver is
+  // REQUIRED: a silent fake default would make synthetic rows
+  // indistinguishable from real-lane rows.
+  let driver: 'fake' | 'ai-sdk' | undefined;
+  const suites: string[] = [];
+  let model = '';
+  let provider = '';
+  let driverName = '';
+  let maxUsd: number | undefined;
+  let maxTokens: number | undefined;
+  let checkTimeoutMs = 60_000;
+  let journal: string | undefined;
+  let out: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]!;
     switch (flag) {
-      case '--suite': o.suites.push(nextValue(argv, i, flag)); i++; break;
+      case '--suite': suites.push(nextValue(argv, i, flag)); i++; break;
       case '--driver': {
         const v = nextValue(argv, i, flag);
         if (v !== 'fake' && v !== 'ai-sdk') throw new UsageError(`--driver must be fake|ai-sdk, got '${v}'`);
-        o.driver = v; i++; break;
+        driver = v; i++; break;
       }
-      case '--model': o.model = nextValue(argv, i, flag); i++; break;
-      case '--provider': o.provider = nextValue(argv, i, flag); i++; break;
-      case '--driver-name': o.driverName = nextValue(argv, i, flag); i++; break;
-      case '--journal': o.journal = nextValue(argv, i, flag); i++; break;
-      case '--out': o.out = nextValue(argv, i, flag); i++; break;
+      case '--model': model = nextValue(argv, i, flag); i++; break;
+      case '--provider': provider = nextValue(argv, i, flag); i++; break;
+      case '--driver-name': driverName = nextValue(argv, i, flag); i++; break;
+      case '--journal': journal = nextValue(argv, i, flag); i++; break;
+      case '--out': out = nextValue(argv, i, flag); i++; break;
       case '--max-usd': case '--max-tokens': case '--check-timeout-ms': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
-        if (flag === '--max-usd') o.maxUsd = n;
-        else if (flag === '--max-tokens') o.maxTokens = n;
-        else o.checkTimeoutMs = n;
+        if (flag === '--max-usd') maxUsd = n;
+        else if (flag === '--max-tokens') maxTokens = n;
+        else checkTimeoutMs = n;
         i++; break;
       }
       default: throw new UsageError(`unknown flag '${flag}'\n${USAGE}`);
     }
   }
-  if (o.suites.length === 0 || o.model === '' || o.provider === '') {
+  if (driver === undefined) throw new UsageError(`--driver is required (fake|ai-sdk)\n${USAGE}`);
+  if (suites.length === 0 || model === '' || provider === '') {
     throw new UsageError(`--suite, --model and --provider are required\n${USAGE}`);
   }
-  o.driverName = o.driverName === '' ? o.driver : o.driverName;
-  if (!LANES.has(o.driverName)) {
-    throw new UsageError(`--driver-name '${o.driverName}' is not a toolkit lane (${[...LANES].join('|')}) — pass one so rows validate`);
+  driverName = driverName === '' ? driver : driverName;
+  if (!LANES.has(driverName)) {
+    throw new UsageError(`--driver-name '${driverName}' is not a toolkit lane (${[...LANES].join('|')}) — pass one so rows validate`);
   }
-  return o;
+  // ADR-0001 eval axes: fail at parse time, before any spend, rather than
+  // after a full paid run misreported as an eval outcome.
+  if (driverName !== 'ai-sdk' && model !== FIXED_GLM_SERVED_ID) {
+    throw new UsageError(
+      `--model '${model}' on lane '${driverName}' violates the ADR-0001 eval axes: ` +
+        `models vary on the ai-sdk driver; drivers vary on the fixed served id '${FIXED_GLM_SERVED_ID}' ` +
+        '(schema/comparison-table.schema.json)',
+    );
+  }
+  return { suites, driver, model, provider, maxUsd, maxTokens, checkTimeoutMs, journal, out, driverName };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -106,6 +132,25 @@ async function main(argv: readonly string[]): Promise<number> {
   } catch (e) {
     console.error(e instanceof Error ? e.message : e);
     return 2;
+  }
+  // B3: enforce suite.servedModel at the seam (served-id decision
+  // 2026-09-14) — a mismatch means the operator is pointing the suite at a
+  // wire that does not serve the pinned id; refuse before any dispatch
+  // rather than misrecord rows.
+  const mismatched = suites.find((s) => s.servedModel !== undefined && s.servedModel !== opts.model);
+  if (mismatched !== undefined) {
+    console.error(`suite '${mismatched.name}' pins servedModel '${mismatched.servedModel}' but --model is '${opts.model}' — point the run at the wire that serves the pinned id`);
+    return 2;
+  }
+  // B4: same-role suites collide on <role>.table.json in the shared --out
+  // dir — refuse here, before ANY dispatch burns spend.
+  const seenRoles = new Set<SuiteRole>();
+  for (const s of suites) {
+    if (seenRoles.has(s.role)) {
+      console.error(`two suites share role '${s.role}' (<role>.table.json would collide) — run one suite per role per invocation`);
+      return 2;
+    }
+    seenRoles.add(s.role);
   }
   // One driver PER SUITE: a mixed invocation (fixer + classifier suites)
   // must not force the verdict outputSchema onto fixer cases nor withhold it
@@ -139,16 +184,12 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     if (opts.out !== undefined) {
       mkdirSync(opts.out, { recursive: true });
-      const seenRoles = new Set<string>();
+      // Same-role collisions were refused before any dispatch (see above).
       for (const t of tables) {
-        if (seenRoles.has(t.role)) {
-          throw new Error(`two suites share role '${t.role}'; <role>.table.json would collide — run one suite per role per invocation`);
-        }
-        seenRoles.add(t.role);
         writeFileSync(join(opts.out, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');
       }
       writeFileSync(join(opts.out, 'rows.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length > 0 ? '\n' : ''));
-      console.log(`wrote ${opts.out}/rows.jsonl and ${seenRoles.size} table(s)`);
+      console.log(`wrote ${opts.out}/rows.jsonl and ${tables.length} table(s)`);
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

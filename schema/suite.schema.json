@@ -78,7 +78,7 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["kind"],
-            "description": "Scoring probe, discriminated by `kind`: \"check-rerun\" re-runs a seeded check probe for scoring (reusing the toolkit's baselineProbe mechanics, sweep-agnostic); \"expected-verdict\" compares the classifier output against a verdict from the toolkit's exported classifyThreads vocabulary (actionable | responded | resolved | blocked | skip).",
+            "description": "Scoring probe, discriminated by `kind`: \"check-rerun\" re-runs the case's seeded check probe for scoring by executing it with node directly against the case's materialized workspace copy (sweep-agnostic — no toolkit probe machinery involved); \"expected-verdict\" compares the classifier output against a verdict from the classifyThreads vocabulary (actionable | responded | resolved | blocked | skip; mirrored locally by the runner — the toolkit does not export it).",
             "properties": {
               "kind": {
                 "type": "string",

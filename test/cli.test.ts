@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
@@ -52,6 +52,7 @@ afterEach(() => {
 interface SuiteSpec {
   name: string;
   role: 'fixer-worker' | 'review-classifier';
+  servedModel?: string;
   provenance?: object;
   cases: object[];
 }
@@ -118,6 +119,41 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     captured.driverThrow = new Error("ai-sdk driver: provider 'anthropic' requires ANTHROPIC_API_KEY in the environment");
     await expect(cliMain(cliArgs(dir))).resolves.toBe(2);
     // The run aborted: no tables/rows were published for the aborted suite.
+  }, 15_000);
+});
+
+describe('gate checks (B2 axes, B3 servedModel, B4 same-role collision, B7 required --driver)', () => {
+  it('an axis-violating pair (non-ai-sdk lane, non-GLM model) exits 2 BEFORE any run', async () => {
+    const dir = writeSuite('axis-bad', { name: 'axis-bad', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    const code = await cliMain(['--suite', dir, '--driver', 'fake', '--driver-name', 'subprocess', '--model', 'deepseek-chat', '--provider', 'zai']);
+    expect(code).toBe(2);
+  }, 15_000);
+
+  it('axis-legal pairs run: ai-sdk+deepseek and subprocess+glm-5.3-flash', async () => {
+    const deepseek = writeSuite('axis-deepseek', { name: 'axis-deepseek', role: 'review-classifier', servedModel: 'deepseek-chat', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain(['--suite', deepseek, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'deepseek-chat', '--provider', 'deepseek'])).resolves.toBe(0);
+    const glm = writeSuite('axis-glm', { name: 'axis-glm', role: 'review-classifier', servedModel: 'glm-5.3-flash', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain(['--suite', glm, '--driver', 'fake', '--driver-name', 'subprocess', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(0);
+  }, 15_000);
+
+  it('a servedModel mismatch exits 2 before dispatch; a matching model runs', async () => {
+    const pinned = writeSuite('pinned-suite', { name: 'pinned-suite', role: 'review-classifier', servedModel: 'glm-5.3-flash', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain(['--suite', pinned, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'deepseek-chat', '--provider', 'deepseek'])).resolves.toBe(2);
+    await expect(cliMain(['--suite', pinned, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(0);
+  }, 15_000);
+
+  it('two same-role suites exit 2 with the collision refused pre-dispatch and NO rows written', async () => {
+    const a = writeSuite('collide-a', { name: 'collide-a', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    const b = writeSuite('collide-b', { name: 'collide-b', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    const outDir = join(root, 'out');
+    await expect(cliMain([...cliArgs(a), '--suite', b, '--out', outDir])).resolves.toBe(2);
+    expect(existsSync(join(outDir, 'rows.jsonl'))).toBe(false);
+    expect(existsSync(join(outDir, 'review-classifier.table.json'))).toBe(false);
+  }, 15_000);
+
+  it('an omitted --driver exits 2 (required — no silent fake default)', async () => {
+    const dir = writeSuite('nodriver-suite', { name: 'nodriver-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain(['--suite', dir, '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
   }, 15_000);
 });
 

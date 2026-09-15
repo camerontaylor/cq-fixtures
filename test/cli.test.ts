@@ -112,9 +112,10 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     await expect(cliMain([...cliArgs(dir), '--bogus'])).resolves.toBe(2);
   }, 15_000);
 
-  it('a driver missing-credential throw (ZAI_API_KEY) exits 2 — never zeros-while-green', async () => {
+  it('a driver missing-credential throw (generic requireKey shape) exits 2 — never zeros-while-green', async () => {
     const dir = writeSuite('key-suite', { name: 'key-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
-    captured.driverThrow = new Error('provider zai requires env ZAI_API_KEY (pre-dispatch)');
+    // A different lane than zai, proving the predicate is shape-generic.
+    captured.driverThrow = new Error("ai-sdk driver: provider 'anthropic' requires ANTHROPIC_API_KEY in the environment");
     await expect(cliMain(cliArgs(dir))).resolves.toBe(2);
     // The run aborted: no tables/rows were published for the aborted suite.
   }, 15_000);

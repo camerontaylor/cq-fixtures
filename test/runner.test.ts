@@ -227,9 +227,10 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
   }, 15_000);
 
   it('a driver missing-credential throw aborts the run instead of scoring zeros', async () => {
-    // The toolkit's requireKey throws pre-dispatch on a missing ZAI_API_KEY
+    // The toolkit's requireKey throws pre-dispatch on a missing provider
     // env — infrastructure configuration, not an eval outcome. runSuite must
     // REJECT (cliMain maps it to exit 2), never publish scored-zero rows.
+    // Literal ZAI_API_KEY case (the common path).
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
     const dir = writeSuite('missing-key', {
@@ -240,7 +241,7 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     });
     const missingKeyDriver: Driver = {
       async run(): Promise<WorkerResult> {
-        throw new Error('provider zai requires env ZAI_API_KEY (pre-dispatch)');
+        throw new Error("ai-sdk driver: provider 'zai' requires ZAI_API_KEY in the environment");
       },
     };
     await expect(runSuite(opts(dir, { driver: missingKeyDriver }))).rejects.toThrow(/ZAI_API_KEY/);

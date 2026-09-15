@@ -111,6 +111,15 @@ jobs:
       # refuse admission after the first case of any multi-case suite. Per
       # DD-9's disposition, the cap on this unpriced lane is a token cap;
       # the USD cap is reserved for priced lanes.
+      #
+      # ACCEPTED RISK (recorded): the provider API key sits in this job's
+      # env — and fixer cells hand model-driven workers read/edit/run tools
+      # — so a prompt-injected worker could exfiltrate the key from the
+      # process environment. Accepted because suite prompts are first-party
+      # fixtures (provenance-marked, no third-party content). Owner action
+      # tracked: move cells to a spend-capped, ephemeral eval key. The
+      # credential split already keeps repo write access out of this job
+      # (persist-credentials: false).
       - name: Eval cell — ai-sdk, glm-5.3-flash @ zai
         env:
           # The secret is added to this repo under the name Z_AI_API_KEY and
@@ -192,6 +201,23 @@ jobs:
         # (no looping on our own commits).
         run: |
           set -euo pipefail
+          # WHY the snapshots branch: main is hook-protected (required checks
+          # static+denylist, enforce_admins) — a direct push can never land
+          # once suites exist. Plan-§9 snapshots therefore land on the
+          # dedicated `snapshots` branch; an owner decision to mirror them
+          # onto main can come later.
+          #
+          # The branch setup happens BEFORE the copy: on a same-day
+          # re-dispatch, `git switch` would otherwise overwrite freshly
+          # copied (gitignored) files with the branch's old tracked content.
+          git config user.name "cq-fixtures snapshot bot"
+          git config user.email "actions@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin snapshots >/dev/null 2>&1; then
+            git fetch origin snapshots
+            git switch -C snapshots origin/snapshots
+          else
+            git switch -C snapshots
+          fi
           snap_dir="reports/snapshots/$(date -u +%F)"
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir: eval writes
@@ -209,22 +235,14 @@ jobs:
             echo "no tables to snapshot — nothing committed"
             exit 0
           fi
-          # WHY the snapshots branch: main is hook-protected (required checks
-          # static+denylist, enforce_admins) — a direct push can never land
-          # once suites exist. Plan-§9 snapshots therefore land on the
-          # dedicated `snapshots` branch; an owner decision to mirror them
-          # onto main can come later. Build on the branch when it exists,
-          # start it from the current HEAD on the first snapshot run.
           # reports/* is gitignored for LOCAL runs; committed snapshots are
-          # the designed exception, hence the force-add.
-          git config user.name "cq-fixtures snapshot bot"
-          git config user.email "actions@users.noreply.github.com"
-          if git ls-remote --exit-code --heads origin snapshots >/dev/null 2>&1; then
-            git fetch origin snapshots
-            git switch -C snapshots origin/snapshots
-          else
-            git switch -C snapshots
-          fi
+          # the designed exception, hence the force-add. A same-day
+          # re-dispatch can produce byte-identical content: no staged diff,
+          # no commit, exit 0.
           git add -f "${snap_dir}"
-          git commit -m "report snapshots $(date -u +%F) [skip ci]"
+          if git diff --cached --quiet; then
+            echo "snapshots unchanged — nothing to commit"
+          else
+            git commit -m "report snapshots $(date -u +%F) [skip ci]"
+          fi
           git push origin HEAD:snapshots

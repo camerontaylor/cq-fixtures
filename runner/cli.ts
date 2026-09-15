@@ -154,9 +154,10 @@ async function main(argv: readonly string[]): Promise<number> {
     const message = e instanceof Error ? e.message : String(e);
     // A pre-dispatch missing-credential throw is infrastructure (the secret
     // is absent), not an eval outcome — hard-fail so CI never publishes
-    // zero tables while green.
-    if (/ZAI_API_KEY/.test(message)) {
-      console.error(`required env ZAI_API_KEY missing (add this repo's Actions secret Z_AI_API_KEY; it is mapped to the toolkit's ZAI_API_KEY env): ${message}`);
+    // zero tables while green. Name the env var the toolkit asked for.
+    const envVar = message.match(/requires ([A-Z0-9_]+_API_KEY) in the environment/)?.[1];
+    if (envVar !== undefined) {
+      console.error(`required env ${envVar} missing (add this repo's Actions secret and map it onto the toolkit's ${envVar} env): ${message}`);
       return 2;
     }
     // Post-load failures (row/table validation, output writing) stay exit 1.

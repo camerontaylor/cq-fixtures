@@ -194,13 +194,14 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       }
       worker = await opts.driver.run(invocation);
     } catch (e) {
-      // A pre-dispatch missing-credential throw (e.g. the toolkit's
-      // requireKey failing on a missing ZAI_API_KEY env) is infrastructure
+      // A pre-dispatch missing-credential throw is infrastructure
       // configuration, NOT an eval outcome — scoring it 0 would publish
-      // zeros-while-green. Close the journal honestly (no verdict exists),
-      // clean the scratch workspace, and abort the run; cliMain maps the
-      // rethrown error to exit 2.
-      if (e instanceof Error && /ZAI_API_KEY/.test(e.message)) {
+      // zeros-while-green. The toolkit's requireKey fails uniformly with
+      // "provider '<p>' requires <ENV> in the environment", so the predicate
+      // matches every provider lane, not just zai. Close the journal
+      // honestly (no verdict exists), clean the scratch workspace, and
+      // abort the run; cliMain maps the rethrown error to exit 2.
+      if (e instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(e.message)) {
         await append({
           type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
           inputsHash: hashInputs(suite.role, invocation ?? { caseId: c.id, fixture: c.fixture, task: c.task }),

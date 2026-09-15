@@ -191,6 +191,11 @@ jobs:
           # commit/push, and no model code runs here.
           persist-credentials: true
       - name: Download eval reports
+        # continue-on-error: pre-J3 there is nothing to download — the eval
+        # cell exits 0 at its no-suites gate without creating reports/, and
+        # if-no-files-found: ignore creates NO artifact. The commit step
+        # already no-ops on no tables.
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: eval-reports

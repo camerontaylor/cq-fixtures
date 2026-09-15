@@ -17,7 +17,7 @@ node --experimental-strip-types runner/index.ts \
   --model <served-id> --provider <handle> --max-usd 1 --out <dir>
 ```
 
-Node >= 23.6 runs the TypeScript directly (type stripping); CI uses node 24. `--suite` is repeatable; other flags: `--max-tokens`, `--check-timeout-ms`, `--journal <dir>`. `--driver fake` is the deterministic offline stand-in for plumbing smoke/CI — rows must be labeled with the lane it impersonates via `--driver-name` (the row schema's driver enum only accepts the four toolkit lanes); `--driver ai-sdk` builds the toolkit's `AiSdkDriver` with production defaults and is never the default. Exit codes: 0 clean, 1 any case scored 0 / validation failure / budget-gated run, 2 usage error.
+Node >= 23.6 runs the TypeScript directly (type stripping); CI uses node 24. `--suite` is repeatable; other flags: `--max-tokens`, `--check-timeout-ms`, `--journal <dir>`. `--driver fake` is the deterministic offline stand-in for plumbing smoke/CI — rows must be labeled with the lane it impersonates via `--driver-name` (the row schema's driver enum only accepts the four toolkit lanes); `--driver ai-sdk` builds the toolkit's `AiSdkDriver` with production defaults and is never the default. Exit codes: 0 clean, 1 scored-zero/gated/scoring-phase failure, 2 usage error, suite load/validation failure, or missing-credential failure.
 
 ## Scoring contract
 

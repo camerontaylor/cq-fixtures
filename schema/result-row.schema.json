@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "result-row.schema.json",
+  "title": "Eval result row",
+  "description": "One evaluated task case, with the plan §8 field list verbatim (ws-j item 2). Rows are produced per role (plan §9: fixer-worker, review-classifier) and per (model, driver) cell of the eval matrix; comparison-table.schema.json aggregates them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "role",
+    "suite",
+    "model",
+    "driver",
+    "outcome",
+    "costUSD",
+    "wallTimeMs",
+    "tokens",
+    "runId",
+    "timestamp"
+  ],
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": ["fixer-worker", "review-classifier"],
+      "description": "Which of the plan §9 roles produced this row."
+    },
+    "suite": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the task suite the case came from (the `name` field of a suite.schema.json document)."
+    },
+    "case": {
+      "type": "string",
+      "minLength": 1,
+      "description": "id of the cases[] entry this row scored (links to suite.schema.json case.id). suites/README.md promises one row per case, so rows carry the case id for traceability; optional at schema grain, always emitted by the J2 runner."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The model id the wire actually served. Served-id decision (2026-09-14): the eval wires request the id the wire serves — glm-5.3-flash on the GLM coding wire, the anthropic-compat wire keeps its served id, deepseek keeps its served id — so the toolkit seam's observed-model check passes green. An observed remap despite the served id is a vendor-behavior documentation entry, not an eval failure."
+    },
+    "driver": {
+      "type": "string",
+      "enum": ["ai-sdk", "claude-agent", "subprocess", "acp"],
+      "description": "The four toolkit driver lanes (ADR-0001)."
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "passed", "total"],
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "passed/total for this row."
+        },
+        "passed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of scoring probes that passed for this case."
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of scoring probes in this case (at least one)."
+        }
+      }
+    },
+    "costUSD": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Per-invocation cost in USD, or null. DD-9 (2026-09-14): subscription lanes have no per-invocation USD, so they report null — a number is never invented for them."
+    },
+    "costBasis": {
+      "type": "string",
+      "enum": ["billed", "modeled"],
+      "description": "Optional basis of a non-null costUSD, mirroring the toolkit's WorkerResult.costBasis: \"billed\" is provider-reported spend, \"modeled\" is an estimate from published rates. It exists so a modeled number is never silently reported as actual spend, and it is forbidden when costUSD is null (DD-9)."
+    },
+    "wallTimeMs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Wall-clock duration of the invocation in milliseconds."
+    },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output"],
+      "description": "Token usage as observed at the toolkit seam (ADR-0001 usage shape): input/output required; cache and reasoning counters optional, all integers >= 0.",
+      "properties": {
+        "input": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheRead": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cacheWrite": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reasoning": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier shared by all rows produced in the same eval run."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the invocation completed (RFC 3339 date-time)."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "costUSD": { "const": null } },
+        "required": ["costUSD"]
+      },
+      "then": { "not": { "required": ["costBasis"] } }
+    }
+  ]
+}

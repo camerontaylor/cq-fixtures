@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "suite.schema.json",
+  "title": "Task suite",
+  "description": "A suite is a directory of task cases, each pairing a fixture reference with a task spec and the scoring probe used to grade it (ws-j item 3). fixer-worker suites seed faults into fixture repos and grade by re-running a seeded check; review-classifier suites pair thread payloads with expected verdicts from the toolkit's classifyThreads vocabulary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "role", "cases", "provenance"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The suite directory name under suites/<role>/."
+    },
+    "role": {
+      "type": "string",
+      "enum": ["fixer-worker", "review-classifier"],
+      "description": "The plan §9 role whose worker executes this suite's cases. Binding convention (a cross-object constraint role → cases[].probe.kind that JSON Schema cannot express; enforced by the J2 runner): fixer-worker suites use \"check-rerun\" probes; review-classifier suites use \"expected-verdict\" probes."
+    },
+    "servedModel": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The served model id cases in this suite are executed against (served-id decision 2026-09-14: the eval wires request the id the wire actually serves, e.g. glm-5.3-flash on the GLM coding wire)."
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin"],
+      "description": "Where the cases came from, for contamination transparency. Contamination posture: provenance is marked, and generated or mutated faults are preferred over verbatim public benchmark instances so scores measure fixing and classification skill rather than benchmark recall.",
+      "properties": {
+        "origin": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How the suite was produced, e.g. \"hand-seeded\", \"generated\", \"adapted\"."
+        },
+        "reference": {
+          "type": "string",
+          "description": "Named source the suite derives from or was inspired by, e.g. a public dataset name."
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The task cases in this suite.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "fixture", "task", "probe"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Case id, unique within the suite; enforcing uniqueness is the runner's job, not the schema's."
+          },
+          "fixture": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repo-root-relative path to the fixture this case runs against — e.g. \"fixtures/<name>\" for a seeded-fault repo snapshot, or a thread payload file for review-classifier cases."
+          },
+          "task": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["prompt"],
+            "properties": {
+              "prompt": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The task spec handed to the worker."
+              },
+              "notes": {
+                "type": "string",
+                "description": "Optional curator or runner notes about the task."
+              }
+            }
+          },
+          "probe": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "description": "Scoring probe, discriminated by `kind`: \"check-rerun\" re-runs a seeded check probe for scoring (reusing the toolkit's baselineProbe mechanics, sweep-agnostic); \"expected-verdict\" compares the classifier output against a verdict from the toolkit's exported classifyThreads vocabulary (actionable | responded | resolved | blocked | skip).",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["check-rerun", "expected-verdict"],
+                "description": "Which scoring probe variant this case uses."
+              },
+              "check": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Repo-root-relative path to the seeded check probe to re-run for scoring (kind \"check-rerun\")."
+              },
+              "expected": {
+                "type": "string",
+                "enum": ["actionable", "responded", "resolved", "blocked", "skip"],
+                "description": "Expected review-classifier verdict (kind \"expected-verdict\"), from the toolkit's exported classifyThreads vocabulary."
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": { "kind": { "const": "check-rerun" } },
+                  "required": ["kind"]
+                },
+                "then": {
+                  "required": ["check"],
+                  "not": { "required": ["expected"] }
+                }
+              },
+              {
+                "if": {
+                  "properties": { "kind": { "const": "expected-verdict" } },
+                  "required": ["kind"]
+                },
+                "then": {
+                  "required": ["expected"],
+                  "not": { "required": ["check"] }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

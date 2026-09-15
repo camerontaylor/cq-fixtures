@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "comparison-table.schema.json",
+  "title": "Per-role comparison table",
+  "description": "Aggregates eval result rows (result-row.schema.json, plan §8 field list) into one table per role, with one cell per (model, driver) pair. Axis 1 (ADR-0001, revised 2026-09-14) populates cells with driver \"ai-sdk\" across models; axis 2 populates cells with the fixed served GLM model id (glm-5.3-flash) across all four drivers. All model ids in cells are served ids per the served-id decision (2026-09-14).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["role", "suite", "cells"],
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": ["fixer-worker", "review-classifier"],
+      "description": "The plan §9 role whose result rows this table aggregates."
+    },
+    "suite": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the task suite the aggregated rows came from (the `name` field of a suite.schema.json document)."
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the table was generated (RFC 3339 date-time)."
+    },
+    "cells": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One cell per (model, driver) pair with at least one result row.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model",
+          "driver",
+          "runs",
+          "passed",
+          "total",
+          "score",
+          "costUSD",
+          "wallTimeMs",
+          "tokens"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Served model id of the rows in this cell (served-id decision 2026-09-14)."
+          },
+          "driver": {
+            "type": "string",
+            "enum": ["ai-sdk", "claude-agent", "subprocess", "acp"],
+            "description": "The toolkit driver lane of the rows in this cell (ADR-0001)."
+          },
+          "runs": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of result rows aggregated into this cell."
+          },
+          "passed": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Scoring probes passed, summed over the cell's rows."
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Scoring probes total, summed over the cell's rows (each row requires outcome.total >= 1, so an aggregate of 0 is unreachable)."
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Aggregate score for the cell: passed/total."
+          },
+          "costUSD": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "description": "Aggregate cost in USD over the cell's runs, or null when the lane is subscription-metered and has no per-invocation USD (DD-9, 2026-09-14)."
+          },
+          "costBasis": {
+            "type": "string",
+            "enum": ["billed", "modeled"],
+            "description": "Optional basis of a non-null costUSD, mirroring the toolkit's WorkerResult.costBasis, so a modeled number is never silently reported as actual spend; forbidden when costUSD is null (DD-9)."
+          },
+          "wallTimeMs": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Wall-clock duration in milliseconds, summed over the cell's runs."
+          },
+          "tokens": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["input", "output"],
+            "description": "Token usage summed over the cell's runs, same shape as a result row's tokens (ADR-0001 usage shape).",
+            "properties": {
+              "input": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "output": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cacheRead": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cacheWrite": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reasoning": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "costUSD": { "const": null } },
+              "required": ["costUSD"]
+            },
+            "then": { "not": { "required": ["costBasis"] } }
+          },
+          {
+            "description": "ADR-0001 eval axes enforced per cell (revised 2026-09-14): axis 1 — models vary on the ai-sdk driver; axis 2 — drivers vary on the fixed GLM served id glm-5.3-flash (served-id decision 2026-09-14). A cell on any non-ai-sdk driver must therefore carry exactly the fixed GLM served id.",
+            "if": {
+              "properties": { "driver": { "const": "ai-sdk" } },
+              "required": ["driver"]
+            },
+            "then": {},
+            "else": {
+              "properties": { "model": { "const": "glm-5.3-flash" } }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

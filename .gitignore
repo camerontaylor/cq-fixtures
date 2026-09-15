@@ -1,6 +1,7 @@
 .gjc/
+# Agent scratch: pure runtime, ignored wholesale (T1.5 hygiene rider, 2026-09-14).
+.zcode/
 .paseo/
-.claude/
 node_modules/
 dist/
 *.env*
@@ -8,3 +9,26 @@ reports/*
 !reports/README.md
 tmp/
 .DS_Store
+
+# .claude/ mixes authored, tracked config (agents/, skills/, commands/, hooks/,
+# settings.json, scheduled_tasks.json) with runtime artifacts — so ONLY the
+# runtime artifacts below are ignored, never the directory wholesale: a blanket
+# rule would hide a newly authored skill/agent/command from git status.
+.claude/settings.local.json
+.claude/.credentials.json
+# scheduled_tasks.json is authored; the .lock beside it is runtime.
+.claude/scheduled_tasks.lock
+.claude/memory.db
+.claude/memory.db-wal
+.claude/memory.db-shm
+.claude/worktrees/
+.claude/shell-snapshots/
+.claude/history.jsonl
+.claude/paste-cache/
+.claude/file-history/
+.claude/session-env/
+# sessions/, projects/, ide/, cache/, debug/, tasks/ are deliberately NOT
+# ignored: runtime in the home directory, but none has ever appeared inside a
+# project .claude/ here, and .claude/sessions/ is tracked in two vendored
+# third-party repos — a rule for them would assert a convention that does not
+# exist.

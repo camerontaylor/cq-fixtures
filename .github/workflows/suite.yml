@@ -84,9 +84,11 @@ jobs:
       - name: Check out the repo
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          # Persist the checkout token: the snapshot commit at the bottom of
-          # this job pushes with it.
-          persist-credentials: true
+          # Model-driven code runs in this job (fixer cells get read/edit/run
+          # tools) — it must not see persisted checkout credentials; report
+          # tables leave via artifact, and the snapshot push lives in the
+          # dedicated `snapshot` job below.
+          persist-credentials: false
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -151,6 +153,30 @@ jobs:
           name: eval-reports
           path: reports/
           if-no-files-found: ignore
+
+  # Snapshot publisher: NO model code runs here — it only downloads the
+  # eval-reports artifact and commits tables. Split from `matrix` so the
+  # run-tool surface of fixer cells never coexists with persisted checkout
+  # credentials, and the push is a pure data operation. Same
+  # dispatch/schedule restriction as `matrix` (plan §9 designed flow).
+  snapshot:
+    needs: matrix
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Persist the checkout token: this job's only write is the snapshot
+          # commit/push, and no model code runs here.
+          persist-credentials: true
+      - name: Download eval reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: eval-reports
+          path: reports/
       - name: Commit report snapshots
         # Plan §9: report snapshots are committed as reviewable data.
         # `[skip ci]` keeps the push from re-triggering the gate workflows

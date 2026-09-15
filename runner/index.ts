@@ -63,9 +63,17 @@ export interface RunSuiteOptions {
   driver: Driver;
   model: string;
   provider: string;
-  maxUsd: number;
+  /** Run USD cap. OMIT on unpriced lanes: the governor fails closed on
+   * unpriced usage under a USD cap, so a token-only cap must be able to bind
+   * alone (DD-9). Absent flag = absent cap — no default injection. */
+  maxUsd?: number;
   maxTokens?: number;
+  /** Invocation/governor wall-clock budget. Does NOT bound the check probe —
+   * that is checkTimeoutMs (decoupled so a small run wall clock cannot
+   * silently re-score a fixer case via probe timeout). */
   wallClockMs?: number;
+  /** Ceiling for one check-probe execution (default: scorer's 60_000). */
+  checkTimeoutMs?: number;
   /** Directory for the toolkit NDJSON journal; omitted = no persistence. */
   journalPath?: string;
   /** Repo root fixture/check paths resolve against. Defaults to this repo. */
@@ -108,7 +116,11 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     if (log !== undefined) await log.append(runId, event);
   };
 
-  const budget: Budget = { maxUsd: opts.maxUsd };
+  // Absent caps stay absent: no default injection. A token-only cap must be
+  // able to bind an unpriced lane (DD-9) — configuring a USD cap there would
+  // make the governor fail closed after the first case.
+  const budget: Budget = {};
+  if (opts.maxUsd !== undefined) budget.maxUsd = opts.maxUsd;
   if (opts.maxTokens !== undefined) budget.maxTokens = opts.maxTokens;
   if (opts.wallClockMs !== undefined) budget.wallClockMs = opts.wallClockMs;
 
@@ -119,7 +131,12 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   // in-flight case's outcome stays real evidence.
   const governor = new BudgetGovernor(
     governorConfig(
-      { concurrency: 1, stopOnError: false, maxUsd: opts.maxUsd, ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}) },
+      {
+        concurrency: 1,
+        stopOnError: false,
+        ...(opts.maxUsd !== undefined ? { maxUsd: opts.maxUsd } : {}),
+        ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+      },
       {},
     ),
   );
@@ -219,7 +236,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       const s: ScoreOutcome = isFixerCase(c)
         ? // The workspace is always set on the fixer path (materialized
           // above, before the driver ran) — it is what the probe grades.
-          scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.wallClockMs)
+          // The probe ceiling is checkTimeoutMs, decoupled from the run's
+          // wall-clock budget.
+          scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.checkTimeoutMs)
         : scoreReviewClassifier(c, worker);
       outcome = { score: s.score, passed: s.passed, total: s.total };
       journalResult = { status: 'ok', value: outcome };
@@ -285,7 +304,7 @@ const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (invokedDirectly) {
   import('./cli.ts').then(
-    ({ cliMain }) => cliMain(process.argv.slice(2)),
+    ({ cliMain }) => cliMain(process.argv.slice(2)).then((code) => { process.exitCode = code; }),
     (e) => { console.error(e instanceof Error ? e.message : e); process.exitCode = 1; },
   );
 }

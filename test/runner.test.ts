@@ -75,6 +75,8 @@ interface OverSpec {
   provider?: string;
   maxUsd?: number;
   maxTokens?: number;
+  wallClockMs?: number;
+  checkTimeoutMs?: number;
   journalPath?: string;
 }
 
@@ -83,10 +85,10 @@ function opts(suiteDir: string, over: OverSpec = {}): RunSuiteOptions {
     suiteDir,
     driver: new FakeDriver(),
     // Priced pair by default: the fake's 120 tokens/case cost ~0.0000364 USD,
-    // far under the 1 USD cap, so the governor does not gate ordinary runs.
+    // so even an explicit maxUsd does not gate ordinary runs. Caps default to
+    // ABSENT (no injection) — tests opt into caps explicitly.
     model: 'deepseek-chat',
     provider: 'deepseek',
-    maxUsd: 1,
     repoRoot: root,
     ...over,
   };
@@ -207,6 +209,39 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     expect(outcome.diagnostics).toMatch(/check probe timed out after 300ms/);
   }, 10_000);
 
+  it('the probe ceiling is --check-timeout-ms through the run path, independent of wallClockMs', async () => {
+    // An 800ms check: capped at 300ms it times out (score 0); uncapped it
+    // completes (score 1). wallClockMs is NOT involved — F2 decoupling.
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check-800ms.js'), 'setTimeout(() => process.exit(0), 800);\n');
+    const dir = writeSuite('slow-check-suite', {
+      name: 'slow-check-suite',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-slow', fixture: 'fixture', task: { prompt: 'Fix the fault.' }, probe: { kind: 'check-rerun', check: 'fixture/check-800ms.js' } }],
+    });
+    const capped = await runSuite(opts(dir, { checkTimeoutMs: 300 }));
+    expect(capped.rows[0]).toMatchObject({ case: 'fix-slow', outcome: { score: 0 } });
+    const uncapped = await runSuite(opts(dir));
+    expect(uncapped.rows[0]).toMatchObject({ case: 'fix-slow', outcome: { score: 1 } });
+  }, 15_000);
+
+  it('a small wallClockMs does NOT constrain the check probe (decoupled knobs)', async () => {
+    // wallClockMs is the invocation budget only; the probe ceiling is
+    // checkTimeoutMs (default 60s), so a fast check scores 1 even with a
+    // 50ms run wall clock.
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check-fast.js'), 'process.exit(0);\n');
+    const dir = writeSuite('small-wallclock', {
+      name: 'small-wallclock',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-fast', fixture: 'fixture', task: { prompt: 'Fix the fault.' }, probe: { kind: 'check-rerun', check: 'fixture/check-fast.js' } }],
+    });
+    const result = await runSuite(opts(dir, { wallClockMs: 50 }));
+    expect(result.rows[0]).toMatchObject({ case: 'fix-fast', outcome: { score: 1 } });
+  }, 15_000);
+
   it('a probe handed the wrong probe.kind throws (programming error, caught by loadSuite first)', () => {
     expect(() =>
       scoreFixerWorker(
@@ -302,6 +337,28 @@ describe('budget honesty (I9)', () => {
     expect(finished?.result.status).toBe('ok');
     const runFinished = events.find((e): e is RunFinishedJournalEvent => e.type === 'run-finished');
     expect(runFinished).toMatchObject({ stoppedEarly: true, earlyStopReason: 'budget' });
+  }, 15_000);
+
+  it('an unpriced lane under a TOKEN-ONLY cap dispatches ALL cases (no USD fail-closed)', async () => {
+    // glm-5.3-flash on zai is unpriced: with no maxUsd configured, the
+    // governor has no USD cap to fail closed on, so the token cap binds
+    // alone and both cases dispatch (F1/DD-9).
+    const dir = reviewSuite('token-only', 'token-only', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
+    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxTokens: 10_000 }));
+    expect(result.gatedByBudget).toBe(false);
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows.map((r) => r.case)).toEqual(['rev-1', 'rev-2']);
+    expect(result.rows.every((r) => r.costUSD === null)).toBe(true);
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('an EXPLICIT maxUsd on an unpriced lane still trips fail-closed after case 1', async () => {
+    // Keeping the honest-stop contract honest in the other direction: a
+    // configured USD cap over unpriced usage MUST trip (never run unbounded).
+    const dir = reviewSuite('usd-fail-closed', 'usd-fail-closed', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
+    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxUsd: 0.000001, maxTokens: 1_000_000 }));
+    expect(result.gatedByBudget).toBe(true);
+    expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
   }, 15_000);
 });
 

@@ -14,7 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@camerontaylor/cq-toolkit": "file:vendor/cq-toolkit-0.0.0.tgz"
+    "@camerontaylor/cq-toolkit": "file:vendor/cq-toolkit-0.0.0.tgz",
+    "zod": "4.6.4"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",

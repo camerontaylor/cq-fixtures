@@ -102,7 +102,9 @@ async function main(argv: readonly string[]): Promise<number> {
     // A budget-gated run did not complete: never report it as clean (the
     // gated cases are also visible on the run-finished journal event).
     if (result.gatedByBudget) anyFailed = true;
-    console.log(`suite ${result.rows[0]?.suite ?? suiteDir}: ${passed}/${total} probes passed across ${result.rows.length} case(s), run ${result.rows[0]?.runId}`);
+    const runSuffix = result.rows[0] !== undefined ? `, run ${result.rows[0].runId}` : '';
+    const suiteName = result.rows[0]?.suite ?? suiteDir;
+    console.log(`suite ${suiteName}: ${passed}/${total} probes passed across ${result.rows.length} case(s)${runSuffix}`);
   }
   if (opts.out !== undefined) {
     mkdirSync(opts.out, { recursive: true });

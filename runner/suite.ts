@@ -55,11 +55,18 @@ const validateSuiteDoc = ajv.compile(
   JSON.parse(readFileSync(new URL('../schema/suite.schema.json', import.meta.url), 'utf8')) as object,
 );
 
-/** fixture/check paths must stay inside the repo: relative, no '..' segments. */
+/** fixture/check paths must stay inside the repo: relative in POSIX form, no '..' segments, no Windows separators or drive prefixes. */
 function assertRepoRelative(p: string, label: string, suiteName: string): void {
-  if (p.length === 0 || isAbsolute(p) || p.split('/').includes('..')) {
+  if (
+    p.length === 0 ||
+    isAbsolute(p) ||
+    p.includes('\\') || // a backslash is a separator on Windows — reject the ambiguity outright
+    /^[A-Za-z]:/.test(p) || // Windows drive prefix (C:, C:/…, C:\…)
+    p.split('/').includes('..')
+  ) {
     throw new Error(
-      `suite '${suiteName}': ${label} path '${p}' must be repo-root-relative (no leading '/', no '..' segments)`,
+      `suite '${suiteName}': ${label} path '${p}' must be repo-root-relative ` +
+        `(no leading '/', no '..' segments, no backslashes, no Windows drive prefix)`,
     );
   }
 }

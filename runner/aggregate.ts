@@ -70,9 +70,9 @@ function round6(n: number): number {
 
 /**
  * Aggregate rows into one table per role present in the rows. A role with no
- * rows yields no table; runSuite synthesizes empty-but-valid tables for
- * requested suite roles that somehow produced zero rows (schema currently
- * requires cells minItems 1 — relaxed in a later slice).
+ * rows yields no table; runSuite synthesizes an empty-but-valid table
+ * (cells: [], schema-legal) for a requested suite role that produced zero
+ * rows — the empty-suite form.
  */
 export function aggregate(rows: readonly ResultRow[]): ComparisonTable[] {
   const byRole = new Map<SuiteRole, ResultRow[]>();

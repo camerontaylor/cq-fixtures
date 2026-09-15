@@ -7,7 +7,9 @@ import {
   computeCostUSD,
   openRunLog,
   priceOf,
+  type Driver,
   type JobFinishedJournalEvent,
+  type OpInvocation,
   type RunFinishedJournalEvent,
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
@@ -183,6 +185,7 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
       { fixture: 'fixture', probe: { kind: 'check-rerun', check: 'fixture/does-not-exist.js' } },
       {} as WorkerResult,
       root,
+      join(root, 'fixture'),
     );
     expect(outcome.score).toBe(0);
     expect(outcome.passed).toBe(0);
@@ -190,15 +193,88 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     expect(outcome.diagnostics).toBeDefined();
   });
 
+  it('a check that outlives its timeout scores 0 with a timeout diagnostic (never hangs the suite)', () => {
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check-slow.js'), 'setTimeout(() => process.exit(0), 10_000);\n');
+    const outcome = scoreFixerWorker(
+      { fixture: 'fixture', probe: { kind: 'check-rerun', check: 'fixture/check-slow.js' } },
+      {} as WorkerResult,
+      root,
+      join(root, 'fixture'),
+      300,
+    );
+    expect(outcome.score).toBe(0);
+    expect(outcome.diagnostics).toMatch(/check probe timed out after 300ms/);
+  }, 10_000);
+
   it('a probe handed the wrong probe.kind throws (programming error, caught by loadSuite first)', () => {
     expect(() =>
       scoreFixerWorker(
         { fixture: 'fixture', probe: { kind: 'expected-verdict', expected: 'resolved' } } as never,
         {} as WorkerResult,
         root,
+        join(root, 'fixture'),
       ),
     ).toThrow(/must be 'check-rerun'/);
   });
+});
+
+describe('writable workspace (fixer fixture round-trip)', () => {
+  /** A stand-in worker that "fixes" state.txt inside the workspace named in the prompt. */
+  class FixingDriver implements Driver {
+    readonly invocations: OpInvocation[] = [];
+    async run(invocation: OpInvocation): Promise<WorkerResult> {
+      this.invocations.push(invocation);
+      const workspace = /workspace: (.+)$/m.exec(invocation.prompt)?.[1];
+      if (workspace !== undefined) writeFileSync(join(workspace, 'state.txt'), 'fixed');
+      return {
+        model: invocation.modelSpec.model,
+        structuredOutput: { verdict: 'resolved' },
+        usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 },
+        denials: [],
+        stopReason: 'complete',
+      };
+    }
+  }
+
+  it('the driver writes its workspace copy and the check probe grades THAT copy — the fix round-trips', async () => {
+    // Seeded fault: state.txt says 'broken'; the probe passes only on 'fixed'.
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'state.txt'), 'broken');
+    writeFileSync(join(root, 'fixture', 'check.js'), "process.exit(require('fs').readFileSync('./state.txt', 'utf8') === 'fixed' ? 0 : 1);\n");
+    const dir = writeSuite('ws-suite', {
+      name: 'ws-suite',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-ws-1', fixture: 'fixture', task: { prompt: 'Fix state.txt to say fixed.' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+
+    const driver = new FixingDriver();
+    const result = await runSuite({ suiteDir: dir, driver, model: 'deepseek-chat', provider: 'deepseek', maxUsd: 1, repoRoot: root });
+
+    // The invocation went out shaped for a real fixer: full harness tool
+    // allowlist, workspace-write sandbox, and the workspace path in-prompt.
+    const invocation = driver.invocations[0]!;
+    expect(invocation.toolPolicy).toEqual({ allow: ['read', 'edit', 'run'], mode: 'allowlist' });
+    expect(invocation.sandboxPolicy).toEqual({ level: 'workspace-write' });
+    expect(invocation.prompt).toMatch(/^Fix state\.txt to say fixed\.\nworkspace: \S+/);
+    // The probe saw the driver's fix in the workspace copy: score 1 —
+    // proving the workspace round-trip (driver wrote it, probe read it).
+    expect(result.rows[0]).toMatchObject({ case: 'fix-ws-1', outcome: { score: 1, passed: 1, total: 1 } });
+    // The pristine fixture under repoRoot was never touched.
+    expect(readFileSync(join(root, 'fixture', 'state.txt'), 'utf8')).toBe('broken');
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('review-classifier invocations stay tools-none / read-only with no workspace line', async () => {
+    const dir = reviewSuite('ws-review', 'ws-review', [reviewCase('rev-1', 'resolved')]);
+    const driver = new FixingDriver();
+    await runSuite({ suiteDir: dir, driver, model: 'deepseek-chat', provider: 'deepseek', maxUsd: 1, repoRoot: root });
+    const invocation = driver.invocations[0]!;
+    expect(invocation.toolPolicy).toEqual({ allow: [], mode: 'none' });
+    expect(invocation.sandboxPolicy).toEqual({ level: 'read-only' });
+    expect(invocation.prompt).not.toMatch(/workspace:/);
+  }, 15_000);
 });
 
 describe('budget honesty (I9)', () => {
@@ -299,6 +375,19 @@ describe('semantic layer (issue #4 enforcement in loadSuite)', () => {
       cases: [{ id: 'y', fixture: '../outside', task: { prompt: 'p' }, probe: { kind: 'expected-verdict', expected: 'resolved' } }],
     });
     expect(() => loadSuite(dir)).toThrow(/repo-root-relative/);
+  });
+
+  it('rejects Windows path forms: backslash separators, drive prefixes, drive-absolute', () => {
+    const fixtures = ['sub\\evil', 'C:', 'C:/evil', 'C:\\evil', '/abs'];
+    for (const fixture of fixtures) {
+      const dir = writeSuite(`bad-win-${fixtures.indexOf(fixture)}`, {
+        name: `bad-win-${fixtures.indexOf(fixture)}`,
+        role: 'review-classifier',
+        provenance: { origin: 'hand-seeded' },
+        cases: [{ id: 'w', fixture, task: { prompt: 'p' }, probe: { kind: 'expected-verdict', expected: 'resolved' } }],
+      });
+      expect(() => loadSuite(dir), `fixture '${fixture}' must be rejected`).toThrow(/repo-root-relative/);
+    }
   });
 
   it('rejects a suite failing the JSON Schema (missing provenance)', () => {

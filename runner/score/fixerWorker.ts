@@ -18,6 +18,8 @@ interface CheckRerunCase {
 }
 
 const OUTPUT_TAIL_CHARS = 2000;
+/** Ceiling for a probe with no runner-known wall clock: a looping check must never stall the suite. */
+export const DEFAULT_CHECK_TIMEOUT_MS = 60_000;
 
 function tail(s: string): string {
   const t = s.trim();
@@ -26,28 +28,42 @@ function tail(s: string): string {
 
 /**
  * Score a fixer-worker case by RE-RUNNING the seeded check probe with cwd set
- * to the case's fixture workspace. The worker's structured output does not
- * influence this probe on purpose: the whole contract is "does the check pass
- * on the workspace now" — sweep-agnostic, so the same probe grades a fixed
- * fixture, an untouched fixture, or a sweep artifact identically.
+ * to the MATERIALIZED workspace — the per-case writable copy the worker (may
+ * have) fixed — never the pristine fixture under repoRoot. The check script
+ * itself resolves from repoRoot so the worker cannot rewrite its own judge;
+ * it reads the workspace state through its cwd. The worker's structured
+ * output does not influence this probe on purpose: the whole contract is
+ * "does the check pass on the workspace now" — sweep-agnostic.
  *
- * A probe that cannot execute (missing check script, missing fixture dir,
- * spawn failure) scores 0 with the error captured in diagnostics — it never
- * throws, so one broken case cannot abort the run's remaining cases (I9).
+ * A probe that cannot execute (missing check script, spawn failure) or that
+ * outlives `timeoutMs` scores 0 with the error captured in diagnostics — it
+ * never throws, so one broken case cannot abort the run's remaining cases.
  */
 export function scoreFixerWorker(
   suiteCase: CheckRerunCase,
   _workerResult: WorkerResult,
   repoRoot: string,
+  workspace: string,
+  timeoutMs: number = DEFAULT_CHECK_TIMEOUT_MS,
 ): ScoreOutcome {
   if (suiteCase.probe.kind !== 'check-rerun') {
     // loadSuite's semantic layer already enforces the role↔probe pairing;
     // reaching here means a caller bypassed it. Fail loud (programming error).
     throw new Error(`scoreFixerWorker: probe kind must be 'check-rerun', got '${suiteCase.probe.kind}'`);
   }
-  const fixtureAbs = join(repoRoot, suiteCase.fixture);
   const checkAbs = join(repoRoot, suiteCase.probe.check);
-  const res = spawnSync('node', [checkAbs], { cwd: fixtureAbs, encoding: 'utf8' });
+  const res = spawnSync('node', [checkAbs], { cwd: workspace, encoding: 'utf8', timeout: timeoutMs });
+  // A timeout surfaces as the kill signal (and/or an ETIMEDOUT error) — the
+  // probe was killed, not honestly failed, so say exactly that.
+  const timedOut = res.signal !== null || (res.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
+  if (timedOut) {
+    return {
+      score: 0,
+      passed: 0,
+      total: 1,
+      diagnostics: `check probe timed out after ${timeoutMs}ms (${suiteCase.probe.check})`,
+    };
+  }
   if (res.error !== undefined && res.error !== null) {
     return {
       score: 0,

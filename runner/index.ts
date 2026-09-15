@@ -4,14 +4,18 @@
 // the NDJSON journal, and the price map for DD-9 cost derivation. The driver
 // is INJECTED: adding a case or swapping lanes requires no runner change.
 //
-// Honesty rules enforced here (I9): every case yields exactly one row — a
-// budget-refused case is an honest zero, never skipped and never fabricated;
-// costUSD comes only from the toolkit price map or is null (DD-9); the row's
-// model is the OBSERVED served id when the driver reports one.
+// Honesty rules enforced here (I9): every DISPATCHED case yields exactly one
+// row; a case the governor refuses (budget) yields NO row — refusing to
+// fabricate a zero for work that never ran — and shows up only in the
+// journal's run-finished stoppedEarly/earlyStopReason and the result's
+// gatedByBudget flag. costUSD comes only from the toolkit price map or is
+// null (DD-9); the row's model is the OBSERVED served id when the driver
+// reports one.
 
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import ajvFormats from 'ajv-formats';
@@ -27,6 +31,7 @@ import {
   type OpInvocation,
   type OpResult,
   type RunLog,
+  type ToolkitToolName,
   type Usage,
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
@@ -37,6 +42,11 @@ import { isFixerCase, loadSuite } from './suite.ts';
 
 // Public library surface: the suite loader rides along with the runner.
 export { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
+
+// The toolkit harness tool surface (ToolkitToolName = read | edit | run): a
+// fixer-worker dispatches with this allowlist in workspace-write mode, since
+// a worker that cannot edit files or run a check cannot fix anything.
+const FIXER_TOOL_NAMES: readonly ToolkitToolName[] = ['read', 'edit', 'run'];
 
 // Schema validation of OUTPUTS (rows/tables) — nothing leaves runSuite
 // unvalidated. Same Ajv setup as test/schema.test.ts.
@@ -131,19 +141,45 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       console.error(`  case ${c.id}: not dispatched — run budget exhausted (${admission.reason})`);
       continue;
     }
-    const invocation: OpInvocation = {
-      prompt: c.task.prompt,
-      modelSpec: { model: opts.model, provider: opts.provider },
-      toolPolicy: { allow: [], mode: 'none' },
-      sandboxPolicy: { level: 'read-only' },
-      budget,
-    };
     await append({ type: 'job-started', runId, at: now(), jobId: c.id, op: suite.role, attempt: admission.attempt });
 
     const startedMs = Date.now();
+    // The invocation is built per case because a fixer-worker case runs
+    // against its OWN materialized workspace copy — the copy's absolute path
+    // rides in the prompt and is therefore part of the journaled input hash.
+    let invocation: OpInvocation | undefined;
+    let workspace: string | undefined;
     let worker: WorkerResult | undefined;
     let thrown: unknown;
     try {
+      if (isFixerCase(c)) {
+        // A fixer must be able to MODIFY the fixture: run against a writable
+        // per-case copy under the OS temp dir (removed after the case); the
+        // pristine fixture under repoRoot is never touched. read/edit/run is
+        // the full harness tool surface — a worker that cannot edit or run a
+        // check cannot fix anything, so tools-none/read-only would score
+        // every real fixer case 0 by construction.
+        workspace = mkdtempSync(join(tmpdir(), 'cq-fixture-'));
+        cpSync(join(repoRoot, c.fixture), workspace, { recursive: true });
+        invocation = {
+          prompt: `${c.task.prompt}\nworkspace: ${workspace}`,
+          modelSpec: { model: opts.model, provider: opts.provider },
+          toolPolicy: { allow: [...FIXER_TOOL_NAMES], mode: 'allowlist' },
+          sandboxPolicy: { level: 'workspace-write' },
+          budget,
+        };
+      } else {
+        // Review-classifier: tools-none / read-only. The fixture (thread
+        // payload) is not wired into the prompt yet — payload content
+        // injection is J3 scope.
+        invocation = {
+          prompt: c.task.prompt,
+          modelSpec: { model: opts.model, provider: opts.provider },
+          toolPolicy: { allow: [], mode: 'none' },
+          sandboxPolicy: { level: 'read-only' },
+          budget,
+        };
+      }
       worker = await opts.driver.run(invocation);
     } catch (e) {
       thrown = e;
@@ -181,7 +217,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       diagnostics = 'driver stopReason: aborted';
     } else {
       const s: ScoreOutcome = isFixerCase(c)
-        ? scoreFixerWorker(c, worker, repoRoot)
+        ? // The workspace is always set on the fixer path (materialized
+          // above, before the driver ran) — it is what the probe grades.
+          scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.wallClockMs)
         : scoreReviewClassifier(c, worker);
       outcome = { score: s.score, passed: s.passed, total: s.total };
       journalResult = { status: 'ok', value: outcome };
@@ -189,7 +227,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     }
     await append({
       type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
-      inputsHash: hashInputs(suite.role, invocation),
+      // If materialization failed before an invocation existed, hash the case
+      // facts so the journal still identifies WHAT failed to dispatch.
+      inputsHash: hashInputs(suite.role, invocation ?? { caseId: c.id, fixture: c.fixture, task: c.task }),
       result: journalResult,
       ...(worker !== undefined ? { usage } : {}),
     });
@@ -200,6 +240,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       wallTimeMs, tokens: tokensOf(usage), runId, timestamp: now(),
     });
     console.error(`  case ${c.id}: score ${outcome.score}${diagnostics !== undefined ? ` — ${diagnostics.split('\n')[0]}` : ''}`);
+    // The materialized workspace is the driver's scratch: graded against,
+    // then removed. The pristine fixture under repoRoot is never touched.
+    if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
   }
   await append({
     type: 'run-finished', runId, at: now(), stoppedEarly: gatedByBudget,

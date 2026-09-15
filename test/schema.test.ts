@@ -118,6 +118,19 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
           tokens: { input: 4800, output: 1360, reasoning: 384 },
         },
         {
+          // Axis 1 varies models on the ai-sdk driver: a second served id.
+          model: 'deepseek-chat',
+          driver: 'ai-sdk',
+          runs: 2,
+          passed: 1,
+          total: 2,
+          score: 0.5,
+          costUSD: 0.0042,
+          costBasis: 'modeled',
+          wallTimeMs: 63_000,
+          tokens: { input: 2500, output: 660 },
+        },
+        {
           // Axis 2: drivers vary on the fixed GLM served id.
           model: 'glm-5.3-flash',
           driver: 'claude-agent',
@@ -180,6 +193,61 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
   it('accepts a table with a valid RFC 3339 generatedAt', () => {
     const table = validTable();
     table.generatedAt = '2026-09-15T12:34:56Z';
+    expect(tableSchema(table)).toBe(true);
+  });
+
+  it('rejects an out-of-matrix cell: a non-ai-sdk driver carrying a non-GLM model', () => {
+    const table = validTable();
+    table.cells = [
+      {
+        model: 'deepseek-chat',
+        driver: 'subprocess',
+        runs: 2,
+        passed: 1,
+        total: 2,
+        score: 0.5,
+        costUSD: null,
+        wallTimeMs: 61_000,
+        tokens: { input: 2400, output: 620 },
+      },
+    ];
+    expect(tableSchema(table)).toBe(false);
+  });
+
+  it('accepts an axis-2 cell: the fixed GLM served id on the acp driver', () => {
+    const table = validTable();
+    table.cells = [
+      {
+        model: 'glm-5.3-flash',
+        driver: 'acp',
+        runs: 2,
+        passed: 2,
+        total: 2,
+        score: 1,
+        costUSD: null,
+        wallTimeMs: 58_000,
+        tokens: { input: 2100, output: 540 },
+      },
+    ];
+    expect(tableSchema(table)).toBe(true);
+  });
+
+  it('still accepts an axis-1 cell: a non-GLM model on the ai-sdk driver', () => {
+    const table = validTable();
+    table.cells = [
+      {
+        model: 'deepseek-chat',
+        driver: 'ai-sdk',
+        runs: 2,
+        passed: 1,
+        total: 2,
+        score: 0.5,
+        costUSD: 0.0042,
+        costBasis: 'modeled',
+        wallTimeMs: 63_000,
+        tokens: { input: 2500, output: 660 },
+      },
+    ];
     expect(tableSchema(table)).toBe(true);
   });
 

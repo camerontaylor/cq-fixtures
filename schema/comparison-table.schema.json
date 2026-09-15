@@ -123,6 +123,17 @@
               "required": ["costUSD"]
             },
             "then": { "not": { "required": ["costBasis"] } }
+          },
+          {
+            "description": "ADR-0001 eval axes enforced per cell (revised 2026-09-14): axis 1 — models vary on the ai-sdk driver; axis 2 — drivers vary on the fixed GLM served id glm-5.3-flash (served-id decision 2026-09-14). A cell on any non-ai-sdk driver must therefore carry exactly the fixed GLM served id.",
+            "if": {
+              "properties": { "driver": { "const": "ai-sdk" } },
+              "required": ["driver"]
+            },
+            "then": {},
+            "else": {
+              "properties": { "model": { "const": "glm-5.3-flash" } }
+            }
           }
         ]
       }

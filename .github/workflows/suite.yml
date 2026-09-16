@@ -82,6 +82,18 @@ jobs:
             elif [ "${rc}" -eq 1 ]; then
               echo "::notice::smoke ${suite_dir}: scored zero — the honest fake outcome (the fake cannot fix)"
             fi
+            # cliMain's exit 1 CONFLATES two things: a scored-zero run
+            # (benign — the suite completed and emitted its table) and a
+            # run-phase throw mid-scoring/journal/validation (tables missing
+            # or partial). rc 1 is benign ONLY when the suite completed
+            # emission — its per-role table exists, including the
+            # empty-but-valid budget-gated form — so the workflow re-checks
+            # instead of trusting the code: a missing table is a run-phase
+            # failure and hard-fails like rc>=2.
+            if [ ! -f "${out_dir}/${role}.table.json" ]; then
+              hard_fail=1
+              echo "::error::smoke ${suite_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
+            fi
           done
           exit "${hard_fail}"
       - name: Upload smoke reports
@@ -235,6 +247,21 @@ jobs:
               hard_fail=1
             elif [ "${rc}" -eq 1 ]; then
               echo "::warning::suite ${MATRIX_MODEL}/${rel_dir} scored zero or was budget-gated"
+            fi
+            # Same conflation guard as the smoke loop: cliMain's exit 1 can
+            # be a benign scored outcome (table emitted) OR a run-phase throw
+            # mid-scoring/journal/validation (tables missing or partial).
+            # rc 1 is benign ONLY when the suite completed emission — its
+            # per-role table exists, including the empty-but-valid
+            # budget-gated form — so the table's absence hard-fails: without
+            # this, a suite dying mid-emit on the LAST suite would report job
+            # success and the snapshot's full-success path would clear the
+            # day's dir, replacing complete data with incomplete data.
+            # rel_dir is <role>/<suite>; the role is its first segment.
+            role="${rel_dir%%/*}"
+            if [ ! -f "${out_dir}/${role}.table.json" ]; then
+              hard_fail=1
+              echo "::error::suite ${rel_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
             fi
             suite_count=$((suite_count + 1))
           done < <(find suites/fixer-worker/micro suites/review-classifier/micro -maxdepth 1 -name suite.json 2>/dev/null | sort)

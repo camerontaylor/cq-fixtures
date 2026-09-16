@@ -95,6 +95,23 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(ifLine).toContain("needs.matrix.result != 'skipped'");
   });
 
+  it('rc 1 is trusted only with an emitted table: both loops carry the table-existence guard', () => {
+    // cliMain's exit 1 CONFLATES a scored-zero run (benign — tables emitted)
+    // with a run-phase throw mid-scoring/journal/validation (tables missing
+    // or partial). The workflow must not take rc 1's word for it: after the
+    // rc branch, each loop re-checks that the suite's per-role table
+    // actually landed before treating the run as benign — otherwise a suite
+    // dying mid-emit on the last suite reports success and the snapshot's
+    // full-success path replaces complete data with incomplete data.
+    for (const { label, chunk } of [
+      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro suites') },
+      { label: 'matrix eval cell', chunk: stepChunk('Eval cell —') },
+    ] as const) {
+      expect(chunk, `${label}: table-existence guard`).toContain('-f "${out_dir}/${role}.table.json"');
+      expect(chunk, `${label}: guard names the run-phase failure`).toContain('run-phase failure, not a scored outcome');
+    }
+  });
+
   it('the per-cell artifact coupling holds: cell-scoped name, pattern download, merge-multiple', () => {
     // These three substrings are ONE contract: the matrix cells upload under
     // a cell-scoped artifact name (upload-artifact v4 requires unique

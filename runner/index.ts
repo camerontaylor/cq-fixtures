@@ -36,7 +36,8 @@ import {
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
 import { aggregate, type ComparisonTable, type ResultRow } from './aggregate.ts';
-import { scoreFixerWorker, type ScoreOutcome } from './score/fixerWorker.ts';
+import { scoreSchemaCompliance } from './dimensions/schemaCompliance.ts';
+import { scoreFixerWorker } from './score/fixerWorker.ts';
 import { scoreReviewClassifier } from './score/reviewClassifier.ts';
 import { isFixerCase, loadSuite } from './suite.ts';
 
@@ -98,8 +99,14 @@ export interface RunSuiteResult {
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-function zeroOutcome(): { score: 0; passed: 0; total: 1 } {
-  return { score: 0, passed: 0, total: 1 };
+// DD-4: a fixer-worker case configures TWO scoring probes — the check-rerun
+// judge (does the workspace pass now) and the schema-compliance probe (could
+// the model hold the declared {fixed, notes} json shape). Every other role
+// configures one.
+const FIXER_PROBE_COUNT = 2;
+
+function zeroOutcome(total: number): { score: 0; passed: 0; total: number } {
+  return { score: 0, passed: 0, total };
 }
 
 function tokensOf(usage: Usage): ResultRow['tokens'] {
@@ -315,30 +322,48 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       let outcome: { score: number; passed: number; total: number };
       let journalResult: OpResult<unknown>;
       let diagnostics: string | undefined;
+      // DD-4: the probe ceiling holds even on the zero paths below — a case
+      // configures its probes up front, so a worker that never produced a
+      // gradeable result failed every one of them (passed 0 of the full
+      // ceiling) rather than a truncated count.
+      const probeCount = isFixerCase(c) ? FIXER_PROBE_COUNT : 1;
       if (worker === undefined) {
-        outcome = zeroOutcome();
+        outcome = zeroOutcome(probeCount);
         journalResult = { status: 'failed', error: String(thrown) };
         diagnostics = `driver threw: ${String(thrown)}`;
       } else if (worker.stopReason === 'budget') {
-        outcome = zeroOutcome(); // honest budget-exhausted: no fabricated credit
+        outcome = zeroOutcome(probeCount); // honest budget-exhausted: no fabricated credit
         journalResult = { status: 'budget-exhausted' };
         diagnostics = 'driver stopped on budget';
       } else if (worker.stopReason === 'error') {
-        outcome = zeroOutcome();
+        outcome = zeroOutcome(probeCount);
         journalResult = { status: 'failed', error: 'driver stopReason: error' };
         diagnostics = 'driver stopReason: error';
       } else if (worker.stopReason === 'aborted') {
-        outcome = zeroOutcome();
+        outcome = zeroOutcome(probeCount);
         journalResult = { status: 'indeterminate', detail: 'driver stopReason: aborted' };
         diagnostics = 'driver stopReason: aborted';
+      } else if (isFixerCase(c)) {
+        // A fixer case scores TWO probes (DD-4: the worker declares its own
+        // verdict; the runner grades whether the model could hold the json
+        // shape it was asked for).
+        // Probe 1 — check-rerun, as today: the workspace is always set on
+        // the fixer path (materialized above, before the driver ran) — it is
+        // what the probe grades. The probe ceiling is checkTimeoutMs, an
+        // independent knob from the run's budget caps.
+        const check = scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.checkTimeoutMs);
+        // Probe 2 — schema compliance (runner/dimensions/schemaCompliance.ts):
+        // grades ONLY the structuredOutput's shape discipline, never the
+        // fix's content, so the check's sweep-agnostic contract is intact.
+        const schema = scoreSchemaCompliance(worker);
+        const passed = check.passed + schema.passed;
+        outcome = { score: passed / FIXER_PROBE_COUNT, passed, total: FIXER_PROBE_COUNT };
+        journalResult = { status: 'ok', value: outcome };
+        // Both probes' complaints surface; the CLI prints the first line.
+        const complaints = [check.diagnostics, schema.diagnostics].filter((d): d is string => d !== undefined);
+        diagnostics = complaints.length > 0 ? complaints.join('\n') : undefined;
       } else {
-        const s: ScoreOutcome = isFixerCase(c)
-          ? // The workspace is always set on the fixer path (materialized
-            // above, before the driver ran) — it is what the probe grades.
-            // The probe ceiling is checkTimeoutMs, an independent knob from
-            // the run's budget caps.
-            scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.checkTimeoutMs)
-          : scoreReviewClassifier(c, worker);
+        const s = scoreReviewClassifier(c, worker);
         outcome = { score: s.score, passed: s.passed, total: s.total };
         journalResult = { status: 'ok', value: outcome };
         diagnostics = s.diagnostics;

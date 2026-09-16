@@ -14,8 +14,13 @@ Each suite directory carries a `suite.json` validated by `schema/suite.schema.js
   relative require would resolve against the pristine fixture under the repo root, not the
   workspace copy being graded. The judge reads the workspace exclusively through
   `process.cwd()`. A probe may spawn additional processes (e.g. a test runner); those children
-  inherit cwd from the workspace. The case passes iff the probe passes (sweep-agnostic — no
-  toolkit probe machinery involved).
+  inherit cwd from the workspace. The check probe itself stays sweep-agnostic — no toolkit probe
+  machinery involved, and the worker's answer does not influence it. DECIDED (DD-4, phase-3 J4,
+  2026-09-16): a fixer case carries TWO scored probes — this check-rerun probe plus the
+  schema-compliance probe (did the worker declare its verdict in the structured-output shape
+  `{fixed: boolean, notes: string}` it was asked for?) — so a fixer row's `outcome.total` is 2
+  and each probe contributes one credit: the case's score is the fraction of its probes that
+  passed, making a model's json-fidelity visible in its score.
 - **review-classifier — verdict match.** The runner compares the classifier's verdict against the
   case's expected verdict in the classifyThreads vocabulary —
   `actionable | responded | resolved | blocked | skip` (ws-j item 3; UC §2 row 34).
@@ -47,7 +52,7 @@ as the observed served id, it carries no costUSD (cost derivation stays the runn
 toolkit price map, DD-9 — null on unpriced lanes, never invented), and it cannot fix fixtures (a
 fixer case scored against it fails unless the seeded check already passes on the untouched
 fixture — correct plumbing-smoke behavior, not a scored eval result). The `.github/workflows/
-suite.yml` smoke-job flip to actually run these suites lands in goal J4.
+suite.yml` smoke-job flip to actually run these suites landed in goal J4 (PR #12).
 
 ## Provenance / contamination
 

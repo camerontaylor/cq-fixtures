@@ -4,8 +4,10 @@ name: suite
 # `paths-ignore`, no branch or tag filters. push and pull_request run the
 # `smoke` job unfiltered (the denylist self-test's workflow sanity scan reads
 # this block, and unfiltered push runs keep the smoke green on main);
-# `workflow_dispatch` and the nightly `schedule` declare the real-driver
-# matrix's triggers. Declaring events is not filtering: the `matrix` job
+# `workflow_dispatch` and the WEEKLY `schedule` declare the real-driver
+# matrix's triggers (plan §9 weekly cadence, J4: the J3 daily cron was
+# reduced to a Monday-morning run now that the matrix is live; dispatch stays
+# for on-demand runs). Declaring events is not filtering: the `matrix` job
 # ADDITIONALLY self-restricts to dispatch/schedule via its job-level `if`, so
 # push/PR runs never attempt a live eval while the `on:` block itself stays
 # free of filters.
@@ -15,7 +17,9 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: '17 3 * * *'
+    # Plan §9 weekly cadence: 03:17 UTC every Monday. workflow_dispatch stays
+    # the on-demand path (an eval re-run never waits for the window).
+    - cron: '17 3 * * 1'
 
 permissions:
   contents: read
@@ -35,40 +39,74 @@ jobs:
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci
-      - name: Run the runner over suites/**/smoke/
-        # The empty set IS the phase-2 state: smoke suite dirs under
-        # suites/<role>/<name>/smoke/ are populated by phase-3 goal J3, so a
-        # find with no hits is a pass, not a failure. When a smoke dir DOES
-        # exist we hard-fail rather than run it: the FAKE driver's row needs
-        # a --driver-name lane label, and which lane a fake run should claim
-        # is a phase-3 decision (the row schema's driver enum admits only the
-        # four real toolkit lanes — see suites/README.md). Failing keeps that
-        # question from being silently papered over in this skeleton.
+      - name: Fake-driver smoke over the micro suites
+        # Goal J4 replaced the J3 hard-fail seam with the REAL smoke: both
+        # micro suites run under the FakeDriver — zero network, zero spend —
+        # proving the whole pipeline (suite load, payload injection, judge
+        # spawn, scoring, journal, aggregation) stays wired on every push and
+        # every PR. The fake claims --driver-name subprocess per the recorded
+        # J3 decision (suites/README.md): the fake stands in for a local CLI
+        # transport, so `subprocess` is the honest lane label — never
+        # `ai-sdk`, the paid eval axis. --check-timeout-ms 120000 gives the
+        # judge's internal 45s vitest ceiling generous headroom.
+        #
+        # EXIT DISCIPLINE: rc 0 (no row scored zero) and rc 1 (the suite
+        # SCORED ZERO somewhere) are BOTH smoke-green. rc 1 is the honest
+        # fake outcome here — and in practice BOTH suites exit 1: the fake
+        # cannot fix fixtures (every fixer row scores zero across its two
+        # DD-4 probes), and its hardcoded 'resolved' verdict misses the 8
+        # non-resolved-expected classifier cases. A scored-zero fake run IS
+        # the success signal; rc >= 2 (usage error, suite load/validation
+        # failure, fixture materialization failure, pre-dispatch
+        # missing-credential) is a hard failure.
         run: |
           set -euo pipefail
-          smoke_dirs="$(find suites -type d -name smoke | sort)"
-          if [ -z "${smoke_dirs}" ]; then
-            echo "no smoke suites yet — populated by phase-3 goal J3"
-            exit 0
-          fi
-          echo "::error::smoke suites exist but lane labeling is owned by phase-3 goal J3 — see suites/README.md"
-          printf 'found smoke dirs:\n%s\n' "${smoke_dirs}"
-          exit 1
+          hard_fail=0
+          for role_dir in suites/fixer-worker suites/review-classifier; do
+            suite_dir="${role_dir}/micro"
+            role="$(basename "${role_dir}")"
+            out_dir="reports/smoke/${role}"
+            rc=0
+            node --experimental-strip-types runner/index.ts \
+              --suite "${suite_dir}" \
+              --driver fake \
+              --driver-name subprocess \
+              --model glm-5.3-flash \
+              --provider zai \
+              --check-timeout-ms 120000 \
+              --journal "${out_dir}/journal" \
+              --out "${out_dir}" || rc=$?
+            if [ "${rc}" -ge 2 ]; then
+              echo "::error::smoke ${suite_dir}: runner usage/validation failure (exit ${rc})"
+              hard_fail=1
+            elif [ "${rc}" -eq 1 ]; then
+              echo "::notice::smoke ${suite_dir}: scored zero — the honest fake outcome (the fake cannot fix)"
+            fi
+            # cliMain's exit 1 CONFLATES two things: a scored-zero run
+            # (benign — the suite completed and emitted its table) and a
+            # run-phase throw mid-scoring/journal/validation (tables missing
+            # or partial). rc 1 is benign ONLY when the suite completed
+            # emission — its per-role table exists, including the
+            # empty-but-valid budget-gated form — so the workflow re-checks
+            # instead of trusting the code: a missing table is a run-phase
+            # failure and hard-fails like rc>=2.
+            if [ ! -f "${out_dir}/${role}.table.json" ]; then
+              hard_fail=1
+              echo "::error::smoke ${suite_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
+            fi
+          done
+          exit "${hard_fail}"
       - name: Upload smoke reports
+        # if: always(): a hard-failed smoke (rc>=2) still uploads whatever
+        # journals/tables were written before the failure — triage evidence
+        # for the case that broke the run.
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: smoke-reports
           path: reports/smoke/
           if-no-files-found: ignore
 
-  # BLOCKED: needs secrets — Z_AI_API_KEY exists only in the cq-toolkit repo's
-  # Actions secrets (owner/conductor set). Until the same secret NAME is added
-  # to cq-fixtures' Actions settings, dispatching this workflow hard-fails:
-  # the runner maps the toolkit's missing-credential throw to exit 2 instead
-  # of publishing zero-scored tables. The secret is added as Z_AI_API_KEY and
-  # mapped here onto the toolkit's required ZAI_API_KEY env name; this is
-  # recorded, not faked.
-  #
   # Real drivers, dispatch/schedule ONLY: the job-level `if` is the one
   # allowed restriction here (the `on:` block above remains unfiltered — a
   # job-level `if` removes whole runs by event, which is queue/mechanics
@@ -81,6 +119,48 @@ jobs:
     # publisher is the dedicated `snapshot` job), so read is enough.
     permissions:
       contents: read
+    strategy:
+      # One cell's hard failure must not kill the other cell's eval: the
+      # surviving cell's tables are still real evidence and still land in the
+      # artifacts/snapshots.
+      fail-fast: false
+      matrix:
+        # THE MODEL AXIS (ADR-0001 axis 1, as revised 2026-09-14 — that
+        # revision removes the ANTHROPIC-key requirement: phase-4 Claude-
+        # shaped lanes will exercise Z.AI's anthropic-compat endpoint, while
+        # each model keeps running on its own wire): models vary on the
+        # ai-sdk driver. Both entries are SERVED IDS
+        # (served-id decision 2026-09-14) — the GLM coding wire serves
+        # glm-5.3-flash; deepseek keeps its served id. The lane file's
+        # 'drivers × Claude' wording is SUPERSEDED by that revision: DRIVERS
+        # vary on the FIXED GLM served id, a constraint the runner itself
+        # enforces per invocation (runner/cli.ts's axis guard refuses any
+        # non-ai-sdk lane carrying a different model), so a driver axis is
+        # not expressible in THIS matrix.
+        #
+        # DRIVER AXIS, recorded for phase-4: ai-sdk + claude-agent/
+        # subprocess/acp over the fixed glm-5.3-flash served id expands in
+        # phase-4 lane J (J5 four-wide per delegation/phase-4-lane-j.md) once
+        # the runner constructs those toolkit lanes — the runner CLI today
+        # supports --driver fake|ai-sdk only (this job's cells and the smoke
+        # job above are exactly those two).
+        #
+        # Budget by TOKENS (--max-tokens 200000), not USD: glm-5.3-flash@zai
+        # is ABSENT from the toolkit price map and the governor FAILS CLOSED
+        # on unpriced usage under a USD cap (it would refuse admission after
+        # the first case of any multi-case suite — the exact failure DD-9
+        # exists to prevent), and deepseek pricing must not be assumed either.
+        # A token cap binds alone on both cells, keeping them dispatch-safe;
+        # the USD cap is reserved for priced lanes that opt into one.
+        cell:
+          - model: glm-5.3-flash
+            provider: zai
+            env_key: ZAI_API_KEY
+            secret_name: Z_AI_API_KEY
+          - model: deepseek-chat
+            provider: deepseek
+            env_key: DEEPSEEK_API_KEY
+            secret_name: DEEPSEEK_API_KEY
     steps:
       - name: Check out the repo
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -99,18 +179,12 @@ jobs:
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci
-      # Served-id decision (2026-09-14): the GLM coding wire serves
-      # glm-5.3-flash, so this cell requests exactly that served id
-      # (--model glm-5.3-flash --provider zai) and the runner records the
-      # OBSERVED served id from the wire — a gateway remap surfaces as data,
-      # never silently rewritten.
-      #
-      # Budget by TOKENS (--max-tokens 200000): glm-5.3-flash on the zai
-      # coding-plan lane is ABSENT from the toolkit price map, and the
-      # governor fails closed on unpriced usage under a USD cap — it would
-      # refuse admission after the first case of any multi-case suite. Per
-      # DD-9's disposition, the cap on this unpriced lane is a token cap;
-      # the USD cap is reserved for priced lanes.
+      # CREDENTIAL PREREQUISITE (the J3 BLOCKED note, carried forward): both
+      # secret NAMES must exist in THIS repo's Actions settings — Z_AI_API_KEY
+      # (the zai key) and DEEPSEEK_API_KEY. A missing or empty secret maps to
+      # '' below, which the toolkit's requireKey rejects exactly like an
+      # unset var, so the cell aborts PRE-DISPATCH with exit 2 (hard failure)
+      # instead of publishing zero-scored tables while green.
       #
       # ACCEPTED RISK (recorded): the provider API key sits in this job's
       # env — and fixer cells hand model-driven workers read/edit/run tools
@@ -120,68 +194,93 @@ jobs:
       # tracked: move cells to a spend-capped, ephemeral eval key. The
       # credential split already keeps repo write access out of this job
       # (persist-credentials: false).
-      - name: Eval cell — ai-sdk, glm-5.3-flash @ zai
+      - name: Eval cell — ${{ matrix.cell.model }} @ ${{ matrix.cell.provider }}
         env:
-          # The secret is added to this repo under the name Z_AI_API_KEY and
-          # mapped onto the toolkit driver's required ZAI_API_KEY env name.
-          ZAI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
+          # The cell names BOTH sides of the credential seam: env_key is the
+          # toolkit requireKey name for the cell's provider (ZAI_API_KEY /
+          # DEEPSEEK_API_KEY — the runner CLI does not take these, the toolkit
+          # driver asks for them by name); secret_name is THIS repo's Actions
+          # secret carrying the key. Dynamic secret indexing is resolved at
+          # STEP level (the strategy block cannot read the secrets context);
+          # the `&& … || ''` guard keeps the OTHER provider's env empty on
+          # every cell, so each cell only ever satisfies its own driver.
+          ZAI_API_KEY: ${{ matrix.cell.env_key == 'ZAI_API_KEY' && secrets[matrix.cell.secret_name] || '' }}
+          DEEPSEEK_API_KEY: ${{ matrix.cell.env_key == 'DEEPSEEK_API_KEY' && secrets[matrix.cell.secret_name] || '' }}
+          MATRIX_MODEL: ${{ matrix.cell.model }}
+          MATRIX_PROVIDER: ${{ matrix.cell.provider }}
         run: |
           set -euo pipefail
-          # DEFERRED-DISCOVERY until goal J4: real-driver dispatch of any
-          # suite (the micro suites included) is explicitly deferred to J4,
-          # which lands the designed discovery. The allowlist root below
-          # (suites/matrix-ready/) deliberately DOES NOT EXIST yet, so this
-          # find is always empty and the cell stays a pure no-op — a new or
-          # populated suite anywhere under suites/ can never re-arm the
-          # paid cell by accident. J4 replaces this seam wholesale.
-          if [ -z "$(find suites/matrix-ready -name suite.json -print -quit 2>/dev/null)" ]; then
-            echo "no suites yet — populated by phase-3 goal J3; the matrix cell is a no-op until then"
-            # The eval-reports artifact must ALWAYS exist: the snapshot job's
-            # download step no longer tolerates a missing artifact (M2).
-            # EMPTY (not a dot-file): upload-artifact v4 drops hidden files
-            # unless include-hidden-files is set.
-            mkdir -p reports/eval
-            touch reports/eval/EMPTY
-            exit 0
-          fi
-          # The runner exits 1 when a suite SCORED ZERO or was BUDGET-GATED —
-          # a normal eval outcome, not an infra failure — and 2 for
-          # usage/validation errors (incl. a missing ZAI_API_KEY env, which
-          # aborts the run pre-dispatch instead of scoring zeros). So: rc>=2
-          # is a hard failure collected below; rc==1 appends a warning and
-          # the loop continues. Tables from scored-zero runs are still valid
-          # artifacts and still land in the upload/snapshot steps below.
+          # Designed discovery (J4): the two micro suites ARE the matrix
+          # payload — a SHALLOW find over their FIXED directories (-maxdepth 1:
+          # only a suite.json placed DIRECTLY in a named dir runs; verified
+          # against both real suites). A nested micro/x/suite.json is a
+          # structuring decision for J5's designed discovery, not an accident
+          # to auto-run here; widening this list stays a deliberate edit.
           hard_fail=0
+          suite_count=0
           while IFS= read -r suite_file; do
             suite_dir="$(dirname "${suite_file}")"
-            # G7: out dir mirrors the suite path relative to suites/ so two
-            # suites sharing a basename cannot collide; the NDJSON journal
-            # (incl. the honest-stop record) lands inside the same subtree.
+            # G7: out dir mirrors the suite path relative to suites/, PREFIXED
+            # with the cell's served model id so the two axis cells never
+            # collide on one table; the NDJSON journal (incl. the honest-stop
+            # record) lands inside the same subtree. The snapshot job's copy
+            # loop preserves the whole relative path, so snapshots nest as
+            # <date>/<model>/<role>/<suite>/<role>.table.json.
             rel_dir="$(dirname "${suite_file#suites/}")"
-            out_dir="reports/eval/${rel_dir}"
+            out_dir="reports/eval/${MATRIX_MODEL}/${rel_dir}"
             rc=0
+            # < /dev/null: this loop reads its worklist from the find's stdin
+            # (while-read); the first stdin-reading driver (a phase-4 lane
+            # transport reading a prompt from stdin, say) would otherwise eat
+            # the remaining suite paths mid-run.
             node --experimental-strip-types runner/index.ts \
               --suite "${suite_dir}" \
               --driver ai-sdk \
               --driver-name ai-sdk \
-              --model glm-5.3-flash \
-              --provider zai \
+              --model "${MATRIX_MODEL}" \
+              --provider "${MATRIX_PROVIDER}" \
               --max-tokens 200000 \
               --journal "${out_dir}/journal" \
-              --out "${out_dir}" || rc=$?
+              --out "${out_dir}" < /dev/null || rc=$?
             if [ "${rc}" -ge 2 ]; then
-              echo "::error::suite ${rel_dir}: runner usage/validation failure (exit ${rc})"
+              echo "::error::suite ${MATRIX_MODEL}/${rel_dir}: runner usage/validation failure (exit ${rc})"
               hard_fail=1
             elif [ "${rc}" -eq 1 ]; then
-              echo "::warning::suite ${rel_dir} scored zero or was budget-gated"
+              echo "::warning::suite ${MATRIX_MODEL}/${rel_dir} scored zero or was budget-gated"
             fi
-          # DEFERRED-DISCOVERY until goal J4 — rationale on the guard above.
-          done < <(find suites/matrix-ready -name suite.json 2>/dev/null | sort)
-          # The artifact must exist on every path — even when suites ran but
-          # every run hard-failed pre-output — so the snapshot job's download
-          # can never 404 on a missing artifact. EMPTY (not a dot-file):
-          # upload-artifact v4 drops hidden files unless
-          # include-hidden-files is set.
+            # Same conflation guard as the smoke loop: cliMain's exit 1 can
+            # be a benign scored outcome (table emitted) OR a run-phase throw
+            # mid-scoring/journal/validation (tables missing or partial).
+            # rc 1 is benign ONLY when the suite completed emission — its
+            # per-role table exists, including the empty-but-valid
+            # budget-gated form — so the table's absence hard-fails: without
+            # this, a suite dying mid-emit on the LAST suite would report job
+            # success and the snapshot's full-success path would clear the
+            # day's dir, replacing complete data with incomplete data.
+            # rel_dir is <role>/<suite>; the role is its first segment.
+            role="${rel_dir%%/*}"
+            if [ ! -f "${out_dir}/${role}.table.json" ]; then
+              hard_fail=1
+              echo "::error::suite ${rel_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
+            fi
+            suite_count=$((suite_count + 1))
+          done < <(find suites/fixer-worker/micro suites/review-classifier/micro -maxdepth 1 -name suite.json 2>/dev/null | sort)
+          # Discovery drift must be VISIBLE but never fail the cell (it is a
+          # structuring signal, not an eval outcome): the list above names
+          # exactly two dirs with one directly-placed suite.json each, so
+          # anything but 2 is drift. Zero keeps the stronger wording — an
+          # accidental REMOVAL is the urgent case.
+          if [ "${suite_count}" -eq 0 ]; then
+            echo "::warning::matrix discovery found no suites — if this is an accidental removal, investigate"
+          elif [ "${suite_count}" -ne 2 ]; then
+            echo "::warning::matrix discovery found ${suite_count} suites (expected 2) — investigate if unintended"
+          fi
+          # The eval-reports artifact must ALWAYS exist — even when the find
+          # above came up empty (which can now only happen if the micro
+          # suites vanish, warned above) or every run hard-failed pre-output
+          # — so the snapshot job's download step can never 404 on a missing
+          # artifact (M2). EMPTY (not a dot-file): upload-artifact v4 drops
+          # hidden files unless include-hidden-files is set.
           mkdir -p reports/eval
           touch reports/eval/EMPTY
           exit "${hard_fail}"
@@ -189,7 +288,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: eval-reports
+          # PER-CELL artifact name: upload-artifact v4 requires unique names,
+          # and the two matrix cells run as separate jobs — a shared name
+          # would make the second uploader fail. The snapshot job below
+          # re-joins the cells with a pattern download (merge-multiple),
+          # which is that action's designed merge mechanism.
+          name: eval-reports-${{ matrix.cell.model }}
           path: reports/
           if-no-files-found: ignore
 
@@ -200,7 +304,23 @@ jobs:
   # dispatch/schedule restriction as `matrix` (plan §9 designed flow).
   snapshot:
     needs: matrix
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # needs + !cancelled(): the snapshot runs after a FAILED matrix too. The
+    # default post-failure behavior would SKIP this job on `needs: matrix`,
+    # burying the surviving cell's tables — but every matrix cell uploads its
+    # eval-reports-<model> artifact `if: always()`, so whatever survived a
+    # partial failure still publishes. The dispatch/schedule restriction is
+    # kept INSIDE the expression (push/PR runs still never reach this job) —
+    # cancelling a run explicitly must not publish half a matrix, hence
+    # !cancelled() rather than always().
+    #
+    # needs.matrix.result != 'skipped': !cancelled() OVERRIDES the default
+    # skip-on-failed-need, so without this guard a dispatch run whose SMOKE
+    # job failed would skip the matrix yet STILL run this job — and a skipped
+    # matrix produces NO artifact at all (the EMPTY-artifact path lives
+    # INSIDE the matrix job), while download-artifact v4 silently succeeds on
+    # a zero-match pattern. The job would then publish empty/foreign data and
+    # could even create the snapshots branch as a bare checkout copy.
+    if: ${{ !cancelled() && needs.matrix.result != 'skipped' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     # Serialize snapshot-branch updates: two overlapping dispatch/schedule
     # runs would race the `snapshots` tip and one push would fail
@@ -218,13 +338,17 @@ jobs:
           # commit/push, and no model code runs here.
           persist-credentials: true
       - name: Download eval reports
-        # No continue-on-error: the matrix eval cell touches reports/eval/EMPTY
-        # on every path, so the eval-reports artifact ALWAYS exists and this
-        # download cannot fail on a missing artifact. A real download failure
-        # must fail this job loudly.
+        # No continue-on-error: the matrix eval cells touch reports/eval/EMPTY
+        # on every path, so an eval-reports-* artifact ALWAYS exists per cell
+        # and this download cannot fail on a missing artifact. A real
+        # download failure must fail this job loudly. (J4: the cells upload
+        # per-model artifacts — upload-artifact v4 requires unique names — so
+        # the pattern + merge-multiple download re-joins them into reports/
+        # exactly as the single pre-matrix artifact did.)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: eval-reports
+          pattern: eval-reports-*
+          merge-multiple: true
           path: reports/
       - name: Commit report snapshots
         # Plan §9: report snapshots are committed as reviewable data.
@@ -252,36 +376,55 @@ jobs:
           snap_dir="reports/snapshots/$(date -u +%F)"
           # A same-day re-dispatch after a suite is removed or renamed must
           # not leave the old suite's stale tables behind: clear this run's
-          # dated dir (tracked on the snapshots branch) before recopying.
+          # dated dir (tracked on the snapshots branch) before recopying —
+          # but ONLY when the matrix fully succeeded. The snapshot runs after
+          # PARTIAL failures too (!cancelled()), and clearing on a degraded
+          # run would destroy the failed cell's tables from an earlier
+          # complete run the same day. Degraded publishes therefore MERGE
+          # into the dated dir: stale tables from a same-day renamed/removed
+          # suite may linger in that case — accepted, degraded publishes
+          # merge; only a fully successful matrix clears its own dated dir.
           # set -u safe — snap_dir is assigned one line above; rm -rf on a
-          # missing dir is a silent no-op.
-          rm -rf "${snap_dir}"
+          # missing dir is a silent no-op. needs.matrix.result is a fixed
+          # GitHub enum ('success'|'failure'|'cancelled'|'skipped'), safe to
+          # interpolate into the script.
+          if [ "${{ needs.matrix.result }}" = "success" ]; then
+            rm -rf "${snap_dir}"
+          else
+            echo "matrix did not fully succeed (${{ needs.matrix.result }}) — merging into ${snap_dir} without clearing"
+          fi
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir: eval writes
-          # reports/eval/<role>/<suite>/<role>.table.json, and flattening to
-          # the basename would collide the moment two suites share a role —
-          # snapshots/<date>/<role>/<suite>/<role>.table.json is the stable
-          # form.
+          # reports/eval/<model>/<role>/<suite>/<role>.table.json, and
+          # flattening to the basename would collide the moment two suites
+          # share a role — snapshots/<date>/<model>/<role>/<suite>/ is the
+          # stable form.
           while IFS= read -r table; do
             rel="${table#reports/eval/}"
             suite_name="$(dirname "${rel}")"
             mkdir -p "${snap_dir}/${suite_name}"
             cp "${table}" "${snap_dir}/${suite_name}/"
           done < <(find reports/eval -name '*.table.json' 2>/dev/null | sort)
-          # Add runs BEFORE any early exit, so removals publish too: the
-          # rm -rf above cleared the worktree, and `git add` stages the
-          # removal of previously tracked tables as deletions — a run that
-          # follows the removal of ALL suites therefore commits and pushes
-          # its deletions instead of leaving the stale dated dir on
-          # origin/snapshots. reports/* is gitignored for LOCAL runs;
-          # committed snapshots are the designed exception, hence the
+          # Add runs BEFORE any early exit, so removals publish too: on a
+          # fully successful matrix the rm -rf above cleared the worktree, and
+          # `git add` stages the removal of previously tracked tables as
+          # deletions — a run that follows the removal of ALL suites therefore
+          # commits and pushes its deletions instead of leaving the stale
+          # dated dir on origin/snapshots. reports/* is gitignored for LOCAL
+          # runs; committed snapshots are the designed exception, hence the
           # force-add.
           git add -f "${snap_dir}"
           # "Snapshots unchanged" is the ONLY no-op path: staged deletions
-          # are a diff, so they commit and push exactly like adds.
+          # are a diff, so they commit exactly like adds. The PUSH lives
+          # INSIDE the commit branch: when nothing is staged, nothing is
+          # pushed. Otherwise a zero-artifact run (e.g. both matrix cells
+          # failing before the eval step, so the pattern download silently
+          # matches nothing) would still push and create the snapshots
+          # branch as a bare checkout copy — a true no-op is the honest
+          # outcome instead.
           if git diff --cached --quiet; then
-            echo "snapshots unchanged — nothing to commit"
+            echo "snapshots unchanged — nothing to commit, nothing to push"
           else
             git commit -m "report snapshots $(date -u +%F) [skip ci]"
+            git push origin HEAD:snapshots
           fi
-          git push origin HEAD:snapshots

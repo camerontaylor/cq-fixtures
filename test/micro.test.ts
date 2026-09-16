@@ -228,6 +228,20 @@ describe('fault discrimination (pristine fails, solution passes — the heart of
 
         expect(runJudge(), `${c.id} must FAIL on the pristine (faulted) fixture`).not.toBe(0);
 
+        // Adversarial variant (PR 10 review, batched into this loop): a
+        // worker can plant an ALWAYS-PASS test into its workspace copy —
+        // the test files are part of the judge, so the judge must restore
+        // the pristine tests and still fail the faulted src.
+        rmSync(join(workspace, 'test'), { recursive: true, force: true });
+        mkdirSync(join(workspace, 'test'), { recursive: true });
+        writeFileSync(
+          join(workspace, 'test', 'gamed.test.ts'),
+          "import { describe, expect, it } from 'vitest';\ndescribe('gamed', () => { it('always passes', () => { expect(1).toBe(1); }); });\n",
+        );
+        expect(runJudge(), `${c.id} must FAIL even with a planted always-pass test (pristine restore wins)`).not.toBe(0);
+        // The judge put the real tests back over the plant.
+        expect(existsSync(join(workspace, 'test', 'gamed.test.ts'))).toBe(false);
+
         // The solutions dir is OUTSIDE the materialized fixture: copying it
         // over the workspace overwrites the faulted src file with the fixed
         // reference implementation and nothing else.
@@ -238,6 +252,43 @@ describe('fault discrimination (pristine fails, solution passes — the heart of
         rmSync(workspace, { recursive: true, force: true });
       }
     }, PROBE_TIMEOUT_MS * 2 + 30_000);
+  }
+});
+
+describe('judge integrity: planted vitest config cannot turn a faulted fixture green (PR 10 review)', () => {
+  // Reviewer-reproduced bypass: a workspace vitest.config.mjs with
+  // `{ test: { include: [], passWithNoTests: true } }` made the judge exit 0
+  // on a FAULTED fixture — config discovery is a bypass. Two defenses, both
+  // exercised here: the judge scrubs planted vitest/vite config files from
+  // the workspace root, AND it spawns vitest with an EXPLICIT repo-side
+  // judge config (fixtures/judge.vitest.config.mjs) so discovery cannot run
+  // at all. Two representative fixtures; each case costs one real vitest
+  // spawn.
+  const fixer = loadSuite(FIXER_SUITE_DIR);
+  for (const c of fixer.cases) {
+    if (!isFixerCase(c)) continue;
+    if (c.id !== 'micro-1' && c.id !== 'micro-5') continue;
+    const { fixture, probe } = c;
+    it(`${c.id}: planted passWithNoTests config is scrubbed and inert on a faulted workspace`, () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'cq-micro-cfg-'));
+      try {
+        cpSync(join(REPO_ROOT, fixture), workspace, { recursive: true, verbatimSymlinks: true });
+        writeFileSync(
+          join(workspace, 'vitest.config.mjs'),
+          'export default { test: { include: [], passWithNoTests: true } };\n',
+        );
+        const status = spawnSync(process.execPath, [join(REPO_ROOT, probe.check)], {
+          cwd: workspace,
+          encoding: 'utf8',
+          timeout: PROBE_TIMEOUT_MS,
+        }).status;
+        expect(status, `${c.id} must FAIL with src still faulted, planted config notwithstanding`).not.toBe(0);
+        // The scrub removed the plant from the workspace root.
+        expect(existsSync(join(workspace, 'vitest.config.mjs'))).toBe(false);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    }, PROBE_TIMEOUT_MS + 30_000);
   }
 });
 

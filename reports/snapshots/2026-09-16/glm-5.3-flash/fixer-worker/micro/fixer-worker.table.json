@@ -1,0 +1,23 @@
+{
+  "role": "fixer-worker",
+  "suite": "micro",
+  "generatedAt": "2026-09-16T18:59:47.340Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "ai-sdk",
+      "runs": 5,
+      "passed": 0,
+      "total": 10,
+      "score": 0,
+      "costUSD": null,
+      "wallTimeMs": 188601,
+      "tokens": {
+        "input": 5595,
+        "output": 2074,
+        "cacheRead": 35840,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

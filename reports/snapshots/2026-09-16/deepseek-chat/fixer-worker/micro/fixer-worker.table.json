@@ -1,0 +1,24 @@
+{
+  "role": "fixer-worker",
+  "suite": "micro",
+  "generatedAt": "2026-09-16T18:57:12.107Z",
+  "cells": [
+    {
+      "model": "deepseek-chat",
+      "driver": "ai-sdk",
+      "runs": 5,
+      "passed": 0,
+      "total": 10,
+      "score": 0,
+      "costUSD": 0.004477,
+      "costBasis": "modeled",
+      "wallTimeMs": 33714,
+      "tokens": {
+        "input": 8942,
+        "output": 1975,
+        "cacheRead": 40832,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "role": "review-classifier",
+  "suite": "micro",
+  "generatedAt": "2026-09-16T18:57:18.737Z",
+  "cells": [
+    {
+      "model": "deepseek-flash",
+      "driver": "ai-sdk",
+      "runs": 10,
+      "passed": 9,
+      "total": 10,
+      "score": 0.9,
+      "costUSD": null,
+      "wallTimeMs": 6234,
+      "tokens": {
+        "input": 6000,
+        "output": 77,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

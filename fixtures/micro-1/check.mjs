@@ -38,4 +38,9 @@ if (res.error !== undefined && res.error !== null) {
 }
 // A signal kill (status null, e.g. the spawn timeout firing) is a failure,
 // never a pass.
+// Forward the captured vitest diagnostics, then exit with the child's
+// status: the runner scores the exit code and trims these bytes to its
+// own diagnostics tail, so a red suite must still carry its evidence.
+if (res.stdout) process.stdout.write(res.stdout);
+if (res.stderr) process.stderr.write(res.stderr);
 process.exit(res.status ?? 1);

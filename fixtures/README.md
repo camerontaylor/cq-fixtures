@@ -31,15 +31,16 @@ Five tiny SYNTHETIC zero-dependency TypeScript packages, one seeded fault each (
   fails). Diagnostics are forwarded; the final status is set via
   `process.exitCode` so piped output always flushes.
 
-## Fixed reference copies (`solutions/`)
+## Reference fixes (embedded, deliberately not shipped)
 
-`fixtures/solutions/micro-{1..5}/` holds ONLY the fixed version of each faulted `src/` file,
-at the same relative path as in the fixture. These copies exist for the repo's own tests
-(`test/micro.test.ts`): after asserting the pristine workspace FAILS the judge, a test
-overwrites the faulted file with the solution copy and asserts the workspace now PASSES. The
-`solutions/` dir is never referenced by any `suite.json` and is never materialized into a
-worker workspace — a worker is graded on the fix it produces, not on a diff against a hidden
-answer.
+There is deliberately NO on-disk answer key: the former `fixtures/solutions/` directory was
+removed (Codex P1) — in a real fixer run the worker holds read tools over the repo checkout,
+so reference implementations stored anywhere in the tree would be findable and copyable,
+corrupting eval scores. The five fixed reference sources live ONLY as embedded strings in
+`test/micro.test.ts` (a `SOLUTIONS` map): the discrimination test overwrites the faulted file
+with the embedded fix in its tmp workspace copy and asserts the judge now passes. Not being
+materialized into a workspace was never enough — a reader must not be able to find the
+answers at all.
 
 ## Thread payloads (`threads/`)
 

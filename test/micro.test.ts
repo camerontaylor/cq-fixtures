@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import ajvFormats from 'ajv-formats';
@@ -221,12 +221,93 @@ describe('micro fixture/payload integrity (everything a case references exists)'
   });
 });
 
+/**
+ * The five fixed reference sources, EMBEDDED here and deliberately nowhere
+ * else (Codex P1): a real eval worker holds read tools over the repo
+ * checkout, so an on-disk answer key (the former fixtures/solutions/) would
+ * be findable and copyable, corrupting eval scores. The map is keyed by
+ * case id; `path` is the faulted file's workspace-relative location.
+ */
+const SOLUTIONS: Record<string, { path: string; content: string }> = {
+  'micro-1': {
+    path: 'src/rangeSum.ts',
+    content: String.raw`// Sum utilities for integer ranges.
+export function sumRange(a: number, b: number): number {
+  let total = 0;
+  for (let i = a; i <= b; i++) {
+    total += i;
+  }
+  return total;
+}
+`,
+  },
+  'micro-2': {
+    path: 'src/slugify.ts',
+    content: String.raw`// Slug helpers for URL path segments.
+export function slugify(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .join('-');
+}
+`,
+  },
+  'micro-3': {
+    path: 'src/memoize.ts',
+    content: String.raw`// Call-count reducers for hot single-argument lookups.
+export function memoize<A, B>(fn: (arg: A) => B): (arg: A) => B {
+  const cache = new Map<A, B>();
+  return (arg: A): B => {
+    if (cache.has(arg)) {
+      return cache.get(arg)!;
+    }
+    const value = fn(arg);
+    cache.set(arg, value);
+    return value;
+  };
+}
+`,
+  },
+  'micro-4': {
+    path: 'src/parseConfig.ts',
+    content: String.raw`// Config parsing for the loader pipeline.
+export function parseConfig(text: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('invalid config');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('invalid config');
+  }
+  return parsed as Record<string, unknown>;
+}
+`,
+  },
+  'micro-5': {
+    path: 'src/sortTasks.ts',
+    content: String.raw`// Ordering rules for the task board render.
+export interface Task {
+  id: number;
+  priority: number;
+  label: string;
+}
+
+export function sortTasks(tasks: Task[]): Task[] {
+  return [...tasks].sort((a, b) => b.priority - a.priority || a.id - b.id);
+}
+`,
+  },
+};
+
 describe('fault discrimination (pristine fails, solution passes — the heart of J3)', () => {
   // Per case: copy the fixture to a tmp workspace exactly like the runner
   // materializes workspaces, run the case's OWN check probe there
   // (cwd = workspace copy, judge resolved from the repo root), expect
   // FAILURE on the seeded fault; then overwrite the faulted src with the
-  // fixtures/solutions reference copy and expect the SAME probe to PASS.
+  // embedded reference fix and expect the SAME probe to PASS.
   const fixer = loadSuite(FIXER_SUITE_DIR);
 
   for (const c of fixer.cases) {
@@ -257,10 +338,12 @@ describe('fault discrimination (pristine fails, solution passes — the heart of
         // The judge put the real tests back over the plant.
         expect(existsSync(join(workspace, 'test', 'gamed.test.ts'))).toBe(false);
 
-        // The solutions dir is OUTSIDE the materialized fixture: copying it
-        // over the workspace overwrites the faulted src file with the fixed
-        // reference implementation and nothing else.
-        cpSync(join(REPO_ROOT, 'fixtures', 'solutions', c.id), workspace, { recursive: true });
+        // The reference fix exists ONLY as the embedded string above (Codex
+        // P1 — no on-disk answer key): overwrite the faulted file with it.
+        const solution = SOLUTIONS[c.id];
+        expect(solution, `embedded reference fix for ${c.id}`).toBeDefined();
+        mkdirSync(join(workspace, dirname(solution!.path)), { recursive: true });
+        writeFileSync(join(workspace, solution!.path), solution!.content);
 
         expect(runJudge(), `${c.id} must PASS once the faulted src is fixed`).toBe(0);
       } finally {
@@ -352,6 +435,37 @@ describe('judge integrity: planted vitest config cannot turn a faulted fixture g
       const status = runJudgeOrThrow('micro-1', join(REPO_ROOT, 'fixtures', 'micro-1', 'check.mjs'), workspace);
       expect(status, 'judge must FAIL on a faulted workspace regardless of the planted workspace file').not.toBe(0);
     } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, PROBE_TIMEOUT_MS + 30_000);
+
+  it('micro-1: a symlinked escape out of the graded tree fails closed (the walk is load-bearing)', () => {
+    // The reviewer-reproduced bypass this containment walk exists for: the
+    // worker owns the workspace tree and can replace src with a symlink to
+    // a FIXED copy living OUTSIDE the workspace — without the walk that
+    // grades green without a real fix. The reference fix now lives only in
+    // this file, so the outside target is a throwaway copy built beside the
+    // workspace. Asserts BOTH the exit status and the walk's own marker in
+    // stderr — the failure must be the containment refusal, not something
+    // incidental.
+    const outside = mkdtempSync(join(tmpdir(), 'cq-micro-out-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'cq-micro-lnk-'));
+    try {
+      mkdirSync(join(outside, 'src'), { recursive: true });
+      writeFileSync(join(outside, 'src', 'rangeSum.ts'), SOLUTIONS['micro-1']!.content);
+      cpSync(join(REPO_ROOT, 'fixtures', 'micro-1'), workspace, { recursive: true, verbatimSymlinks: true });
+      rmSync(join(workspace, 'src'), { recursive: true, force: true });
+      symlinkSync(join(outside, 'src'), join(workspace, 'src'));
+      const res = spawnSync(process.execPath, [join(REPO_ROOT, 'fixtures', 'micro-1', 'check.mjs')], {
+        cwd: workspace,
+        encoding: 'utf8',
+        timeout: PROBE_TIMEOUT_MS,
+      });
+      expect(res.status, 'the escape must fail closed with exit 1, never grade the outside fix').toBe(1);
+      expect(res.stderr).toContain('workspace escape');
+      expect(res.stderr).toContain('refusing to judge');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     }
   }, PROBE_TIMEOUT_MS + 30_000);

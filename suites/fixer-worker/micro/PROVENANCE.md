@@ -12,9 +12,11 @@ No public-benchmark instances are included or adapted. Each fault is a fresh one
 of a trivial reference implementation written for this suite (`fixtures/micro-{1..5}/src/`), and
 each fixture package is a zero-dependency synthetic TS package. The task prompts describe the
 wrong BEHAVIOR only — they never name the mutated line, so a worker must diagnose from the
-failing vitest suite. `fixtures/solutions/micro-{1..5}/` holds the fixed reference copies used
-only by this repo's own tests; they are never materialized into a worker workspace and are
-referenced by no suite.
+failing vitest suite. The fixed reference implementations are embedded ONLY in this repo's own
+test harness (`test/micro.test.ts`, a `SOLUTIONS` map) and are deliberately NOT shipped as repo
+files (Codex P1): a real eval worker holds read tools over the repo checkout, so an on-disk
+answer key (the former `fixtures/solutions/`) would be readable and copyable — not
+materializing it into the workspace hides nothing from a reader.
 
 ## Fault manifest (one line per fixture)
 

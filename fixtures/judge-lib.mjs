@@ -35,7 +35,7 @@
 //
 // - The workspace tree is graded ONLY where it physically lives: the worker
 //   owns the tree and may plant symlinks — e.g. src replaced by a symlink
-//   pointing at fixtures/solutions/*/src graded as passing
+//   pointing at a fixed copy OUTSIDE the workspace, graded as passing
 //   (reviewer-reproduced, round 2). Every non-directory entry is
 //   realpath-resolved and verified to stay inside the workspace's own
 //   realpath; the first escape fails closed.

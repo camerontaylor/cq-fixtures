@@ -163,13 +163,17 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     }
     await append({ type: 'job-started', runId, at: now(), jobId: c.id, op: suite.role, attempt: admission.attempt });
 
-    // T2: materialization is its own guarded step BEFORE the scored path.
-    // A fixture that cannot be copied is an infrastructure failure — the
-    // driver never ran — so the case emits NO row (rows exist only for cases
-    // that ran, like budget-refused cases), the journal records the honest
-    // indeterminate finish, and the failure surfaces via stderr + the
-    // result's diagnostics.
+    // T2: fixture preparation is its own guarded step BEFORE the scored
+    // path — for BOTH roles, because both are infrastructure the driver
+    // never sees: a fixture that cannot be COPIED (fixer workspace) or READ
+    // (review-classifier payload injection) must not be misclassified as a
+    // driver error and emit a scored failed row — that would fabricate an
+    // eval outcome for work that never ran. The honest taxonomy: NO row
+    // (rows exist only for cases that ran, like budget-refused cases), a
+    // job-finished:indeterminate journal event, a stderr + diagnostics
+    // entry, and a materializationFailures increment.
     let workspace: string | undefined;
+    let payload: string | undefined;
     if (isFixerCase(c)) {
       try {
         workspace = mkdtempSync(join(tmpdir(), 'cq-fixture-'));
@@ -182,6 +186,26 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       } catch (e) {
         if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
         const detail = `fixture materialization failed for '${c.fixture}': ${e instanceof Error ? e.message : String(e)}`;
+        await append({
+          type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
+          inputsHash: hashInputs(suite.role, { caseId: c.id, fixture: c.fixture, task: c.task }),
+          result: { status: 'indeterminate', detail },
+        });
+        console.error(`  case ${c.id}: not scored — ${detail}`);
+        caseDiagnostics.push(`case ${c.id}: ${detail}`);
+        materializationFailures += 1;
+        continue;
+      }
+    } else {
+      // The classifier's prompt carries the payload's CONTENT (J3/D3), so
+      // the fixture file is read here — before any invocation exists — with
+      // the same honesty shape as the fixer materialization guard above
+      // (cycle-2 CLI review): the read failure is infrastructure, not an
+      // eval outcome.
+      try {
+        payload = readFileSync(join(repoRoot, c.fixture), 'utf8');
+      } catch (e) {
+        const detail = `fixture read failed for '${c.fixture}': ${e instanceof Error ? e.message : String(e)}`;
         await append({
           type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
           inputsHash: hashInputs(suite.role, { caseId: c.id, fixture: c.fixture, task: c.task }),
@@ -216,22 +240,20 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           };
         } else {
           // Review-classifier: tools-none / read-only — the classifier cannot
-          // open files itself, so the thread payload's CONTENT is injected
-          // into the prompt (J3/D3, 2026-09-16): instruction first, then the
-          // fixture file verbatim (utf8). The read sits inside the per-case
-          // try on purpose: an unreadable fixture is a BROKEN CASE, not an
-          // abort — the throw lands in the catch below and becomes an honest
-          // failed row (I9), never a crashed run. Fixer prompts stay
-          // unchanged: the workspace path already rides in them above.
+          // open files itself, so the thread payload's CONTENT rides in the
+          // prompt (J3/D3, 2026-09-16): instruction first, then the fixture
+          // file verbatim (utf8). The read already succeeded in the guarded
+          // infrastructure step above — a failed read never reaches dispatch
+          // (cycle-2 CLI review) — so `payload` is always the file's content
+          // here. Fixer prompts stay unchanged: the workspace path already
+          // rides in them above.
           invocation = {
-            prompt: c.task.prompt,
+            prompt: `${c.task.prompt}\n\nThread payload (fixture ${c.fixture}):\n${payload}`,
             modelSpec: { model: opts.model, provider: opts.provider },
             toolPolicy: { allow: [], mode: 'none' },
             sandboxPolicy: { level: 'read-only' },
             budget,
           };
-          const payload = readFileSync(join(repoRoot, c.fixture), 'utf8');
-          invocation.prompt += `\n\nThread payload (fixture ${c.fixture}):\n${payload}`;
         }
         worker = await opts.driver.run(invocation);
       } catch (e) {

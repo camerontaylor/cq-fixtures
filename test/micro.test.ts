@@ -344,3 +344,44 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
     expect(driver.workspaceExistedAtDispatch).toBe(true);
   }, 120_000);
 });
+
+describe('classifier fixture read failure is materialization-class (cycle-2 honesty taxonomy)', () => {
+  it('an unreadable payload emits NO row, counts a materialization failure, and never dispatches', async () => {
+    // Cycle-2 CLI review: the payload read is INFRASTRUCTURE — the driver
+    // never ran — so it mirrors the fixer materialization guard (T2):
+    // journal indeterminate, diagnostic, materializationFailures increment,
+    // NO row. The old behavior misclassified the read throw as a driver
+    // error and emitted a scored failed row — a fabricated eval outcome.
+    // (The downstream cliMain exit-2 mapping is keyed on the same
+    // materializationFailures counter and is covered for the fixer twin by
+    // cli.test.ts's materialization-exits-2 test.)
+    const dir = join(wsRoot, 'missing-payload');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'suite.json'),
+      JSON.stringify({
+        name: 'missing-payload',
+        role: 'review-classifier',
+        provenance: { origin: 'test-local single-case slice of suites/review-classifier/micro' },
+        cases: [
+          {
+            id: 'thread-missing',
+            fixture: 'fixtures/threads/does-not-exist.json',
+            task: { prompt: 'Classify the review thread payload printed below.' },
+            probe: { kind: 'expected-verdict', expected: 'resolved' },
+          },
+        ],
+      }, null, 2) + '\n',
+    );
+    const driver = new CapturingDriver();
+    const result = await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
+
+    expect(driver.invocations).toHaveLength(0); // the driver never ran
+    expect(result.rows).toEqual([]); // no fabricated scored zero
+    expect(result.materializationFailures).toBe(1);
+    expect(result.tables[0]?.cells).toEqual([]); // empty-but-valid table
+    expect(result.diagnostics).toEqual([
+      expect.stringMatching(/^case thread-missing: fixture read failed for 'fixtures\/threads\/does-not-exist\.json': /),
+    ]);
+  }, 60_000);
+});

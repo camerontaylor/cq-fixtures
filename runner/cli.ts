@@ -185,14 +185,11 @@ async function main(argv: readonly string[]): Promise<number> {
       });
       rows.push(...result.rows);
       tables.push(...result.tables);
-      if (result.materializationFailures > 0) {
-        materializationFailures += result.materializationFailures;
-        // Both infrastructure message shapes are X2-class: the fixer
-        // workspace COPY failure and the classifier payload READ failure
-        // (cycle-3 review round 1) — filtering on the old literal alone
-        // printed a count with zero case lines for read failures.
-        materializationDiagnostics.push(...result.diagnostics.filter((d) => /fixture (materialization|read) failed/.test(d)));
-      }
+      // X2 inputs arrive STRUCTURED from the runner (round 3): the runner
+      // classifies its own infrastructure refusals, so the CLI prints them
+      // without re-matching diagnostics prose.
+      materializationFailures += result.materializationFailures;
+      materializationDiagnostics.push(...result.materializationDiagnostics);
       const passed = result.rows.reduce((n, r) => n + r.outcome.passed, 0);
       const total = result.rows.reduce((n, r) => n + r.outcome.total, 0);
       if (result.rows.some((r) => r.outcome.passed === 0)) anyFailed = true;

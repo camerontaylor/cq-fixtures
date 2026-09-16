@@ -185,12 +185,13 @@ describe('gate checks (B2 axes, B3 servedModel, B4 same-role collision, B7 requi
     await expect(cliMain(['--suite', dir, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
   }, 15_000);
 
-  it('a classifier case with a missing payload exits 2 AND the X2 block lists the case id (widened predicate)', async () => {
+  it('X2 lists both infrastructure classes from the runner\'s structured diagnostics (fixer copy + classifier read)', async () => {
     // PR 10 review round 1: the classifier payload-read failure is the
-    // second infrastructure shape ('fixture read failed for …'). The X2
-    // filter must match it too — the old literal-only predicate printed the
-    // count with ZERO case lines for this class.
-    const dir = writeSuite('clf-missing-payload', {
+    // second infrastructure shape ('fixture read failed for …'); round 3:
+    // the X2 block now prints the runner's STRUCTURED
+    // materializationDiagnostics directly — no prose re-matching — so both
+    // classes list their affected case ids here in one invocation.
+    const clf = writeSuite('clf-missing-payload', {
       name: 'clf-missing-payload',
       role: 'review-classifier',
       cases: [
@@ -202,20 +203,35 @@ describe('gate checks (B2 axes, B3 servedModel, B4 same-role collision, B7 requi
         },
       ],
     });
+    const fixer = writeSuite('fix-missing-fixture', {
+      name: 'fix-missing-fixture',
+      role: 'fixer-worker',
+      cases: [
+        {
+          id: 'fix-missing',
+          fixture: 'fixtures/micro-missing',
+          task: { prompt: 'Fix the fault.' },
+          probe: { kind: 'check-rerun', check: 'fixtures/micro-missing/check.mjs' },
+        },
+      ],
+    });
     const errors: string[] = [];
     const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
       errors.push(args.map((a) => String(a)).join(' '));
     });
     try {
-      await expect(cliMain(['--suite', dir, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
+      await expect(
+        cliMain(['--suite', clf, '--suite', fixer, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai']),
+      ).resolves.toBe(2);
     } finally {
       spy.mockRestore();
     }
     const stderr = errors.join('\n');
-    // The X2 count block ran…
-    expect(stderr).toMatch(/1 case\(s\) failed fixture materialization \(the driver never ran\):/);
-    // …and the widened predicate carried the affected case's line beneath it.
+    // The X2 count block ran with BOTH refusals counted…
+    expect(stderr).toMatch(/2 case\(s\) failed fixture materialization \(the driver never ran\):/);
+    // …and both affected case ids are listed beneath it.
     expect(stderr).toMatch(/case thread-missing: fixture read failed for 'fixtures\/threads\/does-not-exist\.json':/);
+    expect(stderr).toMatch(/case fix-missing: fixture materialization failed for 'fixtures\/micro-missing':/);
   }, 15_000);
 });
 

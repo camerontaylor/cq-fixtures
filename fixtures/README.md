@@ -31,16 +31,18 @@ Five tiny SYNTHETIC zero-dependency TypeScript packages, one seeded fault each (
   fails). Diagnostics are forwarded; the final status is set via
   `process.exitCode` so piped output always flushes.
 
-## Reference fixes (embedded, deliberately not shipped)
+## Reference fixes (embedded in the harness — the real posture, no hiding)
 
-There is deliberately NO on-disk answer key: the former `fixtures/solutions/` directory was
-removed (Codex P1) — in a real fixer run the worker holds read tools over the repo checkout,
-so reference implementations stored anywhere in the tree would be findable and copyable,
-corrupting eval scores. The five fixed reference sources live ONLY as embedded strings in
-`test/micro.test.ts` (a `SOLUTIONS` map): the discrimination test overwrites the faulted file
-with the embedded fix in its tmp workspace copy and asserts the judge now passes. Not being
-materialized into a workspace was never enough — a reader must not be able to find the
-answers at all.
+The five fixed reference sources live as embedded strings in `test/micro.test.ts` (a
+`SOLUTIONS` map; the former on-disk `fixtures/solutions/` was removed, Codex P1). They are IN
+the tree, not hidden: a worker that can read the repo checkout CAN find them. What keeps the
+key out of play today is the dispatched worker surface, not file hiding — today's toolkit
+lanes confine read/edit to the materialized workspace and run to an empty default allowlist,
+so the key is unreachable by the surface this repo actually dispatches today. The residual
+exposure for phase-4 fixer cells (host-privileged run tools, first-party prompts) is already
+recorded in `.github/workflows/suite.yml`'s ACCEPTED-RISK block and joins that class. The
+discrimination test overwrites the faulted file with the embedded fix in its tmp workspace
+copy and asserts the judge now passes.
 
 ## Thread payloads (`threads/`)
 

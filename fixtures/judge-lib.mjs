@@ -40,10 +40,11 @@
 //   realpath-resolved and verified to stay inside the workspace's own
 //   realpath; the first escape fails closed.
 //
-// - FAIL CLOSED everywhere: misuse (cwd containing the pristine fixture),
-//   an escaped or unresolvable graded-tree entry, a missing vitest entry,
-//   or a spawn failure each yield a one-line stderr reason and exit 1 — a
-//   judge that cannot judge never passes.
+// - FAIL CLOSED everywhere: misuse (ANY cwd inside the repo — the judge
+//   only ever grades materialized tmpdir workspaces), an escaped or
+//   unresolvable graded-tree entry, a missing vitest entry, or a spawn
+//   failure each yield a one-line stderr reason and exit 1 — a judge that
+//   cannot judge never passes.
 //
 // The judge re-runs the fixture's vitest suite against cwd. Vitest is
 // loaded from the REPO's node_modules — the fixture workspace is a
@@ -105,18 +106,32 @@ export function runVitestJudge(options) {
     process.exit(1);
   }
 
-  // FAIL CLOSED on misuse (round 2; previously this branch skipped the
-  // workspace repairs and PROCEEDED): the judge is only ever executed with
-  // cwd = a MATERIALIZED WORKSPACE COPY. A cwd that CONTAINS this fixture
-  // dir (the repo root, fixtures/, the fixture dir itself) is misuse —
-  // restoring or scrubbing there would delete or overwrite repo content,
-  // and grading whatever cwd holds would not be grading a workspace copy.
-  // A judge that cannot tell what it is grading must never grade.
-  const cwdToFixture = relative(process.cwd(), fixtureDir);
-  const fixtureInsideCwd = cwdToFixture === '' || (!cwdToFixture.startsWith('..') && !isAbsolute(cwdToFixture));
-  if (fixtureInsideCwd) {
+  // FAIL CLOSED on misuse (round 2, widened round 3 — one-directional guard
+  // fixed): the judge is only ever executed with cwd = a MATERIALIZED
+  // WORKSPACE COPY under os.tmpdir (the runner's mkdtempSync), so ANY cwd
+  // whose realpath lies inside the repo is misuse by construction. The
+  // round-2 guard only refused when the cwd CONTAINED the pristine fixture
+  // dir, but a cwd INSIDE the repo without containing it (e.g.
+  // fixtures/micro-1/src or <repo>/test) proceeded and MUTATED the pristine
+  // tree in place — restoring test/ and scrubbing configs over repo content
+  // (reviewer-reproduced). realpath on BOTH sides keeps the comparison
+  // honest across tmpdir symlink chains (/tmp vs /private/tmp); an
+  // unresolvable cwd is refused too. This subsumes the old direction: any
+  // cwd containing the fixture dir is inside the repo.
+  let cwdReal;
+  try {
+    cwdReal = realpathSync(process.cwd());
+  } catch {
+    console.error(`${judgeLabel}: misuse — cwd does not resolve; refusing to judge (fail closed)`);
+    process.exitCode = 1;
+    return;
+  }
+  const repoRootReal = realpathSync(repoRoot);
+  const relCwdToRepo = relative(repoRootReal, cwdReal);
+  const cwdInsideRepo = relCwdToRepo === '' || (!relCwdToRepo.startsWith('..') && !isAbsolute(relCwdToRepo));
+  if (cwdInsideRepo) {
     console.error(
-      `${judgeLabel}: misuse — cwd ${cwdToFixture === '' ? 'is' : 'contains'} the pristine fixture dir; refusing to judge (fail closed)`,
+      `${judgeLabel}: misuse — cwd is inside the repo (${cwdReal}); only materialized tmpdir workspaces are graded; refusing to judge (fail closed)`,
     );
     process.exitCode = 1;
     return;
@@ -139,7 +154,7 @@ export function runVitestJudge(options) {
   // directory is reported as a symlink and checked through its target
   // instead). An unresolvable entry (dangling link) resolves nowhere, so it
   // grades nothing and also fails closed.
-  const workspaceReal = realpathSync(process.cwd());
+  const workspaceReal = cwdReal;
   const escapeReason = (entryPath) => {
     let resolved;
     try {

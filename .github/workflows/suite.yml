@@ -127,13 +127,16 @@ jobs:
           ZAI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
         run: |
           set -euo pipefail
-          # TEMPORARY until goal J4: the micro suites are populated but the
-          # smoke/matrix design (fake-driver PR smoke, served-id matrix
-          # cells) lands with J4 — excluding them here keeps the nightly
-          # schedule from starting unclaimed paid dispatches. J4 replaces
-          # this discovery with the designed one; until then the guard below
-          # sees no suites and the cell stays a pure no-op.
-          if [ -z "$(find suites -name suite.json -not -path 'suites/fixer-worker/micro/*' -not -path 'suites/review-classifier/micro/*' -print -quit)" ]; then
+          # INCLUDE-LIST until goal J4: the micro suites are populated but
+          # the smoke/matrix design (fake-driver PR smoke, served-id matrix
+          # cells) lands with J4 — so this cell iterates EXACTLY the two
+          # known micro dirs, keeping the nightly schedule from starting
+          # unclaimed paid dispatches. An exclude-list was rejected: it
+          # re-arms the paid cell the moment any NEW suite lands anywhere
+          # under suites/. J4 replaces this discovery with the designed one;
+          # until then this guard sees no suites and the cell stays a pure
+          # no-op.
+          if [ -z "$(find suites/fixer-worker/micro suites/review-classifier/micro -name suite.json -print -quit 2>/dev/null)" ]; then
             echo "no suites yet — populated by phase-3 goal J3; the matrix cell is a no-op until then"
             # The eval-reports artifact must ALWAYS exist: the snapshot job's
             # download step no longer tolerates a missing artifact (M2).
@@ -174,12 +177,8 @@ jobs:
             elif [ "${rc}" -eq 1 ]; then
               echo "::warning::suite ${rel_dir} scored zero or was budget-gated"
             fi
-          # TEMPORARY until goal J4: the micro suites are populated but the
-          # smoke/matrix design (fake-driver PR smoke, served-id matrix
-          # cells) lands with J4 — excluding them here keeps the nightly
-          # schedule from starting unclaimed paid dispatches. J4 replaces
-          # this find with the designed discovery.
-          done < <(find suites -name suite.json -not -path 'suites/fixer-worker/micro/*' -not -path 'suites/review-classifier/micro/*' | sort)
+          # INCLUDE-LIST until goal J4 — rationale on the guard above.
+          done < <(find suites/fixer-worker/micro suites/review-classifier/micro -name suite.json 2>/dev/null | sort)
           # The artifact must exist on every path — even when suites ran but
           # every run hard-failed pre-output — so the snapshot job's download
           # can never 404 on a missing artifact. EMPTY (not a dot-file):

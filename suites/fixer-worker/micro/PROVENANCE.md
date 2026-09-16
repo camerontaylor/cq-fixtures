@@ -12,11 +12,14 @@ No public-benchmark instances are included or adapted. Each fault is a fresh one
 of a trivial reference implementation written for this suite (`fixtures/micro-{1..5}/src/`), and
 each fixture package is a zero-dependency synthetic TS package. The task prompts describe the
 wrong BEHAVIOR only — they never name the mutated line, so a worker must diagnose from the
-failing vitest suite. The fixed reference implementations are embedded ONLY in this repo's own
-test harness (`test/micro.test.ts`, a `SOLUTIONS` map) and are deliberately NOT shipped as repo
-files (Codex P1): a real eval worker holds read tools over the repo checkout, so an on-disk
-answer key (the former `fixtures/solutions/`) would be readable and copyable — not
-materializing it into the workspace hides nothing from a reader.
+failing vitest suite. The fixed reference implementations are embedded in this repo's own test
+harness (`test/micro.test.ts`, a `SOLUTIONS` map) — and no further: they are IN the tree, and a
+worker that can read the repo checkout can find them. What keeps the key out of play today is
+the dispatched worker surface, not file hiding: today's toolkit lanes confine read/edit to the
+materialized workspace and run to an empty default allowlist, so the key is unreachable by the
+surface this repo actually dispatches today. The residual exposure for phase-4 fixer cells
+(host-privileged run tools, first-party prompts) is already recorded in
+`.github/workflows/suite.yml`'s ACCEPTED-RISK block and joins that class.
 
 ## Fault manifest (one line per fixture)
 

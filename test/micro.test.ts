@@ -222,10 +222,14 @@ describe('micro fixture/payload integrity (everything a case references exists)'
 });
 
 /**
- * The five fixed reference sources, EMBEDDED here and deliberately nowhere
- * else (Codex P1): a real eval worker holds read tools over the repo
- * checkout, so an on-disk answer key (the former fixtures/solutions/) would
- * be findable and copyable, corrupting eval scores. The map is keyed by
+ * The five fixed reference sources, embedded here (the former on-disk
+ * `fixtures/solutions/` was removed, Codex P1). HONEST POSTURE (round 3):
+ * these strings are still IN the tree — a worker that can read the repo
+ * checkout can find them. The real defense is the dispatched worker
+ * surface: today's toolkit lanes confine read/edit to the materialized
+ * workspace and run to an empty default allowlist; the phase-4 residual
+ * (host-privileged run tools) is recorded in suite.yml's ACCEPTED-RISK
+ * block — see fixtures/README.md "Reference fixes". The map is keyed by
  * case id; `path` is the faulted file's workspace-relative location.
  */
 const SOLUTIONS: Record<string, { path: string; content: string }> = {
@@ -575,16 +579,13 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
   }, 120_000);
 });
 
-describe('classifier fixture read failure is materialization-class (cycle-2 honesty taxonomy)', () => {
+describe('guarded infrastructure failures are materialization-class (rounds 2-3 honesty taxonomy)', () => {
   it('an unreadable payload emits NO row, counts a materialization failure, and never dispatches', async () => {
     // Cycle-2 CLI review: the payload read is INFRASTRUCTURE — the driver
     // never ran — so it mirrors the fixer materialization guard (T2):
     // journal indeterminate, diagnostic, materializationFailures increment,
     // NO row. The old behavior misclassified the read throw as a driver
     // error and emitted a scored failed row — a fabricated eval outcome.
-    // (The downstream cliMain exit-2 mapping is keyed on the same
-    // materializationFailures counter and is covered for the fixer twin by
-    // cli.test.ts's materialization-exits-2 test.)
     const dir = join(wsRoot, 'missing-payload');
     mkdirSync(dir, { recursive: true });
     writeFileSync(
@@ -612,6 +613,75 @@ describe('classifier fixture read failure is materialization-class (cycle-2 hone
     expect(result.tables[0]?.cells).toEqual([]); // empty-but-valid table
     expect(result.diagnostics).toEqual([
       expect.stringMatching(/^case thread-missing: fixture read failed for 'fixtures\/threads\/does-not-exist\.json': /),
+    ]);
+    // Round 3 (FIX 4): the structured channel carries the same line, so the
+    // CLI's X2 block lists the case without re-matching prose.
+    expect(result.materializationDiagnostics).toEqual([
+      expect.stringMatching(/^case thread-missing: fixture read failed for 'fixtures\/threads\/does-not-exist\.json': /),
+    ]);
+  }, 60_000);
+
+  it('an uncopyable FIXER fixture surfaces through the same structured channel', async () => {
+    // FIX 4 (round 3): both infrastructure shapes are carried in
+    // materializationDiagnostics — asserted here for the fixer copy-failure
+    // class (the classifier read-failure class is asserted above).
+    const dir = join(wsRoot, 'missing-fixer-fixture');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'suite.json'),
+      JSON.stringify({
+        name: 'missing-fixer-fixture',
+        role: 'fixer-worker',
+        provenance: { origin: 'test-local single-case slice of suites/fixer-worker/micro' },
+        cases: [
+          {
+            id: 'micro-missing',
+            fixture: 'fixtures/micro-missing',
+            task: { prompt: 'The workspace at the path below contains a TypeScript package whose vitest suite fails.' },
+            probe: { kind: 'check-rerun', check: 'fixtures/micro-missing/check.mjs' },
+          },
+        ],
+      }, null, 2) + '\n',
+    );
+    const result = await runSuite({ suiteDir: dir, driver: new CapturingDriver(), ...SMOKE_MODEL });
+    expect(result.rows).toEqual([]);
+    expect(result.materializationFailures).toBe(1);
+    expect(result.materializationDiagnostics).toEqual([
+      expect.stringMatching(/^case micro-missing: fixture materialization failed for 'fixtures\/micro-missing': /),
+    ]);
+  }, 60_000);
+
+  it('a payload that reads but is not valid JSON is materialization-class too (FIX 5)', async () => {
+    // Round 3: a parse failure is infrastructure, never a dispatched
+    // scored-0 row — the classifier can never see a usable task. The target
+    // is a REAL repo file that is not JSON (fixtures/README.md), so no
+    // dedicated bad fixture file had to be authored.
+    const dir = join(wsRoot, 'non-json-payload');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'suite.json'),
+      JSON.stringify({
+        name: 'non-json-payload',
+        role: 'review-classifier',
+        provenance: { origin: 'test-local single-case slice of suites/review-classifier/micro' },
+        cases: [
+          {
+            id: 'thread-not-json',
+            fixture: 'fixtures/README.md',
+            task: { prompt: 'Classify the review thread payload printed below.' },
+            probe: { kind: 'expected-verdict', expected: 'resolved' },
+          },
+        ],
+      }, null, 2) + '\n',
+    );
+    const driver = new CapturingDriver();
+    const result = await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
+
+    expect(driver.invocations).toHaveLength(0);
+    expect(result.rows).toEqual([]);
+    expect(result.materializationFailures).toBe(1);
+    expect(result.materializationDiagnostics).toEqual([
+      expect.stringMatching(/^case thread-not-json: thread payload is not valid JSON for 'fixtures\/README\.md': /),
     ]);
   }, 60_000);
 });

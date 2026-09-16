@@ -248,7 +248,7 @@ describe('role-dependent AiSdkDriver construction (F3/G6 — one driver PER SUIT
     expect(options!.outputSchema!.safeParse({ nope: true }).success).toBe(false);
   }, 15_000);
 
-  it('a fixer-only run constructs the driver WITHOUT an output schema', async () => {
+  it('a fixer-only run constructs the driver WITH the fixer output schema (DD-4)', async () => {
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
     const dir = writeSuite('fix-suite', {
@@ -257,10 +257,17 @@ describe('role-dependent AiSdkDriver construction (F3/G6 — one driver PER SUIT
       cases: [{ id: 'fix-1', fixture: 'fixture', task: { prompt: 'Fix the fault.' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
     });
     await cliMain(cliArgs(dir));
-    expect(captured.constructorOptions.at(-1)).toBeUndefined();
+    const options = captured.constructorOptions.at(-1) as { outputSchema?: { safeParse(v: unknown): { success: boolean } } } | undefined;
+    expect(options).toBeDefined();
+    expect(options!.outputSchema).toBeDefined();
+    // The schema is the fixer's {fixed, notes} verdict shape (DD-4), not the
+    // classifier's vocabulary and not just any schema.
+    expect(options!.outputSchema!.safeParse({ fixed: true, notes: 'ok' }).success).toBe(true);
+    expect(options!.outputSchema!.safeParse({ fixed: 'yes', notes: '' }).success).toBe(false);
+    expect(options!.outputSchema!.safeParse({ verdict: 'resolved' }).success).toBe(false);
   }, 15_000);
 
-  it('a MIXED invocation constructs per suite: fixer bare, classifier with schema', async () => {
+  it('a MIXED invocation constructs per suite: fixer with the fixer schema, classifier with the verdict schema', async () => {
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
     const fixer = writeSuite('mix-fixer', {
@@ -271,7 +278,12 @@ describe('role-dependent AiSdkDriver construction (F3/G6 — one driver PER SUIT
     const clf = writeSuite('mix-clf', { name: 'mix-clf', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await cliMain([...cliArgs(fixer), '--suite', clf]);
     expect(captured.constructorOptions).toHaveLength(2);
-    expect(captured.constructorOptions[0]).toBeUndefined(); // fixer suite: bare driver
+    // Fixer suite: the DD-4 {fixed, notes} schema — it must reject the
+    // classifier's verdict shape so the two roles can never be confused.
+    const fixerOptions = captured.constructorOptions[0] as { outputSchema?: { safeParse(v: unknown): { success: boolean } } };
+    expect(fixerOptions.outputSchema).toBeDefined();
+    expect(fixerOptions.outputSchema!.safeParse({ fixed: false, notes: '' }).success).toBe(true);
+    expect(fixerOptions.outputSchema!.safeParse({ verdict: 'resolved' }).success).toBe(false);
     const clfOptions = captured.constructorOptions[1] as { outputSchema?: unknown };
     expect(clfOptions.outputSchema).toBeDefined(); // classifier suite: verdict schema
   }, 15_000);

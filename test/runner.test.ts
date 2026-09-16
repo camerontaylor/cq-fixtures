@@ -17,6 +17,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runSuite, type RunSuiteOptions } from '../runner/index.ts';
 import { loadSuite } from '../runner/suite.ts';
+import { scoreSchemaCompliance } from '../runner/dimensions/schemaCompliance.ts';
 import { scoreFixerWorker } from '../runner/score/fixerWorker.ts';
 import { scoreReviewClassifier } from '../runner/score/reviewClassifier.ts';
 import { FakeDriver } from '../runner/fake-driver.ts';
@@ -193,7 +194,13 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
       ],
     });
     const result = await runSuite(opts(dir));
-    expect(result.rows.map((r) => [r.case, r.outcome.score])).toEqual([['fix-pass', 1], ['fix-fail', 0]]);
+    // DD-4: fixer rows carry TWO probes (check-rerun + schema compliance).
+    // The FakeDriver's verdict-shaped structuredOutput fails the schema
+    // probe, so a passing check scores 1/2 — the check probe itself still
+    // discriminates pass (1 check-probe credit) from fail (0 credits).
+    expect(result.rows.map((r) => [r.case, r.outcome.score])).toEqual([['fix-pass', 0.5], ['fix-fail', 0]]);
+    expect(result.rows.map((r) => [r.case, r.outcome.passed])).toEqual([['fix-pass', 1], ['fix-fail', 0]]);
+    expect(result.rows.every((r) => r.outcome.total === 2)).toBe(true);
     assertSchemaValid(result.rows, result.tables);
   }, 15_000);
 
@@ -238,7 +245,10 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     const capped = await runSuite(opts(dir, { checkTimeoutMs: 300 }));
     expect(capped.rows[0]).toMatchObject({ case: 'fix-slow', outcome: { score: 0 } });
     const uncapped = await runSuite(opts(dir));
-    expect(uncapped.rows[0]).toMatchObject({ case: 'fix-slow', outcome: { score: 1 } });
+    // DD-4: 0.5, not 1 — the check probe passed (its ceiling is the knob
+    // under test here) while the fake's verdict-shaped structuredOutput
+    // fails the schema-compliance probe.
+    expect(uncapped.rows[0]).toMatchObject({ case: 'fix-slow', outcome: { score: 0.5 } });
   }, 15_000);
 
   it('a driver missing-credential throw aborts the run instead of scoring zeros', async () => {
@@ -340,6 +350,67 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
   });
 });
 
+describe('schema-compliance dimension (DD-4: structured-output fidelity as a scored probe)', () => {
+  it('a structuredOutput matching {fixed: boolean, notes: string} passes 1/1', () => {
+    const ok = scoreSchemaCompliance({
+      structuredOutput: { fixed: true, notes: 'reordered the loop guard' },
+    } as WorkerResult);
+    expect(ok).toMatchObject({ score: 1, passed: 1, total: 1 });
+    expect(ok.diagnostics).toBeUndefined();
+  });
+
+  it('missing, verdict-shaped, or wrongly-typed structuredOutput scores 0 with a ONE-LINE diagnostic, never throws', () => {
+    // The classifier's vocabulary shape is the canonical near-miss: the
+    // right channel, the wrong contract.
+    const verdictShaped = scoreSchemaCompliance({
+      structuredOutput: { verdict: 'resolved' },
+    } as WorkerResult);
+    expect(verdictShaped.score).toBe(0);
+    expect(verdictShaped.diagnostics).toMatch(/does not match the fixer output schema/);
+
+    const missing = scoreSchemaCompliance({} as WorkerResult);
+    expect(missing).toMatchObject({ score: 0, passed: 0, total: 1 });
+
+    const wrongTypes = scoreSchemaCompliance({
+      structuredOutput: { fixed: 'yes', notes: 3 },
+    } as WorkerResult);
+    expect(wrongTypes.score).toBe(0);
+    // One line by contract: the CLI prints only the first diagnostic line.
+    expect(wrongTypes.diagnostics).not.toMatch(/\n/);
+  });
+
+  it('a worker that fixes the fixture AND holds the shape scores both probes (2/2) end to end', async () => {
+    // The same seeded fault as the workspace round-trip test, dispatched to
+    // a driver that both writes the fix and answers in the DD-4 shape — the
+    // only configuration that earns the full fixer row.
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'state.txt'), 'broken');
+    writeFileSync(join(root, 'fixture', 'check.js'), "process.exit(require('fs').readFileSync('./state.txt', 'utf8') === 'fixed' ? 0 : 1);\n");
+    const dir = writeSuite('dd4-suite', {
+      name: 'dd4-suite',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-dd4', fixture: 'fixture', task: { prompt: 'Fix state.txt to say fixed.' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+    const shapedFixer: Driver = {
+      async run(invocation: OpInvocation): Promise<WorkerResult> {
+        const workspace = /workspace: (.+)$/m.exec(invocation.prompt)?.[1];
+        if (workspace !== undefined) writeFileSync(join(workspace, 'state.txt'), 'fixed');
+        return {
+          model: invocation.modelSpec.model,
+          structuredOutput: { fixed: true, notes: 'wrote fixed to state.txt' },
+          usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+          denials: [],
+          stopReason: 'complete',
+        };
+      },
+    };
+    const result = await runSuite(opts(dir, { driver: shapedFixer }));
+    expect(result.rows[0]).toMatchObject({ case: 'fix-dd4', outcome: { score: 1, passed: 2, total: 2 } });
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+});
+
 describe('writable workspace (fixer fixture round-trip)', () => {
   /** A stand-in worker that "fixes" state.txt inside the workspace named in the prompt. */
   class FixingDriver implements Driver {
@@ -379,9 +450,11 @@ describe('writable workspace (fixer fixture round-trip)', () => {
     expect(invocation.toolPolicy).toEqual({ allow: ['read', 'edit', 'run'], mode: 'allowlist' });
     expect(invocation.sandboxPolicy).toEqual({ level: 'workspace-write' });
     expect(invocation.prompt).toMatch(/^Fix state\.txt to say fixed\.\nworkspace: \S+/);
-    // The probe saw the driver's fix in the workspace copy: score 1 —
-    // proving the workspace round-trip (driver wrote it, probe read it).
-    expect(result.rows[0]).toMatchObject({ case: 'fix-ws-1', outcome: { score: 1, passed: 1, total: 1 } });
+    // The probe saw the driver's fix in the workspace copy: the check probe
+    // passed — proving the workspace round-trip (driver wrote it, probe read
+    // it). DD-4: score 0.5 of total 2, because the FixingDriver's
+    // verdict-shaped structuredOutput fails the schema-compliance probe.
+    expect(result.rows[0]).toMatchObject({ case: 'fix-ws-1', outcome: { score: 0.5, passed: 1, total: 2 } });
     // The pristine fixture under repoRoot was never touched.
     expect(readFileSync(join(root, 'fixture', 'state.txt'), 'utf8')).toBe('broken');
     assertSchemaValid(result.rows, result.tables);
@@ -421,7 +494,9 @@ describe('writable workspace (fixer fixture round-trip)', () => {
     const result = await runSuite(opts(dir, { driver: linkReader }));
 
     expect(copiedLinkTargets).toEqual(['../../src/module.js']);
-    expect(result.rows[0]).toMatchObject({ case: 'fix-link', outcome: { score: 1 } });
+    // DD-4: 0.5 of 2 — the check probe passed on the verbatim link, the
+    // linkReader's verdict-shaped structuredOutput failed the schema probe.
+    expect(result.rows[0]).toMatchObject({ case: 'fix-link', outcome: { score: 0.5 } });
   }, 15_000);
 
   it('review-classifier invocations stay tools-none / read-only with no workspace line', async () => {
@@ -466,6 +541,10 @@ describe('fixture materialization honesty (T2)', () => {
     expect(result.rows.map((r) => r.case)).toEqual(['fix-healthy']);
     expect(result.diagnostics).toEqual([
       expect.stringMatching(/^case fix-broken: fixture materialization failed for 'fixture-file'/),
+      // DD-4: the healthy case RAN, so its row also carries the schema
+      // probe's complaint — the FakeDriver's verdict-shaped structuredOutput
+      // is not the fixer's {fixed, notes} shape.
+      expect.stringMatching(/^case fix-healthy: structuredOutput does not match the fixer output schema/),
     ]);
     assertSchemaValid(result.rows, result.tables);
 

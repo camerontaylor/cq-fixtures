@@ -482,9 +482,14 @@ describe('fake-driver smoke over the micro suites (D2 subprocess lane)', () => {
     // Plumbing-smoke honesty: an untouched faulted fixture must fail the
     // judge. These are zeros about a FAKE, not an eval verdict.
     expect(result.rows.every((r) => r.outcome.passed === 0)).toBe(true);
+    // DD-4: a fixer row carries TWO probes (check-rerun + schema
+    // compliance) — and the fake fails both: it cannot fix, and its
+    // verdict-shaped structuredOutput is not the fixer's {fixed, notes}
+    // shape, so the schema-compliance probe honestly reads 0 too.
+    expect(result.rows.every((r) => r.outcome.total === 2)).toBe(true);
     expect(result.rows.every((r) => r.driver === 'subprocess')).toBe(true);
     expect(result.tables[0]?.cells).toEqual([
-      expect.objectContaining({ model: 'glm-5.3-flash', driver: 'subprocess', runs: 5, passed: 0, total: 5 }),
+      expect.objectContaining({ model: 'glm-5.3-flash', driver: 'subprocess', runs: 5, passed: 0, total: 10 }),
     ]);
     assertSchemaValid(result.rows, result.tables);
   }, 300_000);

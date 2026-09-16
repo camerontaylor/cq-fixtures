@@ -12,6 +12,11 @@ import { runSuite } from './index.ts';
 import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
 import { loadSuite, type Suite } from './suite.ts';
 import { FakeDriver } from './fake-driver.ts';
+// DD-4: the fixer-worker's structured-output shape — the classifier's
+// verdict schema is mirrored locally below, the fixer's lives on the
+// dimensions module it is graded against, so both probes target one source
+// of truth.
+import { FIXER_OUTPUT_SCHEMA } from './dimensions/schemaCompliance.ts';
 
 const LANES = new Set(['ai-sdk', 'claude-agent', 'subprocess', 'acp']);
 // ADR-0001 eval axes (the per-cell constraint in
@@ -133,8 +138,9 @@ async function main(argv: readonly string[]): Promise<number> {
     throw e;
   }
   // Suites load BEFORE driver construction: load/validation failures map to
-  // exit 2 (hard-fail in the workflow), and the loaded roles decide whether
-  // the ai-sdk lane needs a verdict output schema.
+  // exit 2 (hard-fail in the workflow), and the loaded roles decide which
+  // output schema the ai-sdk lane requests (classifier → verdict vocabulary,
+  // fixer → the DD-4 fixer verdict shape).
   let suites: Suite[];
   try {
     suites = opts.suites.map((d) => loadSuite(d));
@@ -162,8 +168,12 @@ async function main(argv: readonly string[]): Promise<number> {
     seenRoles.add(s.role);
   }
   // One driver PER SUITE: a mixed invocation (fixer + classifier suites)
-  // must not force the verdict outputSchema onto fixer cases nor withhold it
-  // from classifier cases — each suite's role decides its own construction.
+  // must not force one role's outputSchema onto the other — each suite's
+  // role decides its own construction (F3/G6): classifier →
+  // VERDICT_OUTPUT_SCHEMA, fixer → FIXER_OUTPUT_SCHEMA (DD-4).
+  // FakeDriver is unchanged and stays schema-blind: it never emits the
+  // fixer's {fixed, notes} shape, so a fake fixer row honestly fails the
+  // schema-compliance probe.
   const rows: ResultRow[] = [];
   const tables: ComparisonTable[] = [];
   let anyFailed = false;
@@ -174,7 +184,11 @@ async function main(argv: readonly string[]): Promise<number> {
   try {
     for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
       const driver: Driver = opts.driver === 'ai-sdk'
-        ? new AiSdkDriver(suite.role === 'review-classifier' ? { outputSchema: VERDICT_OUTPUT_SCHEMA } : undefined)
+        ? new AiSdkDriver(
+            suite.role === 'review-classifier'
+              ? { outputSchema: VERDICT_OUTPUT_SCHEMA }
+              : { outputSchema: FIXER_OUTPUT_SCHEMA },
+          )
         : new FakeDriver();
       const result = await runSuite({
         suiteDir, driver,

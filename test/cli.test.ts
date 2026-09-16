@@ -76,7 +76,16 @@ function writeSuite(dirName: string, spec: SuiteSpec): string {
 }
 
 function reviewCase(id: string, expected: string): object {
-  return { id, fixture: 'fixture', task: { prompt: 'Classify the review thread.' }, probe: { kind: 'expected-verdict', expected } };
+  // J3 payload injection: runSuite reads the classifier fixture from the repo
+  // root (cliMain exposes no repoRoot override), so classifier cases here
+  // reference a REAL repo fixture — thread-01.json — instead of the pre-J3
+  // nonexistent 'fixture' placeholder.
+  return {
+    id,
+    fixture: 'fixtures/threads/thread-01.json',
+    task: { prompt: 'Classify the review thread.' },
+    probe: { kind: 'expected-verdict', expected },
+  };
 }
 
 function cliArgs(suiteDir: string): string[] {
@@ -174,6 +183,55 @@ describe('gate checks (B2 axes, B3 servedModel, B4 same-role collision, B7 requi
       cases: [{ id: 'fix-u', fixture: 'does-not-exist', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'does-not-exist/check.js' } }],
     });
     await expect(cliMain(['--suite', dir, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
+  }, 15_000);
+
+  it('X2 lists both infrastructure classes from the runner\'s structured diagnostics (fixer copy + classifier read)', async () => {
+    // PR 10 review round 1: the classifier payload-read failure is the
+    // second infrastructure shape ('fixture read failed for …'); round 3:
+    // the X2 block now prints the runner's STRUCTURED
+    // materializationDiagnostics directly — no prose re-matching — so both
+    // classes list their affected case ids here in one invocation.
+    const clf = writeSuite('clf-missing-payload', {
+      name: 'clf-missing-payload',
+      role: 'review-classifier',
+      cases: [
+        {
+          id: 'thread-missing',
+          fixture: 'fixtures/threads/does-not-exist.json',
+          task: { prompt: 'Classify the review thread payload printed below.' },
+          probe: { kind: 'expected-verdict', expected: 'resolved' },
+        },
+      ],
+    });
+    const fixer = writeSuite('fix-missing-fixture', {
+      name: 'fix-missing-fixture',
+      role: 'fixer-worker',
+      cases: [
+        {
+          id: 'fix-missing',
+          fixture: 'fixtures/micro-missing',
+          task: { prompt: 'Fix the fault.' },
+          probe: { kind: 'check-rerun', check: 'fixtures/micro-missing/check.mjs' },
+        },
+      ],
+    });
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map((a) => String(a)).join(' '));
+    });
+    try {
+      await expect(
+        cliMain(['--suite', clf, '--suite', fixer, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai']),
+      ).resolves.toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+    const stderr = errors.join('\n');
+    // The X2 count block ran with BOTH refusals counted…
+    expect(stderr).toMatch(/2 case\(s\) failed fixture materialization \(the driver never ran\):/);
+    // …and both affected case ids are listed beneath it.
+    expect(stderr).toMatch(/case thread-missing: fixture read failed for 'fixtures\/threads\/does-not-exist\.json':/);
+    expect(stderr).toMatch(/case fix-missing: fixture materialization failed for 'fixtures\/micro-missing':/);
   }, 15_000);
 });
 

@@ -1,0 +1,20 @@
+{
+  "id": 481205,
+  "path": "auth/tokenRefresh.ts",
+  "line": 61,
+  "resolved": true,
+  "comments": [
+    {
+      "author": "avermeulen",
+      "body": "The refresh promise is created but never stored, so two concurrent 401s each kick off their own refresh call. Stash the in-flight promise and await it in both paths.",
+      "createdAt": "2026-09-06T16:20:00Z",
+      "isReply": false
+    },
+    {
+      "author": "nkalliomaki",
+      "body": "Pushed the single-flight change with a concurrency test; verified both requests now share one refresh call. Resolving.",
+      "createdAt": "2026-09-06T17:44:00Z",
+      "isReply": true
+    }
+  ]
+}

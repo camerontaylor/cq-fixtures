@@ -127,7 +127,14 @@ jobs:
           ZAI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "$(find suites -name suite.json -print -quit)" ]; then
+          # DEFERRED-DISCOVERY until goal J4: real-driver dispatch of any
+          # suite (the micro suites included) is explicitly deferred to J4,
+          # which lands the designed discovery. The allowlist root below
+          # (suites/matrix-ready/) deliberately DOES NOT EXIST yet, so this
+          # find is always empty and the cell stays a pure no-op — a new or
+          # populated suite anywhere under suites/ can never re-arm the
+          # paid cell by accident. J4 replaces this seam wholesale.
+          if [ -z "$(find suites/matrix-ready -name suite.json -print -quit 2>/dev/null)" ]; then
             echo "no suites yet — populated by phase-3 goal J3; the matrix cell is a no-op until then"
             # The eval-reports artifact must ALWAYS exist: the snapshot job's
             # download step no longer tolerates a missing artifact (M2).
@@ -168,7 +175,8 @@ jobs:
             elif [ "${rc}" -eq 1 ]; then
               echo "::warning::suite ${rel_dir} scored zero or was budget-gated"
             fi
-          done < <(find suites -name suite.json | sort)
+          # DEFERRED-DISCOVERY until goal J4 — rationale on the guard above.
+          done < <(find suites/matrix-ready -name suite.json 2>/dev/null | sort)
           # The artifact must exist on every path — even when suites ran but
           # every run hard-failed pre-output — so the snapshot job's download
           # can never 404 on a missing artifact. EMPTY (not a dot-file):

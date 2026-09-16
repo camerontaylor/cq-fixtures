@@ -1,0 +1,20 @@
+{
+  "id": 481203,
+  "path": "api/validate.ts",
+  "line": 88,
+  "resolved": false,
+  "comments": [
+    {
+      "author": "dholdgrafer",
+      "body": "Negative page sizes slip through here: `pageSize` is only checked for undefined, so `pageSize: -5` reaches the query builder and the SQL layer throws an opaque error three frames later. Please clamp or reject at the boundary.",
+      "createdAt": "2026-09-04T11:02:00Z",
+      "isReply": false
+    },
+    {
+      "author": "sokanwue",
+      "body": "Good catch — added a lower bound of 1 with a 400 response, plus a regression test (see run 2264). No further changes requested, happy to take another look if you disagree with the clamp choice.",
+      "createdAt": "2026-09-04T13:26:00Z",
+      "isReply": true
+    }
+  ]
+}

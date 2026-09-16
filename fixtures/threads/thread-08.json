@@ -1,0 +1,14 @@
+{
+  "id": 481208,
+  "path": "billing/proration.ts",
+  "line": 73,
+  "resolved": false,
+  "comments": [
+    {
+      "author": "tamikaduffey",
+      "body": "This rounding mode has to match whatever the finance vendor settles on for mid-cycle credits — that decision is still with their solutions engineer and it is outside this team's control. Blocked on the vendor answer; leaving this unresolved until then rather than guessing a rounding rule we may have to rip out.",
+      "createdAt": "2026-09-09T10:49:00Z",
+      "isReply": false
+    }
+  ]
+}

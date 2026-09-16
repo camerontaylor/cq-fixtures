@@ -1,0 +1,14 @@
+{
+  "id": 481210,
+  "path": "CHANGELOG.md",
+  "line": 3,
+  "resolved": false,
+  "comments": [
+    {
+      "author": "adelekowalczyk",
+      "body": "Not for this PR (out of scope, fine to leave), just noting for whoever owns the next release: the rewrite of the sync engine deserves its own changelog entry beyond the one-liner here.",
+      "createdAt": "2026-09-11T12:03:00Z",
+      "isReply": false
+    }
+  ]
+}

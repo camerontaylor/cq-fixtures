@@ -1,0 +1,54 @@
+{
+  "name": "micro",
+  "role": "fixer-worker",
+  "provenance": {
+    "origin": "hand-seeded synthetic (phase-3 J3, 2026-09-16); no public-benchmark content"
+  },
+  "cases": [
+    {
+      "id": "micro-1",
+      "fixture": "fixtures/micro-1",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. sumRange(a, b) currently returns the sum excluding b; it must include b.",
+        "notes": "seeded fault: hand-written mutation, synthetic"
+      },
+      "probe": { "kind": "check-rerun", "check": "fixtures/micro-1/check.mjs" }
+    },
+    {
+      "id": "micro-2",
+      "fixture": "fixtures/micro-2",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. slugify currently preserves the input's letter case; every slug it produces must be entirely lowercase.",
+        "notes": "seeded fault: hand-written mutation, synthetic"
+      },
+      "probe": { "kind": "check-rerun", "check": "fixtures/micro-2/check.mjs" }
+    },
+    {
+      "id": "micro-3",
+      "fixture": "fixtures/micro-3",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. the memoizer currently recomputes the underlying function on every call; a repeated call with the same argument must reuse the first result.",
+        "notes": "seeded fault: hand-written mutation, synthetic"
+      },
+      "probe": { "kind": "check-rerun", "check": "fixtures/micro-3/check.mjs" }
+    },
+    {
+      "id": "micro-4",
+      "fixture": "fixtures/micro-4",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseConfig currently swallows malformed input by returning an empty object; it must throw an Error whose message mentions 'invalid config' instead.",
+        "notes": "seeded fault: hand-written mutation, synthetic"
+      },
+      "probe": { "kind": "check-rerun", "check": "fixtures/micro-4/check.mjs" }
+    },
+    {
+      "id": "micro-5",
+      "fixture": "fixtures/micro-5",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. sortTasks currently orders tasks by priority ascending; it must order by priority descending.",
+        "notes": "seeded fault: hand-written mutation, synthetic"
+      },
+      "probe": { "kind": "check-rerun", "check": "fixtures/micro-5/check.mjs" }
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "id": 481206,
+  "path": "ui/dropdown.tsx",
+  "line": 204,
+  "resolved": true,
+  "comments": [
+    {
+      "author": "giselaroque",
+      "body": "The open state leaks here: when the dropdown unmounts mid-animation the timeout still fires and warns about a setState on an unmounted component. Clear the handle in the cleanup function.",
+      "createdAt": "2026-09-07T09:05:00Z",
+      "isReply": false
+    },
+    {
+      "author": "eboateng",
+      "body": "Cleanup added and the warning is gone in the sandbox app. Thanks for the precise pointer — resolving this thread.",
+      "createdAt": "2026-09-07T11:37:00Z",
+      "isReply": true
+    }
+  ]
+}

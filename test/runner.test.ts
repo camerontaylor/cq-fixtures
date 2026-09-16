@@ -39,6 +39,20 @@ let root: string;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'cq-fixture-runner-'));
+  // J3 payload injection: runSuite reads a review-classifier case's fixture
+  // from repoRoot and injects its content into the prompt, so the fixture
+  // file must EXIST on disk now (a missing file is an honest failed row, not
+  // a skipped read). Hermetic per-test payload at the tmp repoRoot.
+  writeFileSync(
+    join(root, 'thread.json'),
+    JSON.stringify({
+      id: 1,
+      path: 'src/example.ts',
+      line: 1,
+      resolved: false,
+      comments: [{ author: 'tester', body: 'example remark', createdAt: '2026-09-16T00:00:00Z', isReply: false }],
+    }),
+  );
 });
 
 afterEach(() => {
@@ -55,7 +69,7 @@ function writeSuite(dirName: string, suite: object): string {
 function reviewCase(id: string, expected: string): object {
   return {
     id,
-    fixture: 'fixture',
+    fixture: 'thread.json',
     task: { prompt: 'Classify the review thread.' },
     probe: { kind: 'expected-verdict', expected },
   };

@@ -1,0 +1,20 @@
+{
+  "id": 481204,
+  "path": "workers/resize.ts",
+  "line": 130,
+  "resolved": false,
+  "comments": [
+    {
+      "author": "ltorvmark",
+      "body": "This pipeline stage is failing on the nightly: the image height assertion blows up whenever the source is portrait, because the aspect ratio is applied to width twice. The nightly job has been red since this landed.",
+      "createdAt": "2026-09-05T08:31:00Z",
+      "isReply": false
+    },
+    {
+      "author": "jbergstrom",
+      "body": "Confirmed and fixed — the ratio is now derived once and passed to both dimensions. The nightly is green again: run 8421. Marking this conversation done on my side; shout if you see a recurrence.",
+      "createdAt": "2026-09-05T10:58:00Z",
+      "isReply": true
+    }
+  ]
+}

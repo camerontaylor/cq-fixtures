@@ -280,7 +280,7 @@ describe('suite schema (ws-j item 3)', () => {
             prompt: 'Fix the failing null-guard regression without changing public behavior.',
             notes: 'Fault seeded in src/guard.ts.',
           },
-          probe: { kind: 'check-rerun', check: 'fixtures/null-guard-repo/checks/regression.sh' },
+          probe: { kind: 'check-rerun', check: 'fixtures/null-guard-repo/checks/regression.mjs' },
         },
       ],
     };

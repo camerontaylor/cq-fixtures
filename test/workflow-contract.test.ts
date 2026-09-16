@@ -42,18 +42,30 @@ function stepChunk(namePrefix: string): string {
 const RC_EXIT_DISCIPLINE = ['|| rc=$?', '-ge 2', 'exit "${hard_fail}"'] as const;
 
 /**
- * The BENIGN leg of the rc taxonomy: the `-eq 1` branch body — extracted as
- * the region between the `-eq 1` marker and the next `-ge 2` marker (the two
- * branch conditions), falling back to the end of the chunk when the
- * hard-fail branch textually precedes the benign one (today's if/elif
- * layout). This is what the negative assertion runs against: a branch that
- * is green by design must not secretly set hard_fail.
+ * The BENIGN leg of the rc taxonomy: the `-eq 1` branch body — bounded at
+ * whichever comes first after the marker: the closing `fi` of the branch
+ * (first line that is exactly `fi`, however indented) or a following `-ge 2`
+ * marker (a reorder guard). Bounding at the `fi` — instead of end-of-chunk —
+ * matters for the matrix chunk: its zero-discovery warning sits AFTER the
+ * loop, OUTSIDE the branch, and an unbounded slice would let that outside
+ * warning satisfy the branch assertion.
  */
 function benignBranch(chunk: string): string {
   const start = chunk.indexOf('-eq 1');
   expect(start, "chunk carries a '-eq 1' branch").toBeGreaterThan(-1);
-  const nextHardFail = chunk.indexOf('-ge 2', start + 1);
-  return chunk.slice(start, nextHardFail === -1 ? undefined : nextHardFail);
+  // Absolute offset of the branch's closing `fi` line within the chunk.
+  let fiAbs = -1;
+  let acc = start;
+  for (const line of chunk.slice(start).split('\n')) {
+    if (line.trim() === 'fi') {
+      fiAbs = acc;
+      break;
+    }
+    acc += line.length + 1;
+  }
+  const bounds = [chunk.indexOf('-ge 2', start), fiAbs].filter((i) => i > start);
+  const end = bounds.length > 0 ? Math.min(...bounds) : chunk.length;
+  return chunk.slice(start, end);
 }
 
 describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
@@ -81,6 +93,19 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(ifLine, 'snapshot job declares a job-level if:').toBeDefined();
     expect(ifLine).toContain('!cancelled()');
     expect(ifLine).toContain("needs.matrix.result != 'skipped'");
+  });
+
+  it('the per-cell artifact coupling holds: cell-scoped name, pattern download, merge-multiple', () => {
+    // These three substrings are ONE contract: the matrix cells upload under
+    // a cell-scoped artifact name (upload-artifact v4 requires unique
+    // names), and the snapshot job re-joins the cells via a pattern +
+    // merge-multiple download. A drift in any of them degrades SILENTLY —
+    // the download zero-matches (v4 succeeds on zero matches), the push
+    // guard turns the snapshot into a no-op — and snapshots stop publishing
+    // while every job stays green.
+    expect(text).toContain('name: eval-reports-${{ matrix.cell.model }}');
+    expect(text).toContain('pattern: eval-reports-*');
+    expect(text).toContain('merge-multiple: true');
   });
 
   it('the BENIGN leg stays benign: the -eq 1 branch notices/warns and never sets hard_fail', () => {

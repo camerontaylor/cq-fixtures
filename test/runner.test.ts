@@ -297,6 +297,34 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     expect(leftovers).toEqual([]);
   }, 15_000);
 
+  it('a THROWING-driver fixer case keeps the full probe ceiling: { passed: 0, total: 2 } (DD-4, not a truncated total: 1)', async () => {
+    // The zero paths count the case's CONFIGURED probes (runner/index.ts
+    // zeroOutcome(probeCount)): a worker that never produced a gradeable
+    // result failed both DD-4 probes — the check-rerun AND the
+    // schema-compliance probe — so its row carries the full ceiling of 2,
+    // never a truncated total: 1. (A plain driver throw, not the
+    // missing-credential class: that one aborts the run instead — asserted
+    // above.)
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    const dir = writeSuite('throwing-fixer', {
+      name: 'throwing-fixer',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-throw', fixture: 'fixture', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+    const throwingDriver: Driver = {
+      async run(): Promise<WorkerResult> {
+        throw new Error('boom — a driver-level failure, not a credential abort');
+      },
+    };
+    const result = await runSuite(opts(dir, { driver: throwingDriver }));
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ case: 'fix-throw', outcome: { score: 0, passed: 0, total: 2 } });
+    expect(result.diagnostics[0]).toMatch(/^case fix-throw: driver threw: /);
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
   it('a check killed by its own signal reports failure-with-signal, never "timed out"', () => {
     // W2: only the spawn timeout machinery (ETIMEDOUT) may claim "timed
     // out" — a script dying by its own SIGKILL is a plain failure that

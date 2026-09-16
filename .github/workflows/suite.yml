@@ -199,9 +199,11 @@ jobs:
         run: |
           set -euo pipefail
           # Designed discovery (J4): the two micro suites ARE the matrix
-          # payload — a find over their FIXED directories, so no new or moved
-          # suite can silently re-arm a paid run; widening the matrix's suite
-          # set is a deliberate edit to this list.
+          # payload — a SHALLOW find over their FIXED directories (-maxdepth 1:
+          # only a suite.json placed DIRECTLY in a named dir runs; verified
+          # against both real suites). A nested micro/x/suite.json is a
+          # structuring decision for J5's designed discovery, not an accident
+          # to auto-run here; widening this list stays a deliberate edit.
           hard_fail=0
           suite_count=0
           while IFS= read -r suite_file; do
@@ -215,6 +217,10 @@ jobs:
             rel_dir="$(dirname "${suite_file#suites/}")"
             out_dir="reports/eval/${MATRIX_MODEL}/${rel_dir}"
             rc=0
+            # < /dev/null: this loop reads its worklist from the find's stdin
+            # (while-read); the first stdin-reading driver (a phase-4 lane
+            # transport reading a prompt from stdin, say) would otherwise eat
+            # the remaining suite paths mid-run.
             node --experimental-strip-types runner/index.ts \
               --suite "${suite_dir}" \
               --driver ai-sdk \
@@ -223,7 +229,7 @@ jobs:
               --provider "${MATRIX_PROVIDER}" \
               --max-tokens 200000 \
               --journal "${out_dir}/journal" \
-              --out "${out_dir}" || rc=$?
+              --out "${out_dir}" < /dev/null || rc=$?
             if [ "${rc}" -ge 2 ]; then
               echo "::error::suite ${MATRIX_MODEL}/${rel_dir}: runner usage/validation failure (exit ${rc})"
               hard_fail=1
@@ -231,12 +237,16 @@ jobs:
               echo "::warning::suite ${MATRIX_MODEL}/${rel_dir} scored zero or was budget-gated"
             fi
             suite_count=$((suite_count + 1))
-          done < <(find suites/fixer-worker/micro suites/review-classifier/micro -name suite.json 2>/dev/null | sort)
-          # Zero discovery stays GREEN (designed removal is not a failure),
-          # but it must be VISIBLE: an accidental suite loss would otherwise
-          # look like a clean, table-less run.
+          done < <(find suites/fixer-worker/micro suites/review-classifier/micro -maxdepth 1 -name suite.json 2>/dev/null | sort)
+          # Discovery drift must be VISIBLE but never fail the cell (it is a
+          # structuring signal, not an eval outcome): the list above names
+          # exactly two dirs with one directly-placed suite.json each, so
+          # anything but 2 is drift. Zero keeps the stronger wording — an
+          # accidental REMOVAL is the urgent case.
           if [ "${suite_count}" -eq 0 ]; then
             echo "::warning::matrix discovery found no suites — if this is an accidental removal, investigate"
+          elif [ "${suite_count}" -ne 2 ]; then
+            echo "::warning::matrix discovery found ${suite_count} suites (expected 2) — investigate if unintended"
           fi
           # The eval-reports artifact must ALWAYS exist — even when the find
           # above came up empty (which can now only happen if the micro

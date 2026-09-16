@@ -203,6 +203,7 @@ jobs:
           # suite can silently re-arm a paid run; widening the matrix's suite
           # set is a deliberate edit to this list.
           hard_fail=0
+          suite_count=0
           while IFS= read -r suite_file; do
             suite_dir="$(dirname "${suite_file}")"
             # G7: out dir mirrors the suite path relative to suites/, PREFIXED
@@ -229,13 +230,20 @@ jobs:
             elif [ "${rc}" -eq 1 ]; then
               echo "::warning::suite ${MATRIX_MODEL}/${rel_dir} scored zero or was budget-gated"
             fi
+            suite_count=$((suite_count + 1))
           done < <(find suites/fixer-worker/micro suites/review-classifier/micro -name suite.json 2>/dev/null | sort)
+          # Zero discovery stays GREEN (designed removal is not a failure),
+          # but it must be VISIBLE: an accidental suite loss would otherwise
+          # look like a clean, table-less run.
+          if [ "${suite_count}" -eq 0 ]; then
+            echo "::warning::matrix discovery found no suites — if this is an accidental removal, investigate"
+          fi
           # The eval-reports artifact must ALWAYS exist — even when the find
           # above came up empty (which can now only happen if the micro
-          # suites vanish) or every run hard-failed pre-output — so the
-          # snapshot job's download step can never 404 on a missing artifact
-          # (M2). EMPTY (not a dot-file): upload-artifact v4 drops hidden
-          # files unless include-hidden-files is set.
+          # suites vanish, warned above) or every run hard-failed pre-output
+          # — so the snapshot job's download step can never 404 on a missing
+          # artifact (M2). EMPTY (not a dot-file): upload-artifact v4 drops
+          # hidden files unless include-hidden-files is set.
           mkdir -p reports/eval
           touch reports/eval/EMPTY
           exit "${hard_fail}"
@@ -370,10 +378,16 @@ jobs:
           # force-add.
           git add -f "${snap_dir}"
           # "Snapshots unchanged" is the ONLY no-op path: staged deletions
-          # are a diff, so they commit and push exactly like adds.
+          # are a diff, so they commit exactly like adds. The PUSH lives
+          # INSIDE the commit branch: when nothing is staged, nothing is
+          # pushed. Otherwise a zero-artifact run (e.g. both matrix cells
+          # failing before the eval step, so the pattern download silently
+          # matches nothing) would still push and create the snapshots
+          # branch as a bare checkout copy — a true no-op is the honest
+          # outcome instead.
           if git diff --cached --quiet; then
-            echo "snapshots unchanged — nothing to commit"
+            echo "snapshots unchanged — nothing to commit, nothing to push"
           else
             git commit -m "report snapshots $(date -u +%F) [skip ci]"
+            git push origin HEAD:snapshots
           fi
-          git push origin HEAD:snapshots

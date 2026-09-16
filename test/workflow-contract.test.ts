@@ -41,6 +41,21 @@ function stepChunk(namePrefix: string): string {
 /** The three substrings that together spell the rc-exit discipline (I1). */
 const RC_EXIT_DISCIPLINE = ['|| rc=$?', '-ge 2', 'exit "${hard_fail}"'] as const;
 
+/**
+ * The BENIGN leg of the rc taxonomy: the `-eq 1` branch body — extracted as
+ * the region between the `-eq 1` marker and the next `-ge 2` marker (the two
+ * branch conditions), falling back to the end of the chunk when the
+ * hard-fail branch textually precedes the benign one (today's if/elif
+ * layout). This is what the negative assertion runs against: a branch that
+ * is green by design must not secretly set hard_fail.
+ */
+function benignBranch(chunk: string): string {
+  const start = chunk.indexOf('-eq 1');
+  expect(start, "chunk carries a '-eq 1' branch").toBeGreaterThan(-1);
+  const nextHardFail = chunk.indexOf('-ge 2', start + 1);
+  return chunk.slice(start, nextHardFail === -1 ? undefined : nextHardFail);
+}
+
 describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
   it('the smoke loop hard-fails on rc>=2 (rc capture, -ge 2 branch, exit "${hard_fail}")', () => {
     const smoke = stepChunk('Fake-driver smoke over the micro suites');
@@ -66,5 +81,22 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(ifLine, 'snapshot job declares a job-level if:').toBeDefined();
     expect(ifLine).toContain('!cancelled()');
     expect(ifLine).toContain("needs.matrix.result != 'skipped'");
+  });
+
+  it('the BENIGN leg stays benign: the -eq 1 branch notices/warns and never sets hard_fail', () => {
+    // rc 1 (scored zero / budget-gated) is GREEN by design (I1): the branch
+    // must surface its own marker — ::notice:: on the smoke loop, ::warning::
+    // on the matrix eval cell — and must NOT touch hard_fail, so a benign
+    // outcome can never be reclassified into a job failure (nor a hard fail
+    // hidden as a warning).
+    const cases = [
+      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro suites'), marker: '::notice::' },
+      { label: 'matrix eval cell', chunk: stepChunk('Eval cell —'), marker: '::warning::' },
+    ] as const;
+    for (const { label, chunk, marker } of cases) {
+      const benign = benignBranch(chunk);
+      expect(benign, `${label}: -eq 1 branch must carry ${marker}`).toContain(marker);
+      expect(benign, `${label}: -eq 1 branch must NOT set hard_fail=1 (rc 1 is green)`).not.toContain('hard_fail=1');
+    }
   });
 });

@@ -1,8 +1,8 @@
 // Shared immutable-judge implementation for the micro fixtures — ONE judge,
-// five thin shims (fresh-reviewer round 1, PR 10: the judge bypass fix and
-// the deduplication fix). This lib lives at the fixtures/ level and is NEVER
-// materialized into a worker workspace; the repo-side check.mjs shims import
-// it by relative path and only identify WHICH fixture they judge.
+// five thin shims (fresh-reviewer round 1, PR 10; hardened round 2). This
+// lib lives at the fixtures/ level and is NEVER materialized into a worker
+// workspace; the repo-side check.mjs shims import it by relative path and
+// only identify WHICH fixture they judge.
 //
 // THE DECIDED PROBE CONTRACT (suites/README.md, phase-3 J3), enforced here:
 //
@@ -33,19 +33,28 @@
 //   discovery entirely, so even a missed or oddly-named planted config is
 //   inert.
 //
-// - The judge re-runs the fixture's vitest suite against cwd. Vitest is
-//   loaded from the REPO's node_modules — the fixture workspace is a
-//   zero-dependency package with no node_modules of its own — and is handed
-//   `--root <cwd>` so it discovers tests inside the workspace, not the repo.
-//   Output is piped and then forwarded: the runner scores the exit status
-//   and trims diagnostics to its own tail, so a red suite must still carry
-//   its evidence without flooding the row.
+// - The workspace tree is graded ONLY where it physically lives: the worker
+//   owns the tree and may plant symlinks — e.g. src replaced by a symlink
+//   pointing at fixtures/solutions/*/src graded as passing
+//   (reviewer-reproduced, round 2). Every non-directory entry is
+//   realpath-resolved and verified to stay inside the workspace's own
+//   realpath; the first escape fails closed.
 //
-// A probe that cannot run (missing vitest entry, spawn failure) exits 1
-// with a one-line stderr reason — a judge that cannot judge never passes.
+// - FAIL CLOSED everywhere: misuse (cwd containing the pristine fixture),
+//   an escaped or unresolvable graded-tree entry, a missing vitest entry,
+//   or a spawn failure each yield a one-line stderr reason and exit 1 — a
+//   judge that cannot judge never passes.
+//
+// The judge re-runs the fixture's vitest suite against cwd. Vitest is
+// loaded from the REPO's node_modules — the fixture workspace is a
+// zero-dependency package with no node_modules of its own — and is handed
+// `--root <cwd>` so it discovers tests inside the workspace, not the repo.
+// Output is piped and then forwarded: the runner scores the exit status and
+// trims diagnostics to its own tail, so a red suite must still carry its
+// evidence without flooding the row.
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -60,8 +69,15 @@ const PLANTED_CONFIG_FILES = [
   'vite.config.js', 'vite.config.mjs', 'vite.config.cjs',
 ];
 
-/** Ceiling for the spawned vitest run: a looping suite must never stall the scoring probe. */
-const VITEST_TIMEOUT_MS = 120_000;
+/**
+ * Ceiling for the spawned vitest run. LAYERING (round-2 review): the
+ * runner's scorer default (runner/score/fixerWorker.ts
+ * DEFAULT_CHECK_TIMEOUT_MS = 60_000) kills the whole probe before this
+ * judge's own ceiling would fire unless the operator raises
+ * --check-timeout-ms — so this ceiling must stay BELOW it; micro probes run
+ * in ~1-2s, 45s is generous headroom.
+ */
+const VITEST_TIMEOUT_MS = 45_000;
 
 /**
  * Run the shared vitest judge for one micro fixture. Plain JS (no TS
@@ -76,7 +92,8 @@ const VITEST_TIMEOUT_MS = 120_000;
  * @param {string} options.judgeLabel - label used in one-line stderr reasons.
  * @returns {void} never normally: sets process.exitCode to the vitest
  *   child's status (a signal kill counts as failure); calls process.exit(1)
- *   only on the early infrastructure guards.
+ *   only on the early infrastructure guards, and sets process.exitCode = 1
+ *   with a one-line stderr reason on any fail-closed refusal.
  */
 export function runVitestJudge(options) {
   const { judgeUrl, judgeLabel } = options;
@@ -88,25 +105,70 @@ export function runVitestJudge(options) {
     process.exit(1);
   }
 
-  // Guard: the judge is only ever executed with cwd = a MATERIALIZED
-  // WORKSPACE COPY. A cwd that CONTAINS this fixture dir (the repo root,
-  // fixtures/, the fixture dir itself) is misuse — restoring or scrubbing
-  // there would delete or overwrite repo content (the repo's own test/,
-  // the repo's vitest.config.ts) — so both workspace repairs are skipped
-  // and the run proceeds against whatever cwd actually holds.
-  const pristineTestDir = join(fixtureDir, 'test');
+  // FAIL CLOSED on misuse (round 2; previously this branch skipped the
+  // workspace repairs and PROCEEDED): the judge is only ever executed with
+  // cwd = a MATERIALIZED WORKSPACE COPY. A cwd that CONTAINS this fixture
+  // dir (the repo root, fixtures/, the fixture dir itself) is misuse —
+  // restoring or scrubbing there would delete or overwrite repo content,
+  // and grading whatever cwd holds would not be grading a workspace copy.
+  // A judge that cannot tell what it is grading must never grade.
   const cwdToFixture = relative(process.cwd(), fixtureDir);
   const fixtureInsideCwd = cwdToFixture === '' || (!cwdToFixture.startsWith('..') && !isAbsolute(cwdToFixture));
-  if (!fixtureInsideCwd) {
-    // Restore the pristine tests (see contract: the tests are part of the judge).
-    rmSync(join(process.cwd(), 'test'), { recursive: true, force: true });
-    cpSync(pristineTestDir, join(process.cwd(), 'test'), { recursive: true });
-    // Scrub worker-planted config files from the workspace root (see
-    // contract: config discovery is a bypass). Belt one of two — the
-    // explicit --config below is belt two.
-    for (const name of PLANTED_CONFIG_FILES) {
-      rmSync(join(process.cwd(), name), { recursive: true, force: true });
+  if (fixtureInsideCwd) {
+    console.error(
+      `${judgeLabel}: misuse — cwd ${cwdToFixture === '' ? 'is' : 'contains'} the pristine fixture dir; refusing to judge (fail closed)`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  // Restore the pristine tests (see contract: the tests are part of the judge).
+  const pristineTestDir = join(fixtureDir, 'test');
+  rmSync(join(process.cwd(), 'test'), { recursive: true, force: true });
+  cpSync(pristineTestDir, join(process.cwd(), 'test'), { recursive: true });
+  // Scrub worker-planted config files from the workspace root (see
+  // contract: config discovery is a bypass). Belt one of two — the
+  // explicit --config below is belt two.
+  for (const name of PLANTED_CONFIG_FILES) {
+    rmSync(join(process.cwd(), name), { recursive: true, force: true });
+  }
+
+  // Graded-tree containment (round 2): every non-directory entry in the
+  // workspace must realpath-resolve INSIDE the workspace's own realpath.
+  // Directories reached by readdir are physical by construction (a symlinked
+  // directory is reported as a symlink and checked through its target
+  // instead). An unresolvable entry (dangling link) resolves nowhere, so it
+  // grades nothing and also fails closed.
+  const workspaceReal = realpathSync(process.cwd());
+  const escapeReason = (entryPath) => {
+    let resolved;
+    try {
+      resolved = realpathSync(entryPath);
+    } catch {
+      return 'does not resolve (dangling link?)';
     }
+    const relToWorkspace = relative(workspaceReal, resolved);
+    return relToWorkspace !== '' && (relToWorkspace.startsWith('..') || isAbsolute(relToWorkspace))
+      ? `resolves outside the workspace (${resolved})`
+      : undefined;
+  };
+  const walkGradedTree = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!walkGradedTree(join(dir, entry.name))) return false;
+        continue;
+      }
+      const reason = escapeReason(join(dir, entry.name));
+      if (reason !== undefined) {
+        console.error(`${judgeLabel}: workspace escape — ${join(dir, entry.name)} ${reason}; refusing to judge (fail closed)`);
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!walkGradedTree(process.cwd())) {
+    process.exitCode = 1;
+    return;
   }
 
   const res = spawnSync(

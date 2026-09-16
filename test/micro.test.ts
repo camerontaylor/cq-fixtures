@@ -29,9 +29,29 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const FIXER_SUITE_DIR = join(REPO_ROOT, 'suites', 'fixer-worker', 'micro');
 const CLASSIFIER_SUITE_DIR = join(REPO_ROOT, 'suites', 'review-classifier', 'micro');
 
-// Ceiling for one judge execution in these tests: matches the judges' own
-// internal spawn timeout (fixtures/micro-*/check.mjs).
+// Generous ceiling for one judge execution in these tests — the judge's own
+// internal vitest ceiling is 45s (fixtures/judge-lib.mjs, layered below the
+// scorer's 60s default); this test-side ceiling only guards a hung judge.
 const PROBE_TIMEOUT_MS = 120_000;
+
+/**
+ * Spawn one judge exactly as the runner's scorer does and return its exit
+ * status (CodeRabbit minor, round 2): spawnSync reports status NULL on
+ * timeout/signal/spawn failure, and a null would satisfy the faulted side's
+ * `not.toBe(0)` for the WRONG reason — a non-execution is infrastructure,
+ * not a probe verdict. Fail the test immediately instead, naming the case
+ * and the spawn problem.
+ */
+function runJudgeOrThrow(caseId: string, checkPath: string, workspace: string): number {
+  const res = spawnSync(process.execPath, [checkPath], { cwd: workspace, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS });
+  if ((res.error !== undefined && res.error !== null) || res.status === null) {
+    throw new Error(
+      `${caseId} judge spawn failed (infrastructure, not an eval signal): ` +
+        `${(res.error as Error | undefined)?.message ?? `killed by signal ${res.signal ?? 'unknown'}`}`,
+    );
+  }
+  return res.status;
+}
 
 // Ajv setup identical to test/schema.test.ts and the runner: every artifact
 // these tests inspect is held to the same contract the runner enforces.
@@ -219,12 +239,7 @@ describe('fault discrimination (pristine fails, solution passes — the heart of
       const workspace = mkdtempSync(join(tmpdir(), 'cq-micro-ws-'));
       try {
         cpSync(join(REPO_ROOT, fixture), workspace, { recursive: true, verbatimSymlinks: true });
-        const runJudge = (): number | null =>
-          spawnSync(process.execPath, [join(REPO_ROOT, probe.check)], {
-            cwd: workspace,
-            encoding: 'utf8',
-            timeout: PROBE_TIMEOUT_MS,
-          }).status;
+        const runJudge = (): number => runJudgeOrThrow(c.id, join(REPO_ROOT, probe.check), workspace);
 
         expect(runJudge(), `${c.id} must FAIL on the pristine (faulted) fixture`).not.toBe(0);
 
@@ -277,11 +292,7 @@ describe('judge integrity: planted vitest config cannot turn a faulted fixture g
           join(workspace, 'vitest.config.mjs'),
           'export default { test: { include: [], passWithNoTests: true } };\n',
         );
-        const status = spawnSync(process.execPath, [join(REPO_ROOT, probe.check)], {
-          cwd: workspace,
-          encoding: 'utf8',
-          timeout: PROBE_TIMEOUT_MS,
-        }).status;
+        const status = runJudgeOrThrow(c.id, join(REPO_ROOT, probe.check), workspace);
         expect(status, `${c.id} must FAIL with src still faulted, planted config notwithstanding`).not.toBe(0);
         // The scrub removed the plant from the workspace root.
         expect(existsSync(join(workspace, 'vitest.config.mjs'))).toBe(false);
@@ -290,6 +301,60 @@ describe('judge integrity: planted vitest config cannot turn a faulted fixture g
       }
     }, PROBE_TIMEOUT_MS + 30_000);
   }
+
+  // FIX 5 (round 2): the two defenses above lean on vitest-5 INTERNALS.
+  // These tests pin them so a vitest major bump cannot silently reopen
+  // either bypass. micro-1 only — each costs a real vitest spawn and the
+  // internals are per-runner, not per-fixture.
+
+  it('micro-1: a planted workspace node_modules/vitest stub cannot satisfy the judge', () => {
+    // Pinned internal #1 — import aliasing: the runner's vitest resolves
+    // test files' `import 'vitest'` through its own alias and never
+    // consults the workspace's node_modules. A planted stub like this could
+    // shadow the test API if a vitest major bump changed that resolution;
+    // on a FAULTED workspace the judge must fail regardless — what this
+    // test forbids is the plant ever flipping a broken workspace green.
+    const workspace = mkdtempSync(join(tmpdir(), 'cq-micro-nm-'));
+    try {
+      cpSync(join(REPO_ROOT, 'fixtures', 'micro-1'), workspace, { recursive: true, verbatimSymlinks: true });
+      mkdirSync(join(workspace, 'node_modules', 'vitest'), { recursive: true });
+      writeFileSync(
+        join(workspace, 'node_modules', 'vitest', 'package.json'),
+        JSON.stringify({ name: 'vitest', version: '0.0.0', type: 'module', main: './index.js', exports: './index.js' }) + '\n',
+      );
+      writeFileSync(
+        join(workspace, 'node_modules', 'vitest', 'index.js'),
+        "export const describe = () => { throw new Error('shadowed vitest API'); };\n" +
+          'export const it = describe;\nexport const expect = describe;\n',
+      );
+      const status = runJudgeOrThrow('micro-1', join(REPO_ROOT, 'fixtures', 'micro-1', 'check.mjs'), workspace);
+      expect(status, 'judge must FAIL on a faulted workspace regardless of the planted stub').not.toBe(0);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, PROBE_TIMEOUT_MS + 30_000);
+
+  it('micro-1: a planted vitest.workspace.mjs narrowed to a passing-only project cannot satisfy the judge', () => {
+    // Pinned internal #2 — workspace discovery: vitest 5 does not discover
+    // vitest.workspace.mjs at all (workspaces became in-config "projects"
+    // in vitest 3), and the judge names --config, which disables discovery
+    // besides. A workspace file narrowed to a passing-only project is
+    // therefore inert; if a future vitest major re-enables workspace-file
+    // discovery, this test fails loudly here instead of a faulted fixture
+    // silently grading green.
+    const workspace = mkdtempSync(join(tmpdir(), 'cq-micro-wsf-'));
+    try {
+      cpSync(join(REPO_ROOT, 'fixtures', 'micro-1'), workspace, { recursive: true, verbatimSymlinks: true });
+      writeFileSync(
+        join(workspace, 'vitest.workspace.mjs'),
+        'export default { projects: [{ test: { include: [], passWithNoTests: true } }] };\n',
+      );
+      const status = runJudgeOrThrow('micro-1', join(REPO_ROOT, 'fixtures', 'micro-1', 'check.mjs'), workspace);
+      expect(status, 'judge must FAIL on a faulted workspace regardless of the planted workspace file').not.toBe(0);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, PROBE_TIMEOUT_MS + 30_000);
 });
 
 describe('fake-driver smoke over the micro suites (D2 subprocess lane)', () => {

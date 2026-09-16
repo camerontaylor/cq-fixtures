@@ -13,11 +13,23 @@ Five tiny SYNTHETIC zero-dependency TypeScript packages, one seeded fault each (
   PASSES once the fault is fixed. These suites are excluded from the repo's own `npm test`
   (`vitest.config.ts`): they are red by design and are only ever graded inside a materialized
   workspace copy.
-- `check.mjs` — the immutable judge (the decided probe contract in `suites/README.md`): it
-  resolves from the repo root, locates the repo's `node_modules/vitest/vitest.mjs`, and re-runs
-  the suite against the workspace under judgment via
-  `spawnSync(process.execPath, [vitest, 'run', '--root', process.cwd()])`, exiting with the
-  child's status.
+- `check.mjs` — a thin shim over the shared immutable judge,
+  `fixtures/judge-lib.mjs` (which lives at the fixtures/ level and is never
+  materialized into a workspace; the shim only identifies which fixture it
+  judges, resolving the pristine fixture dir and repo root from the shim's
+  own URL). The judge re-runs the fixture's vitest suite against the
+  workspace under judgment (`node <repo vitest> run --root <cwd> --config
+  fixtures/judge.vitest.config.mjs`) and fails closed — exit 1, never pass —
+  on: misuse (cwd containing the pristine fixture), a graded-tree escape
+  (every non-directory entry must realpath-resolve inside the workspace; the
+  worker owns the tree and may plant symlinks), a missing restore target, or
+  a spawn failure. Before every run it restores the PRISTINE `test/` into
+  the workspace (the tests are part of the judge), scrubs worker-planted
+  `vitest.config.*` / `vite.config.*` from the workspace root, and the
+  explicit judge config disables discovery entirely (include pinned to the
+  restored `test/**/*.test.ts`, `passWithNoTests: false` so a broken restore
+  fails). Diagnostics are forwarded; the final status is set via
+  `process.exitCode` so piped output always flushes.
 
 ## Fixed reference copies (`solutions/`)
 

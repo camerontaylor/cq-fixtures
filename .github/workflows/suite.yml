@@ -319,10 +319,23 @@ jobs:
           snap_dir="reports/snapshots/$(date -u +%F)"
           # A same-day re-dispatch after a suite is removed or renamed must
           # not leave the old suite's stale tables behind: clear this run's
-          # dated dir (tracked on the snapshots branch) before recopying.
+          # dated dir (tracked on the snapshots branch) before recopying —
+          # but ONLY when the matrix fully succeeded. The snapshot runs after
+          # PARTIAL failures too (!cancelled()), and clearing on a degraded
+          # run would destroy the failed cell's tables from an earlier
+          # complete run the same day. Degraded publishes therefore MERGE
+          # into the dated dir: stale tables from a same-day renamed/removed
+          # suite may linger in that case — accepted, degraded publishes
+          # merge; only a fully successful matrix clears its own dated dir.
           # set -u safe — snap_dir is assigned one line above; rm -rf on a
-          # missing dir is a silent no-op.
-          rm -rf "${snap_dir}"
+          # missing dir is a silent no-op. needs.matrix.result is a fixed
+          # GitHub enum ('success'|'failure'|'cancelled'|'skipped'), safe to
+          # interpolate into the script.
+          if [ "${{ needs.matrix.result }}" = "success" ]; then
+            rm -rf "${snap_dir}"
+          else
+            echo "matrix did not fully succeed (${{ needs.matrix.result }}) — merging into ${snap_dir} without clearing"
+          fi
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir: eval writes
           # reports/eval/<model>/<role>/<suite>/<role>.table.json, and
@@ -335,13 +348,13 @@ jobs:
             mkdir -p "${snap_dir}/${suite_name}"
             cp "${table}" "${snap_dir}/${suite_name}/"
           done < <(find reports/eval -name '*.table.json' 2>/dev/null | sort)
-          # Add runs BEFORE any early exit, so removals publish too: the
-          # rm -rf above cleared the worktree, and `git add` stages the
-          # removal of previously tracked tables as deletions — a run that
-          # follows the removal of ALL suites therefore commits and pushes
-          # its deletions instead of leaving the stale dated dir on
-          # origin/snapshots. reports/* is gitignored for LOCAL runs;
-          # committed snapshots are the designed exception, hence the
+          # Add runs BEFORE any early exit, so removals publish too: on a
+          # fully successful matrix the rm -rf above cleared the worktree, and
+          # `git add` stages the removal of previously tracked tables as
+          # deletions — a run that follows the removal of ALL suites therefore
+          # commits and pushes its deletions instead of leaving the stale
+          # dated dir on origin/snapshots. reports/* is gitignored for LOCAL
+          # runs; committed snapshots are the designed exception, hence the
           # force-add.
           git add -f "${snap_dir}"
           # "Snapshots unchanged" is the ONLY no-op path: staged deletions

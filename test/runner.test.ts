@@ -379,6 +379,17 @@ describe('schema-compliance dimension (DD-4: structured-output fidelity as a sco
     expect(wrongTypes.diagnostics).not.toMatch(/\n/);
   });
 
+  it('an EXTRA field fails the probe (strict schema — DD-4 measures shape fidelity)', () => {
+    // Zod objects default-strip unknown keys, so a schema-stripping parse
+    // would let a stray `verdict` ride along undetected; .strict() makes any
+    // undeclared key a compliance failure, with the diagnostic naming it.
+    const extraField = scoreSchemaCompliance({
+      structuredOutput: { fixed: true, notes: 'ok', verdict: 'whatever' },
+    } as WorkerResult);
+    expect(extraField).toMatchObject({ score: 0, passed: 0, total: 1 });
+    expect(extraField.diagnostics).toMatch(/Unrecognized key: "verdict"/);
+  });
+
   it('a worker that fixes the fixture AND holds the shape scores both probes (2/2) end to end', async () => {
     // The same seeded fault as the workspace round-trip test, dispatched to
     // a driver that both writes the fix and answers in the DD-4 shape — the

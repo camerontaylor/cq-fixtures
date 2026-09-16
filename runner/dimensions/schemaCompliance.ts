@@ -25,11 +25,19 @@ import type { ScoreOutcome } from '../score/fixerWorker.ts';
  * Passed to the driver at construction time (runner/cli.ts, the same F3/G6
  * seam where the classifier gets its verdict schema) and restated as the
  * schema-compliance probe's target below — one shape, two consumers.
+ *
+ * STRICT by design (cycle-2 CLI review): zod objects default-strip unknown
+ * keys, which would let `{fixed, notes, verdict: 'whatever'}` pass
+ * compliance while carrying an undeclared field — but DD-4 measures
+ * json-SHAPE fidelity, so strictness is the point: any key outside the
+ * declared shape fails the probe.
  */
-export const FIXER_OUTPUT_SCHEMA = z.object({
-  fixed: z.boolean(),
-  notes: z.string(),
-});
+export const FIXER_OUTPUT_SCHEMA = z
+  .object({
+    fixed: z.boolean(),
+    notes: z.string(),
+  })
+  .strict();
 
 /**
  * Score the schema-compliance probe: PASS (1/1) iff the worker returned a

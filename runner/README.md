@@ -21,7 +21,7 @@ Node >= 23.6 runs the TypeScript directly (type stripping); CI uses node 24. `--
 
 ## Scoring contract
 
-Per-role scorers live in `runner/score/`: `check-rerun` (fixer-worker) re-runs the seeded check with cwd set to the fixture workspace — the worker's answer does not influence the probe, re-running the check IS the contract; `expected-verdict` (review-classifier) compares the classifier's `structuredOutput.verdict` against the suite's expected value from the toolkit's classifyThreads vocabulary (actionable | responded | resolved | blocked | skip). A probe that cannot execute scores 0 with diagnostics and never aborts the run.
+Per-role scorers live in `runner/score/`: `check-rerun` (fixer-worker) re-runs the seeded check with cwd set to the fixture workspace — the worker's answer does not influence the probe, re-running the check IS the contract; `expected-verdict` (review-classifier) compares the classifier's `structuredOutput.verdict` against the suite's expected value from the toolkit's classifyThreads vocabulary (actionable | responded | resolved | blocked | skip). A probe that cannot execute scores 0 with diagnostics and never aborts the run. Fixer cases carry a SECOND scored probe (DD-4, phase-3 J4): `runner/dimensions/schemaCompliance.ts` grades whether the worker's `structuredOutput` holds the strict `{fixed: boolean, notes: string}` shape it was asked to declare — so a fixer row's `outcome.total` is 2 (check probe + schema probe) and a model's json-fidelity is visible in its score.
 
 ## Served ids
 

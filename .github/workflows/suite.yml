@@ -85,6 +85,10 @@ jobs:
           done
           exit "${hard_fail}"
       - name: Upload smoke reports
+        # if: always(): a hard-failed smoke (rc>=2) still uploads whatever
+        # journals/tables were written before the failure — triage evidence
+        # for the case that broke the run.
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: smoke-reports
@@ -263,7 +267,15 @@ jobs:
     # kept INSIDE the expression (push/PR runs still never reach this job) —
     # cancelling a run explicitly must not publish half a matrix, hence
     # !cancelled() rather than always().
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    #
+    # needs.matrix.result != 'skipped': !cancelled() OVERRIDES the default
+    # skip-on-failed-need, so without this guard a dispatch run whose SMOKE
+    # job failed would skip the matrix yet STILL run this job — and a skipped
+    # matrix produces NO artifact at all (the EMPTY-artifact path lives
+    # INSIDE the matrix job), while download-artifact v4 silently succeeds on
+    # a zero-match pattern. The job would then publish empty/foreign data and
+    # could even create the snapshots branch as a bare checkout copy.
+    if: ${{ !cancelled() && needs.matrix.result != 'skipped' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     # Serialize snapshot-branch updates: two overlapping dispatch/schedule
     # runs would race the `snapshots` tip and one push would fail

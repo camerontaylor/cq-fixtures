@@ -88,7 +88,8 @@
               "check": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Repo-root-relative path to the seeded check probe to re-run for scoring (kind \"check-rerun\")."
+                "pattern": "\\.(mjs|cjs|js)$",
+                "description": "Repo-root-relative path to the seeded check probe to re-run for scoring (kind \"check-rerun\"). The check is a Node script: the runner always executes it as `node <check>` (J3 decision 2026-09-16), so the declared format must say so — the file extension must be .js, .cjs, or .mjs."
               },
               "expected": {
                 "type": "string",

@@ -1,0 +1,14 @@
+{
+  "id": 481201,
+  "path": "src/retry.ts",
+  "line": 42,
+  "resolved": false,
+  "comments": [
+    {
+      "author": "mhalliwell",
+      "body": "This retry loop catches the error but never re-checks whether the caller's abort signal fired, so a cancelled request keeps retrying up to the max attempts. The signal check has to happen at the top of the loop — right now a cancelled download keeps hitting the endpoint five more times.",
+      "createdAt": "2026-09-02T09:14:00Z",
+      "isReply": false
+    }
+  ]
+}

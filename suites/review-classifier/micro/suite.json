@@ -1,0 +1,89 @@
+{
+  "name": "micro",
+  "role": "review-classifier",
+  "provenance": {
+    "origin": "hand-seeded synthetic (phase-3 J3, 2026-09-16); no public-benchmark content"
+  },
+  "cases": [
+    {
+      "id": "thread-01",
+      "fixture": "fixtures/threads/thread-01.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "actionable" }
+    },
+    {
+      "id": "thread-02",
+      "fixture": "fixtures/threads/thread-02.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "actionable" }
+    },
+    {
+      "id": "thread-03",
+      "fixture": "fixtures/threads/thread-03.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "responded" }
+    },
+    {
+      "id": "thread-04",
+      "fixture": "fixtures/threads/thread-04.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "responded" }
+    },
+    {
+      "id": "thread-05",
+      "fixture": "fixtures/threads/thread-05.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "resolved" }
+    },
+    {
+      "id": "thread-06",
+      "fixture": "fixtures/threads/thread-06.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "resolved" }
+    },
+    {
+      "id": "thread-07",
+      "fixture": "fixtures/threads/thread-07.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "blocked" }
+    },
+    {
+      "id": "thread-08",
+      "fixture": "fixtures/threads/thread-08.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "blocked" }
+    },
+    {
+      "id": "thread-09",
+      "fixture": "fixtures/threads/thread-09.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "skip" }
+    },
+    {
+      "id": "thread-10",
+      "fixture": "fixtures/threads/thread-10.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}."
+      },
+      "probe": { "kind": "expected-verdict", "expected": "skip" }
+    }
+  ]
+}

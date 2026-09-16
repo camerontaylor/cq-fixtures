@@ -1,0 +1,14 @@
+{
+  "id": 481209,
+  "path": "utils/format.ts",
+  "line": 12,
+  "resolved": false,
+  "comments": [
+    {
+      "author": "rowanpetrossian",
+      "body": "Nit: `let` here is never reassigned — prefer `const`. Entirely optional, style only.",
+      "createdAt": "2026-09-10T08:22:00Z",
+      "isReply": false
+    }
+  ]
+}

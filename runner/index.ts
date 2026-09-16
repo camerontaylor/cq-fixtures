@@ -215,9 +215,14 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             budget,
           };
         } else {
-          // Review-classifier: tools-none / read-only. The fixture (thread
-          // payload) is not wired into the prompt yet — payload content
-          // injection is J3 scope.
+          // Review-classifier: tools-none / read-only — the classifier cannot
+          // open files itself, so the thread payload's CONTENT is injected
+          // into the prompt (J3/D3, 2026-09-16): instruction first, then the
+          // fixture file verbatim (utf8). The read sits inside the per-case
+          // try on purpose: an unreadable fixture is a BROKEN CASE, not an
+          // abort — the throw lands in the catch below and becomes an honest
+          // failed row (I9), never a crashed run. Fixer prompts stay
+          // unchanged: the workspace path already rides in them above.
           invocation = {
             prompt: c.task.prompt,
             modelSpec: { model: opts.model, provider: opts.provider },
@@ -225,6 +230,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             sandboxPolicy: { level: 'read-only' },
             budget,
           };
+          const payload = readFileSync(join(repoRoot, c.fixture), 'utf8');
+          invocation.prompt += `\n\nThread payload (fixture ${c.fixture}):\n${payload}`;
         }
         worker = await opts.driver.run(invocation);
       } catch (e) {

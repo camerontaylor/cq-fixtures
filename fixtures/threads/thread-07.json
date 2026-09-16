@@ -1,0 +1,14 @@
+{
+  "id": 481207,
+  "path": "sync/merge.ts",
+  "line": 259,
+  "resolved": false,
+  "comments": [
+    {
+      "author": "kvandusen",
+      "body": "Whether we last-write-wins or reject on this conflict depends on the cross-team conflict-policy decision that is still parked with the storage platform group. We cannot pick a semantics here until they publish the policy — holding this thread open until that lands. No code change requested from this PR.",
+      "createdAt": "2026-09-08T14:12:00Z",
+      "isReply": false
+    }
+  ]
+}

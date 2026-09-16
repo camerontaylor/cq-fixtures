@@ -1,0 +1,14 @@
+{
+  "id": 481202,
+  "path": "lib/ttlCache.ts",
+  "line": 17,
+  "resolved": false,
+  "comments": [
+    {
+      "author": "priyaraghunathan",
+      "body": "The expiry comparison is inverted: `if (now - entry.storedAt < this.ttlMs)` keeps an entry only while it is YOUNGER than the TTL, but the branch evicts in that case. Net effect is that fresh entries are dropped and stale ones are served forever. Swap the comparison (or the branch) and add a test that reads at ttlMs + 1.",
+      "createdAt": "2026-09-03T15:47:00Z",
+      "isReply": false
+    }
+  ]
+}

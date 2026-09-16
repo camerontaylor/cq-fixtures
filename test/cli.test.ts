@@ -76,7 +76,16 @@ function writeSuite(dirName: string, spec: SuiteSpec): string {
 }
 
 function reviewCase(id: string, expected: string): object {
-  return { id, fixture: 'fixture', task: { prompt: 'Classify the review thread.' }, probe: { kind: 'expected-verdict', expected } };
+  // J3 payload injection: runSuite reads the classifier fixture from the repo
+  // root (cliMain exposes no repoRoot override), so classifier cases here
+  // reference a REAL repo fixture — thread-01.json — instead of the pre-J3
+  // nonexistent 'fixture' placeholder.
+  return {
+    id,
+    fixture: 'fixtures/threads/thread-01.json',
+    task: { prompt: 'Classify the review thread.' },
+    probe: { kind: 'expected-verdict', expected },
+  };
 }
 
 function cliArgs(suiteDir: string): string[] {

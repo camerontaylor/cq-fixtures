@@ -109,8 +109,11 @@ jobs:
       # artifacts/snapshots.
       fail-fast: false
       matrix:
-        # THE MODEL AXIS (ADR-0001 axis 1, as revised 2026-09-14, Z.AI-only):
-        # models vary on the ai-sdk driver. Both entries are SERVED IDS
+        # THE MODEL AXIS (ADR-0001 axis 1, as revised 2026-09-14 — that
+        # revision removes the ANTHROPIC-key requirement: phase-4 Claude-
+        # shaped lanes will exercise Z.AI's anthropic-compat endpoint, while
+        # each model keeps running on its own wire): models vary on the
+        # ai-sdk driver. Both entries are SERVED IDS
         # (served-id decision 2026-09-14) — the GLM coding wire serves
         # glm-5.3-flash; deepseek keeps its served id. The lane file's
         # 'drivers × Claude' wording is SUPERSEDED by that revision: DRIVERS
@@ -175,7 +178,7 @@ jobs:
       # tracked: move cells to a spend-capped, ephemeral eval key. The
       # credential split already keeps repo write access out of this job
       # (persist-credentials: false).
-      - name: Eval cell — ${{ matrix.model }} @ ${{ matrix.provider }}
+      - name: Eval cell — ${{ matrix.cell.model }} @ ${{ matrix.cell.provider }}
         env:
           # The cell names BOTH sides of the credential seam: env_key is the
           # toolkit requireKey name for the cell's provider (ZAI_API_KEY /
@@ -185,10 +188,10 @@ jobs:
           # STEP level (the strategy block cannot read the secrets context);
           # the `&& … || ''` guard keeps the OTHER provider's env empty on
           # every cell, so each cell only ever satisfies its own driver.
-          ZAI_API_KEY: ${{ matrix.env_key == 'ZAI_API_KEY' && secrets[matrix.secret_name] || '' }}
-          DEEPSEEK_API_KEY: ${{ matrix.env_key == 'DEEPSEEK_API_KEY' && secrets[matrix.secret_name] || '' }}
-          MATRIX_MODEL: ${{ matrix.model }}
-          MATRIX_PROVIDER: ${{ matrix.provider }}
+          ZAI_API_KEY: ${{ matrix.cell.env_key == 'ZAI_API_KEY' && secrets[matrix.cell.secret_name] || '' }}
+          DEEPSEEK_API_KEY: ${{ matrix.cell.env_key == 'DEEPSEEK_API_KEY' && secrets[matrix.cell.secret_name] || '' }}
+          MATRIX_MODEL: ${{ matrix.cell.model }}
+          MATRIX_PROVIDER: ${{ matrix.cell.provider }}
         run: |
           set -euo pipefail
           # Designed discovery (J4): the two micro suites ARE the matrix
@@ -241,7 +244,7 @@ jobs:
           # would make the second uploader fail. The snapshot job below
           # re-joins the cells with a pattern download (merge-multiple),
           # which is that action's designed merge mechanism.
-          name: eval-reports-${{ matrix.model }}
+          name: eval-reports-${{ matrix.cell.model }}
           path: reports/
           if-no-files-found: ignore
 
@@ -252,7 +255,15 @@ jobs:
   # dispatch/schedule restriction as `matrix` (plan §9 designed flow).
   snapshot:
     needs: matrix
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # needs + !cancelled(): the snapshot runs after a FAILED matrix too. The
+    # default post-failure behavior would SKIP this job on `needs: matrix`,
+    # burying the surviving cell's tables — but every matrix cell uploads its
+    # eval-reports-<model> artifact `if: always()`, so whatever survived a
+    # partial failure still publishes. The dispatch/schedule restriction is
+    # kept INSIDE the expression (push/PR runs still never reach this job) —
+    # cancelling a run explicitly must not publish half a matrix, hence
+    # !cancelled() rather than always().
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     # Serialize snapshot-branch updates: two overlapping dispatch/schedule
     # runs would race the `snapshots` tip and one push would fail

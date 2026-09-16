@@ -44,7 +44,11 @@ now) plus the schema-compliance probe (`runner/dimensions/schemaCompliance.ts`
 notes: string}` it was asked to declare). A model's json-fidelity is
 therefore visible directly in its score; classifier rows stay `total: 1`.
 
-**The eval axes** (ADR-0001 as revised 2026-09-14, Z.AI-only): models vary
-on the `ai-sdk` driver; drivers vary on the fixed GLM served id
-`glm-5.3-flash` — a constraint the runner CLI enforces per invocation, so a
-cell on any non-ai-sdk driver carries exactly that served id.
+**The eval axes** (ADR-0001 as revised 2026-09-14): the revision removes the
+ANTHROPIC-key requirement — phase-4 Claude-shaped lanes will exercise Z.AI's
+anthropic-compat endpoint, while each model keeps running on its own wire
+(`glm-5.3-flash` on the GLM coding wire, `deepseek-chat` on the deepseek
+wire). Models vary on the `ai-sdk` driver; drivers vary on the fixed GLM
+served id `glm-5.3-flash` — a constraint the runner CLI enforces per
+invocation, so a cell on any non-ai-sdk driver carries exactly that served
+id.

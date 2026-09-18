@@ -125,42 +125,65 @@ jobs:
       # artifacts/snapshots.
       fail-fast: false
       matrix:
-        # THE MODEL AXIS (ADR-0001 axis 1, as revised 2026-09-14 — that
-        # revision removes the ANTHROPIC-key requirement: phase-4 Claude-
-        # shaped lanes will exercise Z.AI's anthropic-compat endpoint, while
-        # each model keeps running on its own wire): models vary on the
-        # ai-sdk driver. Both entries are SERVED IDS
-        # (served-id decision 2026-09-14) — the GLM coding wire serves
-        # glm-5.3-flash; deepseek keeps its served id. The lane file's
-        # 'drivers × Claude' wording is SUPERSEDED by that revision: DRIVERS
-        # vary on the FIXED GLM served id, a constraint the runner itself
-        # enforces per invocation (runner/cli.ts's axis guard refuses any
-        # non-ai-sdk lane carrying a different model), so a driver axis is
-        # not expressible in THIS matrix.
+        # THE J5 AXES MATRIX (ADR-0001 as revised 2026-09-14): axis 1 —
+        # models vary on the ai-sdk driver; axis 2 — drivers vary on the
+        # FIXED served GLM id glm-5.3-flash, over Z.AI only. Five cells: two
+        # model-axis cells (ai-sdk @ glm-5.3-flash, ai-sdk @ deepseek-chat)
+        # and three driver-axis cells (claude-agent / subprocess / acp @
+        # glm-5.3-flash @ zai — the four-wide driver axis minus ai-sdk
+        # itself). The ai-sdk@glm-5.3-flash cell carries BOTH axes'
+        # evidence — it is the axis-1 model cell AND the driver axis's
+        # ai-sdk point — so it runs once, not once per axis. Every
+        # non-ai-sdk cell pins model glm-5.3-flash, and the runner's axis
+        # guard (runner/cli.ts) refuses any other pairing per invocation;
+        # `axis` records which axis a cell varies (bookkeeping, not a
+        # runner input).
         #
-        # DRIVER AXIS, recorded for phase-4: ai-sdk + claude-agent/
-        # subprocess/acp over the fixed glm-5.3-flash served id expands in
-        # phase-4 lane J (J5 four-wide per delegation/phase-4-lane-j.md) once
-        # the runner constructs those toolkit lanes — the runner CLI today
-        # supports --driver fake|ai-sdk only (this job's cells and the smoke
-        # job above are exactly those two).
+        # LANE PREREQUISITES: the claude-agent lane needs NO install step —
+        # its optional peer @anthropic-ai/claude-agent-sdk ships as a
+        # devDependency (npm ci provides it). The subprocess lane spawns the
+        # headless `claude` CLI (installed below); the acp lane spawns the
+        # zcode-acp-server harness (installed below, version-pinned).
         #
         # Budget by TOKENS (--max-tokens 200000), not USD: glm-5.3-flash@zai
         # is ABSENT from the toolkit price map and the governor FAILS CLOSED
         # on unpriced usage under a USD cap (it would refuse admission after
         # the first case of any multi-case suite — the exact failure DD-9
-        # exists to prevent), and deepseek pricing must not be assumed either.
-        # A token cap binds alone on both cells, keeping them dispatch-safe;
-        # the USD cap is reserved for priced lanes that opt into one.
+        # exists to prevent), and deepseek pricing must not be assumed
+        # either. A token cap binds alone on every cell, keeping them
+        # dispatch-safe; the USD cap is reserved for priced lanes that opt
+        # into one.
         cell:
-          - model: glm-5.3-flash
+          - axis: model
+            model: glm-5.3-flash
             provider: zai
+            driver: ai-sdk
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
-          - model: deepseek-chat
+          - axis: model
+            model: deepseek-chat
             provider: deepseek
+            driver: ai-sdk
             env_key: DEEPSEEK_API_KEY
             secret_name: DEEPSEEK_API_KEY
+          - axis: driver
+            model: glm-5.3-flash
+            provider: zai
+            driver: claude-agent
+            env_key: ZAI_API_KEY
+            secret_name: Z_AI_API_KEY
+          - axis: driver
+            model: glm-5.3-flash
+            provider: zai
+            driver: subprocess
+            env_key: ZAI_API_KEY
+            secret_name: Z_AI_API_KEY
+          - axis: driver
+            model: glm-5.3-flash
+            provider: zai
+            driver: acp
+            env_key: ZAI_API_KEY
+            secret_name: Z_AI_API_KEY
     steps:
       - name: Check out the repo
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -179,6 +202,181 @@ jobs:
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci
+      - name: Excise the unit-test tree and git objects (review-debt 11)
+        # The matrix job never runs vitest, but test/micro.test.ts carries the
+        # micro suites' REFERENCE FIXES: a model-driven worker with
+        # host-privileged tools must not be able to read them out of the
+        # checkout it works in (answer lookup). So the tree is removed before
+        # ANY model-facing step, in EVERY cell (this step is unconditional).
+        # .git goes too: even a fetch-depth-1 clone's object store holds the
+        # HEAD tree's blobs, so `git show HEAD:test/micro.test.ts` would
+        # recover the excised file from .git without the network
+        # (persist-credentials: false already keeps the token out; the
+        # objects are the residual channel). Nothing else breaks: the runner
+        # is self-contained under runner/ (test/cli.test.ts imports nothing
+        # the runner needs), the eval step uses no git, and pack-toolkit.sh
+        # clones fresh from the remote into its own temp dir.
+        run: |
+          set -euo pipefail
+          echo "excising test/ and .git — the micro suites' reference fixes (test/micro.test.ts) must not be readable by model-driven workers from the worktree OR the object store (review-debt #11)"
+          rm -rf test/ .git
+      # LANE INSTALLS (conditional): each lane brings only its own harness.
+      # The claude-agent lane deliberately has NO install step here — its
+      # optional peer @anthropic-ai/claude-agent-sdk ships as a devDependency
+      # (npm ci provides it), so `--driver claude-agent` works out of the box.
+      - name: Install the subprocess lane CLI
+        if: matrix.cell.driver == 'subprocess'
+        # The subprocess lane spawns `claude` (the toolkit SubprocessDriver's
+        # binary default) pointed at Z.AI's anthropic-compat endpoint — the
+        # headless CLI is the claude-code package, PINNED to the exact 2.x
+        # version npm resolves today (2.1.276, 2026-09-19; registry-resolved
+        # at J5 — the first dispatch is the live probe), consistent with the
+        # zcode-acp-server pin below.
+        run: npm install -g @anthropic-ai/claude-code@2.1.276
+      - name: Install the acp lane harness
+        if: matrix.cell.driver == 'acp'
+        # PINNED to the probed version (2026-09-19, 0.43.3): >=0.43 moved the
+        # editor-facing stdio ACP bridge into the `server` subcommand (the
+        # bare bin opens its interactive TUI), and the runner passes the
+        # explicit argv ['zcode-acp-server', 'server'] (runner/cli.ts
+        # ACP_COMMAND) — so the installed harness must be the
+        # subcommand-capable line.
+        run: npm install -g zcode-acp-server@0.43.3
+      - name: ACP headless auth preflight
+        id: acp_preflight
+        if: matrix.cell.driver == 'acp'
+        # CREDENTIAL ASYMMETRY: the OTHER four cells' keys are repo secrets —
+        # their absence is a misconfiguration and hard-fails pre-dispatch in
+        # the runner (exit 2). The acp lane's credentials are AGENT-SIDE (the
+        # zcode harness reads its own zcode-credentials app-side), and CI's
+        # single GitHub identity cannot provision them from repo secrets — so
+        # a blocked acp lane is an honest outcome: skip LOUDLY but green (the
+        # lane is absent from the run, never published as data). The probe
+        # below speaks the minimal ACP round over stdio — initialize
+        # (protocolVersion 1, the ACP convention, clientCapabilities {}),
+        # session/new (fresh mkdtemp cwd, mcpServers []), then session/prompt
+        # — under `timeout 150` (the step keeps its own default timeout).
+        # Exit-status discipline (round-2 review + Codex PR-13 P1 ×2): the SKIP
+        # class is exactly TWO shapes — fail() on a json-rpc error matching
+        # the LIVE-PROBED no-credentials response ("Model config is missing",
+        # 2026-09-19; exit 3), and the timeout's own branch (rc 124: "blocked,
+        # cause not established" — not labeled credentials). EVERYTHING ELSE
+        # is a HARD failure (exit 4, loud): a spawn error, any OTHER json-rpc
+        # error (protocol regression, provider outage, harness bug), an
+        # UNEXPLAINED close before any agent line, and any unexpected
+        # non-zero — a broken harness can never silently vanish from the
+        # matrix as a credential skip.
+        run: |
+          set -euo pipefail
+          rc=0
+          timeout 150 node -e '
+            const { spawn } = require("node:child_process");
+            const { mkdtempSync } = require("node:fs");
+            const { tmpdir } = require("node:os");
+            const { join } = require("node:path");
+            const child = spawn("zcode-acp-server", ["server"], { stdio: ["pipe", "pipe", "pipe"] });
+            const stderr = [];
+            child.stderr.on("data", (d) => { stderr.push(d.toString()); if (stderr.length > 40) stderr.shift(); });
+            let stage = 0; // 0 initialize sent, 1 session/new sent, 2 prompt sent
+            const fail = (why, code = 3) => {
+              console.error("acp preflight FAILED: " + why);
+              if (stderr.length > 0) console.error(stderr.join(""));
+              process.exit(code);
+            };
+            child.on("error", (e) => { console.error("acp preflight FAILED: spawn error: " + e.message); process.exit(4); });
+            // close, not exit: close fires after stdio flushes, so an agent
+            // line arriving just before the harness dies is still processed
+            // by the stdout handler above. An unexplained close is exit 4
+            // (infrastructure), NOT the credential skip: the live-probed
+            // credential-less harness fails via the json-rpc missing-config
+            // response — a silent close is a crash/outage/regression and
+            // must fail the cell loudly (Codex PR-13 round-2 P1).
+            child.on("close", (code) => fail("harness closed (code " + code + ") without any agent output", 4));
+            // A dying harness must not surface as an unhandled EPIPE on the
+            // queued send()s — close/timeout own the verdict (cycle-1 r1
+            // finding 3): the error listener absorbs it.
+            child.stdin.on("error", () => {});
+            const send = (m) => child.stdin.write(JSON.stringify(m) + "\n");
+            send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {} } });
+            let out = "";
+            child.stdout.on("data", (d) => {
+              out += d.toString();
+              let i;
+              while ((i = out.indexOf("\n")) !== -1) {
+                const line = out.slice(0, i).trim();
+                out = out.slice(i + 1);
+                if (line === "") continue;
+                let msg;
+                // Auth-OK is a JSON-RPC MESSAGE at stage 2 — never any
+                // parsed-less stdout line: a login-blocked harness that
+                // narrates to stdout ("visit … to log in") must NOT flip the
+                // cell to authenticated (cycle-2 r1 finding 1) — the timeout
+                // owns non-JSON output.
+                try { msg = JSON.parse(line); } catch { continue; }
+                if (msg.error !== undefined) {
+                  const detail = JSON.stringify(msg.error);
+                  // The exact live-probed marker ONLY (2026-09-19): a loose
+                  // substring like config.json would convert ANY config
+                  // regression (malformed/unreadable file) into a credential
+                  // skip (Codex PR-13 round-3 P1).
+                  if (/Model config is missing/.test(detail)) {
+                    fail("json-rpc error: model config missing (probed no-credentials shape): " + detail, 3);
+                  }
+                  fail("json-rpc error before any agent output (infrastructure): " + detail, 4);
+                }
+                if (stage === 0 && msg.id === 1) {
+                  stage = 1;
+                  send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: mkdtempSync(join(tmpdir(), "acp-preflight-")), mcpServers: [] } });
+                } else if (stage === 1 && msg.id === 2) {
+                  stage = 2;
+                  send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId: msg.result.sessionId, prompt: [{ type: "text", text: "Reply with the single word ready." }] } });
+                } else if (stage === 2) {
+                  // Auth-OK requires the AGENT REPLY (agent_message_chunk) —
+                  // a session/protocol message alone proves nothing: probed
+                  // live (2026-09-19), the harness streams bookkeeping like
+                  // available_commands_update with ZERO credentials, so only
+                  // the reply is accepted; bookkeeping keeps waiting and the
+                  // timeout owns it (skip class). NO APOSTROPHES may appear
+                  // anywhere in this script: it rides inside a shell
+                  // single-quoted string (CodeRabbit PR-13 catch — one
+                  // apostrophe turned the whole preflight into a bash
+                  // syntax error).
+                  const upd = msg.params && msg.params.update;
+                  if (upd !== undefined && upd.sessionUpdate === "agent_message_chunk") {
+                    console.log(line);
+                    process.exit(0);
+                  }
+                }
+              }
+            });
+          ' || rc=$?
+          # The skip signal rides the ARTIFACT (reports/eval/ACP-SKIPPED,
+          # uploaded by the always-on upload step below), NOT a matrix job
+          # output: GitHub merges same-named outputs of matrix legs
+          # LAST-WRITER-WINS, and four of the five legs would write 'false'
+          # — a later eval leg would erase the acp leg's skip and the
+          # snapshot's clear-on-success would wipe an earlier same-day
+          # authenticated acp run (round-2 r2 finding 1). The marker file
+          # never publishes: the snapshot's copy loop takes *.table.json
+          # only.
+          if [ "${rc}" -eq 124 ]; then
+            # HONEST DIAGNOSIS (round-2 r2 finding 2): a window expiry is a
+            # blocked lane, NOT an established credential cause — say so.
+            echo "::warning::acp cell blocked: no agent output within 150s — treated as blocked, cause not established"
+            echo "acp lane skipped: no agent output within 150s — treated as blocked; the lane is honestly absent from this run, never published as data" >> "${GITHUB_STEP_SUMMARY}"
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            mkdir -p reports/eval && touch reports/eval/ACP-SKIPPED
+          elif [ "${rc}" -eq 3 ]; then
+            echo "::warning::acp cell blocked: no headless agent credentials (zcode-credentials cannot be provisioned from repo secrets)"
+            echo "acp lane skipped: no headless agent credentials in CI (agent-side auth) — the lane is honestly absent from this run, never published as data" >> "${GITHUB_STEP_SUMMARY}"
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            mkdir -p reports/eval && touch reports/eval/ACP-SKIPPED
+          elif [ "${rc}" -ne 0 ]; then
+            # Spawn failures (4), script crashes, any unexpected status: a
+            # broken preflight must never silently omit the acp lane — fail.
+            echo "::error::acp preflight failed (rc ${rc}) — infrastructure, not a credential skip"
+            exit 1
+          fi
       # CREDENTIAL PREREQUISITE (the J3 BLOCKED note, carried forward): both
       # secret NAMES must exist in THIS repo's Actions settings — Z_AI_API_KEY
       # (the zai key) and DEEPSEEK_API_KEY. A missing or empty secret maps to
@@ -194,7 +392,12 @@ jobs:
       # tracked: move cells to a spend-capped, ephemeral eval key. The
       # credential split already keeps repo write access out of this job
       # (persist-credentials: false).
-      - name: Eval cell — ${{ matrix.cell.model }} @ ${{ matrix.cell.provider }}
+      - name: Eval cell — ${{ matrix.cell.model }} @ ${{ matrix.cell.provider }} on ${{ matrix.cell.driver }}
+        # The acp cell runs ONLY if the preflight above proved headless agent
+        # auth (skip != 'true'); every OTHER cell runs unconditionally — their
+        # credentials are repo secrets, and a missing one is a
+        # misconfiguration the runner hard-fails on, never a skip.
+        if: matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true'
         env:
           # The cell names BOTH sides of the credential seam: env_key is the
           # toolkit requireKey name for the cell's provider (ZAI_API_KEY /
@@ -208,6 +411,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ matrix.cell.env_key == 'DEEPSEEK_API_KEY' && secrets[matrix.cell.secret_name] || '' }}
           MATRIX_MODEL: ${{ matrix.cell.model }}
           MATRIX_PROVIDER: ${{ matrix.cell.provider }}
+          MATRIX_DRIVER: ${{ matrix.cell.driver }}
         run: |
           set -euo pipefail
           # Designed discovery (J4): the two micro suites ARE the matrix
@@ -221,32 +425,32 @@ jobs:
           while IFS= read -r suite_file; do
             suite_dir="$(dirname "${suite_file}")"
             # G7: out dir mirrors the suite path relative to suites/, PREFIXED
-            # with the cell's served model id so the two axis cells never
-            # collide on one table; the NDJSON journal (incl. the honest-stop
-            # record) lands inside the same subtree. The snapshot job's copy
-            # loop preserves the whole relative path, so snapshots nest as
-            # <date>/<model>/<role>/<suite>/<role>.table.json.
+            # with the cell's served model id AND driver so same-model driver
+            # cells never collide on one table; the NDJSON journal (incl. the
+            # honest-stop record) lands inside the same subtree. The snapshot
+            # job's copy loop preserves the whole relative path, so snapshots
+            # nest as <date>/<model>/<driver>/<role>/<suite>/<role>.table.json.
             rel_dir="$(dirname "${suite_file#suites/}")"
-            out_dir="reports/eval/${MATRIX_MODEL}/${rel_dir}"
+            out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}"
             rc=0
             # < /dev/null: this loop reads its worklist from the find's stdin
-            # (while-read); the first stdin-reading driver (a phase-4 lane
-            # transport reading a prompt from stdin, say) would otherwise eat
-            # the remaining suite paths mid-run.
+            # (while-read); a stdin-reading driver transport (the subprocess
+            # or acp lane reading a prompt from stdin, say) would otherwise
+            # eat the remaining suite paths mid-run.
             node --experimental-strip-types runner/index.ts \
               --suite "${suite_dir}" \
-              --driver ai-sdk \
-              --driver-name ai-sdk \
+              --driver "${MATRIX_DRIVER}" \
+              --driver-name "${MATRIX_DRIVER}" \
               --model "${MATRIX_MODEL}" \
               --provider "${MATRIX_PROVIDER}" \
               --max-tokens 200000 \
               --journal "${out_dir}/journal" \
               --out "${out_dir}" < /dev/null || rc=$?
             if [ "${rc}" -ge 2 ]; then
-              echo "::error::suite ${MATRIX_MODEL}/${rel_dir}: runner usage/validation failure (exit ${rc})"
+              echo "::error::suite ${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}: runner usage/validation failure (exit ${rc})"
               hard_fail=1
             elif [ "${rc}" -eq 1 ]; then
-              echo "::warning::suite ${MATRIX_MODEL}/${rel_dir} scored zero or was budget-gated"
+              echo "::warning::suite ${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir} scored zero or was budget-gated"
             fi
             # Same conflation guard as the smoke loop: cliMain's exit 1 can
             # be a benign scored outcome (table emitted) OR a run-phase throw
@@ -289,11 +493,13 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # PER-CELL artifact name: upload-artifact v4 requires unique names,
-          # and the two matrix cells run as separate jobs — a shared name
-          # would make the second uploader fail. The snapshot job below
-          # re-joins the cells with a pattern download (merge-multiple),
-          # which is that action's designed merge mechanism.
-          name: eval-reports-${{ matrix.cell.model }}
+          # and the five matrix cells run as separate jobs — a shared name
+          # would make the second uploader fail. Model+driver is the cell's
+          # FULL identity (same-model driver cells must not share a name).
+          # The snapshot job below re-joins the cells with a pattern download
+          # (merge-multiple), which is that action's designed merge mechanism;
+          # its eval-reports-* glob still matches these longer names.
+          name: eval-reports-${{ matrix.cell.model }}-${{ matrix.cell.driver }}
           path: reports/
           if-no-files-found: ignore
 
@@ -307,9 +513,10 @@ jobs:
     # needs + !cancelled(): the snapshot runs after a FAILED matrix too. The
     # default post-failure behavior would SKIP this job on `needs: matrix`,
     # burying the surviving cell's tables — but every matrix cell uploads its
-    # eval-reports-<model> artifact `if: always()`, so whatever survived a
-    # partial failure still publishes. The dispatch/schedule restriction is
-    # kept INSIDE the expression (push/PR runs still never reach this job) —
+    # eval-reports-<model>-<driver> artifact `if: always()`, so whatever
+    # survived a partial failure still publishes. The dispatch/schedule
+    # restriction is kept INSIDE the expression (push/PR runs still never
+    # reach this job) —
     # cancelling a run explicitly must not publish half a matrix, hence
     # !cancelled() rather than always().
     #
@@ -338,13 +545,19 @@ jobs:
           # commit/push, and no model code runs here.
           persist-credentials: true
       - name: Download eval reports
-        # No continue-on-error: the matrix eval cells touch reports/eval/EMPTY
-        # on every path, so an eval-reports-* artifact ALWAYS exists per cell
-        # and this download cannot fail on a missing artifact. A real
-        # download failure must fail this job loudly. (J4: the cells upload
-        # per-model artifacts — upload-artifact v4 requires unique names — so
-        # the pattern + merge-multiple download re-joins them into reports/
-        # exactly as the single pre-matrix artifact did.)
+        # No continue-on-error: every cell that REACHED its eval step touches
+        # reports/eval/EMPTY on every path, so an eval-reports-<model>-<driver>
+        # artifact exists for each such cell and this download cannot fail on
+        # a missing artifact. The one exception is an acp cell whose
+        # preflight skipped (or hard-failed) BEFORE the eval step — that cell
+        # legitimately contributes no artifact, and the pattern +
+        # merge-multiple download tolerates its absence (the surviving
+        # cells' artifacts still merge). A real download failure must fail
+        # this job loudly. (J4: the cells upload
+        # per-cell artifacts — upload-artifact v4 requires unique names; J5
+        # widened the name to model+driver, which the eval-reports-* glob
+        # still matches — so the pattern + merge-multiple download re-joins
+        # them into reports/ exactly as the single pre-matrix artifact did.)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: eval-reports-*
@@ -388,17 +601,25 @@ jobs:
           # missing dir is a silent no-op. needs.matrix.result is a fixed
           # GitHub enum ('success'|'failure'|'cancelled'|'skipped'), safe to
           # interpolate into the script.
-          if [ "${{ needs.matrix.result }}" = "success" ]; then
+          # A skipped acp lane is DEGRADED even though result reads
+          # 'success': the preflight drops reports/eval/ACP-SKIPPED into the
+          # eval artifact (job outputs would be last-writer-wins across the
+          # matrix legs — see the preflight comment), and a skip means
+          # MERGE, never clear — an earlier same-day authenticated acp run's
+          # tables stay.
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ]; then
             rm -rf "${snap_dir}"
           else
-            echo "matrix did not fully succeed (${{ needs.matrix.result }}) — merging into ${snap_dir} without clearing"
+            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent)) — merging into ${snap_dir} without clearing"
           fi
           mkdir -p "${snap_dir}"
-          # Snapshot IDENTITY preserves the suite dir: eval writes
-          # reports/eval/<model>/<role>/<suite>/<role>.table.json, and
-          # flattening to the basename would collide the moment two suites
-          # share a role — snapshots/<date>/<model>/<role>/<suite>/ is the
-          # stable form.
+          # Snapshot IDENTITY preserves the suite dir (the copy loop is
+          # identity-agnostic — it replicates whatever sits below
+          # reports/eval/): eval writes
+          # reports/eval/<model>/<driver>/<role>/<suite>/<role>.table.json,
+          # and flattening to the basename would collide the moment two suites
+          # share a role — snapshots/<date>/<model>/<driver>/<role>/<suite>/
+          # is the stable form.
           while IFS= read -r table; do
             rel="${table#reports/eval/}"
             suite_name="$(dirname "${rel}")"

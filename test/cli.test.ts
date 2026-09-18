@@ -5,13 +5,17 @@ import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cliMain } from '../runner/cli.ts';
 
-// CLI-path tests: exit codes (F4) and role-dependent AiSdkDriver construction
-// (F3). The toolkit barrel is mocked with the REAL module spread back in —
-// only AiSdkDriver is replaced by a mock that records its constructor
-// options, so no network and no live keys are ever touched.
+// CLI-path tests: exit codes (F4) and per-lane driver construction (F3).
+// The toolkit barrel is mocked with the REAL module spread back in — only
+// the driver classes are replaced by mocks that record their constructor
+// options, so no network, no spawn, and no live keys are ever touched.
 
 const captured = vi.hoisted(() => ({
   constructorOptions: [] as unknown[],
+  // Real-lane drivers (claude-agent|subprocess|acp): constructor options
+  // recorded per toolkit class name, so lane tests can assert construction
+  // identity the same way the ai-sdk tests do.
+  laneOptions: {} as Record<string, unknown[]>,
   // When set, the mocked ai-sdk driver throws this pre-dispatch (the
   // toolkit's requireKey missing-env shape).
   driverThrow: null as Error | null,
@@ -34,7 +38,33 @@ vi.mock('@camerontaylor/cq-toolkit', async (importOriginal) => {
       };
     }
   }
-  return { ...actual, AiSdkDriver: MockAiSdkDriver };
+  // The real lanes record construction per class name and mirror
+  // MockAiSdkDriver's resolved-verdict run shape — construction identity is
+  // the test subject; the mock never spawns or touches the network.
+  function recordedLaneDriver(cls: string) {
+    return class {
+      constructor(options?: unknown) {
+        (captured.laneOptions[cls] ??= []).push(options);
+      }
+      async run(invocation: OpInvocation): Promise<WorkerResult> {
+        if (captured.driverThrow !== null) throw captured.driverThrow;
+        return {
+          model: invocation.modelSpec.model,
+          structuredOutput: { verdict: 'resolved' },
+          usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+          denials: [],
+          stopReason: 'complete',
+        };
+      }
+    };
+  }
+  return {
+    ...actual,
+    AiSdkDriver: MockAiSdkDriver,
+    ClaudeAgentDriver: recordedLaneDriver('ClaudeAgentDriver'),
+    SubprocessDriver: recordedLaneDriver('SubprocessDriver'),
+    AcpDriver: recordedLaneDriver('AcpDriver'),
+  };
 });
 
 let root: string;
@@ -42,6 +72,7 @@ let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'cq-fixture-cli-'));
   captured.constructorOptions.length = 0;
+  captured.laneOptions = {};
   captured.driverThrow = null;
 });
 
@@ -286,5 +317,114 @@ describe('role-dependent AiSdkDriver construction (F3/G6 — one driver PER SUIT
     expect(fixerOptions.outputSchema!.safeParse({ verdict: 'resolved' }).success).toBe(false);
     const clfOptions = captured.constructorOptions[1] as { outputSchema?: unknown };
     expect(clfOptions.outputSchema).toBeDefined(); // classifier suite: verdict schema
+  }, 15_000);
+});
+
+describe('--driver parsing (fake|ai-sdk|claude-agent|subprocess|acp)', () => {
+  it('accepts each real lane value and runs it through the mocked lane', async () => {
+    const dir = writeSuite('lanes-suite', { name: 'lanes-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    // --driver-name is omitted: each lane defaults its own label and the
+    // fixed served id keeps the ADR-0001 axis guard satisfied.
+    for (const driver of ['claude-agent', 'subprocess', 'acp']) {
+      await expect(cliMain(['--suite', dir, '--driver', driver, '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(0);
+    }
+  }, 15_000);
+
+  it('an unknown --driver value exits 2', async () => {
+    const dir = writeSuite('baddriver-suite', { name: 'baddriver-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain(['--suite', dir, '--driver', 'telepathy', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
+  }, 15_000);
+
+  it('the ADR-0001 axis guard rejects a non-GLM model on each new lane', async () => {
+    const dir = writeSuite('lane-axis-suite', { name: 'lane-axis-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    for (const driver of ['claude-agent', 'subprocess', 'acp']) {
+      await expect(cliMain(['--suite', dir, '--driver', driver, '--model', 'deepseek-chat', '--provider', 'zai'])).resolves.toBe(2);
+    }
+  }, 15_000);
+
+  it('the T1 mislabel guard still fires: a paid ai-sdk run labeled as a new lane exits 2', async () => {
+    const dir = writeSuite('lane-mislabel-suite', { name: 'lane-mislabel-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain(['--suite', dir, '--driver', 'ai-sdk', '--driver-name', 'claude-agent', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
+  }, 15_000);
+
+  it('the T1 mislabel guard covers every real lane: a non-ai-sdk driver with a mismatched --driver-name exits 2', async () => {
+    // The guard is symmetric since the lane openings: any REAL driver run
+    // labeled as another lane misattributes paid results the same way.
+    const dir = writeSuite('lane-mislabel-2-suite', { name: 'lane-mislabel-2-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    for (const [driver, mislabel] of [
+      ['claude-agent', 'ai-sdk'],
+      ['subprocess', 'acp'],
+      ['acp', 'subprocess'],
+    ] as const) {
+      await expect(cliMain(['--suite', dir, '--driver', driver, '--driver-name', mislabel, '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
+    }
+  }, 15_000);
+
+  it('a real lane with a matching --driver-name parses (the guard only refuses mismatches)', async () => {
+    const dir = writeSuite('lane-label-ok-suite', { name: 'lane-label-ok-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain(['--suite', dir, '--driver', 'claude-agent', '--driver-name', 'claude-agent', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(0);
+  }, 15_000);
+});
+
+describe('real-lane driver construction (per-role schema; never spawns)', () => {
+  it('--driver claude-agent constructs ClaudeAgentDriver WITH the verdict output schema', async () => {
+    const dir = writeSuite('ca-ctor-suite', { name: 'ca-ctor-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await cliMain(['--suite', dir, '--driver', 'claude-agent', '--model', 'glm-5.3-flash', '--provider', 'zai']);
+    const options = (captured.laneOptions.ClaudeAgentDriver ?? []).at(-1) as
+      | { outputSchema?: { safeParse(v: unknown): { success: boolean } } }
+      | undefined;
+    expect(options).toBeDefined();
+    expect(options!.outputSchema).toBeDefined();
+    // The schema is the verdict vocabulary, not just any schema.
+    expect(options!.outputSchema!.safeParse({ verdict: 'resolved' }).success).toBe(true);
+    expect(options!.outputSchema!.safeParse({ verdict: 'weird' }).success).toBe(false);
+  }, 15_000);
+
+  it('--driver subprocess constructs SubprocessDriver with the routing override admitting glm-5.3-flash AND the five upstream names', async () => {
+    const dir = writeSuite('sp-ctor-suite', { name: 'sp-ctor-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await cliMain(['--suite', dir, '--driver', 'subprocess', '--model', 'glm-5.3-flash', '--provider', 'zai']);
+    const options = (captured.laneOptions.SubprocessDriver ?? []).at(-1) as
+      | { outputSchema?: unknown; routingTable?: { endpoints: Record<string, { models: string[] }> } }
+      | undefined;
+    expect(options).toBeDefined();
+    expect(options!.outputSchema).toBeDefined();
+    const models = options!.routingTable!.endpoints['zai']!.models;
+    // The served-id decision (2026-09-14): the override must admit the
+    // fixed axis-2 served id…
+    expect(models).toContain('glm-5.3-flash');
+    // …while the upstream default allowlist it extends survives untouched.
+    expect(models).toEqual(expect.arrayContaining(['glm-4.6', 'glm-4.5', 'glm-4.5-air', 'glm-4.5-flash', 'glm-4.5v']));
+  }, 15_000);
+
+  it('--driver acp constructs AcpDriver with the 0.43.x `server` subcommand argv and the verdict output schema', async () => {
+    const dir = writeSuite('acp-ctor-suite', { name: 'acp-ctor-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await cliMain(['--suite', dir, '--driver', 'acp', '--model', 'glm-5.3-flash', '--provider', 'zai']);
+    const options = (captured.laneOptions.AcpDriver ?? []).at(-1) as
+      | { outputSchema?: unknown; command?: readonly string[] }
+      | undefined;
+    expect(options).toBeDefined();
+    expect(options!.outputSchema).toBeDefined();
+    // The explicit argv wins over the endpoint table — it must be the whole
+    // 0.43.x launch argv (server subcommand), not the stale bare bin.
+    expect(options!.command).toEqual(['zcode-acp-server', 'server']);
+  }, 15_000);
+
+  it('a fixer-worker suite on a real lane requests the fixer schema, not the classifier vocabulary', async () => {
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    const dir = writeSuite('lane-fixer-suite', {
+      name: 'lane-fixer-suite',
+      role: 'fixer-worker',
+      cases: [{ id: 'fix-1', fixture: 'fixture', task: { prompt: 'Fix the fault.' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+    await cliMain(['--suite', dir, '--driver', 'claude-agent', '--model', 'glm-5.3-flash', '--provider', 'zai']);
+    const options = (captured.laneOptions.ClaudeAgentDriver ?? []).at(-1) as
+      | { outputSchema?: { safeParse(v: unknown): { success: boolean } } }
+      | undefined;
+    expect(options).toBeDefined();
+    // The DD-4 {fixed, notes} shape — the real lanes are role-driven
+    // exactly like the ai-sdk lane.
+    expect(options!.outputSchema!.safeParse({ fixed: true, notes: 'ok' }).success).toBe(true);
+    expect(options!.outputSchema!.safeParse({ verdict: 'resolved' }).success).toBe(false);
   }, 15_000);
 });

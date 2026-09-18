@@ -1,0 +1,23 @@
+{
+  "role": "review-classifier",
+  "suite": "micro",
+  "generatedAt": "2026-09-18T20:42:27.111Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "runs": 10,
+      "passed": 0,
+      "total": 10,
+      "score": 0,
+      "costUSD": null,
+      "wallTimeMs": 4945,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

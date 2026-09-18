@@ -115,6 +115,15 @@ jobs:
     needs: smoke
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    # A skipped acp lane (the preflight's honest blocked outcome) must be
+    # visible to the snapshot job: a skip leaves needs.matrix.result at
+    # 'success' (skip is not failure), and the snapshot's clear-on-success
+    # would then wipe any earlier same-day acp tables from an authenticated
+    # run — the absent lane retroactively vanishing from published data
+    # (cycle-2 r1 finding 6). Exported so the snapshot treats a skip as a
+    # degraded run: merge, never clear.
+    outputs:
+      acp_skipped: ${{ steps.acp_preflight.outputs.skip == 'true' }}
     # Model-driven code runs here and this job pushes nothing (the snapshot
     # publisher is the dedicated `snapshot` job), so read is enough.
     permissions:
@@ -259,13 +268,16 @@ jobs:
         # Exit-status discipline (cycle-2 review): ONLY the confirmed
         # no-agent-output class skips — fail() (a JSON-RPC error or a close
         # before any agent line, exit 3) and the timeout's 124, which the
-        # wrapper maps to 3 (a credential-less harness waiting on an
-        # interactive login surfaces exactly as the window expiring with zero
-        # output — the same honest class). Everything else propagates as a
-        # HARD failure: a spawn error exits 4 (install/spawn infrastructure)
-        # and any other non-zero (a script crash, an unexpected status) is
-        # never caught into the skip path — the step errors, so a broken
-        # preflight can never silently omit the acp lane.
+        # wrapper maps to 3. Both sides probed live (2026-09-19): WITH
+        # credentials the harness streams the agent's agent_message_chunk and
+        # the probe exits 0; WITHOUT them the harness fast-fails the prompt
+        # with a json-rpc error naming the missing model config ("zcode
+        # create failed: Model config is missing …") — rc 3, the skip class.
+        # Everything else propagates as a HARD failure: a spawn error exits 4
+        # (install/spawn infrastructure) and any other non-zero (a script
+        # crash, an unexpected status) is never caught into the skip path —
+        # the step errors, so a broken preflight can never silently omit the
+        # acp lane.
         run: |
           set -euo pipefail
           rc=0
@@ -290,6 +302,10 @@ jobs:
             // did not preempt is an auth-FAIL, unconditionally (a stage
             // guard would hang a stage-2 close until the timeout instead).
             child.on("close", (code) => fail("harness closed (code " + code + ") without any agent output"));
+            // A dying harness must not surface as an unhandled EPIPE on the
+            // queued send()s — close/timeout own the verdict (cycle-1 r1
+            // finding 3): the error listener absorbs it.
+            child.stdin.on("error", () => {});
             const send = (m) => child.stdin.write(JSON.stringify(m) + "\n");
             send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {} } });
             let out = "";
@@ -301,7 +317,12 @@ jobs:
                 out = out.slice(i + 1);
                 if (line === "") continue;
                 let msg;
-                try { msg = JSON.parse(line); } catch { if (stage === 2) { console.log(line); process.exit(0); } continue; }
+                // Auth-OK is a JSON-RPC MESSAGE at stage 2 — never any
+                // parsed-less stdout line: a login-blocked harness that
+                // narrates to stdout ("visit … to log in") must NOT flip the
+                // cell to authenticated (cycle-2 r1 finding 1) — the timeout
+                // owns non-JSON output.
+                try { msg = JSON.parse(line); } catch { continue; }
                 if (msg.error !== undefined) fail("json-rpc error before any agent output: " + JSON.stringify(msg.error));
                 if (stage === 0 && msg.id === 1) {
                   stage = 1;
@@ -310,14 +331,25 @@ jobs:
                   stage = 2;
                   send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId: msg.result.sessionId, prompt: [{ type: "text", text: "Reply with the single word ready." }] } });
                 } else if (stage === 2) {
-                  console.log(line); // any session response / agent output = auth-OK
-                  process.exit(0);
+                  // Auth-OK is the AGENT'S OWN REPLY (agent_message_chunk) —
+                  // a session/protocol message alone proves nothing: probed
+                  // live (2026-09-19), the harness streams bookkeeping like
+                  // available_commands_update with ZERO credentials, so only
+                  // the reply is accepted; bookkeeping keeps waiting and the
+                  // timeout owns it (skip class).
+                  const upd = msg.params && msg.params.update;
+                  if (upd !== undefined && upd.sessionUpdate === "agent_message_chunk") {
+                    console.log(line);
+                    process.exit(0);
+                  }
                 }
               }
             });
           ' || rc=$?
-          # 124 = the window expired with zero agent output — the
-          # credential-wait shape, mapped into the skip class (see comment).
+          # 124 = the window expired with zero agent output — the same
+          # honest class (observed: the credential-less harness fails FAST
+          # with a json-rpc error, so 124 is the slow-wait fallback, mapped
+          # into the skip class like its fast sibling).
           if [ "${rc}" -eq 124 ]; then
             rc=3
           fi
@@ -499,10 +531,15 @@ jobs:
           # commit/push, and no model code runs here.
           persist-credentials: true
       - name: Download eval reports
-        # No continue-on-error: the matrix eval cells touch reports/eval/EMPTY
-        # on every path, so an eval-reports-* artifact ALWAYS exists per cell
-        # and this download cannot fail on a missing artifact. A real
-        # download failure must fail this job loudly. (J4: the cells upload
+        # No continue-on-error: every cell that REACHED its eval step touches
+        # reports/eval/EMPTY on every path, so an eval-reports-<model>-<driver>
+        # artifact exists for each such cell and this download cannot fail on
+        # a missing artifact. The one exception is an acp cell whose
+        # preflight skipped (or hard-failed) BEFORE the eval step — that cell
+        # legitimately contributes no artifact, and the pattern +
+        # merge-multiple download tolerates its absence (the surviving
+        # cells' artifacts still merge). A real download failure must fail
+        # this job loudly. (J4: the cells upload
         # per-cell artifacts — upload-artifact v4 requires unique names; J5
         # widened the name to model+driver, which the eval-reports-* glob
         # still matches — so the pattern + merge-multiple download re-joins
@@ -550,10 +587,13 @@ jobs:
           # missing dir is a silent no-op. needs.matrix.result is a fixed
           # GitHub enum ('success'|'failure'|'cancelled'|'skipped'), safe to
           # interpolate into the script.
-          if [ "${{ needs.matrix.result }}" = "success" ]; then
+          # A skipped acp lane is DEGRADED even though result reads
+          # 'success' (see the matrix job's outputs): merge, never clear —
+          # an earlier same-day authenticated acp run's tables stay.
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${{ needs.matrix.outputs.acp_skipped }}" != "true" ]; then
             rm -rf "${snap_dir}"
           else
-            echo "matrix did not fully succeed (${{ needs.matrix.result }}) — merging into ${snap_dir} without clearing"
+            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp_skipped ${{ needs.matrix.outputs.acp_skipped }}) — merging into ${snap_dir} without clearing"
           fi
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir (the copy loop is

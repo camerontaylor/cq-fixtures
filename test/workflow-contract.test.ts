@@ -199,6 +199,15 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(preflight, 'only rc 3 reaches the skip path').toContain('if [ "${rc}" -eq 3 ]; then');
     expect(preflight, 'other failures propagate, loud').toContain('::error::acp preflight failed');
     expect(preflight, 'other failures propagate, loud').toContain('exit 1');
+    // Round-1 review hardening: auth-OK must be a JSON-RPC message, never a
+    // bare stdout line (a login-blocked harness narrates to stdout), a dying
+    // stdin must not EPIPE-crash the probe into the hard-fail branch, and
+    // the skip must be visible to the snapshot job so a skipped run MERGES
+    // into the dated dir instead of clearing earlier same-day acp tables.
+    expect(preflight, 'auth-OK is the agent reply only').toContain('upd.sessionUpdate === "agent_message_chunk"');
+    expect(preflight, 'no unhandled EPIPE on stdin').toContain('child.stdin.on("error"');
+    expect(text).toContain("acp_skipped: ${{ steps.acp_preflight.outputs.skip == 'true' }}");
+    expect(stepChunk('Commit report snapshots')).toContain('needs.matrix.outputs.acp_skipped');
   });
 
   it('the eval step dispatches the CELL driver and nests out dirs by model/driver (G7)', () => {

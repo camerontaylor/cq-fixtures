@@ -2,8 +2,7 @@
 
 First real-driver run of the five-cell axes matrix (ADR-0001 as revised 2026-09-14), dispatched
 manually at J5 (`workflow_dispatch` on main after PR #13). Read the "What is proven" section
-before the numbers — this run's zeros have three different causes and only one of them is a
-model outcome.
+before the numbers: NONE of this run's zeros are model outcomes.
 
 | Cell (model / driver) | Role | Scored | What actually happened |
 |---|---|---|---|

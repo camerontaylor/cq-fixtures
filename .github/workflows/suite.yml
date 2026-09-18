@@ -315,9 +315,11 @@ jobs:
                 try { msg = JSON.parse(line); } catch { continue; }
                 if (msg.error !== undefined) {
                   const detail = JSON.stringify(msg.error);
-                  if (/Model config is missing|config\.json/.test(detail)) {
-                    // The LIVE-PROBED no-credentials shape (2026-09-19) — the
-                    // one json-rpc error that is a credential skip.
+                  // The exact live-probed marker ONLY (2026-09-19): a loose
+                  // substring like config.json would convert ANY config
+                  // regression (malformed/unreadable file) into a credential
+                  // skip (Codex PR-13 round-3 P1).
+                  if (/Model config is missing/.test(detail)) {
                     fail("json-rpc error: model config missing (probed no-credentials shape): " + detail, 3);
                   }
                   fail("json-rpc error before any agent output (infrastructure): " + detail, 4);

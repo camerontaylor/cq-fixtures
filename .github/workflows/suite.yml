@@ -256,19 +256,18 @@ jobs:
         # (protocolVersion 1, the ACP convention, clientCapabilities {}),
         # session/new (fresh mkdtemp cwd, mcpServers []), then session/prompt
         # — under `timeout 150` (the step keeps its own default timeout).
-        # Exit-status discipline (cycle-2 review): ONLY the confirmed
-        # no-agent-output class skips — fail() (a JSON-RPC error or a close
-        # before any agent line, exit 3) and the timeout's 124, which the
-        # wrapper maps to 3. Both sides probed live (2026-09-19): WITH
-        # credentials the harness streams the agent's agent_message_chunk and
-        # the probe exits 0; WITHOUT them the harness fast-fails the prompt
-        # with a json-rpc error naming the missing model config ("zcode
-        # create failed: Model config is missing …") — rc 3, the skip class.
-        # Everything else propagates as a HARD failure: a spawn error exits 4
-        # (install/spawn infrastructure) and any other non-zero (a script
-        # crash, an unexpected status) is never caught into the skip path —
-        # the step errors, so a broken preflight can never silently omit the
-        # acp lane.
+        # Exit-status discipline (round-2 review + Codex PR-13 P1): the SKIP
+        # class is only the confirmed no-agent-output shapes — fail() on a
+        # json-rpc error matching the LIVE-PROBED no-credentials shape
+        # ("Model config is missing", 2026-09-19) or on a close before any
+        # agent line (exit 3, cause always printed to the step log), and the
+        # timeout's own branch (rc 124: "blocked, cause not established" —
+        # not folded into 3 and not labeled credentials). Everything else is
+        # a HARD failure: a spawn error exits 4, any OTHER json-rpc error
+        # exits 4 (protocol regression, provider outage, harness bug — the
+        # lane must fail loudly, never silently vanish as a credential
+        # skip), and any unexpected non-zero is never caught into the skip
+        # path — a broken preflight can never silently omit the acp lane.
         run: |
           set -euo pipefail
           rc=0
@@ -281,10 +280,10 @@ jobs:
             const stderr = [];
             child.stderr.on("data", (d) => { stderr.push(d.toString()); if (stderr.length > 40) stderr.shift(); });
             let stage = 0; // 0 initialize sent, 1 session/new sent, 2 prompt sent
-            const fail = (why) => {
+            const fail = (why, code = 3) => {
               console.error("acp preflight FAILED: " + why);
               if (stderr.length > 0) console.error(stderr.join(""));
-              process.exit(3);
+              process.exit(code);
             };
             child.on("error", (e) => { console.error("acp preflight FAILED: spawn error: " + e.message); process.exit(4); });
             // close, not exit: close fires after stdio flushes, so an agent
@@ -314,7 +313,15 @@ jobs:
                 // cell to authenticated (cycle-2 r1 finding 1) — the timeout
                 // owns non-JSON output.
                 try { msg = JSON.parse(line); } catch { continue; }
-                if (msg.error !== undefined) fail("json-rpc error before any agent output: " + JSON.stringify(msg.error));
+                if (msg.error !== undefined) {
+                  const detail = JSON.stringify(msg.error);
+                  if (/Model config is missing|config\.json/.test(detail)) {
+                    // The LIVE-PROBED no-credentials shape (2026-09-19) — the
+                    // one json-rpc error that is a credential skip.
+                    fail("json-rpc error: model config missing (probed no-credentials shape): " + detail, 3);
+                  }
+                  fail("json-rpc error before any agent output (infrastructure): " + detail, 4);
+                }
                 if (stage === 0 && msg.id === 1) {
                   stage = 1;
                   send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: mkdtempSync(join(tmpdir(), "acp-preflight-")), mcpServers: [] } });
@@ -322,12 +329,16 @@ jobs:
                   stage = 2;
                   send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId: msg.result.sessionId, prompt: [{ type: "text", text: "Reply with the single word ready." }] } });
                 } else if (stage === 2) {
-                  // Auth-OK is the AGENT'S OWN REPLY (agent_message_chunk) —
+                  // Auth-OK requires the AGENT REPLY (agent_message_chunk) —
                   // a session/protocol message alone proves nothing: probed
                   // live (2026-09-19), the harness streams bookkeeping like
                   // available_commands_update with ZERO credentials, so only
                   // the reply is accepted; bookkeeping keeps waiting and the
-                  // timeout owns it (skip class).
+                  // timeout owns it (skip class). NO APOSTROPHES may appear
+                  // anywhere in this script: it rides inside a shell
+                  // single-quoted string (CodeRabbit PR-13 catch — one
+                  // apostrophe turned the whole preflight into a bash
+                  // syntax error).
                   const upd = msg.params && msg.params.update;
                   if (upd !== undefined && upd.sessionUpdate === "agent_message_chunk") {
                     console.log(line);

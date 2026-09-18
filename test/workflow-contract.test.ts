@@ -204,10 +204,10 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell).toContain('< /dev/null');
   });
 
-  it('lane installs are conditional: subprocess claude-code@2, acp pinned 0.43.3, claude-agent none', () => {
+  it('lane installs are conditional: subprocess claude-code pinned, acp pinned 0.43.3, claude-agent none', () => {
     const sub = stepChunk('Install the subprocess lane CLI');
     expect(sub).toContain("if: matrix.cell.driver == 'subprocess'");
-    expect(sub).toContain('npm install -g @anthropic-ai/claude-code@2');
+    expect(sub).toContain('npm install -g @anthropic-ai/claude-code@2.1.276');
     const acp = stepChunk('Install the acp lane harness');
     expect(acp).toContain("if: matrix.cell.driver == 'acp'");
     // PINNED to the probed version (2026-09-19): >=0.43 moved the stdio ACP
@@ -242,7 +242,16 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // one allowed restriction — and model-driven code never sees persisted
     // checkout credentials (only the snapshot job, a pure data operation,
     // persists them).
-    const onBlock = text.slice(text.indexOf('\non:\n'), text.indexOf('\npermissions:'));
+    // Anchors are validated before slicing: a missing or misordered anchor
+    // fails loudly instead of yielding an oversized slice that could mask a
+    // filter key living outside the real on: block.
+    const onBlock = (() => {
+      const start = text.indexOf('\non:\n');
+      const end = text.indexOf('\npermissions:', start);
+      expect(start, 'on: anchor exists').toBeGreaterThanOrEqual(0);
+      expect(end, 'permissions: anchor follows on:').toBeGreaterThan(start);
+      return text.slice(start, end);
+    })();
     for (const banned of ['paths:', 'paths-ignore:', 'branches:', 'branches-ignore:', 'tags:', 'tags-ignore:']) {
       expect(onBlock, `on: block must stay filter-free (${banned})`).not.toContain(banned);
     }

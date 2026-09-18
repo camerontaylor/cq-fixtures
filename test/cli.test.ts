@@ -346,6 +346,24 @@ describe('--driver parsing (fake|ai-sdk|claude-agent|subprocess|acp)', () => {
     const dir = writeSuite('lane-mislabel-suite', { name: 'lane-mislabel-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await expect(cliMain(['--suite', dir, '--driver', 'ai-sdk', '--driver-name', 'claude-agent', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
   }, 15_000);
+
+  it('the T1 mislabel guard covers every real lane: a non-ai-sdk driver with a mismatched --driver-name exits 2', async () => {
+    // The guard is symmetric since the lane openings: any REAL driver run
+    // labeled as another lane misattributes paid results the same way.
+    const dir = writeSuite('lane-mislabel-2-suite', { name: 'lane-mislabel-2-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    for (const [driver, mislabel] of [
+      ['claude-agent', 'ai-sdk'],
+      ['subprocess', 'acp'],
+      ['acp', 'subprocess'],
+    ] as const) {
+      await expect(cliMain(['--suite', dir, '--driver', driver, '--driver-name', mislabel, '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(2);
+    }
+  }, 15_000);
+
+  it('a real lane with a matching --driver-name parses (the guard only refuses mismatches)', async () => {
+    const dir = writeSuite('lane-label-ok-suite', { name: 'lane-label-ok-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain(['--suite', dir, '--driver', 'claude-agent', '--driver-name', 'claude-agent', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(0);
+  }, 15_000);
 });
 
 describe('real-lane driver construction (per-role schema; never spawns)', () => {

@@ -222,8 +222,11 @@ jobs:
         if: matrix.cell.driver == 'subprocess'
         # The subprocess lane spawns `claude` (the toolkit SubprocessDriver's
         # binary default) pointed at Z.AI's anthropic-compat endpoint — the
-        # headless CLI is the claude-code package, pinned to the 2.x line.
-        run: npm install -g @anthropic-ai/claude-code@2
+        # headless CLI is the claude-code package, PINNED to the exact 2.x
+        # version npm resolves today (2.1.276, 2026-09-19; registry-resolved
+        # at J5 — the first dispatch is the live probe), consistent with the
+        # zcode-acp-server pin below.
+        run: npm install -g @anthropic-ai/claude-code@2.1.276
       - name: Install the acp lane harness
         if: matrix.cell.driver == 'acp'
         # PINNED to the probed version (2026-09-19, 0.43.3): >=0.43 moved the
@@ -270,7 +273,12 @@ jobs:
               process.exit(3);
             };
             child.on("error", (e) => fail("spawn error: " + e.message));
-            child.on("exit", (code) => { if (stage < 2) fail("harness exited (code " + code + ") before any agent output"); });
+            // close, not exit: close fires after stdio flushes, so an agent
+            // line arriving just before the harness dies is still processed
+            // by the stdout handler above — and any close the success path
+            // did not preempt is an auth-FAIL, unconditionally (a stage
+            // guard would hang a stage-2 close until the timeout instead).
+            child.on("close", (code) => fail("harness closed (code " + code + ") without any agent output"));
             const send = (m) => child.stdin.write(JSON.stringify(m) + "\n");
             send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {} } });
             let out = "";
@@ -375,7 +383,7 @@ jobs:
               echo "::error::suite ${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}: runner usage/validation failure (exit ${rc})"
               hard_fail=1
             elif [ "${rc}" -eq 1 ]; then
-              echo "::warning::suite ${MATRIX_MODEL}/${rel_dir} scored zero or was budget-gated"
+              echo "::warning::suite ${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir} scored zero or was budget-gated"
             fi
             # Same conflation guard as the smoke loop: cliMain's exit 1 can
             # be a benign scored outcome (table emitted) OR a run-phase throw

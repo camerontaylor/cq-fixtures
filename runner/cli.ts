@@ -27,9 +27,9 @@ import { FIXER_OUTPUT_SCHEMA } from './dimensions/schemaCompliance.ts';
 
 const LANES = new Set(['ai-sdk', 'claude-agent', 'subprocess', 'acp']);
 // --driver values: the schema-blind fake plus the toolkit's four real lanes
-// (the LANES set above).
+// (derived from the LANES set above so the two lists stay synchronized).
 type DriverKind = 'fake' | 'ai-sdk' | 'claude-agent' | 'subprocess' | 'acp';
-const DRIVERS = new Set<string>(['fake', 'ai-sdk', 'claude-agent', 'subprocess', 'acp']);
+const DRIVERS = new Set<string>(['fake', ...LANES]);
 // ADR-0001 eval axes (the per-cell constraint in
 // schema/comparison-table.schema.json): axis 1 — models vary on the ai-sdk
 // driver; axis 2 — drivers vary on the fixed GLM served id. A paid ai-sdk
@@ -153,11 +153,13 @@ function parseArgs(argv: readonly string[]): CliOptions {
   if (!LANES.has(driverName)) {
     throw new UsageError(`--driver-name '${driverName}' is not a toolkit lane (${[...LANES].join('|')}) — pass one so rows validate`);
   }
-  // T1: a paid ai-sdk run labeled as another lane is a silent
-  // misattribution — refuse it. Fake runs with an explicit lane label stay
-  // legal (the smoke story).
-  if (driver === 'ai-sdk' && driverName !== 'ai-sdk') {
-    throw new UsageError(`--driver ai-sdk with --driver-name '${driverName}' mislabels paid ai-sdk results as another lane — drop --driver-name or use --driver fake`);
+  // T1: a paid run labeled as another lane is a silent misattribution —
+  // refuse it on EVERY real lane (the guard predates the lane openings and
+  // covered only ai-sdk; a claude-agent run labeled ai-sdk misattributes the
+  // same way). Fake runs with an explicit lane label stay legal (the smoke
+  // story).
+  if (driver !== 'fake' && driverName !== driver) {
+    throw new UsageError(`--driver ${driver} with --driver-name '${driverName}' mislabels paid ${driver} results as another lane — drop --driver-name or use --driver fake`);
   }
   // ADR-0001 eval axes: fail at parse time, before any spend, rather than
   // after a full paid run misreported as an eval outcome.

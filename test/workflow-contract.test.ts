@@ -165,9 +165,12 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // eval step; the runner is self-contained under runner/, so nothing else
     // needs the tree.
     const excision = stepChunk('Excise the unit-test tree');
-    expect(excision).toContain('rm -rf test/');
+    expect(excision).toContain('rm -rf test/ .git');
     expect(excision).toContain('review-debt #11');
     expect(excision, 'the excision runs in every cell (no if:)').not.toContain('if:');
+    // Cycle-2 review: the worktree copy alone is not enough — the shallow
+    // clone's object store holds the HEAD tree's blobs, so .git must go too.
+    expect(excision).toContain('.git');
     expect(stepLine('Excise the unit-test tree')).toBeLessThan(stepLine('Eval cell —'));
   });
 
@@ -188,6 +191,14 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(stepChunk('Eval cell —')).toContain(
       "if: matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true'",
     );
+    // Cycle-2 review, exit-status discipline: ONLY the confirmed
+    // no-agent-output class (3, with the timeout's 124 mapped in) skips —
+    // every other non-zero is a hard step failure, never a silent lane
+    // omission.
+    expect(preflight, 'timeout maps into the skip class').toContain('if [ "${rc}" -eq 124 ]; then');
+    expect(preflight, 'only rc 3 reaches the skip path').toContain('if [ "${rc}" -eq 3 ]; then');
+    expect(preflight, 'other failures propagate, loud').toContain('::error::acp preflight failed');
+    expect(preflight, 'other failures propagate, loud').toContain('exit 1');
   });
 
   it('the eval step dispatches the CELL driver and nests out dirs by model/driver (G7)', () => {

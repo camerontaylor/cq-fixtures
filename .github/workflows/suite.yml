@@ -202,18 +202,24 @@ jobs:
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci
-      - name: Excise the unit-test tree (review-debt 11)
+      - name: Excise the unit-test tree and git objects (review-debt 11)
         # The matrix job never runs vitest, but test/micro.test.ts carries the
         # micro suites' REFERENCE FIXES: a model-driven worker with
         # host-privileged tools must not be able to read them out of the
         # checkout it works in (answer lookup). So the tree is removed before
         # ANY model-facing step, in EVERY cell (this step is unconditional).
-        # Nothing else breaks: the runner is self-contained under runner/
-        # (test/cli.test.ts imports nothing the runner needs).
+        # .git goes too: even a fetch-depth-1 clone's object store holds the
+        # HEAD tree's blobs, so `git show HEAD:test/micro.test.ts` would
+        # recover the excised file from .git without the network
+        # (persist-credentials: false already keeps the token out; the
+        # objects are the residual channel). Nothing else breaks: the runner
+        # is self-contained under runner/ (test/cli.test.ts imports nothing
+        # the runner needs), the eval step uses no git, and pack-toolkit.sh
+        # clones fresh from the remote into its own temp dir.
         run: |
           set -euo pipefail
-          echo "excising test/ — the micro suites' reference fixes (test/micro.test.ts) must not be readable by model-driven workers (review-debt #11)"
-          rm -rf test/
+          echo "excising test/ and .git — the micro suites' reference fixes (test/micro.test.ts) must not be readable by model-driven workers from the worktree OR the object store (review-debt #11)"
+          rm -rf test/ .git
       # LANE INSTALLS (conditional): each lane brings only its own harness.
       # The claude-agent lane deliberately has NO install step here — its
       # optional peer @anthropic-ai/claude-agent-sdk ships as a devDependency
@@ -250,14 +256,19 @@ jobs:
         # (protocolVersion 1, the ACP convention, clientCapabilities {}),
         # session/new (fresh mkdtemp cwd, mcpServers []), then session/prompt
         # — under `timeout 150` (the step keeps its own default timeout).
-        # ANY session response or agent output line is auth-OK (exit 0);
-        # timeout, spawn error, or a JSON-RPC error before any agent output is
-        # auth-FAIL (exit 3, printing the last stderr lines; the timeout
-        # wrapper's kill surfaces as its own non-zero status and lands in the
-        # same skip path).
+        # Exit-status discipline (cycle-2 review): ONLY the confirmed
+        # no-agent-output class skips — fail() (a JSON-RPC error or a close
+        # before any agent line, exit 3) and the timeout's 124, which the
+        # wrapper maps to 3 (a credential-less harness waiting on an
+        # interactive login surfaces exactly as the window expiring with zero
+        # output — the same honest class). Everything else propagates as a
+        # HARD failure: a spawn error exits 4 (install/spawn infrastructure)
+        # and any other non-zero (a script crash, an unexpected status) is
+        # never caught into the skip path — the step errors, so a broken
+        # preflight can never silently omit the acp lane.
         run: |
           set -euo pipefail
-          skip=0
+          rc=0
           timeout 150 node -e '
             const { spawn } = require("node:child_process");
             const { mkdtempSync } = require("node:fs");
@@ -272,7 +283,7 @@ jobs:
               if (stderr.length > 0) console.error(stderr.join(""));
               process.exit(3);
             };
-            child.on("error", (e) => fail("spawn error: " + e.message));
+            child.on("error", (e) => { console.error("acp preflight FAILED: spawn error: " + e.message); process.exit(4); });
             // close, not exit: close fires after stdio flushes, so an agent
             // line arriving just before the harness dies is still processed
             // by the stdout handler above — and any close the success path
@@ -304,11 +315,21 @@ jobs:
                 }
               }
             });
-          ' || skip=$?
-          if [ "${skip}" -ne 0 ]; then
+          ' || rc=$?
+          # 124 = the window expired with zero agent output — the
+          # credential-wait shape, mapped into the skip class (see comment).
+          if [ "${rc}" -eq 124 ]; then
+            rc=3
+          fi
+          if [ "${rc}" -eq 3 ]; then
             echo "::warning::acp cell blocked: no headless agent credentials (zcode-credentials cannot be provisioned from repo secrets)"
             echo "acp lane skipped: no headless agent credentials in CI (agent-side auth) — the lane is honestly absent from this run, never published as data" >> "${GITHUB_STEP_SUMMARY}"
             echo "skip=true" >> "${GITHUB_OUTPUT}"
+          elif [ "${rc}" -ne 0 ]; then
+            # Spawn failures (4), script crashes, any unexpected status: a
+            # broken preflight must never silently omit the acp lane — fail.
+            echo "::error::acp preflight failed (rc ${rc}) — infrastructure, not a credential skip"
+            exit 1
           fi
       # CREDENTIAL PREREQUISITE (the J3 BLOCKED note, carried forward): both
       # secret NAMES must exist in THIS repo's Actions settings — Z_AI_API_KEY

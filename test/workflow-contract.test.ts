@@ -204,10 +204,23 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // stdin must not EPIPE-crash the probe into the hard-fail branch, and
     // the skip must be visible to the snapshot job so a skipped run MERGES
     // into the dated dir instead of clearing earlier same-day acp tables.
+    // Round-1 review hardening: auth-OK must be the agent's own reply
+    // (agent_message_chunk), never a bare or protocol stdout line (a
+    // login-blocked harness narrates to stdout; the harness streams
+    // bookkeeping with zero credentials), a dying stdin must not
+    // EPIPE-crash the probe into the hard-fail branch.
     expect(preflight, 'auth-OK is the agent reply only').toContain('upd.sessionUpdate === "agent_message_chunk"');
     expect(preflight, 'no unhandled EPIPE on stdin').toContain('child.stdin.on("error"');
-    expect(text).toContain("acp_skipped: ${{ steps.acp_preflight.outputs.skip == 'true' }}");
-    expect(stepChunk('Commit report snapshots')).toContain('needs.matrix.outputs.acp_skipped');
+    // Round-2 review: the skip rides the ARTIFACT (a marker file), never a
+    // matrix job output — outputs merge last-writer-wins across legs, so
+    // the four non-acp legs would erase the acp leg's skip and the
+    // snapshot's clear-on-success would wipe earlier same-day acp tables.
+    // The 124 timeout keeps its own honest diagnosis (blocked, cause not
+    // established) instead of claiming credentials.
+    expect(text, 'no racy job-output transport').not.toContain('acp_skipped');
+    expect(preflight, 'the skip marker rides the artifact').toContain('touch reports/eval/ACP-SKIPPED');
+    expect(preflight, 'timeout keeps its own honest wording').toContain('no agent output within 150s');
+    expect(stepChunk('Commit report snapshots')).toContain('reports/eval/ACP-SKIPPED');
   });
 
   it('the eval step dispatches the CELL driver and nests out dirs by model/driver (G7)', () => {

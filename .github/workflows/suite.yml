@@ -115,15 +115,6 @@ jobs:
     needs: smoke
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
-    # A skipped acp lane (the preflight's honest blocked outcome) must be
-    # visible to the snapshot job: a skip leaves needs.matrix.result at
-    # 'success' (skip is not failure), and the snapshot's clear-on-success
-    # would then wipe any earlier same-day acp tables from an authenticated
-    # run — the absent lane retroactively vanishing from published data
-    # (cycle-2 r1 finding 6). Exported so the snapshot treats a skip as a
-    # degraded run: merge, never clear.
-    outputs:
-      acp_skipped: ${{ steps.acp_preflight.outputs.skip == 'true' }}
     # Model-driven code runs here and this job pushes nothing (the snapshot
     # publisher is the dedicated `snapshot` job), so read is enough.
     permissions:
@@ -346,17 +337,27 @@ jobs:
               }
             });
           ' || rc=$?
-          # 124 = the window expired with zero agent output — the same
-          # honest class (observed: the credential-less harness fails FAST
-          # with a json-rpc error, so 124 is the slow-wait fallback, mapped
-          # into the skip class like its fast sibling).
+          # The skip signal rides the ARTIFACT (reports/eval/ACP-SKIPPED,
+          # uploaded by the always-on upload step below), NOT a matrix job
+          # output: GitHub merges same-named outputs of matrix legs
+          # LAST-WRITER-WINS, and four of the five legs would write 'false'
+          # — a later eval leg would erase the acp leg's skip and the
+          # snapshot's clear-on-success would wipe an earlier same-day
+          # authenticated acp run (round-2 r2 finding 1). The marker file
+          # never publishes: the snapshot's copy loop takes *.table.json
+          # only.
           if [ "${rc}" -eq 124 ]; then
-            rc=3
-          fi
-          if [ "${rc}" -eq 3 ]; then
+            # HONEST DIAGNOSIS (round-2 r2 finding 2): a window expiry is a
+            # blocked lane, NOT an established credential cause — say so.
+            echo "::warning::acp cell blocked: no agent output within 150s — treated as blocked, cause not established"
+            echo "acp lane skipped: no agent output within 150s — treated as blocked; the lane is honestly absent from this run, never published as data" >> "${GITHUB_STEP_SUMMARY}"
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            mkdir -p reports/eval && touch reports/eval/ACP-SKIPPED
+          elif [ "${rc}" -eq 3 ]; then
             echo "::warning::acp cell blocked: no headless agent credentials (zcode-credentials cannot be provisioned from repo secrets)"
             echo "acp lane skipped: no headless agent credentials in CI (agent-side auth) — the lane is honestly absent from this run, never published as data" >> "${GITHUB_STEP_SUMMARY}"
             echo "skip=true" >> "${GITHUB_OUTPUT}"
+            mkdir -p reports/eval && touch reports/eval/ACP-SKIPPED
           elif [ "${rc}" -ne 0 ]; then
             # Spawn failures (4), script crashes, any unexpected status: a
             # broken preflight must never silently omit the acp lane — fail.
@@ -588,12 +589,15 @@ jobs:
           # GitHub enum ('success'|'failure'|'cancelled'|'skipped'), safe to
           # interpolate into the script.
           # A skipped acp lane is DEGRADED even though result reads
-          # 'success' (see the matrix job's outputs): merge, never clear —
-          # an earlier same-day authenticated acp run's tables stay.
-          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${{ needs.matrix.outputs.acp_skipped }}" != "true" ]; then
+          # 'success': the preflight drops reports/eval/ACP-SKIPPED into the
+          # eval artifact (job outputs would be last-writer-wins across the
+          # matrix legs — see the preflight comment), and a skip means
+          # MERGE, never clear — an earlier same-day authenticated acp run's
+          # tables stay.
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ]; then
             rm -rf "${snap_dir}"
           else
-            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp_skipped ${{ needs.matrix.outputs.acp_skipped }}) — merging into ${snap_dir} without clearing"
+            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent)) — merging into ${snap_dir} without clearing"
           fi
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir (the copy loop is

@@ -6,7 +6,14 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AiSdkDriver, type Driver } from '@camerontaylor/cq-toolkit';
+import {
+  AcpDriver,
+  AiSdkDriver,
+  ClaudeAgentDriver,
+  defaultRoutingTable,
+  SubprocessDriver,
+  type Driver,
+} from '@camerontaylor/cq-toolkit';
 import { z } from 'zod';
 import { runSuite } from './index.ts';
 import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
@@ -19,6 +26,10 @@ import { FakeDriver } from './fake-driver.ts';
 import { FIXER_OUTPUT_SCHEMA } from './dimensions/schemaCompliance.ts';
 
 const LANES = new Set(['ai-sdk', 'claude-agent', 'subprocess', 'acp']);
+// --driver values: the schema-blind fake plus the toolkit's four real lanes
+// (the LANES set above).
+type DriverKind = 'fake' | 'ai-sdk' | 'claude-agent' | 'subprocess' | 'acp';
+const DRIVERS = new Set<string>(['fake', 'ai-sdk', 'claude-agent', 'subprocess', 'acp']);
 // ADR-0001 eval axes (the per-cell constraint in
 // schema/comparison-table.schema.json): axis 1 — models vary on the ai-sdk
 // driver; axis 2 — drivers vary on the fixed GLM served id. A paid ai-sdk
@@ -28,7 +39,7 @@ const LANES = new Set(['ai-sdk', 'claude-agent', 'subprocess', 'acp']);
 const FIXED_GLM_SERVED_ID = 'glm-5.3-flash';
 const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
-  '--driver fake|ai-sdk --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
+  '--driver fake|ai-sdk|claude-agent|subprocess|acp --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
   '[--max-usd <n>] [--max-tokens <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
   'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure';
@@ -44,6 +55,33 @@ const VERDICT_OUTPUT_SCHEMA = z.object({
   verdict: z.enum(['actionable', 'responded', 'resolved', 'blocked', 'skip']),
 });
 
+// The subprocess lane runs the fixed axis-2 served id (see FIXED_GLM_SERVED_ID
+// above), but the toolkit's default routing table predates the served-id
+// decision (2026-09-14): its `zai` allowlist carries the GLM names the
+// provider docs listed then, not the GLM coding wire's glm-5.3-flash — and
+// `routeFor` refuses any model off the allowlist. The routingTable
+// constructor option is the designed per-deployment override surface, so the
+// subprocess lane rebuilds the default table with the served id appended.
+function subprocessRoutingTable() {
+  const table = defaultRoutingTable();
+  const zai = table.endpoints['zai']!;
+  return {
+    ...table,
+    endpoints: {
+      ...table.endpoints,
+      zai: { ...zai, models: [...zai.models, FIXED_GLM_SERVED_ID] },
+    },
+  };
+}
+
+// ACP harness argv: since ~0.43 the bare `zcode-acp-server` bin opens its
+// interactive TUI — the editor-facing stdio ACP bridge is the `server`
+// subcommand (probed 2026-09-19 at zcode-acp-server 0.43.3, engines
+// node>=22). The toolkit's default endpoint argv (['zcode-acp-server'],
+// probed at 0.37.3) is stale for 0.43.x, and the driver's explicit
+// `command` argv wins over the endpoint table — so pass the whole argv.
+const ACP_COMMAND = ['zcode-acp-server', 'server'] as const;
+
 function nextValue(argv: readonly string[], i: number, flag: string): string {
   const v = argv[i + 1];
   if (v === undefined) throw new UsageError(`flag ${flag} requires a value\n${USAGE}`);
@@ -52,7 +90,7 @@ function nextValue(argv: readonly string[], i: number, flag: string): string {
 
 interface CliOptions {
   suites: string[];
-  driver: 'fake' | 'ai-sdk';
+  driver: DriverKind;
   model: string;
   provider: string;
   maxUsd?: number;
@@ -68,7 +106,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   // caps, so a token-only cap can bind an unpriced lane (DD-9). --driver is
   // REQUIRED: a silent fake default would make synthetic rows
   // indistinguishable from real-lane rows.
-  let driver: 'fake' | 'ai-sdk' | undefined;
+  let driver: DriverKind | undefined;
   const suites: string[] = [];
   let model = '';
   let provider = '';
@@ -84,8 +122,10 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--suite': suites.push(nextValue(argv, i, flag)); i++; break;
       case '--driver': {
         const v = nextValue(argv, i, flag);
-        if (v !== 'fake' && v !== 'ai-sdk') throw new UsageError(`--driver must be fake|ai-sdk, got '${v}'`);
-        driver = v; i++; break;
+        if (!DRIVERS.has(v)) {
+          throw new UsageError(`--driver must be ${[...DRIVERS].join('|')}, got '${v}'`);
+        }
+        driver = v as DriverKind; i++; break;
       }
       case '--model': model = nextValue(argv, i, flag); i++; break;
       case '--provider': provider = nextValue(argv, i, flag); i++; break;
@@ -103,7 +143,9 @@ function parseArgs(argv: readonly string[]): CliOptions {
       default: throw new UsageError(`unknown flag '${flag}'\n${USAGE}`);
     }
   }
-  if (driver === undefined) throw new UsageError(`--driver is required (fake|ai-sdk)\n${USAGE}`);
+  if (driver === undefined) {
+    throw new UsageError(`--driver is required (${[...DRIVERS].join('|')})\n${USAGE}`);
+  }
   if (suites.length === 0 || model === '' || provider === '') {
     throw new UsageError(`--suite, --model and --provider are required\n${USAGE}`);
   }
@@ -169,8 +211,8 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   // One driver PER SUITE: a mixed invocation (fixer + classifier suites)
   // must not force one role's outputSchema onto the other — each suite's
-  // role decides its own construction (F3/G6): classifier →
-  // VERDICT_OUTPUT_SCHEMA, fixer → FIXER_OUTPUT_SCHEMA (DD-4).
+  // role decides its own construction (F3/G6): every REAL lane requests
+  // classifier → VERDICT_OUTPUT_SCHEMA, fixer → FIXER_OUTPUT_SCHEMA (DD-4).
   // FakeDriver is unchanged and stays schema-blind: it never emits the
   // fixer's {fixed, notes} shape, so a fake fixer row honestly fails the
   // schema-compliance probe.
@@ -183,12 +225,14 @@ async function main(argv: readonly string[]): Promise<number> {
   // thrown here — is exit 1 (a benign eval outcome the workflow warns on).
   try {
     for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
-      const driver: Driver = opts.driver === 'ai-sdk'
-        ? new AiSdkDriver(
-            suite.role === 'review-classifier'
-              ? { outputSchema: VERDICT_OUTPUT_SCHEMA }
-              : { outputSchema: FIXER_OUTPUT_SCHEMA },
-          )
+      const outputSchema = suite.role === 'review-classifier' ? VERDICT_OUTPUT_SCHEMA : FIXER_OUTPUT_SCHEMA;
+      const driver: Driver =
+        opts.driver === 'ai-sdk' ? new AiSdkDriver({ outputSchema })
+        : opts.driver === 'claude-agent' ? new ClaudeAgentDriver({ outputSchema })
+        // Axis-2 subprocess run: the routing override (see
+        // subprocessRoutingTable) admits the fixed served id.
+        : opts.driver === 'subprocess' ? new SubprocessDriver({ outputSchema, routingTable: subprocessRoutingTable() })
+        : opts.driver === 'acp' ? new AcpDriver({ outputSchema, command: ACP_COMMAND })
         : new FakeDriver();
       const result = await runSuite({
         suiteDir, driver,

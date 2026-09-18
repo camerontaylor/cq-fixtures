@@ -256,18 +256,16 @@ jobs:
         # (protocolVersion 1, the ACP convention, clientCapabilities {}),
         # session/new (fresh mkdtemp cwd, mcpServers []), then session/prompt
         # — under `timeout 150` (the step keeps its own default timeout).
-        # Exit-status discipline (round-2 review + Codex PR-13 P1): the SKIP
-        # class is only the confirmed no-agent-output shapes — fail() on a
-        # json-rpc error matching the LIVE-PROBED no-credentials shape
-        # ("Model config is missing", 2026-09-19) or on a close before any
-        # agent line (exit 3, cause always printed to the step log), and the
-        # timeout's own branch (rc 124: "blocked, cause not established" —
-        # not folded into 3 and not labeled credentials). Everything else is
-        # a HARD failure: a spawn error exits 4, any OTHER json-rpc error
-        # exits 4 (protocol regression, provider outage, harness bug — the
-        # lane must fail loudly, never silently vanish as a credential
-        # skip), and any unexpected non-zero is never caught into the skip
-        # path — a broken preflight can never silently omit the acp lane.
+        # Exit-status discipline (round-2 review + Codex PR-13 P1 ×2): the SKIP
+        # class is exactly TWO shapes — fail() on a json-rpc error matching
+        # the LIVE-PROBED no-credentials response ("Model config is missing",
+        # 2026-09-19; exit 3), and the timeout's own branch (rc 124: "blocked,
+        # cause not established" — not labeled credentials). EVERYTHING ELSE
+        # is a HARD failure (exit 4, loud): a spawn error, any OTHER json-rpc
+        # error (protocol regression, provider outage, harness bug), an
+        # UNEXPLAINED close before any agent line, and any unexpected
+        # non-zero — a broken harness can never silently vanish from the
+        # matrix as a credential skip.
         run: |
           set -euo pipefail
           rc=0
@@ -288,10 +286,12 @@ jobs:
             child.on("error", (e) => { console.error("acp preflight FAILED: spawn error: " + e.message); process.exit(4); });
             // close, not exit: close fires after stdio flushes, so an agent
             // line arriving just before the harness dies is still processed
-            // by the stdout handler above — and any close the success path
-            // did not preempt is an auth-FAIL, unconditionally (a stage
-            // guard would hang a stage-2 close until the timeout instead).
-            child.on("close", (code) => fail("harness closed (code " + code + ") without any agent output"));
+            // by the stdout handler above. An unexplained close is exit 4
+            // (infrastructure), NOT the credential skip: the live-probed
+            // credential-less harness fails via the json-rpc missing-config
+            // response — a silent close is a crash/outage/regression and
+            // must fail the cell loudly (Codex PR-13 round-2 P1).
+            child.on("close", (code) => fail("harness closed (code " + code + ") without any agent output", 4));
             // A dying harness must not surface as an unhandled EPIPE on the
             // queued send()s — close/timeout own the verdict (cycle-1 r1
             // finding 3): the error listener absorbs it.

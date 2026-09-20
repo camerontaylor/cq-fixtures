@@ -64,7 +64,8 @@ const VERDICT_OUTPUT_SCHEMA = z.object({
 // acp eval cell runs only after an auth-OK preflight, which always writes
 // the record — an unaccounted probe must never silently run as ungoverned.
 const PROBE_RECORD_SCHEMA = z.object({
-  probe: z.literal('acp-auth-preflight'),
+  probe: z.literal('acp-auth-preflight'), // .strict(): unknown keys fail loud instead of dropping silently
+
   // ISO-8601: the record's timestamp rides into the journal verbatim, so a
   // non-datetime string would pollute the journal's time-ordered evidence.
   at: z.string().datetime(),
@@ -74,7 +75,7 @@ const PROBE_RECORD_SCHEMA = z.object({
   // an unbounded string would bloat the journal (the writer slices to 200;
   // the boundary re-enforces it for hand-written records).
   replyPreview: z.string().max(200),
-});
+}).strict();
 
 // The subprocess lane runs the fixed axis-2 served id (see FIXED_GLM_SERVED_ID
 // above), but the toolkit's default routing table predates the served-id

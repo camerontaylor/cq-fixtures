@@ -224,6 +224,12 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     const probeUsage: Usage = {
       input: PREFLIGHT_PROBE_RESERVE_TOKENS, output: 0, cacheRead: 0, cacheWrite: 0,
     };
+    // Tokens only, never observeResult: the probe's cost is as unmeasurable
+    // as its tokens, and cells run token-cap-only (DD-9) — observeResult's
+    // unpriced-under-maxUsd trip would fail a USD-capped probe run before
+    // any case dispatches. A --max-usd run with a probe behaves exactly like
+    // one without (cases still trip fail-closed on unpriced usage); the
+    // probe itself adds no USD evidence either way.
     governor.observeUsage(PREFLIGHT_PROBE_JOB_ID, probeUsage);
     await append({
       type: 'job-finished', runId, at: now(),

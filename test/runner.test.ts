@@ -731,6 +731,39 @@ describe('pre-runner probe accounting (review-debt #14)', () => {
     expect(result.gatedByBudget).toBe(false);
     expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
   }, 15_000);
+
+  it('every suite run in one process charges the reservation against its own cap', async () => {
+    // Each suite invocation owns its own governor and journal, so a shared
+    // --journal dir collects one probe pair PER run, each counting against
+    // that run's cap — conservative in the same direction on each.
+    const a = reviewSuite('probe-multi-a', 'probe-multi-a', [reviewCase('rev-a', 'resolved')]);
+    const b = reviewSuite('probe-multi-b', 'probe-multi-b', [reviewCase('rev-b', 'resolved')]);
+    const journalPath = join(root, 'journal-multi');
+    await runSuite(opts(a, { journalPath, preflightProbe: probe }));
+    await runSuite(opts(b, { journalPath, preflightProbe: probe }));
+    const log = openRunLog(journalPath);
+    const runs = await log.runs();
+    expect(runs).toHaveLength(2);
+    for (const runId of runs) {
+      const events = await log.read(runId);
+      expect(events.filter((e) => e.type === 'job-started' && (e as { jobId: string }).jobId === PREFLIGHT_PROBE_JOB_ID)).toHaveLength(1);
+      expect(
+        events.filter((e): e is JobFinishedJournalEvent => e.type === 'job-finished' && e.jobId === PREFLIGHT_PROBE_JOB_ID),
+      ).toHaveLength(1);
+    }
+  }, 15_000);
+
+  it('a --max-usd run with a probe behaves like one without (the probe adds no USD evidence)', async () => {
+    // Unpriced lane under an explicit USD cap: the probe observes tokens
+    // only, so the fail-closed trip still comes from the first case's
+    // unpriced usage — identical shape to the no-probe run.
+    const dir = reviewSuite('probe-usd', 'probe-usd', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
+    const result = await runSuite(
+      opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxUsd: 0.000001, maxTokens: 1_000_000, preflightProbe: probe }),
+    );
+    expect(result.gatedByBudget).toBe(true);
+    expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
+  }, 15_000);
 });
 
 describe('DD-9 cost derivation', () => {

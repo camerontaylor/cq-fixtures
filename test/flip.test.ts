@@ -155,6 +155,10 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     const { status, stderr } = runFlip(dir, ['2.0.0'], env);
     expect(status).not.toBe(0);
     expect(stderr).toContain('refusing a second flip');
+    // Pre-write refusal (exit 3 inside): no restore note, no backups left
+    // behind, version untouched — the retry is a clean re-run.
+    expect(stderr).not.toContain('restored');
+    expect(existsSync(join(dir, 'package.json.bak-flip'))).toBe(false);
     expect(readPkg(dir).dependencies?.[DEP]).toBe('1.0.0');
   });
 

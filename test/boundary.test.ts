@@ -55,9 +55,11 @@ function distEntries(): Array<{ label: string; path: string }> {
 // synthetic strings — see the matcher self-test below — which the text
 // scan cannot tell apart from real imports).
 function testEntries(): Array<{ label: string; path: string }> {
+  // All `.ts` under test/, not just `*.test.ts`: a future non-test helper
+  // (shared sandbox setup, fixtures) with a deep import must not evade.
   return readdirSync(TEST_DIR, { recursive: true })
     .map(String)
-    .filter((f) => f.endsWith('.test.ts') && !/(^|[\\/])boundary\.test\.ts$/.test(f))
+    .filter((f) => f.endsWith('.ts') && !/(^|[\\/])boundary\.test\.ts$/.test(f))
     .sort()
     .map((f) => ({ label: `test/${f.replaceAll('\\', '/')}`, path: join(TEST_DIR, f) }));
 }
@@ -103,7 +105,7 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   // legitimate and must not trip the rule; and NOT "any path outside
   // runner/", which no text regex can resolve. `../../../src/` and
   // `../vendor/` are caught; `../score/` is not.
-  ['relative escape into a vendored tree (any import form)', /(?:from|import|require|import\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*meta\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|require\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireMock|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*import(?:Actual|Mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unstable_mockModule|mock\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*module|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireActual|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unmock|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*createMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*genMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*dontMock|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*doUnmock|vitest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\(?\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`](?:\.\.\/)+(?:src|vendor|lib)(?:\/|["'`]|$|\$)/],
+  ['relative escape into a vendored tree (any import form)', /(?:from|import|require|import\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*meta\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|require\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireMock|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*import(?:Actual|Mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unstable_mockModule|mock\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*module|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireActual|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unmock|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*createMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*genMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*dontMock|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*doUnmock|vitest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\(?\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`](?:\.\/)*(?:\.\.\/)+(?:src|vendor|lib|dist)(?:\/|["'`]|$|\$)/],
 ];
 
 interface Violation {
@@ -278,6 +280,9 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "jest.dontMock('../../src/internal');",
       "vi.doUnmock('../../src/internal');",
       "jest.doUnmock('../../src/internal');",
+      "import { x } from '../dist/internal';",
+      "import { x } from '../../dist/internal';",
+      "import { x } from './../src/internal';",
       "vitest.mock('../../src/internal');",
       "vitest.importActual('../../src/internal');",
       "require /*c*/ .resolve('../../src/internal');",

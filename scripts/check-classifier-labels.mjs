@@ -40,6 +40,26 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const VERDICTS = ['actionable', 'responded', 'resolved', 'blocked', 'skip'];
 const FP_FLAGS = ['none', 'suspicious-benign'];
+// F4 r1-F1: the closed routing taxonomy (LABEL-GUIDE.md §2, verbatim) —
+// the gate allowlists it on sidecar AND notes so a typo'd group can never
+// pass CI green while the guide claims a closed routing layer.
+const CONCERN_GROUPS = [
+  'Logic & functionality',
+  'Implementation',
+  'API documentation',
+  'Resource',
+  'Performance',
+  'Validation/Security',
+  'Interface',
+  'Appearance/Formatting',
+  'Naming',
+  'Code organization',
+  'Documentation',
+  'Discussion',
+  'Design',
+  'Question',
+  'Praise',
+];
 const EXPECTED_GUIDE_VERSION = '1.0';
 const DEFAULT_SUITES = [
   'suites/review-classifier/breadth-verified',
@@ -153,8 +173,14 @@ function main() {
       if (!FP_FLAGS.includes(l.fp_flag)) fail(`${where}: sidecar.fp_flag '${l.fp_flag}' must be none|suspicious-benign`);
       if (typeof l.adversarial_reply !== 'boolean') fail(`${where}: sidecar.adversarial_reply must be boolean`);
       if (typeof l.concern_group !== 'string' || l.concern_group === '') fail(`${where}: sidecar.concern_group must be a non-empty string`);
+      else if (!CONCERN_GROUPS.includes(l.concern_group)) {
+        fail(`${where}: sidecar.concern_group '${l.concern_group}' is outside the guide §2 taxonomy (want one of: ${CONCERN_GROUPS.join(' | ')})`);
+      }
       const notes = parseNotes(c.task?.notes, where);
       if (notes !== null) {
+        if (!CONCERN_GROUPS.includes(notes.concern_group)) {
+          fail(`${where}: notes concern_group '${notes.concern_group}' is outside the guide §2 taxonomy (want one of: ${CONCERN_GROUPS.join(' | ')})`);
+        }
         if (notes.concern_group !== l.concern_group) fail(`${where}: notes concern_group '${notes.concern_group}' != sidecar '${l.concern_group}'`);
         if (notes.fp_flag !== l.fp_flag) fail(`${where}: notes fp_flag '${notes.fp_flag}' != sidecar '${l.fp_flag}'`);
         if (notes.adversarial_reply !== l.adversarial_reply) {
@@ -180,6 +206,26 @@ function main() {
       }
       const annotators = annotatorEntries.length;
       const status = l.adjudication?.status;
+      // F4 r1-F2: status semantics, not just status vocabulary. `agreed`
+      // is a unanimity claim (every pass's verdict equals the recorded
+      // expected); `adjudicated` must name who decided and what was
+      // decided; `single-annotator` must carry neither (there was no second
+      // pass to adjudicate). A bare length+vocabulary check would let
+      // [actionable, skip] pass as `agreed` on expected actionable.
+      const by = l.adjudication?.by;
+      const decision = l.adjudication?.decision;
+      if (status === 'agreed') {
+        const dissent = annotatorEntries.filter((a) => a.verdict !== l.expected);
+        if (dissent.length > 0) {
+          fail(`${where}: status agreed but annotator verdicts [${annotatorEntries.map((a) => `${a.id}:${a.verdict}`).join(', ')}] != expected '${l.expected}'`);
+        }
+      } else if (status === 'adjudicated') {
+        if (typeof by !== 'string' || by === '') fail(`${where}: status adjudicated requires adjudication.by (who decided)`);
+        if (typeof decision !== 'string' || decision === '') fail(`${where}: status adjudicated requires adjudication.decision (what was decided)`);
+      } else if (status === 'single-annotator') {
+        if (by !== undefined) fail(`${where}: status single-annotator must not carry adjudication.by (no second pass)`);
+        if (decision !== undefined) fail(`${where}: status single-annotator must not carry adjudication.decision (no second pass)`);
+      }
       if (tier === 'breadth-verified') {
         if (annotators < 2) fail(`${where}: verified tier needs >= 2 annotators, has ${annotators}`);
         if (status !== 'agreed' && status !== 'adjudicated') {
@@ -220,6 +266,9 @@ function main() {
   for (const l of combined) {
     if (byVerdict[l.expected] !== undefined) byVerdict[l.expected] += 1;
   }
+  // F4 r1-F6: the benign floor is EXACTLY met (20/60) by current corpus
+  // design — any benign→none relabel reds CI here, which is the intended
+  // forcing function (relabel deliberately, then re-balance), not brittleness.
   const benign = combined.filter((l) => l.fp_flag === 'suspicious-benign').length;
   const adversarial = combined.filter((l) => l.adversarial_reply === true).length;
   if (combined.length !== 60) fail(`combined corpus is ${combined.length} cases, want 60`);

@@ -993,6 +993,77 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     expect(table!.cells[0]).toMatchObject({ fpN: 3, fpRate: 1 / 3 });
   });
 
+  it('a classifier case with a missing sidecar omits the flag LOUDLY: row shape unchanged, one case diagnostic (r1-F3)', async () => {
+    writeFileSync(join(root, 'lonely.json'), JSON.stringify(threadPayload(7)));
+    // No lonely.label.json anywhere: the flag must be omitted AND diagnosed.
+    const dir = reviewSuite('sidecar-diag', 'sidecar-diag', [
+      reviewCaseOn('c-lonely', 'lonely.json', 'resolved'),
+    ]);
+    const result = await runSuite(opts(dir));
+    expect(result.rows).toHaveLength(1);
+    expect('suspiciousBenign' in result.rows[0]!).toBe(false);
+    expect(result.rows[0]!.probes).toEqual([
+      { kind: 'expected-verdict', expected: 'resolved', observed: 'resolved', passed: true },
+    ]);
+    expect(result.diagnostics).toContain(
+      "case c-lonely: label sidecar 'lonely.label.json' absent — suspiciousBenign flag omitted",
+    );
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('mixed probed/unprobed classifier cell: score counts every row, byVerdict/macroF1 count probed rows only (r1-F4)', () => {
+    const probed: ResultRow = {
+      role: 'review-classifier',
+      suite: 'mixed-cell',
+      case: 'c-scored',
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: 1, passed: 1, total: 1 },
+      probes: [{ kind: 'expected-verdict', expected: 'actionable', observed: 'actionable', passed: true }],
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-mixed-cell',
+      timestamp: '2026-09-21T00:00:00Z',
+    };
+    // A zero-path row (driver-throw): honest outcome failure, no probes[] by I9.
+    const unprobed: ResultRow = {
+      ...probed,
+      case: 'c-thrown',
+      outcome: { score: 0, passed: 0, total: 1 },
+    };
+    delete (unprobed as { probes?: unknown }).probes;
+    const [table] = aggregate([probed, unprobed]);
+    const cell = table!.cells[0]!;
+    // Score denominator covers both rows; confusion covers the scored one.
+    expect(cell).toMatchObject({ runs: 2, passed: 1, total: 2, score: 0.5 });
+    expect(cell.byVerdict!.actionable).toEqual({ expected: 1, correct: 1, predicted: { actionable: 1 } });
+    expect(cell.macroF1).toBeCloseTo(0.2, 10);
+    expect(cell).not.toHaveProperty('fpRate');
+  });
+
+  it('an out-of-vocabulary observed verdict is a miss with no predicted bucket (r1-F5)', () => {
+    const row: ResultRow = {
+      role: 'review-classifier',
+      suite: 'oov-cell',
+      case: 'c-oov',
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: 0, passed: 0, total: 1 },
+      probes: [{ kind: 'expected-verdict', expected: 'skip', observed: 'maybe', passed: false }],
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-oov-cell',
+      timestamp: '2026-09-21T00:00:00Z',
+    };
+    const [table] = aggregate([row]);
+    const cell = table!.cells[0]!;
+    expect(cell).toMatchObject({ runs: 1, passed: 0, total: 1, score: 0 });
+    expect(cell.byVerdict!.skip).toEqual({ expected: 1, correct: 0, predicted: {} });
+    expect(cell.macroF1).toBe(0);
+  });
+
   it('fixer rows and cells carry none of the F4 fields (pre-F4 shape preserved)', async () => {
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');

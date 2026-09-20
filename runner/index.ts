@@ -169,28 +169,37 @@ function tokensOf(usage: Usage): ResultRow['tokens'] {
 // The label.json lives beside the thread payload (`<fixture>.json` ->
 // `<fixture>.label.json`) and carries the adjudicated fp_flag; the runner
 // reads ONLY that flag — concern group and adjudication records stay in the
-// file for the label-drift CI check, never in rows. A missing, unreadable,
-// or invalid sidecar yields undefined SILENTLY: micro suites carry no
-// labels, and sidecar presence is enforced by the drift check, not the
-// runner. This helper never throws past its caller and never returns false
-// (absence means unflagged — the row simply omits suspiciousBenign).
-function suspiciousBenignFlag(repoRoot: string, fixture: string): true | undefined {
-  if (!fixture.endsWith('.json')) return undefined;
+// file for the label-drift CI check, never in rows. A missing or unparseable
+// sidecar is NOT silent (r1-F3): the caller surfaces it as a case diagnostic
+// so a damaged sidecar undercounts fpN/fpRate loudly instead of invisibly —
+// micro suites carry no labels, so their runs note the omission per case.
+// This helper never throws past its caller. 'unflagged' covers every
+// present-but-not-benign sidecar (fp_flag none, or invalid — validity is the
+// drift check's job, not the runner's); the row omits suspiciousBenign for
+// every status but 'flagged'.
+type SidecarFlag = 'flagged' | 'absent' | 'unparseable' | 'unflagged';
+function suspiciousBenignFlag(repoRoot: string, fixture: string): SidecarFlag {
+  if (!fixture.endsWith('.json')) return 'unflagged';
+  let raw: string;
   try {
-    const parsed: unknown = JSON.parse(
-      readFileSync(join(repoRoot, `${fixture.slice(0, -'.json'.length)}.label.json`), 'utf8'),
-    );
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      (parsed as { fp_flag?: unknown }).fp_flag === 'suspicious-benign'
-    ) {
-      return true;
-    }
-    return undefined;
+    raw = readFileSync(join(repoRoot, `${fixture.slice(0, -'.json'.length)}.label.json`), 'utf8');
   } catch {
-    return undefined;
+    return 'absent';
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return 'unparseable';
+  }
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    (parsed as { fp_flag?: unknown }).fp_flag === 'suspicious-benign'
+  ) {
+    return 'flagged';
+  }
+  return 'unflagged';
 }
 
 export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
@@ -449,7 +458,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // below; fixer rows and every zero path leave them unset, so those
       // rows keep their exact pre-F4 shape.
       let rowProbes: ResultRow['probes'];
-      let rowSuspiciousBenign: true | undefined;
+      let sidecarFlag: SidecarFlag | undefined;
       // DD-4: the probe ceiling holds even on the zero paths below — a case
       // configures its probes up front, so a worker that never produced a
       // gradeable result failed every one of them (passed 0 of the full
@@ -499,7 +508,15 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // so the confusion matrix, macro-F1, and FP rate are computable from
         // rows.jsonl — the outcome triple alone cannot supply them.
         rowProbes = [{ kind: 'expected-verdict', expected: c.probe.expected, observed: s.observed ?? null, passed: s.passed === 1 }];
-        if (suspiciousBenignFlag(repoRoot, c.fixture) === true) rowSuspiciousBenign = true;
+        sidecarFlag = suspiciousBenignFlag(repoRoot, c.fixture);
+        // r1-F3: a damaged sidecar is a case diagnostic (row shape
+        // unchanged) — silent omission would undercount fpN/fpRate with
+        // zero signal on any run the drift gate does not cover.
+        if (sidecarFlag === 'absent' || sidecarFlag === 'unparseable') {
+          caseDiagnostics.push(
+            `case ${c.id}: label sidecar '${c.fixture.slice(0, -'.json'.length)}.label.json' ${sidecarFlag} — suspiciousBenign flag omitted`,
+          );
+        }
       }
       if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);
       await append({
@@ -515,7 +532,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         outcome, costUSD: cost ?? null,
         ...(cost !== undefined ? { costBasis: 'modeled' as const } : {}),
         ...(rowProbes !== undefined ? { probes: rowProbes } : {}),
-        ...(rowSuspiciousBenign === true ? { suspiciousBenign: true } : {}),
+        ...(sidecarFlag === 'flagged' ? { suspiciousBenign: true } : {}),
         wallTimeMs, tokens: tokensOf(usage), runId, timestamp: now(),
       });
       console.error(`  case ${c.id}: score ${outcome.score}${diagnostics !== undefined ? ` — ${diagnostics.split('\n')[0]}` : ''}`);

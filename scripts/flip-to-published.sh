@@ -18,7 +18,7 @@
 # lock still points at the tarball and the next `npm ci` fails), and
 # removes `toolkit.lock` (the pre-publish pin has no meaning once the
 # published version is the source of truth). Any failure after the
-# rewrite restores package.json from a backup (taken first), so a failed
+# rewrite restores package.json + package-lock.json from backups (taken first), so a failed
 # run never bricks its own retry. Refuses to run when the
 # dependency is not a `file:` spec (the flip is one-way) or when
 # toolkit.lock is absent.
@@ -50,6 +50,11 @@ if [ ! -f "$FLIP_PKG" ]; then
 fi
 if [ ! -f "$FLIP_LOCK" ]; then
   echo "error: $FLIP_LOCK not found — nothing to flip from (already flipped?)" >&2
+  exit 1
+fi
+
+if [ ! -f "$ROOT/package-lock.json" ]; then
+  echo "error: $ROOT/package-lock.json not found — cannot back it up for rollback" >&2
   exit 1
 fi
 
@@ -123,9 +128,9 @@ if (typeof entry?.resolved !== "string" || entry.resolved.startsWith("file:")) {
 }
 ' || { restore_all; exit 1; }
 
-# Removal order: the pin first, the backups last — a lock-removal failure
-# keeps the backups, so the flipped tree stays retryable.
-rm "$FLIP_LOCK"
+# Removal order: the pin first, the backups last — and the pin removal
+# itself restores on failure, so even a failed rm keeps the tree retryable.
+rm "$FLIP_LOCK" || { restore_all; exit 1; }
 rm -f "$BACKUP_PKG" "$BACKUP_LOCK"
 
 echo "flipped $FLIP_DEP to $FLIP_VERSION; removed toolkit.lock."

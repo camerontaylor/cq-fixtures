@@ -68,7 +68,6 @@ const SCANNED_FILES: Array<{ label: string; path: string }> = [
     .filter((f) => f.endsWith('.ts'))
     .sort()
     .map((f) => ({ label: `runner/${f.replaceAll('\\', '/')}`, path: join(RUNNER_DIR, f) })),
-  ...distEntries(),
   ...testEntries(),
   { label: 'scripts/pack-toolkit.sh', path: fileURLToPath(new URL('../scripts/pack-toolkit.sh', import.meta.url)) },
   { label: 'scripts/flip-to-published.sh', path: fileURLToPath(new URL('../scripts/flip-to-published.sh', import.meta.url)) },
@@ -90,11 +89,13 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   ],
   // Relative escape into a VENDORED tree: one-or-more `../` chains into
   // `src/`, `vendor/`, or `lib/` — any import form, any spacing, any quote
-  // style. Deliberately NOT a bare `../` match — intra-runner relatives
-  // like `../score/fixerWorker.ts` are legitimate and must not trip the
-  // rule; and NOT "any path outside runner/", which no text regex can
-  // resolve. `../../../src/` and `../vendor/` are caught; `../score/` is not.
-  ['relative escape into a vendored tree (any import form)', /(?:from|import|require)\s*\(?\s*['"`](?:\.\.\/)+(?:src|vendor|lib)\//],
+  // style, with OR without the trailing slash (directory imports like
+  // `from '../../src'` must not evade). Deliberately NOT a bare `../`
+  // match — intra-runner relatives like `../score/fixerWorker.ts` are
+  // legitimate and must not trip the rule; and NOT "any path outside
+  // runner/", which no text regex can resolve. `../../../src/` and
+  // `../vendor/` are caught; `../score/` is not.
+  ['relative escape into a vendored tree (any import form)', /(?:from|import|require)\s*\(?\s*['"`](?:\.\.\/)+(?:src|vendor|lib)(?:\/|["'`]|$)/],
 ];
 
 interface Violation {
@@ -104,9 +105,18 @@ interface Violation {
   text: string;
 }
 
+// dist/ entries resolve LAZILY (inside the tests, not at module scope):
+// a direct `npx vitest run` without a prior build then fails as a test
+// failure with the actionable message, not as a module collection error.
+// The source/test/script entries above stay eager — a missing runner/ or
+// test/ tree means a broken checkout, and failing loud at import is right.
+function allScannedFiles(): Array<{ label: string; path: string }> {
+  return [...SCANNED_FILES, ...distEntries()];
+}
+
 function findViolations(): Violation[] {
   const violations: Violation[] = [];
-  for (const entry of SCANNED_FILES) {
+  for (const entry of allScannedFiles()) {
     const lines = readFileSync(entry.path, 'utf8').split('\n');
     lines.forEach((text, i) => {
       for (const [rule, pattern] of FORBIDDEN) {
@@ -131,9 +141,9 @@ describe('toolkit package boundary (public surface only)', () => {
     // above would silently pass over nothing — keep it honest. Source and
     // dist counts are asserted SEPARATELY: a present-but-unbuilt dist/
     // must not hide behind the source count.
-    const sources = SCANNED_FILES.filter((f) => f.label.startsWith('runner/'));
-    const built = SCANNED_FILES.filter((f) => f.label.startsWith('dist/'));
-    const tests = SCANNED_FILES.filter((f) => f.label.startsWith('test/'));
+    const sources = allScannedFiles().filter((f) => f.label.startsWith('runner/'));
+    const built = allScannedFiles().filter((f) => f.label.startsWith('dist/'));
+    const tests = allScannedFiles().filter((f) => f.label.startsWith('test/'));
     expect(sources.length).toBeGreaterThanOrEqual(7);
     expect(sources.some((f) => f.label === 'runner/index.ts')).toBe(true);
     // Eight runner modules emit (index, cli, aggregate, suite,
@@ -199,6 +209,8 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "import { x } from  '../../src/internal';",
       "import { x } from '../../../src/internal';",
       "import { x } from '../vendor/internal';",
+      "import { x } from '../../src';",
+      "import { x } from '../vendor';",
       "const m = await import('../../src/internal');",
       "const m = require('../../src/internal');",
       "export * from '../../src/internal';",

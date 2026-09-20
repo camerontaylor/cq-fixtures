@@ -45,7 +45,7 @@ release time, with the owner sign-off plan §6 requires).
   would fail the next `npm ci`), and removes `toolkit.lock`; it refuses a
   second run, non-semver input, a failed lock sync, and a lock whose tree
   entry still resolves via `file:` (stale-entry guard) — every failure
-  restores `package.json` from backup so a failed run never bricks its own
+  restores `package.json` + `package-lock.json` from backup so a failed run never bricks its own
   retry (contract proven by `test/flip.test.ts`, which runs the script
   hermetically against a tmp sandbox — the real tree is never flipped
   by a test). Plan §4 stage 3: run by the human at release, then

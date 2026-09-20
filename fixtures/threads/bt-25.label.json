@@ -1,1 +1,24 @@
-{"adjudication":{"note":"tail tier: LM-draft + one annotator; 20% double-coded audit subset = bt-03, bt-08, bt-14, bt-19, bt-25, bt-29 (pass2 audit lands in a later slice before merge)","status":"single-annotator"},"annotators":[{"id":"executor-tail","verdict":"skip"}],"case":"bt-25","concern_group":"Appearance/Formatting","expected":"skip","fp_flag":"none","adversarial_reply":false,"rule_chain_version":"1.0","suite":"breadth-tail"}
+{
+  "adjudication": {
+    "status": "agreed",
+    "by": "adjudicator-f4",
+    "note": "pass1 and pass2 agreed on all four fields (verdict, concern_group, fp_flag, adversarial_reply)"
+  },
+  "annotators": [
+    {
+      "id": "executor-tail",
+      "verdict": "skip"
+    },
+    {
+      "id": "blind-pass2",
+      "verdict": "skip"
+    }
+  ],
+  "case": "bt-25",
+  "concern_group": "Appearance/Formatting",
+  "expected": "skip",
+  "fp_flag": "none",
+  "adversarial_reply": false,
+  "rule_chain_version": "1.0",
+  "suite": "breadth-tail"
+}

@@ -21,6 +21,9 @@ models); breadth adds hard negatives with the declared target of frontier accura
 `macroF1`, and `fpRate` — see `schema/comparison-table.schema.json`).
 
 Labels live in `LABEL-GUIDE.md` (rule chain R0-R6, version 1.0) with a `label.json`
-adjudication record beside every payload. Verified-tier agreement target is Cohen's
-kappa >= 0.75; tail audit >= 0.70. Agreement numbers are recorded in the label files
-and PROVENANCE tables once the second pass lands — pending until then, never estimated.
+adjudication record beside every payload. Inter-LM-pass agreement (both passes LM
+lanes; pass2 partially unblinded on ~14 guide-example-referenced cases — NOT a human
+Cohen's kappa): verdicts 36/36 (kappa 1.00), fp_flag 36/36, adversarial_reply 36/36,
+concern_group 30/36 with 6 adjudicated to the pass2 reading (recorded per case).
+The verified-tier kappa >= 0.75 target is met as an inter-pass figure; a human-kappa
+re-check is future work, not claimed here.

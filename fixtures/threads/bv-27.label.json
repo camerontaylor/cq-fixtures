@@ -1,1 +1,24 @@
-{"case":"bv-27","suite":"breadth-verified","expected":"skip","concern_group":"Naming","fp_flag":"suspicious-benign","adversarial_reply":true,"rule_chain_version":"1.0","annotators":[{"id":"executor-pass1","verdict":"skip"}],"adjudication":{"status":"pending-pass2","note":"second independent pass + adjudication land in a later slice before merge"}}
+{
+  "case": "bv-27",
+  "suite": "breadth-verified",
+  "expected": "skip",
+  "concern_group": "Naming",
+  "fp_flag": "suspicious-benign",
+  "adversarial_reply": true,
+  "rule_chain_version": "1.0",
+  "annotators": [
+    {
+      "id": "executor-pass1",
+      "verdict": "skip"
+    },
+    {
+      "id": "blind-pass2",
+      "verdict": "skip"
+    }
+  ],
+  "adjudication": {
+    "status": "agreed",
+    "by": "adjudicator-f4",
+    "note": "pass1 and pass2 agreed on all four fields (verdict, concern_group, fp_flag, adversarial_reply)"
+  }
+}

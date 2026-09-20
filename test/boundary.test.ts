@@ -55,11 +55,11 @@ function distEntries(): Array<{ label: string; path: string }> {
 // strings (see the matcher self-test below), which the text scan cannot
 // tell apart from real imports.
 function testEntries(): Array<{ label: string; path: string }> {
-  return readdirSync(TEST_DIR)
+  return readdirSync(TEST_DIR, { recursive: true })
     .map(String)
     .filter((f) => f.endsWith('.test.ts') && f !== 'boundary.test.ts')
     .sort()
-    .map((f) => ({ label: `test/${f}`, path: join(TEST_DIR, f) }));
+    .map((f) => ({ label: `test/${f.replaceAll('\\', '/')}`, path: join(TEST_DIR, f) }));
 }
 
 const SCANNED_FILES: Array<{ label: string; path: string }> = [
@@ -116,14 +116,23 @@ function allScannedFiles(): Array<{ label: string; path: string }> {
 }
 
 function findViolations(): Violation[] {
+  // Whole-file matching (not line-by-line): a multiline import form such
+  // as `await import(` + newline + `'.../sub'` must not evade the rule.
+  // Line numbers derive from the match offset, so attribution stays exact.
   const violations: Violation[] = [];
   for (const entry of allScannedFiles()) {
-    const lines = readFileSync(entry.path, 'utf8').split('\n');
-    lines.forEach((text, i) => {
-      for (const [rule, pattern] of FORBIDDEN) {
-        if (pattern.test(text)) violations.push({ file: entry.label, rule, line: i + 1, text: text.trim() });
+    const content = readFileSync(entry.path, 'utf8');
+    for (const [rule, pattern] of FORBIDDEN) {
+      for (const m of content.matchAll(new RegExp(pattern.source, 'g'))) {
+        const at = m.index ?? 0;
+        violations.push({
+          file: entry.label,
+          rule,
+          line: content.slice(0, at).split('\n').length,
+          text: (m[0].split('\n')[0] ?? '').trim(),
+        });
       }
-    });
+    }
   }
   return violations;
 }
@@ -180,6 +189,8 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       'const m = await import(`@camerontaylor/cq-toolkit/src/internal`);',
       'require.resolve(\'@camerontaylor/cq-toolkit/sub\');',
       'import.meta.resolve(\'@camerontaylor/cq-toolkit/sub\');',
+      "await import(\n  '@camerontaylor/cq-toolkit/internal'\n);",
+      "import {\n  x\n} from '@camerontaylor/cq-toolkit/sub';",
       "const m = await import('@camerontaylor/cq-toolkit/src/internal');",
     ];
     for (const s of internalImports) {

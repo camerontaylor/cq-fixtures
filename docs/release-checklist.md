@@ -43,8 +43,9 @@ release time, with the owner sign-off plan §6 requires).
   dependency from the `file:` tarball to the published version, syncs
   `package-lock.json` via `npm install --package-lock-only` (a stale lock
   would fail the next `npm ci`), and removes `toolkit.lock`; it refuses a
-  second run, non-semver input, a failed lock sync, and a lock whose tree
-  entry still resolves via `file:` (stale-entry guard) — every failure
+  second run, non-semver input, a failed lock sync, a lock whose tree
+  entry still resolves via `file:` (stale-entry guard), and a pre-existing
+  `.bak-flip` backup (never overwrites recovery) — every failure
   restores `package.json` + `package-lock.json` from backup so a failed run never bricks its own
   retry (contract proven by `test/flip.test.ts`, which runs the script
   hermetically against a tmp sandbox — the real tree is never flipped

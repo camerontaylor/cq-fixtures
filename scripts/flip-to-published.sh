@@ -65,6 +65,13 @@ fi
 # tree the claim "every failure restores" would overreach on).
 BACKUP_PKG="$FLIP_PKG.bak-flip"
 BACKUP_LOCK="$ROOT/package-lock.json.bak-flip"
+# A killed run leaves these behind with the ORIGINAL pre-flip content: a
+# rerun must never overwrite them (that would restore a partial state and
+# destroy the recovery copy). Refuse first, unconditionally.
+if [ -e "$BACKUP_PKG" ] || [ -e "$BACKUP_LOCK" ]; then
+  echo "error: stale .bak-flip backup from an interrupted flip — restore or remove it before retrying" >&2
+  exit 1
+fi
 cp "$FLIP_PKG" "$BACKUP_PKG"
 cp "$ROOT/package-lock.json" "$BACKUP_LOCK"
 restore_all() {

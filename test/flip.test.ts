@@ -242,4 +242,21 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     expect(readPkg(dir).dependencies?.[DEP]?.startsWith('file:')).toBe(true);
     expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
   });
+
+  it('refuses when a stale .bak-flip backup exists (never overwrites recovery)', { timeout: 60000 }, () => {
+    // A killed run leaves .bak-flip files with ORIGINAL content; a rerun
+    // must refuse before copying, or the restore would hand back a partial
+    // state and destroy the recovery copy.
+    const dir = sandbox();
+    const { env } = stubNpm(dir, 0);
+    writeFileSync(join(dir, 'package.json.bak-flip'), 'original-pkg');
+    const { status, stderr } = runFlip(dir, ['1.0.0'], env);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('stale .bak-flip backup');
+    // Refusal precedes ALL writes: package.json, lock, and toolkit.lock
+    // untouched; the stale backup itself preserved.
+    expect(readPkg(dir).dependencies?.[DEP]?.startsWith('file:')).toBe(true);
+    expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
+    expect(readFileSync(join(dir, 'package.json.bak-flip'), 'utf8')).toBe('original-pkg');
+  });
 });

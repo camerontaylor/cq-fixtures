@@ -227,8 +227,11 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     const { status, stderr } = runFlip(dir, ['1.0.0'], env);
     expect(status).not.toBe(0);
     expect(stderr).toContain('package-lock.json entry still resolves');
-    // Rollback applies on this leg too: the tree is retryable as-is.
+    // Rollback applies on this leg too, backups included (symmetric with
+    // the lock-sync-failure leg): the tree is retryable as-is.
     expect(readPkg(dir).dependencies?.[DEP]?.startsWith('file:')).toBe(true);
+    expect(existsSync(join(dir, 'package.json.bak-flip'))).toBe(false);
+    expect(existsSync(join(dir, 'package-lock.json.bak-flip'))).toBe(false);
     expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
   });
 

@@ -218,7 +218,7 @@ npm warn install-scripts Run `npm install -g --allow-scripts=@anthropic-ai/claud
 (job 105754963287, "Install the subprocess lane CLI").
 
 `@anthropic-ai/claude-code`'s `bin` target is `bin/claude.exe`, which in the published
-tarball (`npm pack @anthropic-ai/claude-code@2.1.276`; verified 2026-09-21) is a 500-byte
+tarball (`npm pack @anthropic-ai/claude-code@2.1.276`, inspected during this triage) is a 500-byte
 **placeholder shell script** that prints
 `Error: claude native binary not installed.` and exits 1; the package's `postinstall`
 (`install.cjs`) is what copies the real platform binary over it. With the script blocked,

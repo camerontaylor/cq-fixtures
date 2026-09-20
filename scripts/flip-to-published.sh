@@ -72,8 +72,8 @@ if [ -e "$BACKUP_PKG" ] || [ -e "$BACKUP_LOCK" ]; then
   echo "error: stale .bak-flip backup from an interrupted flip — restore or remove it before retrying" >&2
   exit 1
 fi
-cp "$FLIP_PKG" "$BACKUP_PKG"
-cp "$ROOT/package-lock.json" "$BACKUP_LOCK"
+cp "$FLIP_PKG" "$BACKUP_PKG" || { echo "error: cannot back up $FLIP_PKG — refusing to flip without rollback" >&2; exit 1; }
+cp "$ROOT/package-lock.json" "$BACKUP_LOCK" || { rm -f "$BACKUP_PKG"; echo "error: cannot back up $ROOT/package-lock.json — pkg backup removed; fix and re-run" >&2; exit 1; }
 restore_all() {
   cp "$BACKUP_PKG" "$FLIP_PKG"
   cp "$BACKUP_LOCK" "$ROOT/package-lock.json"

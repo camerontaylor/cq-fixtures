@@ -266,4 +266,19 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
     expect(readFileSync(join(dir, 'package.json.bak-flip'), 'utf8')).toBe('original-pkg');
   });
+
+  it('cleans up the pkg backup when the lock backup copy fails (atomic pair)', { timeout: 60000 }, () => {
+    // A directory at the lock path makes cp fail deterministically (no
+    // chmod games): the pkg backup must not be left behind to trip the
+    // stale-backup refusal on retry.
+    const dir = sandbox();
+    const { env } = stubNpm(dir, 0);
+    rmSync(join(dir, 'package-lock.json'));
+    mkdirSync(join(dir, 'package-lock.json'));
+    const { status, stderr } = runFlip(dir, ['1.0.0'], env);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('cannot back up');
+    expect(existsSync(join(dir, 'package.json.bak-flip'))).toBe(false);
+    expect(readPkg(dir).dependencies?.[DEP]?.startsWith('file:')).toBe(true);
+  });
 });

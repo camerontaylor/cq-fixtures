@@ -27,6 +27,7 @@ import { scoreSchemaCompliance } from '../runner/dimensions/schemaCompliance.ts'
 import { scoreFixerWorker } from '../runner/score/fixerWorker.ts';
 import { scoreReviewClassifier } from '../runner/score/reviewClassifier.ts';
 import { FakeDriver } from '../runner/fake-driver.ts';
+import { aggregate } from '../runner/aggregate.ts';
 import type { ResultRow, SuiteRole } from '../runner/aggregate.ts';
 
 // Runner tests: no network, no live keys — the FakeDriver stands in for a
@@ -967,6 +968,30 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     expect(cell.macroF1).toBeCloseTo(0.5, 10);
     assertSchemaValid(result.rows, result.tables);
   }, 15_000);
+
+  it('fpRate counts only observed-actionable on benign rows (CodeRabbit cycle-1: a miss with any other observed verdict is not an FP)', () => {
+    const row = (id: string, expected: string, observed: string | null): ResultRow => ({
+      role: 'review-classifier',
+      suite: 'fp-rule',
+      case: id,
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: observed === expected ? 1 : 0, passed: observed === expected ? 1 : 0, total: 1 },
+      probes: [{ kind: 'expected-verdict', expected, observed, passed: observed === expected }],
+      suspiciousBenign: true,
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-fp-rule',
+      timestamp: '2026-09-21T00:00:00Z',
+    });
+    const [table] = aggregate([
+      row('c1', 'skip', 'actionable'), // cried wolf: the one FP
+      row('c2', 'responded', 'skip'), // miss, wrong non-actionable verdict: not an FP
+      row('c3', 'resolved', null), // miss, unparseable answer: not an FP
+    ]);
+    expect(table!.cells[0]).toMatchObject({ fpN: 3, fpRate: 1 / 3 });
+  });
 
   it('fixer rows and cells carry none of the F4 fields (pre-F4 shape preserved)', async () => {
     mkdirSync(join(root, 'fixture'), { recursive: true });

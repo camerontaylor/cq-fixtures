@@ -125,7 +125,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "expected", "passed"],
+        "required": ["kind", "expected", "observed", "passed"],
         "properties": {
           "kind": {
             "type": "string",

@@ -180,11 +180,17 @@ re-adjudication is a label-drift CI failure.
     { "id": "executor-pass1", "verdict": "<verdict>" }
   ],
   "adjudication": {                   // status + record of the third-pass decision
-    "status": "pending-pass2" | "agreed" | "adjudicated",
-    "by": "<annotator id>",
-    "decision": "<verdict>",
+    "status": "pending-pass2" | "agreed" | "adjudicated" | "single-annotator",
+    "by": "<annotator id>",          // omitted for single-annotator
+    "decision": "<verdict>",         // omitted for single-annotator
     "note": "<what was decided and why>"
   }
+  // `single-annotator` = breadth-tail non-audit cases: annotators holds the
+  // one labeling pass and no adjudicator decision applies (fields by/decision
+  // omitted; note records the tail provenance). The drift CI check requires
+  // exactly this status for non-audit tail cases and agreed|adjudicated for
+  // every double-coded case — a tail case silently upgraded to two passes
+  // without adjudication fails the check.
 }
 ```
 

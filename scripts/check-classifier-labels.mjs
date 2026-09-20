@@ -117,6 +117,7 @@ function main() {
 
   const combined = [];
   const perTier = [];
+  const tierVerdictCounts = {};
   for (const suiteDir of suites) {
     const suiteFile = path.join(repo, suiteDir, 'suite.json');
     const parsed = readJson(suiteFile);
@@ -160,7 +161,24 @@ function main() {
           fail(`${where}: notes adversarial_reply != sidecar.adversarial_reply (${l.adversarial_reply})`);
         }
       }
-      const annotators = Array.isArray(l.annotators) ? l.annotators.length : 0;
+      // Per-record annotator validation: each pass carries its own verdict,
+      // so entries must be well-formed and attributable — a bare length
+      // check would let two anonymous passes satisfy the verified tier.
+      // concern_group / fp_flag / adversarial_reply stay sidecar-level
+      // (asserted above), never per-annotator fields.
+      const annotatorEntries = Array.isArray(l.annotators) ? l.annotators : [];
+      const annotatorIds = new Set();
+      for (const a of annotatorEntries) {
+        if (typeof a !== 'object' || a === null) {
+          fail(`${where}: annotators entry is not an object`);
+          continue;
+        }
+        if (typeof a.id !== 'string' || a.id === '') fail(`${where}: annotators entry has an empty or missing id`);
+        else if (annotatorIds.has(a.id)) fail(`${where}: duplicate annotator id '${a.id}'`);
+        else annotatorIds.add(a.id);
+        if (!VERDICTS.includes(a.verdict)) fail(`${where}: annotator '${a.id}' verdict '${a.verdict}' is outside the vocabulary`);
+      }
+      const annotators = annotatorEntries.length;
       const status = l.adjudication?.status;
       if (tier === 'breadth-verified') {
         if (annotators < 2) fail(`${where}: verified tier needs >= 2 annotators, has ${annotators}`);
@@ -183,6 +201,10 @@ function main() {
         }
       }
       combined.push(l);
+      // Per-tier verdict tallies: the 6-per-verdict-per-tier balance is a
+      // design assertion, checked below alongside the combined 12-per-verdict.
+      const tierCounts = (tierVerdictCounts[tier] ??= Object.fromEntries(VERDICTS.map((v) => [v, 0])));
+      if (tierCounts[l.expected] !== undefined) tierCounts[l.expected] += 1;
       if (tier === 'breadth-verified') tierLabels.push({ id: c.id });
     }
     perTier.push({ tier, count: (suite.cases ?? []).length, audit: tierLabels.filter((t) => t.audit).length });
@@ -205,6 +227,11 @@ function main() {
   if (adversarial < 6) fail(`adversarial-reply is ${adversarial}/60, floor is 6`);
   for (const v of VERDICTS) {
     if (byVerdict[v] !== 12) fail(`combined verdict '${v}' is ${byVerdict[v]}, want exactly 12`);
+  }
+  for (const [t, counts] of Object.entries(tierVerdictCounts)) {
+    for (const v of VERDICTS) {
+      if (counts[v] !== 6) fail(`tier '${t}' verdict '${v}' is ${counts[v]}, want exactly 6`);
+    }
   }
 
   if (failures.length > 0) {

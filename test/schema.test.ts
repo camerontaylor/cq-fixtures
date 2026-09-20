@@ -133,6 +133,12 @@ describe('result-row schema (plan §8 field list)', () => {
     expect(rowSchema(row)).toBe(false);
   });
 
+  it('rejects a probes[] entry missing observed (CodeRabbit cycle-1: required matches the TS contract)', () => {
+    const row = validRow();
+    (row as { probes?: unknown }).probes = [{ kind: 'expected-verdict', expected: 'skip', passed: false }];
+    expect(rowSchema(row)).toBe(false);
+  });
+
   it('rejects a probes[] entry with an undeclared key (probes are closed)', () => {
     const row = validRow();
     (row as { probes?: unknown }).probes = [
@@ -342,6 +348,30 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
       skip: { expected: 0, correct: 0, predicted: {} },
     };
     expect(tableSchema(table)).toBe(false);
+  });
+
+  it('rejects metric pairs split apart (CodeRabbit cycle-1: byVerdict<->macroF1, fpRate<->fpN travel together)', () => {
+    const table = validTable();
+    const cell = table.cells[0] as Record<string, unknown>;
+    cell['byVerdict'] = {
+      actionable: { expected: 1, correct: 1, predicted: { actionable: 1 } },
+      responded: { expected: 0, correct: 0, predicted: {} },
+      resolved: { expected: 0, correct: 0, predicted: {} },
+      blocked: { expected: 0, correct: 0, predicted: {} },
+      skip: { expected: 0, correct: 0, predicted: {} },
+    };
+    expect(tableSchema(table)).toBe(false); // byVerdict without macroF1
+    cell['macroF1'] = 0.2;
+    expect(tableSchema(table)).toBe(true);
+    delete cell['byVerdict'];
+    expect(tableSchema(table)).toBe(false); // macroF1 without byVerdict
+    delete cell['macroF1'];
+    cell['fpRate'] = 0.5;
+    expect(tableSchema(table)).toBe(false); // fpRate without fpN
+    cell['fpN'] = 2;
+    expect(tableSchema(table)).toBe(true);
+    delete cell['fpRate'];
+    expect(tableSchema(table)).toBe(false); // fpN without fpRate
   });
 
   it('rejects fpRate 1.5 and macroF1 above 1', () => {

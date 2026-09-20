@@ -219,7 +219,11 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         acc.classifierProbes.push({ expected: p.expected, observed: p.observed ?? null, passed: p.passed });
         if (row.suspiciousBenign === true) {
           acc.fpTotal += 1;
-          if (!p.passed) acc.fpWrong += 1;
+          // FP-rate-on-suspicious-benign means "the model cried wolf":
+          // only an observed actionable on a benign case is a false
+          // positive. Any other miss (wrong non-actionable verdict, or a
+          // null observed from an unparseable answer) is a miss, not an FP.
+          if (p.observed === 'actionable') acc.fpWrong += 1;
         }
       }
     }

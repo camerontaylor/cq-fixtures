@@ -96,7 +96,7 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   // legitimate and must not trip the rule; and NOT "any path outside
   // runner/", which no text regex can resolve. `../../../src/` and
   // `../vendor/` are caught; `../score/` is not.
-  ['relative escape into a vendored tree (any import form)', /(?:from|import|require)\s*\(?\s*['"`](?:\.\.\/)+(?:src|vendor|lib)(?:\/|["'`]|$)/],
+  ['relative escape into a vendored tree (any import form)', /(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?)\s*\(?\s*['"`](?:\.\.\/)+(?:src|vendor|lib)(?:\/|["'`]|$)/],
 ];
 
 interface Violation {
@@ -230,6 +230,8 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "const m = require('../../src/internal');",
       "export * from '../../src/internal';",
       'import { x } from `../../src/internal`;',
+      "require.resolve('../../src/internal');",
+      "import.meta.resolve('../../src/internal');",
     ];
     for (const s of escapes) {
       expect(escapeRule.test(s), `escape rule must match: ${s}`).toBe(true);

@@ -77,7 +77,12 @@ cp "$ROOT/package-lock.json" "$BACKUP_LOCK"
 restore_all() {
   cp "$BACKUP_PKG" "$FLIP_PKG"
   cp "$BACKUP_LOCK" "$ROOT/package-lock.json"
-  echo "note: package.json + package-lock.json restored from .bak-flip backups; fix the cause and re-run, then remove the backups" >&2
+  # Backups are removed by the restore itself: the live files now hold the
+  # ORIGINAL content, so nothing needs recovering and the retry starts
+  # clean. Only a KILLED run (no restore) leaves backups behind — those
+  # still trip the stale-backup refusal above.
+  rm -f "$BACKUP_PKG" "$BACKUP_LOCK"
+  echo "note: package.json + package-lock.json restored to pre-flip state; fix the cause and re-run" >&2
 }
 
 # Flow: node rewrites package.json → npm syncs the lock (registry) →

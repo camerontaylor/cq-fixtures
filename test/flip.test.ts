@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -181,9 +181,12 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     expect(status).not.toBe(0);
     expect(stderr).toContain('lock sync failed');
     // Rollback: package.json is restored to the file: spec (retryable),
+    // the restore cleans its own backups (only a killed run leaves them),
     // and toolkit.lock must NOT be removed: removal claims a completeness
     // the tree does not have.
     expect(readPkg(dir).dependencies?.[DEP]?.startsWith('file:')).toBe(true);
+    expect(existsSync(join(dir, 'package.json.bak-flip'))).toBe(false);
+    expect(existsSync(join(dir, 'package-lock.json.bak-flip'))).toBe(false);
     expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
   });
 

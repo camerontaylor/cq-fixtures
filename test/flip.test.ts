@@ -5,6 +5,12 @@ import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, afterEach } from 'vitest';
 
+// chmod-based tests are meaningless for root (permission bits do not bind
+// uid 0): run them as plain tests everywhere else, skip for root.
+const itNonRoot = (
+  typeof process.geteuid === 'function' && process.geteuid() === 0 ? it.skip : it
+) as typeof it;
+
 // flip-to-published.sh is a phase-5 HUMAN step: prepared here, NEVER run
 // against this repo (running it would detach the tree from its pinned
 // tarball). These tests execute it hermetically — FIXTURES_ROOT points the
@@ -267,18 +273,22 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     expect(readFileSync(join(dir, 'package.json.bak-flip'), 'utf8')).toBe('original-pkg');
   });
 
-  it('cleans up the pkg backup when the lock backup copy fails (atomic pair)', { timeout: 60000 }, () => {
-    // A directory at the lock path makes cp fail deterministically (no
-    // chmod games): the pkg backup must not be left behind to trip the
-    // stale-backup refusal on retry.
+  itNonRoot('cleans up the pkg backup when the lock backup copy fails (atomic pair)', { timeout: 60000 }, () => {
+    // An unreadable lock passes the existence guard but fails the copy:
+    // the pkg backup must not be left behind to trip the stale-backup
+    // refusal on retry.
     const dir = sandbox();
     const { env } = stubNpm(dir, 0);
-    rmSync(join(dir, 'package-lock.json'));
-    mkdirSync(join(dir, 'package-lock.json'));
-    const { status, stderr } = runFlip(dir, ['1.0.0'], env);
-    expect(status).not.toBe(0);
-    expect(stderr).toContain('cannot back up');
-    expect(existsSync(join(dir, 'package.json.bak-flip'))).toBe(false);
-    expect(readPkg(dir).dependencies?.[DEP]?.startsWith('file:')).toBe(true);
+    chmodSync(join(dir, 'package-lock.json'), 0o000);
+    try {
+      const { status, stderr } = runFlip(dir, ['1.0.0'], env);
+      expect(status).not.toBe(0);
+      expect(stderr).toContain('cannot back up');
+      expect(stderr).toContain('pkg backup removed');
+      expect(existsSync(join(dir, 'package.json.bak-flip'))).toBe(false);
+      expect(readPkg(dir).dependencies?.[DEP]?.startsWith('file:')).toBe(true);
+    } finally {
+      chmodSync(join(dir, 'package-lock.json'), 0o644);
+    }
   });
 });

@@ -1,0 +1,1 @@
+{"id":482128,"path":"sync/reconcile.ts","line":180,"resolved":false,"comments":[{"author":"juliabrandt","body":"Beautiful refactor — the state machine finally reads top-to-bottom with no hidden transitions. No notes, just appreciation.","createdAt":"2026-09-19T11:23:00Z","isReply":false}]}

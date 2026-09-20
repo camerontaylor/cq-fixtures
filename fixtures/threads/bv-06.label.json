@@ -1,0 +1,1 @@
+{"case":"bv-06","suite":"breadth-verified","expected":"actionable","concern_group":"Discussion","fp_flag":"none","adversarial_reply":true,"rule_chain_version":"1.0","annotators":[{"id":"executor-pass1","verdict":"actionable"}],"adjudication":{"status":"pending-pass2","note":"second independent pass + adjudication land in a later slice before merge"}}

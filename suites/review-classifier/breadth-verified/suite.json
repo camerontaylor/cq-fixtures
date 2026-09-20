@@ -1,0 +1,369 @@
+{
+  "name": "breadth-verified",
+  "role": "review-classifier",
+  "provenance": {
+    "origin": "hand-authored synthetic (F4, 2026-09-21); verdict balance 6-per-verdict is a design target, not a field prior; no public-benchmark content"
+  },
+  "cases": [
+    {
+      "id": "bv-01",
+      "fixture": "fixtures/threads/bv-01.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Logic & functionality; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "actionable"
+      }
+    },
+    {
+      "id": "bv-02",
+      "fixture": "fixtures/threads/bv-02.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Validation/Security; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "actionable"
+      }
+    },
+    {
+      "id": "bv-03",
+      "fixture": "fixtures/threads/bv-03.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Resource; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "actionable"
+      }
+    },
+    {
+      "id": "bv-04",
+      "fixture": "fixtures/threads/bv-04.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Performance; fp_flag: none; adversarial_reply: yes"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "actionable"
+      }
+    },
+    {
+      "id": "bv-05",
+      "fixture": "fixtures/threads/bv-05.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: API documentation; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "actionable"
+      }
+    },
+    {
+      "id": "bv-06",
+      "fixture": "fixtures/threads/bv-06.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Discussion; fp_flag: none; adversarial_reply: yes"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "actionable"
+      }
+    },
+    {
+      "id": "bv-07",
+      "fixture": "fixtures/threads/bv-07.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Logic & functionality; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "responded"
+      }
+    },
+    {
+      "id": "bv-08",
+      "fixture": "fixtures/threads/bv-08.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Performance; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "responded"
+      }
+    },
+    {
+      "id": "bv-09",
+      "fixture": "fixtures/threads/bv-09.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Logic & functionality; fp_flag: suspicious-benign; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "responded"
+      }
+    },
+    {
+      "id": "bv-10",
+      "fixture": "fixtures/threads/bv-10.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Validation/Security; fp_flag: suspicious-benign; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "responded"
+      }
+    },
+    {
+      "id": "bv-11",
+      "fixture": "fixtures/threads/bv-11.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Interface; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "responded"
+      }
+    },
+    {
+      "id": "bv-12",
+      "fixture": "fixtures/threads/bv-12.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Resource; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "responded"
+      }
+    },
+    {
+      "id": "bv-13",
+      "fixture": "fixtures/threads/bv-13.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Logic & functionality; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "resolved"
+      }
+    },
+    {
+      "id": "bv-14",
+      "fixture": "fixtures/threads/bv-14.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Resource; fp_flag: suspicious-benign; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "resolved"
+      }
+    },
+    {
+      "id": "bv-15",
+      "fixture": "fixtures/threads/bv-15.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Logic & functionality; fp_flag: suspicious-benign; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "resolved"
+      }
+    },
+    {
+      "id": "bv-16",
+      "fixture": "fixtures/threads/bv-16.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Naming; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "resolved"
+      }
+    },
+    {
+      "id": "bv-17",
+      "fixture": "fixtures/threads/bv-17.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Logic & functionality; fp_flag: suspicious-benign; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "resolved"
+      }
+    },
+    {
+      "id": "bv-18",
+      "fixture": "fixtures/threads/bv-18.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Performance; fp_flag: suspicious-benign; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "resolved"
+      }
+    },
+    {
+      "id": "bv-19",
+      "fixture": "fixtures/threads/bv-19.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Design; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "blocked"
+      }
+    },
+    {
+      "id": "bv-20",
+      "fixture": "fixtures/threads/bv-20.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Interface; fp_flag: suspicious-benign; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "blocked"
+      }
+    },
+    {
+      "id": "bv-21",
+      "fixture": "fixtures/threads/bv-21.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Interface; fp_flag: none; adversarial_reply: yes"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "blocked"
+      }
+    },
+    {
+      "id": "bv-22",
+      "fixture": "fixtures/threads/bv-22.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Resource; fp_flag: none; adversarial_reply: yes"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "blocked"
+      }
+    },
+    {
+      "id": "bv-23",
+      "fixture": "fixtures/threads/bv-23.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Validation/Security; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "blocked"
+      }
+    },
+    {
+      "id": "bv-24",
+      "fixture": "fixtures/threads/bv-24.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Documentation; fp_flag: suspicious-benign; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "blocked"
+      }
+    },
+    {
+      "id": "bv-25",
+      "fixture": "fixtures/threads/bv-25.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Appearance/Formatting; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "skip"
+      }
+    },
+    {
+      "id": "bv-26",
+      "fixture": "fixtures/threads/bv-26.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Documentation; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "skip"
+      }
+    },
+    {
+      "id": "bv-27",
+      "fixture": "fixtures/threads/bv-27.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Naming; fp_flag: suspicious-benign; adversarial_reply: yes"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "skip"
+      }
+    },
+    {
+      "id": "bv-28",
+      "fixture": "fixtures/threads/bv-28.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Design; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "skip"
+      }
+    },
+    {
+      "id": "bv-29",
+      "fixture": "fixtures/threads/bv-29.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Naming; fp_flag: suspicious-benign; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "skip"
+      }
+    },
+    {
+      "id": "bv-30",
+      "fixture": "fixtures/threads/bv-30.json",
+      "task": {
+        "prompt": "Classify the review thread payload printed below into exactly one of actionable|responded|resolved|blocked|skip. The structured output must be {\"verdict\": <one of the five>}.",
+        "notes": "concern_group: Design; fp_flag: none; adversarial_reply: no"
+      },
+      "probe": {
+        "kind": "expected-verdict",
+        "expected": "skip"
+      }
+    }
+  ]
+}

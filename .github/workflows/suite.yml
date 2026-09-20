@@ -451,6 +451,14 @@ jobs:
           # against both real suites). A nested micro/x/suite.json is a
           # structuring decision for J5's designed discovery, not an accident
           # to auto-run here; widening this list stays a deliberate edit.
+          #
+          # deprecated/ exclusion (F2, WB-2.1): retirement moves a case to a
+          # sibling deprecated/ suite (deprecate-don't-renumber), and a retired
+          # case must NEVER spend weekly tokens. -not -path drops any suite
+          # whose path carries a deprecated/ segment, so a future widening of
+          # the discovery roots cannot re-enable a retired suite by accident.
+          # Verified with a dry-run listing over a tree carrying a deprecated
+          # suite (F2 PR verification).
           hard_fail=0
           suite_count=0
           # Review-debt #14: the acp preflight probe spent real inference
@@ -510,7 +518,7 @@ jobs:
               echo "::error::suite ${rel_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
             fi
             suite_count=$((suite_count + 1))
-          done < <(find suites/fixer-worker/micro suites/review-classifier/micro -maxdepth 1 -name suite.json 2>/dev/null | sort)
+          done < <(find suites/fixer-worker/micro suites/review-classifier/micro -maxdepth 1 -name suite.json -not -path '*/deprecated/*' 2>/dev/null | sort)
           # Discovery drift must be VISIBLE but never fail the cell (it is a
           # structuring signal, not an eval outcome): the list above names
           # exactly two dirs with one directly-placed suite.json each, so

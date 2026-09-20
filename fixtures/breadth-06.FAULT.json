@@ -1,0 +1,28 @@
+{
+  "bug_type": "missing logic",
+  "failure_symptoms": "The memoizer recomputes every call: two calls with the same argument run the expensive function twice instead of once.",
+  "operator": "remove-assignment",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:authored",
+    "seed": 106,
+    "engine_version": "@babel/parser@8.0.6"
+  },
+  "validation": {
+    "f2p": ["reuses the cached value on a repeated argument"],
+    "p2p": ["computes each distinct argument once", "joins arguments into a stable key"],
+    "fix": {
+      "src/memoize.ts": "import { Cache } from './cache.ts';\nimport { slowSquare } from './compute.ts';\nimport { keyOf } from './hash.ts';\n\nexport function memoizedSquare(cache: Cache<number>, computeCount: { value: number }, n: number): number {\n  const key = keyOf([n]);\n  const cached = cache.get(key);\n  if (cached !== undefined) return cached;\n  const value = slowSquare(n);\n  computeCount.value += 1;\n  cache.set(key, value);\n  return value;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/memoize.ts",
+    "delete": "cache.set(key, value);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "The diff removes one assignment; the recomputation symptom is not visible in the removed line."
+  }
+}

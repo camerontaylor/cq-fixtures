@@ -1,0 +1,28 @@
+{
+  "bug_type": "value misuse",
+  "failure_symptoms": "withDefaults leaves retries undefined when the caller omits it, instead of defaulting to three.",
+  "operator": "default-param-removal",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": ["supplies three retries when the caller omits them"],
+    "p2p": ["keeps an explicit retry count", "parses the string true", "parses anything else as false", "accepts zero and positive integers", "rejects negative and fractional counts"],
+    "fix": {
+      "src/defaults.ts": "import type { Config } from './types.ts';\n\nexport function withDefaults(partial: Partial<Config>, retries: number = 3): Config {\n  return { verbose: false, retries, ...partial };\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/defaults.ts",
+    "delete": "return { verbose: false, retries, ...partial };"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "told",
+    "notes": "The diff removes the `= 3` initializer; a reader can name the missing default. Recorded as a known tell for this operator; the fixture stays in the medium tier because the fix still requires finding the call site contract."
+  }
+}

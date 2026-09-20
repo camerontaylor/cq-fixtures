@@ -1,0 +1,28 @@
+{
+  "bug_type": "function misuse",
+  "failure_symptoms": "Looking up the city of a missing profile throws a TypeError instead of reporting unknown.",
+  "operator": "non-null-overreach",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "diff-replay",
+    "generator": "fixture-git-replay",
+    "seed": 108,
+    "engine_version": "ts-morph@28.0.0"
+  },
+  "validation": {
+    "f2p": ["returns unknown when the profile is missing"],
+    "p2p": ["returns unknown when the address is missing", "reads the city when present", "trims and title-cases the name"],
+    "fix": {
+      "src/lookup.ts": "import type { Profile } from './types.ts';\n\nexport function cityOf(profile: Profile | undefined): string {\n  return profile?.address?.city ?? 'unknown';\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/lookup.ts",
+    "delete": "return profile?.address?.city ?? 'unknown';"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "told",
+    "notes": "The diff turns `?.` into `!`; a reader can name the non-null overreach directly. Recorded as a known tell; the case keeps the medium tier because the throw path still has to be located."
+  }
+}

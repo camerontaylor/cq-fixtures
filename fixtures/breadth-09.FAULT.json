@@ -1,0 +1,29 @@
+{
+  "bug_type": "variable misuse",
+  "failure_symptoms": "Two independent faults: snapshot() hands out the live internal stock array (a caller's push leaks back in), and an order that is paid but not shipped already reads as complete.",
+  "operator": "shared-reference-return+logical-swap",
+  "difficulty": "hard",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel+ts-morph",
+    "seed": 109,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0+ts-morph@28.0.0"
+  },
+  "validation": {
+    "f2p": ["returns a copy that does not alias internal stock", "is complete only when the order is both paid and shipped"],
+    "p2p": ["returns the current stock rows", "stays complete when paid and shipped", "marks a paid order"],
+    "fix": {
+      "src/inventory.ts": "import type { Product } from './types.ts';\n\nconst stock: Product[] = [\n  { sku: 'a', qty: 3 },\n  { sku: 'b', qty: 5 },\n];\n\nexport function snapshot(): Product[] {\n  return [...stock];\n}\n",
+      "src/orders.ts": "import type { Order } from './types.ts';\n\nexport function statusOf(order: Order): string {\n  if (order.paid && order.shipped) return 'complete';\n  return 'open';\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/inventory.ts",
+    "delete": "return [...stock];"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "told",
+    "notes": "Both diffs are one-token changes (spread dropped, && to ||) and a reader can name each. Hard tier is carried by having to find and fix two independent faults, not by concealment."
+  }
+}

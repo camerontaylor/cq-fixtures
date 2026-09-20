@@ -12,6 +12,14 @@ Result-row + per-role comparison-table JSON schemas (plan §3.2; ws-j item 2, fi
   with node directly against the case's materialized workspace copy — no toolkit probe machinery)
   or `expected-verdict` (classifyThreads vocabulary — mirrored locally by the runner, since the
   toolkit does not export it: `actionable | responded | resolved | blocked | skip`).
+- `fault.schema.json` — the fixture-side per-fault record (plan WB-2.1), NOT a suite field: the
+  closed case shape above stays untouched. One record per seeded fixer fault, stored as the
+  sibling file `fixtures/<name>.FAULT.json` (OUTSIDE the materialized fixture tree, because it
+  carries the canonical fix). HumanEvalFix-shaped: `bug_type`, `failure_symptoms`, `operator`,
+  `difficulty`, `provenance{origin,generator,seed,engine_version}`, `validation{f2p[],p2p[],fix}`,
+  plus optional `adequacy` (single-statement-deletion target) and `tell_audit`. Loaded and
+  catalog-checked by `catalog/fault.ts`; `test/catalog.test.ts` covers the loader and
+  `test/breadth.test.ts` proves the record is unreachable from a worker workspace.
 
 Served-id rule for `model` fields: every `model` id is the id the wire actually served. The eval
 wires request the served id (GLM coding wire → `glm-5.3-flash`; anthropic-compat and deepseek keep

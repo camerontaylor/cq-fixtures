@@ -4,7 +4,7 @@ First real-driver run of the five-cell axes matrix (ADR-0001 as revised 2026-09-
 manually at J5 (`workflow_dispatch` on main after PR #13). Read the "What is proven" section
 before the numbers: NONE of this run's zeros are model outcomes.
 
-| Cell (model / driver) | Role | Scored | What actually happened |
+| Cell (model / driver) | Role | Probes passed/total | What actually happened |
 |---|---|---|---|
 | glm-5.3-flash / ai-sdk | review-classifier | 7/10 | REAL scored run: tokens in 4530 / out 3226; per-case verdicts graded against the expected vocabulary |
 | glm-5.3-flash / ai-sdk | fixer-worker | 0/10 | every case ended `driver stopReason: error` AFTER real token spend (in 5304 / out 1542, wall ~165s) — driver-error zeros, not a "model failed to fix" outcome |
@@ -13,6 +13,8 @@ before the numbers: NONE of this run's zeros are model outcomes.
 | glm-5.3-flash / claude-agent | both | 0/20 | every case `driver stopReason: error`, 0 tokens — lane-level driver failure on CI; honest zeros |
 | glm-5.3-flash / subprocess | both | 0/20 | 0 tokens, ~7.2s wall combined — the headless CLI produced no model output on CI; honest zeros |
 | glm-5.3-flash / acp | — | no data | preflight hard-failed (rc 4, "backend dead") — CI cannot run the acp harness yet; loud, never published as data |
+
+Denominator is probes, not rows: a fixer-worker row carries 2 probes (seeded check-rerun + schema-compliance) and a classifier row carries 1, so e.g. fixer `0/10` aggregates 5 rows and a `both` cell sums both roles' probes.
 
 ## What is proven vs what is not
 

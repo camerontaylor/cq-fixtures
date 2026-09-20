@@ -64,9 +64,9 @@ wall 6.5–6.9 s/case and modeled cost recorded because the row's observed id is
 totals input 8088 / output 2003 / cacheRead 42112, `costUSD` 0.004285 (`costBasis: modeled`).
 
 Corroborating control — glm-5.3-flash ai-sdk review-classifier in the same job
-(`eval/glm-5.3-flash/ai-sdk/review-classifier/micro/journal/07ef168e-6498-45c5-b95e-eb4c32b1680c.ndjson`): 8 of 10
+(`eval/glm-5.3-flash/ai-sdk/review-classifier/micro/journal/07ef168e-6498-45c5-b95e-eb4c32b1680c.ndjson`): 7 of 10
 `job-finished` are `{"status":"ok","value":{"score":1,…}}`, and one further `ok`
-(`thread-04`) scored 0 on the verdict — so 7/10 probes passed. The two failures
+(`thread-04`) scored 0 on the verdict — so 8/10 `job-finished` ok and 7/10 probes passed. The two failures
 (`thread-01`, `thread-07`) are `driver stopReason: error` **with retained usage**
 (`input 512/output 435` and `input 384/output 524`). deepseek's classifier
 (`eval/deepseek-chat/ai-sdk/review-classifier/micro/journal/efa096aa-fecd-426e-8068-da53c4585738.ndjson`):
@@ -302,7 +302,7 @@ is a cq-fixtures CI-wiring fix owned by F1, Lane 4 is an owner decision.
 ## Acceptance check (plan §5, row F0)
 
 - memo committed under `reports/snapshots/2026-09-18/triage.md` — this file;
-- each lane classified toolkit-defect / CI-wiring / unavailable-on-CI — summary table
+- each lane classified toolkit-defect / CI-wiring / lane-unavailable-on-CI — summary table
   above (ai-sdk fixer and claude-agent = toolkit-defect; subprocess = CI-wiring; acp =
   lane-unavailable-on-CI / owner-decision-pending);
 - cq-toolkit issues opened where routed — two, URLs above.

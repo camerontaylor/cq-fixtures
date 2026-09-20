@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -9,31 +9,103 @@ import { describe, expect, it } from 'vitest';
 // src/ or dist/ deep import, and never a relative escape into a vendored
 // source tree. Scanned as TEXT so the rule holds for comments too: a file
 // that merely documents a deep import is already a boundary smell.
+//
+// The scan covers BOTH the runner sources AND the built dist/ output
+// (`npm run build`, tsconfig.build.json): the bare-specifier discipline
+// must survive compilation — a bundler or emit step that rewrote imports
+// into deep paths would break the package boundary exactly where CI stops
+// looking if only sources were scanned.
 
 const RUNNER_DIR = fileURLToPath(new URL('../runner', import.meta.url));
+const DIST_DIR = fileURLToPath(new URL('../dist', import.meta.url));
+const TEST_DIR = fileURLToPath(new URL('.', import.meta.url));
+
+// dist/ is gitignored build output, produced by `npm run build` before
+// `npm test` (CI builds first). The scan FAILS when dist/ is absent,
+// holds no emitted modules, or holds an unexpected emit shape: a missing
+// or misshapen build must never read as a clean boundary.
+function distEntries(): Array<{ label: string; path: string }> {
+  let names: string[];
+  try {
+    names = readdirSync(DIST_DIR, { recursive: true }).map(String).sort();
+  } catch {
+    throw new Error('boundary scan: dist/ is missing — run `npm run build` before `npm test` (CI builds before testing)');
+  }
+  const files = names.filter((f) => /\.(js|cjs|mjs)$/.test(f));
+  // Fail closed on unexpected emit shapes: subdirectories are fine, but
+  // any other FILE the emit leaves behind (e.g. an inlined bundle) must
+  // not slip past the scan.
+  const unexpected = names.filter((f) => {
+    if (/\.(js|cjs|mjs|map)$/.test(f)) return false;
+    try {
+      return statSync(join(DIST_DIR, f)).isFile();
+    } catch {
+      return true;
+    }
+  });
+  if (unexpected.length > 0) {
+    throw new Error(`boundary scan: unexpected non-module files in dist/: ${unexpected.join(', ')}`);
+  }
+  return files.map((f) => ({ label: `dist/${f.replaceAll('\\', '/')}`, path: join(DIST_DIR, f) }));
+}
+
+// test/*.test.ts import the toolkit bare today; a test-side deep import
+// would false-pass if tests were unscanned. boundary.test.ts itself is
+// EXCLUDED at any depth (it intentionally contains violation specimens as
+// synthetic strings — see the matcher self-test below — which the text
+// scan cannot tell apart from real imports).
+function testEntries(): Array<{ label: string; path: string }> {
+  // All `.ts` under test/, not just `*.test.ts`: a future non-test helper
+  // (shared sandbox setup, fixtures) with a deep import must not evade.
+  return readdirSync(TEST_DIR, { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith('.ts') && !/(^|[\\/])boundary\.test\.ts$/.test(f))
+    .sort()
+    .map((f) => ({ label: `test/${f.replaceAll('\\', '/')}`, path: join(TEST_DIR, f) }));
+}
+
 const SCANNED_FILES: Array<{ label: string; path: string }> = [
   ...readdirSync(RUNNER_DIR, { recursive: true })
     .map(String)
     .filter((f) => f.endsWith('.ts'))
     .sort()
     .map((f) => ({ label: `runner/${f.replaceAll('\\', '/')}`, path: join(RUNNER_DIR, f) })),
+  ...testEntries(),
   { label: 'scripts/pack-toolkit.sh', path: fileURLToPath(new URL('../scripts/pack-toolkit.sh', import.meta.url)) },
+  { label: 'scripts/flip-to-published.sh', path: fileURLToPath(new URL('../scripts/flip-to-published.sh', import.meta.url)) },
 ];
 
 const FORBIDDEN: Array<[string, RegExp]> = [
   ['toolkit src deep-import', /@camerontaylor\/cq-toolkit\/src/],
   ['toolkit dist deep-import', /@camerontaylor\/cq-toolkit\/dist/],
-  // Only the bare package specifier is allowed: in ANY import form — static
-  // `from '...'`, dynamic `import('...')`, `require('...')`, and
-  // `export ... from '...'` — the package name followed by '/' or '.' is a
-  // subpath/deep-import attempt. One regex covers all the call/keyword
-  // shapes; a bare `from '@camerontaylor/cq-toolkit'` never matches because
-  // nothing follows the package name.
+  // Only the bare package specifier is allowed: in ANY import form AND
+  // any quote style (including backticks) — static `from '...'`, dynamic
+  // `import('...')`, `require('...')`, `export ... from '...'`, plus the
+  // resolver spellings `require.resolve('...')` and
+  // `import.meta.resolve('...')`, the mock spellings `vi.mock('...')` /
+  // `vi.doMock('...')` / `jest.mock('...')` / `jest.doMock('...')` (live
+  // forms in this repo's own tests) plus the loader spellings
+  // `jest.requireMock('...')` / `vi.importActual('...')` /
+  // `vi.importMock('...')`, the `vitest.*` namespace aliases, and block
+  // OR line comments in the keyword-to-specifier gap (`import /*c*/
+  // ('...')`, `import // c` + newline + `('...')`) as well as around the
+  // dots of compound spellings (`require /*c*/ .resolve('...')`) — the followed by '/' or '.'
+  // is a subpath/deep-import attempt. One regex covers all the
+  // call/keyword shapes; a bare `from '@camerontaylor/cq-toolkit'` never
+  // matches because nothing follows the package name.
   [
     'toolkit subpath import in any import form (bare specifier only)',
-    /(?:from|import|require)\s*\(\s*['"]@camerontaylor\/cq-toolkit[/.]|(?:from|import|require)\s*['"]@camerontaylor\/cq-toolkit[/.]/,
+    /(?:from|import|require|import\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*meta\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|require\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireMock|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*import(?:Actual|Mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unstable_mockModule|mock\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*module|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireActual|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unmock|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*createMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*genMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*dontMock|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*doUnmock|vitest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\(\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`]@camerontaylor\/cq-toolkit[/.$]|(?:from|import|require|import\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*meta\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|require\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireMock|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*import(?:Actual|Mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unstable_mockModule|mock\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*module|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireActual|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unmock|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*createMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*genMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*dontMock|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*doUnmock|vitest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`]@camerontaylor\/cq-toolkit[/.$]/,
   ],
-  ["relative escape into a source tree (from '../../src/…')", /from ['"]\.\.\/\.\.\/src\//],
+  // Relative escape into a VENDORED tree: one-or-more `../` chains into
+  // `src/`, `vendor/`, or `lib/` — any import form, any spacing, any quote
+  // style, with OR without the trailing slash (directory imports like
+  // `from '../../src'` must not evade). Deliberately NOT a bare `../`
+  // match — intra-runner relatives like `../score/fixerWorker.ts` are
+  // legitimate and must not trip the rule; and NOT "any path outside
+  // runner/", which no text regex can resolve. `../../../src/` and
+  // `../vendor/` are caught; `../score/` is not.
+  ['relative escape into a vendored tree (any import form)', /(?:from|import|require|import\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*meta\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|require\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*resolve|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:doMock|mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireMock|vi\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*import(?:Actual|Mock)|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unstable_mockModule|mock\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*module|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*requireActual|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*unmock|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*createMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*genMockFromModule|jest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*dontMock|(?:vi|jest)\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*doUnmock|vitest\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*\.\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)\s*)*(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\(?\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`](?:\.\/)*(?:\.\.\/)+(?:src|vendor|lib|dist)(?:\/|["'`]|$|\$)/],
 ];
 
 interface Violation {
@@ -43,21 +115,39 @@ interface Violation {
   text: string;
 }
 
+// dist/ entries resolve LAZILY (inside the tests, not at module scope):
+// a direct `npx vitest run` without a prior build then fails as a test
+// failure with the actionable message, not as a module collection error.
+// The source/test/script entries above stay eager — a missing runner/ or
+// test/ tree means a broken checkout, and failing loud at import is right.
+function allScannedFiles(): Array<{ label: string; path: string }> {
+  return [...SCANNED_FILES, ...distEntries()];
+}
+
 function findViolations(): Violation[] {
+  // Whole-file matching (not line-by-line): a multiline import form such
+  // as `await import(` + newline + `'.../sub'` must not evade the rule.
+  // Line numbers derive from the match offset, so attribution stays exact.
   const violations: Violation[] = [];
-  for (const entry of SCANNED_FILES) {
-    const lines = readFileSync(entry.path, 'utf8').split('\n');
-    lines.forEach((text, i) => {
-      for (const [rule, pattern] of FORBIDDEN) {
-        if (pattern.test(text)) violations.push({ file: entry.label, rule, line: i + 1, text: text.trim() });
+  for (const entry of allScannedFiles()) {
+    const content = readFileSync(entry.path, 'utf8');
+    for (const [rule, pattern] of FORBIDDEN) {
+      for (const m of content.matchAll(new RegExp(pattern.source, 'g'))) {
+        const at = m.index ?? 0;
+        violations.push({
+          file: entry.label,
+          rule,
+          line: content.slice(0, at).split('\n').length,
+          text: (m[0].split('\n')[0] ?? '').trim(),
+        });
       }
-    });
+    }
   }
   return violations;
 }
 
 describe('toolkit package boundary (public surface only)', () => {
-  it('no runner file or pack script contains a toolkit deep-import or relative escape', () => {
+  it('no runner source, built dist output, or packaging script contains a toolkit deep-import or relative escape', () => {
     const violations = findViolations();
     const report = violations
       .map((v) => `${v.file}:${v.line} [${v.rule}] ${v.text}`)
@@ -65,12 +155,29 @@ describe('toolkit package boundary (public surface only)', () => {
     expect(violations, `boundary violations:\n${report}`).toEqual([]);
   });
 
-  it('scans the real runner surface (guard against the scan going empty)', () => {
-    // If the runner/ tree or the pack script moved, the scan above would
-    // silently pass over nothing — keep it honest.
-    expect(SCANNED_FILES.length).toBeGreaterThanOrEqual(7);
-    expect(SCANNED_FILES.some((f) => f.label === 'runner/index.ts')).toBe(true);
+  it('scans the real runner surface, sources and build (guard against the scan going empty)', () => {
+    // If the runner/ tree, the dist/ build, or a script moved, the scan
+    // above would silently pass over nothing — keep it honest. Source and
+    // dist counts are asserted SEPARATELY: a present-but-unbuilt dist/
+    // must not hide behind the source count.
+    const sources = allScannedFiles().filter((f) => f.label.startsWith('runner/'));
+    const built = allScannedFiles().filter((f) => f.label.startsWith('dist/'));
+    const tests = allScannedFiles().filter((f) => f.label.startsWith('test/'));
+    expect(sources.length).toBeGreaterThanOrEqual(7);
+    expect(sources.some((f) => f.label === 'runner/index.ts')).toBe(true);
+    // Eight runner modules emit (index, cli, aggregate, suite,
+    // fake-driver, dimensions/schemaCompliance, score/fixerWorker,
+    // score/reviewClassifier): fewer means the build dropped a module.
+    expect(built.length).toBeGreaterThanOrEqual(8);
+    expect(built.some((f) => f.label === 'dist/index.js')).toBe(true);
+    expect(built.some((f) => f.label === 'dist/cli.js')).toBe(true);
+    // Test files import the toolkit bare today; boundary.test.ts itself is
+    // excluded (it holds synthetic violation specimens — see testEntries).
+    expect(tests.length).toBeGreaterThanOrEqual(8);
+    expect(tests.some((f) => f.label === 'test/flip.test.ts')).toBe(true);
+    expect(tests.some((f) => f.label === 'test/boundary.test.ts')).toBe(false);
     expect(SCANNED_FILES.some((f) => f.label === 'scripts/pack-toolkit.sh')).toBe(true);
+    expect(SCANNED_FILES.some((f) => f.label === 'scripts/flip-to-published.sh')).toBe(true);
   });
 });
 
@@ -87,6 +194,37 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "export * from '@camerontaylor/cq-toolkit/dist/x.js';",
       "export { y } from '@camerontaylor/cq-toolkit/sub';",
       "import '@camerontaylor/cq-toolkit/depth';",
+      'import(`@camerontaylor/cq-toolkit/sub`);',
+      'const m = await import(`@camerontaylor/cq-toolkit/src/internal`);',
+      'require.resolve(\'@camerontaylor/cq-toolkit/sub\');',
+      'import.meta.resolve(\'@camerontaylor/cq-toolkit/sub\');',
+      'vi.mock(\'@camerontaylor/cq-toolkit/sub\');',
+      'vi.doMock(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.mock(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.doMock(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.requireMock(\'@camerontaylor/cq-toolkit/sub\');',
+      'vi.importActual(\'@camerontaylor/cq-toolkit/sub\');',
+      'vi.importMock(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.unstable_mockModule(\'@camerontaylor/cq-toolkit/sub\');',
+      'mock.module(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.requireActual(\'@camerontaylor/cq-toolkit/sub\');',
+      'vi.unmock(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.unmock(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.createMockFromModule(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.genMockFromModule(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.dontMock(\'@camerontaylor/cq-toolkit/sub\');',
+      'vi.doUnmock(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.doUnmock(\'@camerontaylor/cq-toolkit/sub\');',
+      'vitest.mock(\'@camerontaylor/cq-toolkit/sub\');',
+      'vitest.importMock(\'@camerontaylor/cq-toolkit/sub\');',
+      'require /*c*/ .resolve(\'@camerontaylor/cq-toolkit/sub\');',
+      'import.meta /*c*/ .resolve(\'@camerontaylor/cq-toolkit/sub\');',
+      'import /*c*/ (\'@camerontaylor/cq-toolkit/sub\');',
+      'import // c\n(\'@camerontaylor/cq-toolkit/sub\');',
+      'require //c\n.resolve(\'@camerontaylor/cq-toolkit/sub\');',
+      'await import(`@camerontaylor/cq-toolkit${"/sub"}`);',
+      "await import(\n  '@camerontaylor/cq-toolkit/internal'\n);",
+      "import {\n  x\n} from '@camerontaylor/cq-toolkit/sub';",
       "const m = await import('@camerontaylor/cq-toolkit/src/internal');",
     ];
     for (const s of internalImports) {
@@ -101,6 +239,9 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "import '@camerontaylor/cq-toolkit';",
       "import('@camerontaylor/cq-toolkit').then(m => m);",
       "require('@camerontaylor/cq-toolkit');",
+      'import `@camerontaylor/cq-toolkit`;',
+      'require.resolve(\'@camerontaylor/cq-toolkit\');',
+      'vi.mock(\'@camerontaylor/cq-toolkit\', () => ({}));',
       "export { runSuite } from '@camerontaylor/cq-toolkit';",
     ];
     for (const s of bareImports) {
@@ -109,8 +250,58 @@ describe('boundary matcher self-test (synthetic strings)', () => {
     }
   });
 
-  it('keeps the relative-escape rule honest', () => {
-    expect(escapeRule.test("import { x } from '../../src/internal';")).toBe(true);
-    expect(escapeRule.test("import { x } from '../../lib/internal';")).toBe(false);
+  it('keeps the relative-escape rule honest (any import form, but not bare ../)', () => {
+    // A bare `../` match would false-positive on legitimate intra-runner
+    // relatives (`../score/fixerWorker.ts`); only the `../../src/`
+    // vendored-tree escape counts, in every import spelling.
+    const escapes = [
+      "import { x } from '../../src/internal';",
+      "import { x } from  '../../src/internal';",
+      "import { x } from '../../../src/internal';",
+      "import { x } from '../vendor/internal';",
+      "import { x } from '../../src';",
+      "import { x } from '../vendor';",
+      "const m = await import('../../src/internal');",
+      "const m = require('../../src/internal');",
+      "export * from '../../src/internal';",
+      'import { x } from `../../src/internal`;',
+      "require.resolve('../../src/internal');",
+      "import.meta.resolve('../../src/internal');",
+      "vi.mock('../../src/internal');",
+      "jest.doMock('../../src/internal');",
+      "jest.requireMock('../../src/internal');",
+      "vi.importMock('../../src/internal');",
+      "jest.unstable_mockModule('../../src/internal');",
+      "mock.module('../../src/internal');",
+      "jest.requireActual('../../src/internal');",
+      "vi.unmock('../../src/internal');",
+      "jest.createMockFromModule('../../src/internal');",
+      "jest.genMockFromModule('../../src/internal');",
+      "jest.dontMock('../../src/internal');",
+      "vi.doUnmock('../../src/internal');",
+      "jest.doUnmock('../../src/internal');",
+      "import { x } from '../dist/internal';",
+      "import { x } from '../../dist/internal';",
+      "import { x } from './../src/internal';",
+      "vitest.mock('../../src/internal');",
+      "vitest.importActual('../../src/internal');",
+      "require /*c*/ .resolve('../../src/internal');",
+      "vi.mock /*c*/ ('../../src/internal');",
+      "vi.mock // c\n('../../src/internal');",
+      "await import(`../../src${suffix}`);",
+      "vi.mock // c\n('../../src/internal');",
+    ];
+    for (const s of escapes) {
+      expect(escapeRule.test(s), `escape rule must match: ${s}`).toBe(true);
+    }
+    const legitimate = [
+      "import { x } from '../scoresheet/helper';",
+      "import type { ScoreOutcome } from './fixerWorker.ts';",
+      "import type { ScoreOutcome } from '../score/fixerWorker.ts';",
+      "import { openRunLog } from '@camerontaylor/cq-toolkit';",
+    ];
+    for (const s of legitimate) {
+      expect(escapeRule.test(s), `escape rule must NOT match: ${s}`).toBe(false);
+    }
   });
 });

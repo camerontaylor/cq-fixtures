@@ -89,17 +89,31 @@ restore_all() {
 # node verifies package.json + lock → shell removes toolkit.lock last, so
 # a failed run never claims a completeness the tree does not have.
 # Single node process per step: node startup is slow on some hosts.
+# (The `|| rc=$?` capture: a bare `rc=$?` after a failing command never
+# runs under `set -e`.)
+rc=0
 node -e '
 const fs = require("node:fs");
 const pkg = JSON.parse(fs.readFileSync(process.env.FLIP_PKG, "utf8"));
 const current = pkg?.dependencies?.[process.env.FLIP_DEP];
 if (typeof current !== "string" || !current.startsWith("file:")) {
   console.error(`error: ${process.env.FLIP_DEP} is not a file: spec (got: ${current}) — refusing a second flip`);
-  process.exit(1);
+  process.exit(3);
 }
 (pkg.dependencies ??= {})[process.env.FLIP_DEP] = process.env.FLIP_VERSION;
 fs.writeFileSync(process.env.FLIP_PKG, JSON.stringify(pkg, null, 2) + "\n");
-' || { restore_all; exit 1; }
+' || rc=$?
+# Exit 3 = pre-write refusal (nothing rewritten): drop the redundant
+# backups and exit WITHOUT restoring, so no spurious restore note prints
+# and the retry is not tripped by our own just-taken backups. Any other
+# nonzero = post-write failure: restore and exit.
+if [ "$rc" -eq 3 ]; then
+  rm -f "$BACKUP_PKG" "$BACKUP_LOCK"
+  exit 1
+elif [ "$rc" -ne 0 ]; then
+  restore_all
+  exit 1
+fi
 
 # Sync the committed lock to the published version. A stale lock (still
 # resolving the file: tarball) makes the next `npm ci` fail, so the flip

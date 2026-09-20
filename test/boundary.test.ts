@@ -51,13 +51,13 @@ function distEntries(): Array<{ label: string; path: string }> {
 
 // test/*.test.ts import the toolkit bare today; a test-side deep import
 // would false-pass if tests were unscanned. boundary.test.ts itself is
-// EXCLUDED: it intentionally contains violation specimens as synthetic
-// strings (see the matcher self-test below), which the text scan cannot
-// tell apart from real imports.
+// EXCLUDED at any depth (it intentionally contains violation specimens as
+// synthetic strings — see the matcher self-test below — which the text
+// scan cannot tell apart from real imports).
 function testEntries(): Array<{ label: string; path: string }> {
   return readdirSync(TEST_DIR, { recursive: true })
     .map(String)
-    .filter((f) => f.endsWith('.test.ts') && f !== 'boundary.test.ts')
+    .filter((f) => f.endsWith('.test.ts') && !/(^|[\\/])boundary\.test\.ts$/.test(f))
     .sort()
     .map((f) => ({ label: `test/${f.replaceAll('\\', '/')}`, path: join(TEST_DIR, f) }));
 }
@@ -80,13 +80,15 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   // any quote style (including backticks) — static `from '...'`, dynamic
   // `import('...')`, `require('...')`, `export ... from '...'`, plus the
   // resolver spellings `require.resolve('...')` and
-  // `import.meta.resolve('...')` — the package name followed by '/' or '.'
+  // `import.meta.resolve('...')`, and the mock spellings `vi.mock('...')`
+  // / `vi.doMock('...')` / `jest.mock('...')` (a live form in this repo's
+  // own tests) — the package name followed by '/' or '.'
   // is a subpath/deep-import attempt. One regex covers all the
   // call/keyword shapes; a bare `from '@camerontaylor/cq-toolkit'` never
   // matches because nothing follows the package name.
   [
     'toolkit subpath import in any import form (bare specifier only)',
-    /(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?)\s*\(\s*['"`]@camerontaylor\/cq-toolkit[/.]|(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?)\s*['"`]@camerontaylor\/cq-toolkit[/.]/,
+    /(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?|(?:vi\.doMock|vi\.mock|jest\.mock))\s*\(\s*['"`]@camerontaylor\/cq-toolkit[/.]|(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?|(?:vi\.doMock|vi\.mock|jest\.mock))\s*['"`]@camerontaylor\/cq-toolkit[/.]/,
   ],
   // Relative escape into a VENDORED tree: one-or-more `../` chains into
   // `src/`, `vendor/`, or `lib/` — any import form, any spacing, any quote
@@ -96,7 +98,7 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   // legitimate and must not trip the rule; and NOT "any path outside
   // runner/", which no text regex can resolve. `../../../src/` and
   // `../vendor/` are caught; `../score/` is not.
-  ['relative escape into a vendored tree (any import form)', /(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?)\s*\(?\s*['"`](?:\.\.\/)+(?:src|vendor|lib)(?:\/|["'`]|$)/],
+  ['relative escape into a vendored tree (any import form)', /(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?|(?:vi\.doMock|vi\.mock|jest\.mock))\s*\(?\s*['"`](?:\.\.\/)+(?:src|vendor|lib)(?:\/|["'`]|$)/],
 ];
 
 interface Violation {
@@ -189,6 +191,9 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       'const m = await import(`@camerontaylor/cq-toolkit/src/internal`);',
       'require.resolve(\'@camerontaylor/cq-toolkit/sub\');',
       'import.meta.resolve(\'@camerontaylor/cq-toolkit/sub\');',
+      'vi.mock(\'@camerontaylor/cq-toolkit/sub\');',
+      'vi.doMock(\'@camerontaylor/cq-toolkit/sub\');',
+      'jest.mock(\'@camerontaylor/cq-toolkit/sub\');',
       "await import(\n  '@camerontaylor/cq-toolkit/internal'\n);",
       "import {\n  x\n} from '@camerontaylor/cq-toolkit/sub';",
       "const m = await import('@camerontaylor/cq-toolkit/src/internal');",
@@ -207,6 +212,7 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "require('@camerontaylor/cq-toolkit');",
       'import `@camerontaylor/cq-toolkit`;',
       'require.resolve(\'@camerontaylor/cq-toolkit\');',
+      'vi.mock(\'@camerontaylor/cq-toolkit\', () => ({}));',
       "export { runSuite } from '@camerontaylor/cq-toolkit';",
     ];
     for (const s of bareImports) {
@@ -232,6 +238,7 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       'import { x } from `../../src/internal`;',
       "require.resolve('../../src/internal');",
       "import.meta.resolve('../../src/internal');",
+      "vi.mock('../../src/internal');",
     ];
     for (const s of escapes) {
       expect(escapeRule.test(s), `escape rule must match: ${s}`).toBe(true);

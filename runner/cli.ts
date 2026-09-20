@@ -65,10 +65,15 @@ const VERDICT_OUTPUT_SCHEMA = z.object({
 // the record — an unaccounted probe must never silently run as ungoverned.
 const PROBE_RECORD_SCHEMA = z.object({
   probe: z.literal('acp-auth-preflight'),
-  at: z.string(),
+  // ISO-8601: the record's timestamp rides into the journal verbatim, so a
+  // non-datetime string would pollute the journal's time-ordered evidence.
+  at: z.string().datetime(),
   promptChars: z.number().int().nonnegative(),
   replyChars: z.number().int().nonnegative(),
-  replyPreview: z.string(),
+  // Bounded: the preview lands in the journal value on every suite run, so
+  // an unbounded string would bloat the journal (the writer slices to 200;
+  // the boundary re-enforces it for hand-written records).
+  replyPreview: z.string().max(200),
 });
 
 // The subprocess lane runs the fixed axis-2 served id (see FIXED_GLM_SERVED_ID

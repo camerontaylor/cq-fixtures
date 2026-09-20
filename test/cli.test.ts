@@ -194,6 +194,14 @@ describe('--probe-record (review-debt #14: the pre-runner probe rides inside the
     await expect(cliMain([...cliArgs(dir), '--probe-record', shaped])).resolves.toBe(2);
   }, 15_000);
 
+  it('a record violating the documented bounds (bad at, over-long preview) exits 2', async () => {
+    const dir = writeSuite('probe-bounds', { name: 'probe-bounds', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    const badAt = writeRecord('probe-bad-at.json', JSON.stringify({ ...record, at: 'not-a-datetime' }));
+    await expect(cliMain([...cliArgs(dir), '--probe-record', badAt])).resolves.toBe(2);
+    const longPreview = writeRecord('probe-long.json', JSON.stringify({ ...record, replyPreview: 'x'.repeat(201) }));
+    await expect(cliMain([...cliArgs(dir), '--probe-record', longPreview])).resolves.toBe(2);
+  }, 15_000);
+
   it('a valid record runs clean (exit 0) — the reservation fits the uncapped run', async () => {
     const dir = writeSuite('probe-ok', { name: 'probe-ok', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     const rec = writeRecord('probe.json', JSON.stringify(record));

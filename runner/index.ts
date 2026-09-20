@@ -59,6 +59,44 @@ const validateTable = ajv.compile(
   JSON.parse(readFileSync(new URL('../schema/comparison-table.schema.json', import.meta.url), 'utf8')) as object,
 );
 
+// Review-debt #14: the ACP auth preflight probe (suite.yml `ACP headless
+// auth preflight`) performs a real — tiny — model request BEFORE the runner
+// starts, so its spend used to sit outside the --max-tokens governor and the
+// NDJSON journal with no usage recorded anywhere. The probe's exact usage is
+// unmeasurable (it exits on the first agent chunk), so the runner accounts
+// it as a labeled CONSERVATIVE RESERVATION: admitted through the same
+// governor (observeUsage rolls the token cap — a reserve larger than the
+// remaining cap gates the run instead of spending off-books) and journaled
+// as a job-started/job-finished pair whose ok value says `reservation` in
+// plain text, never a measurement. No row is emitted for the probe — rows
+// exist only for dispatched suite cases (I9), and a probe row would corrupt
+// the comparison tables.
+
+/** Job identity for the pre-runner auth probe in the governor and journal. */
+export const PREFLIGHT_PROBE_JOB_ID = 'acp-preflight-probe';
+const PREFLIGHT_PROBE_OP = 'acp-preflight';
+
+/**
+ * Token ceiling charged for one pre-runner auth probe. The live probe moves
+ * ~a dozen tokens; the reserve is deliberately two orders of magnitude above
+ * that (~1% of the 200000-token cell cap) — measurement is impossible by
+ * construction (first-chunk exit), so the reservation over-counts and the
+ * journal value labels it a reservation, never an observation.
+ */
+export const PREFLIGHT_PROBE_RESERVE_TOKENS = 2000;
+
+/** Facts the workflow preflight records for one auth-OK probe (ACP-PROBE.json). */
+export interface PreflightProbe {
+  /** ISO-8601 timestamp of the auth-OK reply. */
+  at: string;
+  /** Length in characters of the fixed probe prompt the preflight sent. */
+  promptChars: number;
+  /** Length in characters of the first agent reply chunk received. */
+  replyChars: number;
+  /** First 200 characters of that reply chunk (bounded journal payload). */
+  replyPreview: string;
+}
+
 export interface RunSuiteOptions {
   suiteDir: string;
   driver: Driver;
@@ -73,6 +111,14 @@ export interface RunSuiteOptions {
   checkTimeoutMs?: number;
   /** Directory for the toolkit NDJSON journal; omitted = no persistence. */
   journalPath?: string;
+  /**
+   * Pre-runner auth probe facts (review-debt #14). When present, the probe
+   * is admitted through the run's governor and journaled with the run —
+   * its conservative token reservation counts against maxTokens — instead
+   * of spending off-books before the runner starts. Absent = no probe ran
+   * (every non-acp invocation); the run is unchanged.
+   */
+  preflightProbe?: PreflightProbe;
   /** Repo root fixture/check paths resolve against. Defaults to this repo. */
   repoRoot?: string;
   /** Row driver label — must be a toolkit lane (row schema enum). */
@@ -155,6 +201,49 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   );
 
   await append({ type: 'run-started', runId, at: now(), planId: suite.name });
+
+  // Review-debt #14: fold the pre-runner probe into THIS run's governor and
+  // journal (see the constant's comment). Each suite invocation owns its own
+  // governor and journal, so a multi-suite process charges the reservation
+  // against every suite run's cap — conservative in the same direction on
+  // each. The admission also advances the dispatch count, so a resumed run
+  // replaying this journal keeps the same attempt ordinals.
+  if (opts.preflightProbe !== undefined) {
+    const probe = opts.preflightProbe;
+    const probeAdmission = governor.admit(PREFLIGHT_PROBE_JOB_ID);
+    if (probeAdmission.decision === 'reject') {
+      // Unreachable on a fresh governor (no dispatch quota configured, and
+      // the budget cannot have tripped before the first observation) — fail
+      // loud rather than journal a probe the governor refused.
+      throw new Error(`pre-runner probe refused admission: ${probeAdmission.reason}`);
+    }
+    await append({
+      type: 'job-started', runId, at: now(),
+      jobId: PREFLIGHT_PROBE_JOB_ID, op: PREFLIGHT_PROBE_OP, attempt: probeAdmission.attempt,
+    });
+    const probeUsage: Usage = {
+      input: PREFLIGHT_PROBE_RESERVE_TOKENS, output: 0, cacheRead: 0, cacheWrite: 0,
+    };
+    governor.observeUsage(PREFLIGHT_PROBE_JOB_ID, probeUsage);
+    await append({
+      type: 'job-finished', runId, at: now(),
+      jobId: PREFLIGHT_PROBE_JOB_ID, opId: PREFLIGHT_PROBE_OP,
+      inputsHash: hashInputs(PREFLIGHT_PROBE_OP, { promptChars: probe.promptChars, replyChars: probe.replyChars }),
+      result: {
+        status: 'ok',
+        value: {
+          probe: 'acp-auth-preflight',
+          accounting: 'conservative-reservation-tokens (not measured — the probe exits on the first agent chunk)',
+          reservedTokens: PREFLIGHT_PROBE_RESERVE_TOKENS,
+          promptChars: probe.promptChars,
+          replyChars: probe.replyChars,
+          replyPreview: probe.replyPreview,
+          at: probe.at,
+        },
+      },
+      usage: probeUsage,
+    });
+  }
 
   const rows: ResultRow[] = [];
   const caseDiagnostics: string[] = [];

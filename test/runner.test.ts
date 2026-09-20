@@ -15,7 +15,13 @@ import {
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runSuite, type RunSuiteOptions } from '../runner/index.ts';
+import {
+  PREFLIGHT_PROBE_JOB_ID,
+  PREFLIGHT_PROBE_RESERVE_TOKENS,
+  runSuite,
+  type PreflightProbe,
+  type RunSuiteOptions,
+} from '../runner/index.ts';
 import { loadSuite } from '../runner/suite.ts';
 import { scoreSchemaCompliance } from '../runner/dimensions/schemaCompliance.ts';
 import { scoreFixerWorker } from '../runner/score/fixerWorker.ts';
@@ -94,6 +100,7 @@ interface OverSpec {
   maxTokens?: number;
   checkTimeoutMs?: number;
   journalPath?: string;
+  preflightProbe?: PreflightProbe;
 }
 
 function opts(suiteDir: string, over: OverSpec = {}): RunSuiteOptions {
@@ -648,6 +655,80 @@ describe('budget honesty (I9)', () => {
     const dir = reviewSuite('usd-fail-closed', 'usd-fail-closed', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
     const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxUsd: 0.000001, maxTokens: 1_000_000 }));
     expect(result.gatedByBudget).toBe(true);
+    expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
+  }, 15_000);
+});
+
+describe('pre-runner probe accounting (review-debt #14)', () => {
+  const probe: PreflightProbe = {
+    at: '2026-09-20T00:00:00.000Z',
+    promptChars: 30,
+    replyChars: 120,
+    replyPreview: '{"jsonrpc":"2.0","result":{"sessionUpdate":"agent_message_chunk"}}',
+  };
+
+  it('the probe is journaled with its labeled reservation and emits NO row', async () => {
+    const dir = reviewSuite('probe-journal', 'probe-journal', [reviewCase('rev-1', 'resolved')]);
+    const journalPath = join(root, 'journal');
+    const result = await runSuite(opts(dir, { journalPath, preflightProbe: probe }));
+    // The probe is accounting, not evidence: the run still scores its case.
+    expect(result.gatedByBudget).toBe(false);
+    expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
+    assertSchemaValid(result.rows, result.tables);
+
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const started = events.find((e) => e.type === 'job-started' && (e as { jobId: string }).jobId === PREFLIGHT_PROBE_JOB_ID);
+    expect(started).toMatchObject({ op: 'acp-preflight', attempt: 1 });
+    const finished = events.find(
+      (e): e is JobFinishedJournalEvent => e.type === 'job-finished' && e.jobId === PREFLIGHT_PROBE_JOB_ID,
+    );
+    expect(finished?.result).toMatchObject({
+      status: 'ok',
+      value: {
+        probe: 'acp-auth-preflight',
+        reservedTokens: PREFLIGHT_PROBE_RESERVE_TOKENS,
+        promptChars: 30,
+        replyChars: 120,
+      },
+    });
+    // The reservation is LABELED, never a measurement.
+    expect(JSON.stringify(finished?.result)).toMatch(/reservation/);
+    expect(finished).toMatchObject({
+      usage: { input: PREFLIGHT_PROBE_RESERVE_TOKENS, output: 0, cacheRead: 0, cacheWrite: 0 },
+    });
+    // The probe pair precedes every case dispatch in the journal.
+    const firstCaseStart = events.findIndex((e) => e.type === 'job-started' && (e as { jobId: string }).jobId === 'rev-1');
+    expect(events.findIndex((e) => e === started)).toBeLessThan(firstCaseStart);
+  }, 15_000);
+
+  it('the probe reservation counts against the token cap: a cap below the reserve gates the run', async () => {
+    // PREFLIGHT_PROBE_RESERVE_TOKENS (2000) exceeds maxTokens 100, so the
+    // observeUsage fold trips the cap before the first case is admitted:
+    // zero rows (no fabricated verdicts for work that never ran) and the
+    // honest budget stop on run-finished. THIS is the proof the probe sits
+    // INSIDE the governor.
+    const dir = reviewSuite('probe-gated', 'probe-gated', [reviewCase('rev-1', 'resolved')]);
+    const journalPath = join(root, 'journal-gated');
+    const result = await runSuite(opts(dir, { journalPath, maxTokens: 100, preflightProbe: probe }));
+    expect(result.gatedByBudget).toBe(true);
+    expect(result.rows).toEqual([]);
+    expect(result.tables[0]).toMatchObject({ cells: [] });
+
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    expect(events.some((e) => e.type === 'job-started' && (e as { jobId: string }).jobId === PREFLIGHT_PROBE_JOB_ID)).toBe(true);
+    expect(events.some((e) => e.type === 'job-started' && (e as { jobId: string }).jobId === 'rev-1')).toBe(false);
+    const runFinished = events.find((e): e is RunFinishedJournalEvent => e.type === 'run-finished');
+    expect(runFinished).toMatchObject({ stoppedEarly: true, earlyStopReason: 'budget' });
+  }, 15_000);
+
+  it('control: the same tiny cap WITHOUT a probe still dispatches (the probe charge, not the cases, tripped it)', async () => {
+    // The fake reports 120 tokens/case; admission precedes observation, so
+    // the single case dispatches and only then trips the 100-token cap.
+    const dir = reviewSuite('probe-control', 'probe-control', [reviewCase('rev-1', 'resolved')]);
+    const result = await runSuite(opts(dir, { maxTokens: 100 }));
+    expect(result.gatedByBudget).toBe(false);
     expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
   }, 15_000);
 });

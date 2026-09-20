@@ -51,10 +51,10 @@ if [ ! -f "$FLIP_LOCK" ]; then
   exit 1
 fi
 
-# One node process rewrites package.json, removes the lock, and verifies
-# (re-reading the file it just wrote): the dep must be exactly <version>
-# and no file: spec may remain. Single process: node startup is slow on
-# some hosts, and two invocations would double the script's wall time.
+# Flow: node rewrites package.json → npm syncs the lock (registry) →
+# node verifies package.json + lock → shell removes toolkit.lock last, so
+# a failed run never claims a completeness the tree does not have.
+# Single node process per step: node startup is slow on some hosts.
 node -e '
 const fs = require("node:fs");
 const pkg = JSON.parse(fs.readFileSync(process.env.FLIP_PKG, "utf8"));
@@ -95,7 +95,18 @@ if (locked !== process.env.FLIP_VERSION) {
   console.error(`error: post-flip verification failed — package-lock.json still pins ${process.env.FLIP_DEP}@${locked}`);
   process.exit(1);
 }
+// The tree entry must convert too: npm can keep a stale
+// `resolved: file:vendor/...` when the tarball version coincides with the
+// requested one, and the next `npm ci` (after vendor/ is gone) would fail
+// fetching it. The entry must point at the registry, never at a file:.
+const entry = lock?.packages?.[`node_modules/${process.env.FLIP_DEP}`];
+if (typeof entry?.resolved !== "string" || entry.resolved.startsWith("file:")) {
+  console.error(`error: post-flip verification failed — package-lock.json entry still resolves ${process.env.FLIP_DEP} via ${entry?.resolved}`);
+  process.exit(1);
+}
 ' || exit 1
+
+rm "$FLIP_LOCK"
 
 echo "flipped $FLIP_DEP to $FLIP_VERSION; removed toolkit.lock."
 echo "next (human, phase 5): rm -rf vendor node_modules && npm ci && npm run build && npm test"

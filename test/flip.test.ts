@@ -28,7 +28,10 @@ function sandbox(): string {
       name: 'flip-sandbox',
       version: '0.0.0',
       lockfileVersion: 3,
-      packages: { '': { dependencies: { [DEP]: 'file:vendor/cq-toolkit-0.0.0.tgz' } } },
+      packages: {
+        '': { dependencies: { [DEP]: 'file:vendor/cq-toolkit-0.0.0.tgz' } },
+        [`node_modules/${DEP}`]: { version: '0.0.0', resolved: 'file:vendor/cq-toolkit-0.0.0.tgz' },
+      },
     }),
   );
   return dir;
@@ -37,9 +40,12 @@ function sandbox(): string {
 // Hermetic npm: the flip's lock sync must never reach the registry from a
 // test. The stub records its argv, exits NPM_EXIT, and — on success —
 // performs the sync the real `npm install --package-lock-only` would: copy
-// package.json's dep pin into the lock's root entry. It runs with cwd set
-// to the sandbox by the script's `(cd "$ROOT" && npm ...)`.
-function stubNpm(dir: string, exitCode: number): { env: Record<string, string>; log: string } {
+// package.json's dep pin into the lock's root entry AND repoint the tree
+// entry at the registry. It runs with cwd set to the sandbox by the
+// script's `(cd "$ROOT" && npm ...)`. syncEntry=false simulates npm's
+// version-coincidence shortcut (root pin moved, stale file: resolved kept)
+// so the entry-verification leg has a failure to catch.
+function stubNpm(dir: string, exitCode: number, syncEntry = true): { env: Record<string, string>; log: string } {
   const bin = join(dir, 'stubbin');
   mkdirSync(bin, { recursive: true });
   const log = join(dir, 'npm-calls.log');
@@ -50,8 +56,11 @@ function stubNpm(dir: string, exitCode: number): { env: Record<string, string>; 
     'node -e \'const fs=require("node:fs");' +
       'const pkg=JSON.parse(fs.readFileSync("package.json","utf8"));' +
       'const lock=JSON.parse(fs.readFileSync("package-lock.json","utf8"));' +
-      'lock.packages[""].dependencies["@camerontaylor/cq-toolkit"]=' +
-      'pkg.dependencies["@camerontaylor/cq-toolkit"];' +
+      'const v=pkg.dependencies["@camerontaylor/cq-toolkit"];' +
+      'lock.packages[""].dependencies["@camerontaylor/cq-toolkit"]=v;' +
+      'if(process.env.NPM_SYNC_ENTRY==="1"){' +
+      'lock.packages["node_modules/@camerontaylor/cq-toolkit"].resolved=' +
+      '"https://registry.npmjs.org/@camerontaylor/cq-toolkit/-/cq-toolkit-"+v+".tgz";}' +
       'fs.writeFileSync("package-lock.json",JSON.stringify(lock,null,2)+"\\n");\'',
   ].join('\n');
   writeFileSync(join(bin, 'npm'), body + '\n');
@@ -61,6 +70,7 @@ function stubNpm(dir: string, exitCode: number): { env: Record<string, string>; 
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
       NPM_CALL_LOG: log,
       NPM_EXIT: String(exitCode),
+      NPM_SYNC_ENTRY: syncEntry ? '1' : '0',
     },
     log,
   };
@@ -148,6 +158,10 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     expect(status).toBe(0);
     expect(readFileSync(log, 'utf8')).toContain('--package-lock-only');
     expect(readLockDep(dir)).toBe('1.0.0');
+    const entry = (JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8')) as {
+      packages?: Record<string, { resolved?: string }>;
+    }).packages?.[`node_modules/${DEP}`];
+    expect(entry?.resolved?.startsWith('file:')).toBe(false);
   });
 
   it('aborts loudly when the lock sync fails, leaving the lock file in place', { timeout: 60000 }, () => {
@@ -159,6 +173,19 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     // package.json is already rewritten when the sync fails — the message
     // says how to finish — but toolkit.lock must NOT be removed: removal
     // claims a completeness the tree does not have.
+    expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
+  });
+
+  it('rejects a lock whose tree entry still resolves via file: (stale-entry guard)', { timeout: 60000 }, () => {
+    // Real-flip evidence: `npm install --package-lock-only` can leave
+    // `resolved: file:vendor/...` on the tree entry when the tarball
+    // version coincides with the requested one — the next `npm ci` (after
+    // vendor/ is gone) would fail fetching it. The flip must not complete.
+    const dir = sandbox();
+    const { env } = stubNpm(dir, 0, false);
+    const { status, stderr } = runFlip(dir, ['1.0.0'], env);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('package-lock.json entry still resolves');
     expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
   });
 });

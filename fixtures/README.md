@@ -51,3 +51,19 @@ copy and asserts the judge now passes.
 `resolved`, `comments[]` with `author`/`body`/`createdAt`/`isReply`). Two payloads per expected
 verdict (`actionable`, `responded`, `resolved`, `blocked`, `skip`); the payload-to-verdict
 mapping is tabled in `suites/review-classifier/micro/PROVENANCE.md`.
+
+## Breadth fixtures (`breadth-{01..10}`)
+
+Ten synthetic zero-dependency multi-module TypeScript packages (F2, 2026-09-21), one catalog-built
+fault each except the two hard cases (two combined faults each), graded by the
+`suites/fixer-worker/breadth` suite. Each package has 3-5 `src/` files, 1-3 `test/` files and a
+`check.mjs` shim over `fixtures/judge-lib.mjs` (same immutable-judge contract as the micro
+fixtures).
+
+The authoritative per-fault record is `fixtures/breadth-NN.FAULT.json` — a SIBLING FILE, never
+inside the fixture directory. It is HumanEvalFix-shaped (`bug_type`, `failure_symptoms`,
+`operator`, `difficulty`, `provenance`, `validation{f2p,p2p,fix}`) and carries the canonical fix,
+so it must stay outside the tree the runner materializes into a worker workspace; the runner
+copies only `fixtures/<name>/` (`runner/index.ts`), and `test/breadth.test.ts` proves the record
+is unreachable from that workspace. See `suites/fixer-worker/breadth/PROVENANCE.md` for the tier
+and generation mixes.

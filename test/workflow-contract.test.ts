@@ -254,6 +254,16 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell).toContain('< /dev/null');
   });
 
+  it('deprecated/ suites are excluded from matrix discovery (F2, WB-2.1)', () => {
+    // Retirement moves a case to a sibling deprecated/ suite, never renumbers
+    // it — and a retired suite must never spend weekly tokens. The discovery
+    // find must drop any path carrying a deprecated/ segment, so widening the
+    // roots later cannot silently re-enable a retired suite.
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'the suite find drops deprecated/ suites').toContain("-not -path '*/deprecated/*'");
+    expect(evalCell, 'the exclusion rides the suite.json discovery find').toMatch(/-name suite\.json -not -path/);
+  });
+
   it('lane installs are conditional: subprocess claude-code pinned, acp pinned 0.43.3, claude-agent none', () => {
     const sub = stepChunk('Install the subprocess lane CLI');
     expect(sub).toContain("if: matrix.cell.driver == 'subprocess'");

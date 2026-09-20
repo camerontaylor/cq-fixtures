@@ -1,0 +1,28 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "Rectangle area comes out as width plus height, so a 3x4 rectangle reports 7 square metres instead of 12.",
+  "operator": "arithmetic-swap",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:ArithmeticOperator",
+    "seed": 101,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": ["multiplies width by height", "converts centimetres before multiplying"],
+    "p2p": ["passes metres through unchanged", "divides centimetres by one hundred"],
+    "fix": {
+      "src/area.ts": "import { toMetres, type Unit } from './units.ts';\n\n// Area of a rectangle, in square metres.\nexport function rectangleArea(width: number, height: number, unit: Unit): number {\n  const w = toMetres(width, unit);\n  const h = toMetres(height, unit);\n  const area = w * h;\n  return area;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/area.ts",
+    "delete": "const area = w * h;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "The diff swaps * for +; a reader sees the operator change but must still map it to the area symptom."
+  }
+}

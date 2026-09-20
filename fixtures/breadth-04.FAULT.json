@@ -1,0 +1,28 @@
+{
+  "bug_type": "value misuse",
+  "failure_symptoms": "Backoff delays grow threefold per attempt instead of doubling, so the third retry waits 2700ms rather than 800ms.",
+  "operator": "constant-delta",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "@babel/parser@8.0.6"
+  },
+  "validation": {
+    "f2p": ["doubles the delay each attempt", "exposes a factor of two"],
+    "p2p": ["uses the base delay on the first attempt", "starts every retry plan with the base delay", "returns a positive epoch millisecond value"],
+    "fix": {
+      "src/backoff.ts": "// Exponential backoff for the retry helper.\nexport const BACKOFF_FACTOR = 2;\n\nexport function backoffDelay(baseMs: number, attempt: number): number {\n  return baseMs * BACKOFF_FACTOR ** attempt;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/backoff.ts",
+    "delete": "return baseMs * BACKOFF_FACTOR ** attempt;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "The diff is a single numeric literal 2 to 3; the doubling contract lives only in the tests."
+  }
+}

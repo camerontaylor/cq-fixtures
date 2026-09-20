@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fault.schema.json",
+  "title": "Fixture fault record",
+  "description": "Authoritative per-fault metadata for a seeded fixer fixture (plan WB-2.1). HumanEvalFix-shaped: bug_type, failure_symptoms, operator, difficulty, provenance{origin,generator,seed,engine_version}, validation{f2p[],p2p[],fix}. This record carries the canonical fix, so it MUST live OUTSIDE the materialized fixture tree (fixtures/<name>.FAULT.json beside fixtures/<name>/, never inside it) — the runner copies only the fixture directory into a worker workspace (runner/index.ts), and test/breadth.test.ts proves the record is unreachable from that workspace. The suite case shape (schema/suite.schema.json) is untouched: the record is fixture-side, not a suite field.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["bug_type", "failure_symptoms", "operator", "difficulty", "provenance", "validation"],
+  "properties": {
+    "bug_type": {
+      "type": "string",
+      "enum": ["missing logic", "operator misuse", "variable misuse", "value misuse", "excess logic", "function misuse"],
+      "description": "HumanEvalFix bug-type vocabulary (enum copied from the MIT-licensed dataset; no instances vendored)."
+    },
+    "failure_symptoms": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Behaviour-only description of what a worker observes; never names the mutated line."
+    },
+    "operator": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Catalog operator id (catalog/operators.ts). A combined hard-tier fault joins its operators with '+', e.g. 'shared-reference-return+logical-swap'."
+    },
+    "difficulty": {
+      "type": "string",
+      "enum": ["easy", "medium", "hard"]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "generator", "seed", "engine_version"],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "enum": ["operator-catalog", "lm-injected", "diff-replay"],
+          "description": "Generation mix source (plan WB-2.4: 60% procedural / 30% LM-injected / 10% diff-replay)."
+        },
+        "generator": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What produced the fault, e.g. 'catalog:babel:ArithmeticOperator' or 'lane-leader-lm'."
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Deterministic seed used to pick the node/operator (0 for hand-placed LM faults)."
+        },
+        "engine_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Engine + version the operator semantics follow, e.g. '@stryker-mutator/instrumenter@10.0.0' or 'ts-morph@28.0.0' or 'lm'."
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["f2p", "p2p", "fix"],
+      "properties": {
+        "f2p": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Previously-green test titles that flip red on the stored faulted state."
+        },
+        "p2p": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Test titles that must stay green in both states (pass-to-pass)."
+        },
+        "fix": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^src/.*\\.ts$" },
+          "additionalProperties": { "type": "string", "minLength": 1 },
+          "description": "The canonical fix: fixture-relative src/ path -> full fixed file content. The judge test overwrites the faulted files with these contents to prove the fixed state passes. Faults live only in src/, so the map is src/-scoped."
+        }
+      }
+    },
+    "adequacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "delete"],
+      "description": "Single-statement-deletion sanity target (R6 digest §2 P2P adequacy): deleting this exact statement from the FIXED source must make the suite red. Data-driven so the validator needs no heuristic statement picker.",
+      "properties": {
+        "file": { "type": "string", "pattern": "^src/.*\\.ts$" },
+        "delete": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tell_audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["critic", "verdict"],
+      "description": "Adversarial tell audit (R6 digest §2): a critic saw the faulted-vs-fixed DIFF but not the tests and tried to name the bug.",
+      "properties": {
+        "critic": { "type": "string", "minLength": 1 },
+        "verdict": { "type": "string", "enum": ["not-told", "told"] },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

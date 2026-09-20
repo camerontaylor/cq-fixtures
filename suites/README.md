@@ -63,3 +63,11 @@ classification skill, not benchmark recall.
 The micro-suites (phase 3, J3) live in `suites/fixer-worker/micro/` and
 `suites/review-classifier/micro/` — see their `PROVENANCE.md` files and `fixtures/README.md` for
 the hand-seeded synthetic fixtures they run against.
+
+The F2 catalog-built seed lives in `suites/fixer-worker/breadth/` (10 cases, 4 easy / 4 medium /
+2 hard). Its per-fault metadata channel is the fixture-side `fixtures/<name>.FAULT.json` record
+(`schema/fault.schema.json`), NOT a suite field — the closed case shape above is unchanged. The
+record is a SIBLING FILE outside the materialized fixture directory, because it carries the
+canonical fix; `test/breadth.test.ts` proves a worker workspace cannot reach it. `deprecated/`
+suites are excluded from the weekly matrix discovery (`.github/workflows/suite.yml`), so a retired
+case never spends tokens.

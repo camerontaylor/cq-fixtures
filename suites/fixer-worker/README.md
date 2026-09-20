@@ -9,3 +9,10 @@ the answers. Scoring re-runs each case's `check.mjs`
 judge — a vitest run against the case's materialized workspace copy. The decided judge contract
 (Node script, immutable from the repo root, cwd = the workspace, no relative requires) and the
 fake-smoke `--driver-name subprocess` labeling decision are recorded in `suites/README.md`.
+
+`breadth/` is the F2 catalog-built seed (2026-09-21): 10 cases (4 easy / 4 medium / 2 hard)
+whose faults come from the 24-operator catalog in `catalog/operators.ts`. Each case's
+authoritative record is the sibling file `fixtures/breadth-NN.FAULT.json` (outside the
+materialized tree — it carries the canonical fix); see `breadth/PROVENANCE.md` for the mixes and
+`test/breadth.test.ts` for the validation-filter chain. The plan's full `breadth-verified` (12)
+and `breadth-tail` (28) suites are F3's build, extending this seed to the 16/16/8 tier mix.

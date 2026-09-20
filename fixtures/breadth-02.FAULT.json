@@ -1,0 +1,28 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "The final page is never reported as the last page; a three-page document says page index 2 is not final.",
+  "operator": "equality-boundary",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:EqualityOperator",
+    "seed": 102,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": ["treats the final page index as the last page"],
+    "p2p": ["does not treat an earlier page as the last page", "rounds a partial page up", "renders a one-based page label"],
+    "fix": {
+      "src/paging.ts": "import { PAGE_SIZE } from './pageSize.ts';\n\nexport function pageCount(total: number): number {\n  return Math.ceil(total / PAGE_SIZE);\n}\n\n// True when `page` is the zero-based index of the final page.\nexport function isLastPage(page: number, totalPages: number): boolean {\n  return page >= totalPages - 1;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/paging.ts",
+    "delete": "return page >= totalPages - 1;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "The diff is a single >= to > boundary shift; the symptom (last page) is not named in the diff."
+  }
+}

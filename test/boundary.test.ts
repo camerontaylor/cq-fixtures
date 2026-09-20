@@ -208,7 +208,7 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       expect(escapeRule.test(s), `escape rule must match: ${s}`).toBe(true);
     }
     const legitimate = [
-      "import { x } from '../../lib/internal';",
+      "import { x } from '../scoresheet/helper';",
       "import type { ScoreOutcome } from './fixerWorker.ts';",
       "import type { ScoreOutcome } from '../score/fixerWorker.ts';",
       "import { openRunLog } from '@camerontaylor/cq-toolkit';",

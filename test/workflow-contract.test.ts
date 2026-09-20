@@ -223,6 +223,23 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(stepChunk('Commit report snapshots')).toContain('reports/eval/ACP-SKIPPED');
   });
 
+  it('the auth-OK probe leaves a record the eval cell accounts against the token cap (review-debt #14)', () => {
+    // The preflight probe IS a real model request before the runner exists —
+    // without this wiring its spend sits outside the cell --max-tokens
+    // governor and the NDJSON journal with no usage recorded. The record
+    // rides the eval artifact beside ACP-SKIPPED (never a job output, same
+    // last-writer-wins rationale) and the snapshot ignores it.
+    const preflight = stepChunk('ACP headless auth preflight');
+    expect(preflight, 'auth-OK writes the probe record').toContain('writeFileSync("reports/eval/ACP-PROBE.json"');
+    expect(preflight, 'the record carries the probe facts').toContain('acp-auth-preflight');
+    expect(preflight, 'the record carries the probe facts').toContain('Reply with the single word ready.');
+    expect(preflight, 'auth-OK without a record hard-fails').toContain('! -f reports/eval/ACP-PROBE.json');
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'the acp cell passes the record into the runner').toContain('--probe-record reports/eval/ACP-PROBE.json');
+    expect(evalCell, 'the flag is acp-only').toContain('if [ "${MATRIX_DRIVER}" = "acp" ]');
+    expect(stepChunk('Commit report snapshots'), 'the snapshot still copies tables only').toContain("-name '*.table.json'");
+  });
+
   it('the eval step dispatches the CELL driver and nests out dirs by model/driver (G7)', () => {
     const evalCell = stepChunk('Eval cell —');
     expect(evalCell).toContain('MATRIX_DRIVER: ${{ matrix.cell.driver }}');

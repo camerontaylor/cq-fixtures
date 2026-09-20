@@ -17,7 +17,7 @@ node --experimental-strip-types runner/index.ts \
   --model <served-id> --provider <handle> --max-usd 1 --out <dir>
 ```
 
-Node >= 23.6 runs the TypeScript directly (type stripping); CI uses node 24. `--suite` is repeatable; other flags: `--max-tokens`, `--check-timeout-ms`, `--journal <dir>`. `--driver fake` is the deterministic offline stand-in for plumbing smoke/CI — rows must be labeled with the lane it impersonates via `--driver-name` (the row schema's driver enum only accepts the four toolkit lanes); `--driver ai-sdk` builds the toolkit's `AiSdkDriver` with production defaults and is never the default. Exit codes: 0 clean, 1 scored-zero/gated/scoring-phase failure, 2 usage error, suite load/validation failure, or missing-credential failure.
+Node >= 23.6 runs the TypeScript directly (type stripping); CI uses node 24. `--suite` is repeatable; other flags: `--max-tokens`, `--check-timeout-ms`, `--journal <dir>`, `--probe-record <path>`. `--probe-record` takes the workflow ACP preflight's `ACP-PROBE.json` (review-debt #14): the pre-runner auth probe is admitted through the run's governor and journaled with the run as a labeled conservative token reservation instead of spending off-books — a missing or malformed record is exit 2. `--driver fake` is the deterministic offline stand-in for plumbing smoke/CI — rows must be labeled with the lane it impersonates via `--driver-name` (the row schema's driver enum only accepts the four toolkit lanes); `--driver ai-sdk` builds the toolkit's `AiSdkDriver` with production defaults and is never the default. Exit codes: 0 clean, 1 scored-zero/gated/scoring-phase failure, 2 usage error, suite load/validation failure, or missing-credential failure.
 
 ## Scoring contract
 

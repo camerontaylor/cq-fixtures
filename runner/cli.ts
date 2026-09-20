@@ -4,7 +4,7 @@
 // error or suite load/validation failure (the suite.yml workflow hard-fails
 // its rc>=2 branch). Invoked via runner/index.ts.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   AcpDriver,
@@ -15,7 +15,7 @@ import {
   type Driver,
 } from '@camerontaylor/cq-toolkit';
 import { z } from 'zod';
-import { runSuite } from './index.ts';
+import { runSuite, type PreflightProbe } from './index.ts';
 import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
 import { loadSuite, type Suite } from './suite.ts';
 import { FakeDriver } from './fake-driver.ts';
@@ -41,7 +41,7 @@ const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
   '--driver fake|ai-sdk|claude-agent|subprocess|acp --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
   '(--driver-name is required with --driver fake — a fake run must name the lane it stands in for) ' +
-  '[--max-usd <n>] [--max-tokens <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>]\n' +
+  '[--max-usd <n>] [--max-tokens <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
   'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure';
 
@@ -55,6 +55,27 @@ export class UsageError extends Error {}
 const VERDICT_OUTPUT_SCHEMA = z.object({
   verdict: z.enum(['actionable', 'responded', 'resolved', 'blocked', 'skip']),
 });
+
+// Review-debt #14: the workflow's ACP auth preflight proves headless agent
+// auth with a real (tiny) model request before the runner starts. Its record
+// (reports/eval/ACP-PROBE.json) rides in here so the probe is admitted
+// through the run's governor and journaled with the run instead of spending
+// off-books. A missing or malformed record is a usage error (exit 2): the
+// acp eval cell runs only after an auth-OK preflight, which always writes
+// the record — an unaccounted probe must never silently run as ungoverned.
+const PROBE_RECORD_SCHEMA = z.object({
+  probe: z.literal('acp-auth-preflight'), // .strict(): unknown keys fail loud instead of dropping silently
+
+  // ISO-8601: the record's timestamp rides into the journal verbatim, so a
+  // non-datetime string would pollute the journal's time-ordered evidence.
+  at: z.string().datetime(),
+  promptChars: z.number().int().nonnegative(),
+  replyChars: z.number().int().nonnegative(),
+  // Bounded: the preview lands in the journal value on every suite run, so
+  // an unbounded string would bloat the journal (the writer slices to 200;
+  // the boundary re-enforces it for hand-written records).
+  replyPreview: z.string().max(200),
+}).strict();
 
 // The subprocess lane runs the fixed axis-2 served id (see FIXED_GLM_SERVED_ID
 // above), but the toolkit's default routing table predates the served-id
@@ -99,6 +120,7 @@ interface CliOptions {
   checkTimeoutMs: number;
   journal?: string;
   out?: string;
+  probeRecord?: string;
   driverName: string;
 }
 
@@ -117,6 +139,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let checkTimeoutMs = 60_000;
   let journal: string | undefined;
   let out: string | undefined;
+  let probeRecord: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]!;
     switch (flag) {
@@ -133,6 +156,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--driver-name': driverName = nextValue(argv, i, flag); i++; break;
       case '--journal': journal = nextValue(argv, i, flag); i++; break;
       case '--out': out = nextValue(argv, i, flag); i++; break;
+      case '--probe-record': probeRecord = nextValue(argv, i, flag); i++; break;
       case '--max-usd': case '--max-tokens': case '--check-timeout-ms': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
@@ -171,7 +195,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
         '(schema/comparison-table.schema.json)',
     );
   }
-  return { suites, driver, model, provider, maxUsd, maxTokens, checkTimeoutMs, journal, out, driverName };
+  return { suites, driver, model, provider, maxUsd, maxTokens, checkTimeoutMs, journal, out, probeRecord, driverName };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -201,6 +225,26 @@ async function main(argv: readonly string[]): Promise<number> {
   if (mismatched !== undefined) {
     console.error(`suite '${mismatched.name}' pins servedModel '${mismatched.servedModel}' but --model is '${opts.model}' — point the run at the wire that serves the pinned id`);
     return 2;
+  }
+  // Review-debt #14: resolve the pre-runner probe record before ANY dispatch
+  // burns spend — a missing or malformed record is exit 2 (usage), never a
+  // silently ungoverned probe.
+  let preflightProbe: PreflightProbe | undefined;
+  if (opts.probeRecord !== undefined) {
+    try {
+      const parsed = PROBE_RECORD_SCHEMA.parse(JSON.parse(readFileSync(opts.probeRecord, 'utf8')) as unknown);
+      preflightProbe = {
+        at: parsed.at,
+        promptChars: parsed.promptChars,
+        replyChars: parsed.replyChars,
+        replyPreview: parsed.replyPreview,
+      };
+    } catch (e) {
+      console.error(
+        `--probe-record '${opts.probeRecord}' is missing or invalid (the acp preflight must write ACP-PROBE.json on auth-OK): ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return 2;
+    }
   }
   // B4: same-role suites collide on <role>.table.json in the shared --out
   // dir — refuse here, before ANY dispatch burns spend.
@@ -237,12 +281,16 @@ async function main(argv: readonly string[]): Promise<number> {
         : opts.driver === 'subprocess' ? new SubprocessDriver({ outputSchema, routingTable: subprocessRoutingTable() })
         : opts.driver === 'acp' ? new AcpDriver({ outputSchema, command: ACP_COMMAND })
         : new FakeDriver();
+      // Review-debt #14: every suite invocation in this process carries the
+      // same probe — each run owns its own governor and journal, so each
+      // cap conservatively covers the probe (see runner/index.ts).
       const result = await runSuite({
         suiteDir, driver,
         model: opts.model, provider: opts.provider,
         maxUsd: opts.maxUsd, maxTokens: opts.maxTokens,
         checkTimeoutMs: opts.checkTimeoutMs,
         journalPath: opts.journal, driverName: opts.driverName,
+        preflightProbe,
       });
       rows.push(...result.rows);
       tables.push(...result.tables);

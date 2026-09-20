@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
@@ -159,6 +159,71 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     captured.driverThrow = new Error("ai-sdk driver: provider 'anthropic' requires ANTHROPIC_API_KEY in the environment");
     await expect(cliMain(cliArgs(dir))).resolves.toBe(2);
     // The run aborted: no tables/rows were published for the aborted suite.
+  }, 15_000);
+});
+
+describe('--probe-record (review-debt #14: the pre-runner probe rides inside the governor/journal)', () => {
+  const record = {
+    probe: 'acp-auth-preflight',
+    at: '2026-09-20T00:00:00.000Z',
+    promptChars: 30,
+    replyChars: 120,
+    replyPreview: 'ready',
+  };
+
+  function writeRecord(name: string, content: string): string {
+    const path = join(root, name);
+    writeFileSync(path, content);
+    return path;
+  }
+
+  it('a missing record file exits 2 (fail loud — never silently ungoverned)', async () => {
+    const dir = writeSuite('probe-missing', { name: 'probe-missing', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain([...cliArgs(dir), '--probe-record', join(root, 'does-not-exist.json')])).resolves.toBe(2);
+  }, 15_000);
+
+  it('a malformed record exits 2', async () => {
+    const dir = writeSuite('probe-malformed', { name: 'probe-malformed', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    const bad = writeRecord('bad-probe.json', 'not json{');
+    await expect(cliMain([...cliArgs(dir), '--probe-record', bad])).resolves.toBe(2);
+  }, 15_000);
+
+  it('a wrong-shaped record exits 2', async () => {
+    const dir = writeSuite('probe-shape', { name: 'probe-shape', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    const shaped = writeRecord('shaped-probe.json', JSON.stringify({ probe: 'something-else' }));
+    await expect(cliMain([...cliArgs(dir), '--probe-record', shaped])).resolves.toBe(2);
+  }, 15_000);
+
+  it('a record violating the documented bounds (bad at, over-long preview, non-integer counts, extra keys) exits 2', async () => {
+    const dir = writeSuite('probe-bounds', { name: 'probe-bounds', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    const badAt = writeRecord('probe-bad-at.json', JSON.stringify({ ...record, at: 'not-a-datetime' }));
+    await expect(cliMain([...cliArgs(dir), '--probe-record', badAt])).resolves.toBe(2);
+    const longPreview = writeRecord('probe-long.json', JSON.stringify({ ...record, replyPreview: 'x'.repeat(201) }));
+    await expect(cliMain([...cliArgs(dir), '--probe-record', longPreview])).resolves.toBe(2);
+    // Counts are non-negative integers: negatives and floats are rejected.
+    const negative = writeRecord('probe-negative.json', JSON.stringify({ ...record, promptChars: -1 }));
+    await expect(cliMain([...cliArgs(dir), '--probe-record', negative])).resolves.toBe(2);
+    const float = writeRecord('probe-float.json', JSON.stringify({ ...record, replyChars: 1.5 }));
+    await expect(cliMain([...cliArgs(dir), '--probe-record', float])).resolves.toBe(2);
+    // The schema is strict: unknown keys fail loud instead of dropping.
+    const extra = writeRecord('probe-extra.json', JSON.stringify({ ...record, extra: true }));
+    await expect(cliMain([...cliArgs(dir), '--probe-record', extra])).resolves.toBe(2);
+  }, 15_000);
+
+  it('a valid record runs clean (exit 0) — the reservation fits the uncapped run', async () => {
+    const dir = writeSuite('probe-ok', { name: 'probe-ok', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    const rec = writeRecord('probe.json', JSON.stringify(record));
+    await expect(cliMain([...cliArgs(dir), '--probe-record', rec])).resolves.toBe(0);
+  }, 15_000);
+
+  it('a valid record with a sub-reserve token cap gates the run (exit 1, no rows — the probe is inside the governor)', async () => {
+    const dir = writeSuite('probe-gated', { name: 'probe-gated', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    const rec = writeRecord('probe-gated.json', JSON.stringify(record));
+    const outDir = join(root, 'out');
+    await expect(cliMain([...cliArgs(dir), '--probe-record', rec, '--max-tokens', '100', '--out', outDir])).resolves.toBe(1);
+    // Budget-gated, not scored: the empty-but-valid table, no rows.
+    const table = JSON.parse(readFileSync(join(outDir, 'review-classifier.table.json'), 'utf8')) as { cells: unknown[] };
+    expect(table.cells).toEqual([]);
   }, 15_000);
 });
 

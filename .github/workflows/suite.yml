@@ -271,7 +271,7 @@ jobs:
           rc=0
           timeout 150 node -e '
             const { spawn } = require("node:child_process");
-            const { mkdtempSync } = require("node:fs");
+            const { mkdirSync, mkdtempSync, writeFileSync } = require("node:fs");
             const { tmpdir } = require("node:os");
             const { join } = require("node:path");
             const child = spawn("zcode-acp-server", ["server"], { stdio: ["pipe", "pipe", "pipe"] });
@@ -343,6 +343,29 @@ jobs:
                   // syntax error).
                   const upd = msg.params && msg.params.update;
                   if (upd !== undefined && upd.sessionUpdate === "agent_message_chunk") {
+                    // Review-debt #14: this probe IS a real model request,
+                    // and it runs before the runner exists — so its spend
+                    // would sit outside the cell --max-tokens governor and
+                    // the NDJSON journal with no usage recorded. Its exact
+                    // usage is unmeasurable (first-chunk exit), so the eval
+                    // step accounts it as the runner --probe-record: a
+                    // conservative reservation admitted through the same
+                    // governor and journaled with the run. The record rides
+                    // the eval artifact beside ACP-SKIPPED (same
+                    // last-writer-wins rationale — never a job output), and
+                    // the snapshot copy loop ignores it (*.table.json only).
+                    // NO APOSTROPHES in this addition either (single-quoted
+                    // shell string, same as the rest of this script).
+                    const promptText = "Reply with the single word ready.";
+                    const record = {
+                      probe: "acp-auth-preflight",
+                      at: new Date().toISOString(),
+                      promptChars: promptText.length,
+                      replyChars: line.length,
+                      replyPreview: line.slice(0, 200)
+                    };
+                    mkdirSync("reports/eval", { recursive: true });
+                    writeFileSync("reports/eval/ACP-PROBE.json", JSON.stringify(record, null, 2) + "\n");
                     console.log(line);
                     process.exit(0);
                   }
@@ -375,6 +398,14 @@ jobs:
             # Spawn failures (4), script crashes, any unexpected status: a
             # broken preflight must never silently omit the acp lane — fail.
             echo "::error::acp preflight failed (rc ${rc}) — infrastructure, not a credential skip"
+            exit 1
+          fi
+          # Review-debt #14: an auth-OK probe (rc 0) MUST leave its record
+          # behind — the eval step accounts the probe against the cell token
+          # cap from it, and the runner fails loud without it. A missing
+          # record here is infrastructure, never a silent skip.
+          if [ "${rc}" -eq 0 ] && [ ! -f reports/eval/ACP-PROBE.json ]; then
+            echo "::error::acp preflight authed but wrote no probe record — the eval cell cannot account the probe"
             exit 1
           fi
       # CREDENTIAL PREREQUISITE (the J3 BLOCKED note, carried forward): both
@@ -422,6 +453,16 @@ jobs:
           # to auto-run here; widening this list stays a deliberate edit.
           hard_fail=0
           suite_count=0
+          # Review-debt #14: the acp preflight probe spent real inference
+          # before this step — its record rides into the runner so the probe
+          # is admitted through the same governor and journaled with the run
+          # instead of spending off-books. Other cells ran no probe; the
+          # flag is acp-only (the runner exits 2 on a missing record file,
+          # and the preflight hard-fails above when auth-OK leaves none).
+          probe_extra=()
+          if [ "${MATRIX_DRIVER}" = "acp" ]; then
+            probe_extra=(--probe-record reports/eval/ACP-PROBE.json)
+          fi
           while IFS= read -r suite_file; do
             suite_dir="$(dirname "${suite_file}")"
             # G7: out dir mirrors the suite path relative to suites/, PREFIXED
@@ -445,6 +486,7 @@ jobs:
               --provider "${MATRIX_PROVIDER}" \
               --max-tokens 200000 \
               --journal "${out_dir}/journal" \
+              "${probe_extra[@]}" \
               --out "${out_dir}" < /dev/null || rc=$?
             if [ "${rc}" -ge 2 ]; then
               echo "::error::suite ${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}: runner usage/validation failure (exit ${rc})"

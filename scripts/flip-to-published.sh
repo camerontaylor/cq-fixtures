@@ -53,14 +53,19 @@ if [ ! -f "$FLIP_LOCK" ]; then
   exit 1
 fi
 
-# Rollback: every failure AFTER the rewrite restores package.json, so a
-# failed run never bricks its own retry (without this, a re-run
-# mis-reports "refusing a second flip" on the half-flipped tree).
-BACKUP="$FLIP_PKG.bak-flip"
-cp "$FLIP_PKG" "$BACKUP"
-restore_pkg() {
-  cp "$BACKUP" "$FLIP_PKG"
-  echo "note: package.json restored from $BACKUP; fix the cause and re-run, then remove $BACKUP" >&2
+# Rollback: every failure AFTER the rewrite restores package.json AND
+# package-lock.json, so a failed run never bricks its own retry (without
+# this, a re-run mis-reports "refusing a second flip" on the half-flipped
+# tree — and without the lock half, the retry would start from a mixed
+# tree the claim "every failure restores" would overreach on).
+BACKUP_PKG="$FLIP_PKG.bak-flip"
+BACKUP_LOCK="$ROOT/package-lock.json.bak-flip"
+cp "$FLIP_PKG" "$BACKUP_PKG"
+cp "$ROOT/package-lock.json" "$BACKUP_LOCK"
+restore_all() {
+  cp "$BACKUP_PKG" "$FLIP_PKG"
+  cp "$BACKUP_LOCK" "$ROOT/package-lock.json"
+  echo "note: package.json + package-lock.json restored from .bak-flip backups; fix the cause and re-run, then remove the backups" >&2
 }
 
 # Flow: node rewrites package.json → npm syncs the lock (registry) →
@@ -77,16 +82,16 @@ if (typeof current !== "string" || !current.startsWith("file:")) {
 }
 pkg.dependencies[process.env.FLIP_DEP] = process.env.FLIP_VERSION;
 fs.writeFileSync(process.env.FLIP_PKG, JSON.stringify(pkg, null, 2) + "\n");
-' || { restore_pkg; exit 1; }
+' || { restore_all; exit 1; }
 
 # Sync the committed lock to the published version. A stale lock (still
 # resolving the file: tarball) makes the next `npm ci` fail, so the flip
-# is not complete without this. Aborts loudly on failure — package.json is
-# already rewritten at that point, and the message says how to finish.
+# is not complete without this. Aborts loudly on failure with both files
+# restored (see restore_all above).
 if ! (cd "$ROOT" && npm install --package-lock-only --ignore-scripts --no-audit --no-fund); then
   echo "error: npm lock sync failed — package.json now asks for $FLIP_DEP@$FLIP_VERSION;" >&2
-  echo "fix registry access and re-run (package.json was restored; toolkit.lock kept)" >&2
-  restore_pkg
+  echo "fix registry access and re-run (package.json + lock were restored; toolkit.lock kept)" >&2
+  restore_all
   exit 1
 fi
 
@@ -116,10 +121,12 @@ if (typeof entry?.resolved !== "string" || entry.resolved.startsWith("file:")) {
   console.error(`error: post-flip verification failed — package-lock.json entry still resolves ${dep} via ${entry?.resolved}`);
   process.exit(1);
 }
-' || { restore_pkg; exit 1; }
+' || { restore_all; exit 1; }
 
-rm -f "$BACKUP"
+# Removal order: the pin first, the backups last — a lock-removal failure
+# keeps the backups, so the flipped tree stays retryable.
 rm "$FLIP_LOCK"
+rm -f "$BACKUP_PKG" "$BACKUP_LOCK"
 
 echo "flipped $FLIP_DEP to $FLIP_VERSION; removed toolkit.lock."
 echo "next (human, phase 5): rm -rf vendor node_modules && npm ci && npm run build && npm test"

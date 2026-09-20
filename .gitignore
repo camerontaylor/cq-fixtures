@@ -7,6 +7,9 @@ dist/
 # Packed toolkit tarballs are build artifacts, never committed.
 vendor/
 *.env*
+# flip-to-published.sh rollback backups (a killed flip may leave one;
+# successful and failed runs remove or report them).
+*.bak-flip
 reports/*
 !reports/README.md
 tmp/

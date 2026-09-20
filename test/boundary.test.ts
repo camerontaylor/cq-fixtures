@@ -77,21 +77,24 @@ const SCANNED_FILES: Array<{ label: string; path: string }> = [
 const FORBIDDEN: Array<[string, RegExp]> = [
   ['toolkit src deep-import', /@camerontaylor\/cq-toolkit\/src/],
   ['toolkit dist deep-import', /@camerontaylor\/cq-toolkit\/dist/],
-  // Only the bare package specifier is allowed: in ANY import form — static
-  // `from '...'`, dynamic `import('...')`, `require('...')`, and
-  // `export ... from '...'` — the package name followed by '/' or '.' is a
-  // subpath/deep-import attempt. One regex covers all the call/keyword
-  // shapes; a bare `from '@camerontaylor/cq-toolkit'` never matches because
-  // nothing follows the package name.
+  // Only the bare package specifier is allowed: in ANY import form AND
+  // any quote style (including backticks) — static `from '...'`, dynamic
+  // `import('...')`, `require('...')`, and `export ... from '...'` — the
+  // package name followed by '/' or '.' is a subpath/deep-import attempt.
+  // One regex covers all the call/keyword shapes; a bare
+  // `from '@camerontaylor/cq-toolkit'` never matches because nothing
+  // follows the package name.
   [
     'toolkit subpath import in any import form (bare specifier only)',
-    /(?:from|import|require)\s*\(\s*['"]@camerontaylor\/cq-toolkit[/.]|(?:from|import|require)\s*['"]@camerontaylor\/cq-toolkit[/.]/,
+    /(?:from|import|require)\s*\(\s*['"`]@camerontaylor\/cq-toolkit[/.]|(?:from|import|require)\s*['"`]@camerontaylor\/cq-toolkit[/.]/,
   ],
-  // Relative escape into a VENDORED source tree (`../../src/…`, any import
-  // form, any spacing, any quote style): deliberately NOT a bare `../`
-  // match — intra-runner relatives like `../score/fixerWorker.ts` are
-  // legitimate and must not trip the rule.
-  ['relative escape into a vendored tree (any import form)', /(?:from|import|require)\s*\(?\s*['"`]\.\.\/\.\.\/src\//],
+  // Relative escape into a VENDORED tree: one-or-more `../` chains into
+  // `src/`, `vendor/`, or `lib/` — any import form, any spacing, any quote
+  // style. Deliberately NOT a bare `../` match — intra-runner relatives
+  // like `../score/fixerWorker.ts` are legitimate and must not trip the
+  // rule; and NOT "any path outside runner/", which no text regex can
+  // resolve. `../../../src/` and `../vendor/` are caught; `../score/` is not.
+  ['relative escape into a vendored tree (any import form)', /(?:from|import|require)\s*\(?\s*['"`](?:\.\.\/)+(?:src|vendor|lib)\//],
 ];
 
 interface Violation {
@@ -162,6 +165,8 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "export * from '@camerontaylor/cq-toolkit/dist/x.js';",
       "export { y } from '@camerontaylor/cq-toolkit/sub';",
       "import '@camerontaylor/cq-toolkit/depth';",
+      'import(`@camerontaylor/cq-toolkit/sub`);',
+      'const m = await import(`@camerontaylor/cq-toolkit/src/internal`);',
       "const m = await import('@camerontaylor/cq-toolkit/src/internal');",
     ];
     for (const s of internalImports) {
@@ -176,6 +181,7 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "import '@camerontaylor/cq-toolkit';",
       "import('@camerontaylor/cq-toolkit').then(m => m);",
       "require('@camerontaylor/cq-toolkit');",
+      'import `@camerontaylor/cq-toolkit`;',
       "export { runSuite } from '@camerontaylor/cq-toolkit';",
     ];
     for (const s of bareImports) {
@@ -191,6 +197,8 @@ describe('boundary matcher self-test (synthetic strings)', () => {
     const escapes = [
       "import { x } from '../../src/internal';",
       "import { x } from  '../../src/internal';",
+      "import { x } from '../../../src/internal';",
+      "import { x } from '../vendor/internal';",
       "const m = await import('../../src/internal');",
       "const m = require('../../src/internal');",
       "export * from '../../src/internal';",

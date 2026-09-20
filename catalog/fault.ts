@@ -10,7 +10,7 @@
 // schema/suite.schema.json is unchanged (plan §5 F2 acceptance).
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import ajvFormats from 'ajv-formats';
 import { checkOperatorAssignment, operatorById, type BugType, type DifficultyBand, type OperatorSpec } from './operators.ts';
@@ -65,6 +65,24 @@ export function faultOperators(record: FaultRecord): OperatorSpec[] {
 }
 
 /**
+ * A fix path must be a src/-relative POSIX path with no traversal segments.
+ * The JSON Schema pins the prefix; this closes the `src/../../outside.ts`
+ * hole a bare `^src/.*` pattern leaves open.
+ */
+function assertSafeFixPath(rel: string, label: string): void {
+  if (
+    rel.length === 0 ||
+    rel.startsWith('/') ||
+    rel.includes('\\') ||
+    /^[A-Za-z]:/.test(rel) ||
+    !rel.startsWith('src/') ||
+    rel.split('/').includes('..')
+  ) {
+    throw new Error(`${label}: fix path '${rel}' must be a src/-relative path with no '..' segments`);
+  }
+}
+
+/**
  * Enforce the catalog rules the JSON Schema cannot express: every named
  * operator must exist, must be registered for the record's tier, and a
  * non-easy record may not use a trivial-prone operator (plan WB-2.2).
@@ -74,6 +92,8 @@ export function assertFaultCatalogRules(record: FaultRecord, label: string): voi
     const check = checkOperatorAssignment(id, record.difficulty);
     if (!check.ok) throw new Error(`${label}: ${check.reason}`);
   }
+  for (const rel of Object.keys(record.validation.fix)) assertSafeFixPath(rel, label);
+  if (record.adequacy !== undefined) assertSafeFixPath(record.adequacy.file, label);
 }
 
 /** Parse + schema-validate + catalog-check one FAULT.json document. */
@@ -113,11 +133,19 @@ export function loadFaultForFixture(repoRoot: string, fixtureRef: string): Fault
 
 /**
  * Write a record's canonical fix into a materialized workspace. Paths in
- * `fix` are fixture-relative (`src/...`); the schema pins them to `src/`.
+ * `fix` are fixture-relative (`src/...`); the schema pins them to `src/` and
+ * `assertFaultCatalogRules` rejects traversal, and this re-checks that the
+ * resolved target stays inside the workspace before writing.
  */
 export function applyFaultFix(record: FaultRecord, workspace: string): void {
+  const workspaceRoot = resolve(workspace);
   for (const [rel, content] of Object.entries(record.validation.fix)) {
-    const target = join(workspace, rel);
+    assertSafeFixPath(rel, 'applyFaultFix');
+    const target = resolve(workspaceRoot, rel);
+    const relTarget = relative(workspaceRoot, target);
+    if (relTarget.startsWith('..') || isAbsolute(relTarget)) {
+      throw new Error(`applyFaultFix: fix path '${rel}' escapes the workspace`);
+    }
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, content);
   }

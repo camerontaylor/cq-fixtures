@@ -27,6 +27,9 @@ const PROBE_TIMEOUT_MS = 120_000;
 
 const SMOKE_MODEL = { model: 'glm-5.3-flash', provider: 'zai', driverName: 'subprocess' } as const;
 
+const VITEST_MJS = join(REPO_ROOT, 'node_modules', 'vitest', 'vitest.mjs');
+const JUDGE_CONFIG = join(REPO_ROOT, 'fixtures', 'judge.vitest.config.mjs');
+
 function runJudgeOrThrow(caseId: string, checkPath: string, workspace: string): number {
   const res = spawnSync(process.execPath, [checkPath], { cwd: workspace, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS });
   if ((res.error !== undefined && res.error !== null) || res.status === null) {
@@ -36,6 +39,44 @@ function runJudgeOrThrow(caseId: string, checkPath: string, workspace: string): 
     );
   }
   return res.status;
+}
+
+interface TestOutcome {
+  title: string;
+  status: string;
+}
+
+/**
+ * Run the fixture's vitest suite directly with the JSON reporter so each
+ * declared F2P/P2P title can be checked individually. The workspace is a
+ * fresh materialization (pristine tests), and the explicit judge config pins
+ * the include glob, so this mirrors the judge's test surface.
+ */
+function runVitestJson(workspace: string, label: string): { status: number; tests: TestOutcome[] } {
+  const outFile = join(wsRoot, `${label}.json`);
+  const res = spawnSync(
+    process.execPath,
+    [VITEST_MJS, 'run', '--root', workspace, '--config', JUDGE_CONFIG, '--reporter=json', `--outputFile=${outFile}`],
+    { cwd: workspace, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS },
+  );
+  if ((res.error !== undefined && res.error !== null) || res.status === null) {
+    throw new Error(
+      `${label} vitest run failed (infrastructure): ` +
+        `${(res.error as Error | undefined)?.message ?? `killed by signal ${res.signal ?? 'unknown'}`}`,
+    );
+  }
+  const report = JSON.parse(readFileSync(outFile, 'utf8')) as {
+    testResults: Array<{ assertionResults: Array<{ title: string; status: string }> }>;
+  };
+  const tests = report.testResults.flatMap((f) => f.assertionResults.map((a) => ({ title: a.title, status: a.status })));
+  return { status: res.status, tests };
+}
+
+/** The status of one declared test title (must exist exactly once). */
+function outcomeOf(tests: TestOutcome[], title: string, caseId: string): string {
+  const matches = tests.filter((t) => t.title === title);
+  expect(matches.length, `${caseId}: declared test '${title}' must exist exactly once`).toBe(1);
+  return matches[0]!.status;
 }
 
 /** Materialize exactly as runner/index.ts does for a fixer case. */
@@ -236,21 +277,33 @@ describe('FAULT.json is unreachable from a materialized worker workspace', () =>
 describe('validation filter chain: F2P, baseline, determinism ×3, adequacy', () => {
   for (const c of fixerCases) {
     const { fixture, probe } = c;
-    it(`${c.id}: faulted red ×3, fixed green ×3, adequacy deletion red`, () => {
+    it(`${c.id}: per-test F2P/P2P in both states, determinism ×3, adequacy deletion red`, () => {
       const record = loadFaultForFixture(REPO_ROOT, fixture);
       const workspace = materialize(fixture);
       try {
-        const judge = (): number => runJudgeOrThrow(c.id, join(REPO_ROOT, probe.check), workspace);
-
-        // F2P gate + determinism on the stored (faulted) state.
+        // The real scoring path (judge) confirms the aggregate verdict and
+        // determinism; the JSON runs then check each declared title.
         for (let run = 0; run < 3; run++) {
-          expect(judge(), `${c.id} faulted run ${run + 1} must be red`).not.toBe(0);
+          expect(runJudgeOrThrow(c.id, join(REPO_ROOT, probe.check), workspace), `${c.id} faulted judge run ${run + 1} must be red`).not.toBe(0);
+        }
+        const faulted = runVitestJson(workspace, `${c.id}-faulted`);
+        expect(faulted.status, `${c.id} faulted JSON run must be red`).not.toBe(0);
+        for (const title of record.validation.f2p) {
+          expect(outcomeOf(faulted.tests, title, c.id), `${c.id} f2p '${title}' must fail in the faulted state`).toBe('failed');
+        }
+        for (const title of record.validation.p2p) {
+          expect(outcomeOf(faulted.tests, title, c.id), `${c.id} p2p '${title}' must pass in the faulted state`).toBe('passed');
         }
 
         // Baseline/P2P gate + determinism on the canonical-fix state.
         applyFaultFix(record, workspace);
         for (let run = 0; run < 3; run++) {
-          expect(judge(), `${c.id} fixed run ${run + 1} must be green`).toBe(0);
+          expect(runJudgeOrThrow(c.id, join(REPO_ROOT, probe.check), workspace), `${c.id} fixed judge run ${run + 1} must be green`).toBe(0);
+        }
+        const fixed = runVitestJson(workspace, `${c.id}-fixed`);
+        expect(fixed.status, `${c.id} fixed JSON run must be green`).toBe(0);
+        for (const title of [...record.validation.f2p, ...record.validation.p2p]) {
+          expect(outcomeOf(fixed.tests, title, c.id), `${c.id} '${title}' must pass in the fixed state`).toBe('passed');
         }
 
         // P2P adequacy: deleting one load-bearing statement from the fixed
@@ -261,7 +314,7 @@ describe('validation filter chain: F2P, baseline, determinism ×3, adequacy', ()
         const crippled = fixedSource.replace(adequacy.delete, '');
         expect(crippled, `${c.id} adequacy statement must be present in the fixed source`).not.toBe(fixedSource);
         writeFileSync(join(workspace, adequacy.file), crippled);
-        expect(judge(), `${c.id} adequacy deletion must be red`).not.toBe(0);
+        expect(runVitestJson(workspace, `${c.id}-adequacy`).status, `${c.id} adequacy deletion must be red`).not.toBe(0);
       } finally {
         rmSync(workspace, { recursive: true, force: true });
       }

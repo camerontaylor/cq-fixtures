@@ -146,9 +146,9 @@ export const OPERATORS: readonly OperatorSpec[] = [
     bugType: 'value misuse',
     bands: ['easy'],
     trivialProne: true,
-    strykerMutators: ['ArithmeticOperator', 'BooleanLiteral', 'StringLiteral'],
+    strykerMutators: [],
     source: 'swe-smith',
-    description: 'Shifts a numeric/boolean/string literal by one step (trivial-prone: easy tier only).',
+    description: 'Shifts a numeric literal by ±1 or flips a boolean literal (trivial-prone: easy tier only). Implemented by the authored Babel transform in babel-transforms.ts.',
   },
   {
     id: 'chain-break',

@@ -72,7 +72,7 @@
         "fix": {
           "type": "object",
           "minProperties": 1,
-          "propertyNames": { "pattern": "^src/.*\\.ts$" },
+          "propertyNames": { "pattern": "^(?!.*\\.\\.)src/.*\\.ts$" },
           "additionalProperties": { "type": "string", "minLength": 1 },
           "description": "The canonical fix: fixture-relative src/ path -> full fixed file content. The judge test overwrites the faulted files with these contents to prove the fixed state passes. Faults live only in src/, so the map is src/-scoped."
         }
@@ -84,7 +84,7 @@
       "required": ["file", "delete"],
       "description": "Single-statement-deletion sanity target (R6 digest §2 P2P adequacy): deleting this exact statement from the FIXED source must make the suite red. Data-driven so the validator needs no heuristic statement picker.",
       "properties": {
-        "file": { "type": "string", "pattern": "^src/.*\\.ts$" },
+        "file": { "type": "string", "pattern": "^(?!.*\\.\\.)src/.*\\.ts$" },
         "delete": { "type": "string", "minLength": 1 }
       }
     },

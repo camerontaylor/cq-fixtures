@@ -40,10 +40,13 @@ export function applyMutant(source: string, mutant: GeneratedMutant): string {
   return source.slice(0, mutant.start) + mutant.replacement + source.slice(mutant.end);
 }
 
-/** Stryker mutator name → the catalog operators it can seed. */
+/** Stryker mutator name → the catalog operators it can seed. Operators with
+ * an authored Babel transform are excluded: the authored transform is
+ * canonical for them, so `generateBabelMutants` never claims their mutants. */
 const OPERATORS_BY_STRYKER_MUTATOR: ReadonlyMap<string, readonly OperatorSpec[]> = (() => {
   const map = new Map<string, OperatorSpec[]>();
   for (const op of OPERATORS) {
+    if (BABEL_TRANSFORMS[op.id] !== undefined) continue;
     for (const name of op.strykerMutators) {
       const list = map.get(name);
       if (list === undefined) map.set(name, [op]);

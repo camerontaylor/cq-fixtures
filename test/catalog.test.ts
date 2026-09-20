@@ -202,6 +202,11 @@ describe('FAULT.json channel loader (plan WB-2.1)', () => {
     expect(() => parseFaultRecord(JSON.stringify(badFix), 'bad-fix')).toThrow(/failed fault.schema.json validation/);
   });
 
+  it('rejects a fix path with traversal segments', () => {
+    const bad = { ...validRecord, validation: { ...validRecord.validation, fix: { 'src/../../outside.ts': 'x' } } };
+    expect(() => parseFaultRecord(JSON.stringify(bad), 'bad-traversal')).toThrow(/failed fault.schema.json validation/);
+  });
+
   it('derives the sibling record path outside the materialized fixture dir', () => {
     expect(faultRecordRelPath('fixtures/breadth-01')).toBe('fixtures/breadth-01.FAULT.json');
     expect(faultRecordRelPath('fixtures/breadth-01/')).toBe('fixtures/breadth-01.FAULT.json');

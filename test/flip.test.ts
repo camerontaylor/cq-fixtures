@@ -319,5 +319,12 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     const { status, stderr } = runFlip(dir, ['1.0.0'], env);
     expect(status).not.toBe(0);
     expect(stderr).toContain('restore of package.json failed');
+    // The message promises recovery is preserved: both backups kept; the
+    // live pkg stays flipped (manual recovery from the kept backups), the
+    // live lock untouched (npm never ran its sync).
+    expect(existsSync(join(dir, 'package.json.bak-flip'))).toBe(true);
+    expect(existsSync(join(dir, 'package-lock.json.bak-flip'))).toBe(true);
+    expect(readPkg(dir).dependencies?.[DEP]).toBe('1.0.0');
+    expect(readLockDep(dir)).toBe('file:vendor/cq-toolkit-0.0.0.tgz');
   });
 });

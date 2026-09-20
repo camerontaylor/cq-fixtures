@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020';
 import ajvFormats from 'ajv-formats';
 import { describe, expect, it } from 'vitest';
@@ -38,6 +40,10 @@ interface RowSample {
   // Optional at schema grain (not in required); typed here so the acceptance
   // test can pass it through validRow's overrides.
   case?: string;
+  // F4 additive-optional fields: per-probe observed outcomes + the
+  // suspicious-benign flag. Old rows omit both by design.
+  probes?: Array<{ kind: string; expected: string; observed: string | null; passed: boolean }>;
+  suspiciousBenign?: boolean;
 }
 
 function validRow(overrides: Partial<RowSample> = {}): RowSample {
@@ -100,6 +106,38 @@ describe('result-row schema (plan §8 field list)', () => {
 
   it('rejects a row with outcome.score = 1.5', () => {
     const row = validRow({ outcome: { score: 1.5, passed: 6, total: 4 } });
+    expect(rowSchema(row)).toBe(false);
+  });
+
+  it('accepts a classifier row carrying probes[] with the observed verdict + the suspicious-benign flag (F4)', () => {
+    expect(rowSchema(validRow({
+      role: 'review-classifier',
+      outcome: { score: 0, passed: 0, total: 1 },
+      case: 'bv-01',
+      probes: [{ kind: 'expected-verdict', expected: 'skip', observed: 'actionable', passed: false }],
+      suspiciousBenign: true,
+    }))).toBe(true);
+  });
+
+  it('accepts a row whose probe observed is null (missing/unparseable verdict is a miss, never a match)', () => {
+    expect(rowSchema(validRow({
+      role: 'review-classifier',
+      outcome: { score: 0, passed: 0, total: 1 },
+      probes: [{ kind: 'expected-verdict', expected: 'resolved', observed: null, passed: false }],
+    }))).toBe(true);
+  });
+
+  it('rejects a probes[] entry missing passed', () => {
+    const row = validRow();
+    (row as { probes?: unknown }).probes = [{ kind: 'expected-verdict', expected: 'skip', observed: null }];
+    expect(rowSchema(row)).toBe(false);
+  });
+
+  it('rejects a probes[] entry with an undeclared key (probes are closed)', () => {
+    const row = validRow();
+    (row as { probes?: unknown }).probes = [
+      { kind: 'expected-verdict', expected: 'skip', observed: 'skip', passed: true, notes: 'extra' },
+    ];
     expect(rowSchema(row)).toBe(false);
   });
 });
@@ -263,6 +301,59 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
     table.cells = [];
     expect(tableSchema(table)).toBe(true);
   });
+
+  it('accepts a classifier cell with byVerdict/macroF1/fpRate/fpN (F4)', () => {
+    const table = validTable();
+    const cell = table.cells[0] as Record<string, unknown>;
+    cell['byVerdict'] = {
+      actionable: { expected: 2, correct: 1, predicted: { actionable: 1 } },
+      responded: { expected: 1, correct: 1, predicted: { responded: 1 } },
+      resolved: { expected: 1, correct: 0, predicted: {} },
+      blocked: { expected: 1, correct: 1, predicted: { blocked: 1 } },
+      skip: { expected: 1, correct: 0, predicted: { actionable: 1 } },
+    };
+    cell['macroF1'] = 0.5;
+    cell['fpRate'] = 0.5;
+    cell['fpN'] = 2;
+    expect(tableSchema(table)).toBe(true);
+  });
+
+  it('rejects a byVerdict with only four verdict keys (exactly five required)', () => {
+    const table = validTable();
+    const cell = table.cells[0] as Record<string, unknown>;
+    cell['byVerdict'] = {
+      actionable: { expected: 2, correct: 1, predicted: { actionable: 1 } },
+      responded: { expected: 1, correct: 1, predicted: { responded: 1 } },
+      resolved: { expected: 1, correct: 0, predicted: {} },
+      blocked: { expected: 1, correct: 1, predicted: { blocked: 1 } },
+    };
+    cell['macroF1'] = 0.5;
+    expect(tableSchema(table)).toBe(false);
+  });
+
+  it('rejects a byVerdict entry with an out-of-vocabulary predicted key', () => {
+    const table = validTable();
+    const cell = table.cells[0] as Record<string, unknown>;
+    cell['byVerdict'] = {
+      actionable: { expected: 1, correct: 0, predicted: { maybe: 1 } },
+      responded: { expected: 0, correct: 0, predicted: {} },
+      resolved: { expected: 0, correct: 0, predicted: {} },
+      blocked: { expected: 0, correct: 0, predicted: {} },
+      skip: { expected: 0, correct: 0, predicted: {} },
+    };
+    expect(tableSchema(table)).toBe(false);
+  });
+
+  it('rejects fpRate 1.5 and macroF1 above 1', () => {
+    const table = validTable();
+    const cell = table.cells[0] as Record<string, unknown>;
+    cell['fpRate'] = 1.5;
+    cell['fpN'] = 2;
+    expect(tableSchema(table)).toBe(false);
+    cell['fpRate'] = 0.5;
+    cell['macroF1'] = 1.25;
+    expect(tableSchema(table)).toBe(false);
+  });
 });
 
 describe('suite schema (ws-j item 3)', () => {
@@ -339,5 +430,39 @@ describe('suite schema (ws-j item 3)', () => {
     const suite = validClassifierSuite();
     delete (suite as { provenance?: unknown }).provenance;
     expect(suiteSchema(suite)).toBe(false);
+  });
+});
+
+describe('F4 acceptance: committed 2026-09-18 snapshots still validate against the versioned schemas', () => {
+  // The load-bearing half of F4 is additive-optional: every committed
+  // snapshot (reports/snapshots/2026-09-18, tables only — the snapshot job
+  // copies *.table.json) must validate against the NEW table schema, and an
+  // old-shape row (the exact pre-F4 field set, no probes) must validate
+  // against the NEW row schema.
+  const snapDir = fileURLToPath(new URL('../reports/snapshots/2026-09-18', import.meta.url));
+
+  it('every committed snapshot table validates against the NEW table schema and carries none of the F4 fields', () => {
+    const files = (readdirSync(snapDir, { recursive: true }) as string[])
+      .filter((f) => f.endsWith('.table.json'));
+    // Non-vacuous: the 2026-09-18 snapshot commits eight per-cell tables.
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) {
+      const doc = JSON.parse(readFileSync(join(snapDir, f), 'utf8')) as {
+        cells: Array<Record<string, unknown>>;
+      };
+      expect(tableSchema(doc), `${f}: ${ajv.errorsText(tableSchema.errors)}`).toBe(true);
+      for (const cell of doc.cells) {
+        for (const k of ['byVerdict', 'macroF1', 'fpRate', 'fpN']) {
+          expect(cell, `${f} cell carries pre-F4-absent key '${k}'`).not.toHaveProperty(k);
+        }
+      }
+    }
+  });
+
+  it('an old-shape row (exact pre-F4 field set, no probes) validates against the NEW row schema', () => {
+    const oldShape = validRow();
+    expect(oldShape).not.toHaveProperty('probes');
+    expect(oldShape).not.toHaveProperty('suspiciousBenign');
+    expect(rowSchema(oldShape)).toBe(true);
   });
 });

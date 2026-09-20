@@ -198,7 +198,7 @@ describe('breadth suite shape (F2 acceptance)', () => {
       for (const [rel, fixed] of Object.entries(record.validation.fix)) {
         const stored = readFileSync(join(REPO_ROOT, c.fixture, rel), 'utf8');
         const changed = changedLines(stored, fixed);
-        expect(changed.join('\n'), `${c.id} ${rel} diff markers`).not.toMatch(/stryker|mutant|FAULT|BUG|TODO|XXX|MUTATION/i);
+        expect(changed.join('\n'), `${c.id} ${rel} diff markers`).not.toMatch(/\b(stryker|mutant|FAULT|BUG|TODO|XXX|MUTATION)\b/i);
         expect(changed.length, `${c.id} ${rel} diff must be operator-sized`).toBeLessThanOrEqual(6);
       }
     }

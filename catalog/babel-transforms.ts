@@ -208,11 +208,15 @@ const removeAssignment: Transform = (source, fileName) => {
     }
     // A cache write is a `.set(...)` call statement, not an assignment — the
     // digest names this operator "drop cache write" (row 16).
-    if (expression.type === 'CallExpression') {
+    if (expression.type === 'CallExpression' || expression.type === 'OptionalCallExpression') {
       const callee = (expression as unknown as { callee: Node }).callee;
-      if (callee.type !== 'MemberExpression') return;
-      const property = (callee as unknown as { property: Node }).property;
-      if (property.type !== 'Identifier' || (property as unknown as { name: string }).name !== 'set') return;
+      if (callee.type !== 'MemberExpression' && callee.type !== 'OptionalMemberExpression') return;
+      const member = callee as unknown as { property: Node; computed?: boolean };
+      const property = member.property;
+      const isSet =
+        (member.computed !== true && property.type === 'Identifier' && (property as unknown as { name: string }).name === 'set') ||
+        (member.computed === true && property.type === 'StringLiteral' && (property as unknown as { value: string }).value === 'set');
+      if (!isSet) return;
       out.push(makeMutant('remove-assignment', fileName, span(source, node), '', 'remove the cache-write statement'));
     }
   });

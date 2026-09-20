@@ -115,7 +115,15 @@ export function parseFaultRecord(raw: string, label: string): FaultRecord {
 /** Repo-root-relative path of a fixture's FAULT.json sibling. */
 export function faultRecordRelPath(fixtureRef: string): string {
   const trimmed = fixtureRef.replace(/\/+$/, '');
-  if (trimmed === '') throw new Error(`fixture ref '${fixtureRef}' is empty`);
+  if (
+    trimmed === '' ||
+    trimmed.startsWith('/') ||
+    trimmed.includes('\\') ||
+    /^[A-Za-z]:/.test(trimmed) ||
+    trimmed.split('/').includes('..')
+  ) {
+    throw new Error(`fixture ref '${fixtureRef}' must be repo-root-relative with no '..' segments`);
+  }
   return `${trimmed}.FAULT.json`;
 }
 

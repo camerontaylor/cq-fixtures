@@ -64,9 +64,9 @@ and the single-statement-deletion adequacy check. The static typecheck gate is
 the repo's own `npm run typecheck`, which includes `fixtures/**/*.ts`; the
 faults are runtime logic only (no type-error operator class in v1).
 
-The `tell_audit` rows are honest: two medium cases (07, 08) and both hard
-cases are marked `told` — a reader who sees the one-token diff can name the
-mutation. They stay in the corpus because the tier measures locating and
+The `tell_audit` rows are honest: cases 07, 08, and 09 are marked `told` (a
+reader who sees the one-token diff can name the mutation) and breadth-10 is
+`not-told`. They stay in the corpus because the tier measures locating and
 repairing the fault in a multi-module package, not concealment; the
 per-operator tell rate is recorded rather than hidden (digest §2, SWE-Mutation
 down-weighting is F3's scoring step).

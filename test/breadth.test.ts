@@ -171,7 +171,17 @@ function scanForFaultLeaks(workspace: string, fixtureRef: string, record: FaultR
       leaks.push(`${relative(workspace, file)} (FAULT.json by name)`);
       continue;
     }
-    const content = readFileSync(file, 'utf8');
+    const content = (() => {
+      try {
+        return readFileSync(file, 'utf8');
+      } catch (e) {
+        // An unreadable entry (a symlinked dir, a permission error) is
+        // fail-closed: a labeled leak, never a throw that hides the verdict.
+        leaks.push(`${relative(workspace, file)} (unreadable: ${(e as Error).message})`);
+        return undefined;
+      }
+    })();
+    if (content === undefined) continue;
     if (content.includes('"failure_symptoms"')) leaks.push(`${relative(workspace, file)} (FAULT.json marker)`);
     else if (fixValues.some((fix) => fix === content)) leaks.push(`${relative(workspace, file)} (canonical fix content)`);
     else if (secretLines.some((line) => content.includes(line))) leaks.push(`${relative(workspace, file)} (canonical fix line)`);

@@ -230,9 +230,9 @@ function nonNullOverreach(sf: SourceFile, fileName: string): GeneratedMutant[] {
   ]) {
     const text = node.getText();
     if (!text.includes('?.')) continue;
-    // Element access `a?.[i]` must become `a![i]`, not `a!.[i]`; the
-    // property-access replacement then handles `a?.b` -> `a!.b`.
-    const replacement = text.replace('?.[', '![').replace('?.', '!.');
+    // Replace EVERY optional access in a nested chain (a?.b?.c -> a!.b!.c),
+    // and element access `a?.[i]` -> `a![i]` before the `?.` -> `!.` pass.
+    const replacement = text.replaceAll('?.[', '![').replaceAll('?.', '!.');
     out.push(mutantFromNode('non-null-overreach', fileName, node, replacement, 'replace optional access with non-null assertion'));
   }
   return out;

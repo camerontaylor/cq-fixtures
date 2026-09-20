@@ -137,6 +137,11 @@ describe('catalog engines are mutant generators (smoke)', () => {
         contains: 'o![0]',
       },
       {
+        operatorId: 'non-null-overreach',
+        source: 'export function f(o?: { a?: { b: number } }): number {\n  return o?.a?.b ?? 0;\n}\n',
+        contains: 'o!.a!.b',
+      },
+      {
         operatorId: 'radix-coercion-drop',
         source: 'export function f(s: string): number {\n  return parseInt(s, 10);\n}\n',
         contains: 'parseInt(s)',
@@ -170,6 +175,16 @@ describe('catalog engines are mutant generators (smoke)', () => {
         operatorId: 'remove-assignment',
         source: 'export function f(cache: Map<string, number>): void {\n  cache.set("a", 1);\n}\n',
         check: (a) => expect(a).not.toContain('cache.set'),
+      },
+      {
+        operatorId: 'remove-assignment',
+        source: 'export function f(cache?: Map<string, number>): void {\n  cache?.set("a", 1);\n}\n',
+        check: (a) => expect(a).not.toContain('cache?.set'),
+      },
+      {
+        operatorId: 'remove-assignment',
+        source: 'export function f(cache: Map<string, number>): void {\n  cache["set"]("a", 1);\n}\n',
+        check: (a) => expect(a).not.toContain('cache["set"]'),
       },
       {
         operatorId: 'chain-break',
@@ -258,5 +273,11 @@ describe('FAULT.json channel loader (plan WB-2.1)', () => {
   it('derives the sibling record path outside the materialized fixture dir', () => {
     expect(faultRecordRelPath('fixtures/breadth-01')).toBe('fixtures/breadth-01.FAULT.json');
     expect(faultRecordRelPath('fixtures/breadth-01/')).toBe('fixtures/breadth-01.FAULT.json');
+  });
+
+  it('rejects a fixture ref with traversal or absolute segments', () => {
+    expect(() => faultRecordRelPath('../outside')).toThrow(/repo-root-relative/);
+    expect(() => faultRecordRelPath('/abs/fixture')).toThrow(/repo-root-relative/);
+    expect(() => faultRecordRelPath('fixtures/../etc/passwd')).toThrow(/repo-root-relative/);
   });
 });

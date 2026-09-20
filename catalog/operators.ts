@@ -236,7 +236,7 @@ export const OPERATORS: readonly OperatorSpec[] = [
     trivialProne: false,
     strykerMutators: [],
     source: 'swe-smith',
-    description: 'Removes an assignment that carries state to a later read.',
+    description: 'Removes an assignment (or a `.set(...)` cache write) that carries state to a later read.',
   },
   {
     id: 'empty-block',

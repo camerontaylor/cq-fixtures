@@ -99,10 +99,14 @@ describe('catalog engines are mutant generators (smoke)', () => {
     expect(applied.every((s) => s !== source), 'every generated mutant changes the source').toBe(true);
   });
 
-  it('generateBabelMutants rejects an authored-transform operator id', async () => {
+  it('generateBabelMutants rejects authored, non-babel, and unknown operator ids', async () => {
     await expect(generateBabelMutants('export const x = 1;\n', 'a.ts', { operatorId: 'constant-delta' })).rejects.toThrow(
       /authored Babel transform/,
     );
+    await expect(generateBabelMutants('export const x = 1;\n', 'a.ts', { operatorId: 'default-param-removal' })).rejects.toThrow(
+      /ts-morph operator/,
+    );
+    await expect(generateBabelMutants('export const x = 1;\n', 'a.ts', { operatorId: 'nope' })).rejects.toThrow(/unknown operator/);
   });
 
   it('ts-morph generates one fault per TS-specific operator', () => {
@@ -163,6 +167,11 @@ describe('catalog engines are mutant generators (smoke)', () => {
       { operatorId: 'remove-conditional', source: 'export function f(x: boolean): void {\n  if (x) {\n    void x;\n  }\n}\n', check: (a) => expect(a).not.toContain('if (x)') },
       { operatorId: 'remove-assignment', source: 'export function f(): number {\n  let x = 1;\n  x = 2;\n  return x;\n}\n', check: (a) => expect(a).not.toContain('x = 2;') },
       {
+        operatorId: 'remove-assignment',
+        source: 'export function f(cache: Map<string, number>): void {\n  cache.set("a", 1);\n}\n',
+        check: (a) => expect(a).not.toContain('cache.set'),
+      },
+      {
         operatorId: 'chain-break',
         source: 'export function f(xs: number[]): number[] {\n  return xs.filter((x) => x > 0).map((x) => x + 1);\n}\n',
         check: (a) => expect(a).not.toContain('.map('),
@@ -187,6 +196,11 @@ describe('catalog engines are mutant generators (smoke)', () => {
 
   it('StrykerJS-backed operators each generate a mutant through generateForOperator', async () => {
     const cases: Array<{ operatorId: string; source: string }> = [
+      { operatorId: 'assignment-swap', source: 'export function f(x: number): number {\n  x += 1;\n  return x;\n}\n' },
+      { operatorId: 'equality-boundary', source: 'export function f(a: number, b: number): boolean {\n  return a >= b;\n}\n' },
+      { operatorId: 'logical-swap', source: 'export function f(a: boolean, b: boolean): boolean {\n  return a && b;\n}\n' },
+      { operatorId: 'unary-flip', source: 'export function f(x: number): number {\n  return -x;\n}\n' },
+      { operatorId: 'update-flip', source: 'export function f(x: number): number {\n  return ++x;\n}\n' },
       { operatorId: 'method-swap', source: 'export function f(xs: number[]): boolean {\n  return xs.every((x) => x > 0);\n}\n' },
       { operatorId: 'optional-chaining-removal', source: 'export function f(o?: { a: number }): number | undefined {\n  return o?.a;\n}\n' },
       { operatorId: 'empty-block', source: 'export function f(): number {\n  const g = () => 1;\n  return g();\n}\n' },

@@ -12,10 +12,11 @@ repo's judge is the scorer; the engines here only GENERATE candidate faults
   operators (constant ±1, remove loop, empty block/arrow→undefined) are
   restricted to the easy tier and excluded from discrimination scoring.
 - `generate.ts` — engine adapters. StrykerJS `@stryker-mutator/instrumenter`
-  drives the 19 transferred Babel-side operators; `ts-morph` drives the 5
+  drives 9 of the 19 transferred Babel-side operators; the authored transforms
+  in `babel-transforms.ts` drive the other 10; `ts-morph` drives the 5
   TS-specific ones (shared-reference return, Promise.all → unawaited elements,
-  default-param removal, non-null overreach, radix/coercion drop). Both are
-  devDependencies.
+  default-param removal, non-null overreach, radix/coercion drop). Both engines
+  are devDependencies.
 - `babel-transforms.ts` — authored Babel transforms for the SWE-smith-derived
   operators StrykerJS does not provide (constant ±1, operand swap, chain break,
   argument swap, if/else invert, statement shuffle, remove loop/conditional/

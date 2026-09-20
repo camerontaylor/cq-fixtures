@@ -195,15 +195,26 @@ const removeConditional: Transform = (source, fileName) => {
   return out;
 };
 
-/** remove assignment (drop a state write; digest row 16). */
+/** remove assignment, or a cache write (`.set(...)` call); digest row 16. */
 const removeAssignment: Transform = (source, fileName) => {
   const out: GeneratedMutant[] = [];
   walk(parseModule(source), (node) => {
     if (node.type !== 'ExpressionStatement') return;
     const expression = (node as unknown as { expression: Node }).expression;
-    if (expression.type !== 'AssignmentExpression') return;
-    if ((expression as unknown as { operator: string }).operator !== '=') return;
-    out.push(makeMutant('remove-assignment', fileName, span(source, node), '', 'remove the assignment statement'));
+    if (expression.type === 'AssignmentExpression') {
+      if ((expression as unknown as { operator: string }).operator !== '=') return;
+      out.push(makeMutant('remove-assignment', fileName, span(source, node), '', 'remove the assignment statement'));
+      return;
+    }
+    // A cache write is a `.set(...)` call statement, not an assignment — the
+    // digest names this operator "drop cache write" (row 16).
+    if (expression.type === 'CallExpression') {
+      const callee = (expression as unknown as { callee: Node }).callee;
+      if (callee.type !== 'MemberExpression') return;
+      const property = (callee as unknown as { property: Node }).property;
+      if (property.type !== 'Identifier' || (property as unknown as { name: string }).name !== 'set') return;
+      out.push(makeMutant('remove-assignment', fileName, span(source, node), '', 'remove the cache-write statement'));
+    }
   });
   return out;
 };

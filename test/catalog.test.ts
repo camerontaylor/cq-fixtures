@@ -76,7 +76,7 @@ describe('operator catalog metadata (plan WB-2.2)', () => {
 
   it('exposes the StrykerJS NodeMutator names it draws from', () => {
     const names = catalogStrykerMutators();
-    for (const expected of ['ArithmeticOperator', 'AssignmentOperator', 'EqualityOperator', 'LogicalOperator', 'OptionalChaining', 'ConditionalExpression']) {
+    for (const expected of ['ArithmeticOperator', 'AssignmentOperator', 'EqualityOperator', 'LogicalOperator', 'OptionalChaining', 'MethodExpression']) {
       expect(names, `catalog must map StrykerJS ${expected}`).toContain(expected);
     }
   });
@@ -168,6 +168,11 @@ describe('catalog engines are mutant generators (smoke)', () => {
         check: (a) => expect(a).not.toContain('.map('),
       },
       {
+        operatorId: 'ternary-swap',
+        source: 'export function f(x: boolean): number {\n  return x ? 1 : 2;\n}\n',
+        check: (a) => expect(a).toContain('x ? 2 : 1'),
+      },
+      {
         operatorId: 'statement-shuffle',
         source: 'export function f(): number {\n  const a = 1;\n  const b = 2;\n  return a + b;\n}\n',
         check: (a) => expect(a.indexOf('const b = 2;')).toBeLessThan(a.indexOf('const a = 1;')),
@@ -182,7 +187,6 @@ describe('catalog engines are mutant generators (smoke)', () => {
 
   it('StrykerJS-backed operators each generate a mutant through generateForOperator', async () => {
     const cases: Array<{ operatorId: string; source: string }> = [
-      { operatorId: 'ternary-swap', source: 'export function f(x: boolean): number {\n  return x ? 1 : 2;\n}\n' },
       { operatorId: 'method-swap', source: 'export function f(xs: number[]): boolean {\n  return xs.every((x) => x > 0);\n}\n' },
       { operatorId: 'optional-chaining-removal', source: 'export function f(o?: { a: number }): number | undefined {\n  return o?.a;\n}\n' },
       { operatorId: 'empty-block', source: 'export function f(): number {\n  const g = () => 1;\n  return g();\n}\n' },

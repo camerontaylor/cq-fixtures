@@ -168,9 +168,9 @@ export const OPERATORS: readonly OperatorSpec[] = [
     bugType: 'operator misuse',
     bands: ['easy', 'medium', 'hard'],
     trivialProne: false,
-    strykerMutators: ['ConditionalExpression'],
+    strykerMutators: [],
     source: 'swe-smith',
-    description: 'Swaps the consequent/alternate arms of a conditional expression.',
+    description: 'Swaps the consequent/alternate arms of a conditional expression (authored Babel transform).',
   },
   {
     id: 'argument-swap',

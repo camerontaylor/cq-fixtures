@@ -144,6 +144,20 @@ const ifElseInvert: Transform = (source, fileName) => {
   return out;
 };
 
+/** swap ternary branch arms (digest row 10). StrykerJS's "ConditionalExpression" mutator replaces if/loop conditions with booleans, not ternary arms, so this is authored. */
+const ternarySwap: Transform = (source, fileName) => {
+  const out: GeneratedMutant[] = [];
+  walk(parseModule(source), (node) => {
+    if (node.type !== 'ConditionalExpression') return;
+    const expr = node as unknown as { consequent: Node; alternate: Node };
+    const consequent = span(source, expr.consequent);
+    const alternate = span(source, expr.alternate);
+    const s = span(source, node);
+    out.push(makeMutant('ternary-swap', fileName, s, swapSpans(source, s, consequent, alternate), 'swap ternary arms'));
+  });
+  return out;
+};
+
 /** shuffle two adjacent independent statements (digest row 13). */
 const statementShuffle: Transform = (source, fileName) => {
   const out: GeneratedMutant[] = [];
@@ -203,6 +217,7 @@ export const BABEL_TRANSFORMS: Readonly<Record<string, Transform>> = {
   'constant-delta': constantDelta,
   'operand-swap': operandSwap,
   'chain-break': chainBreak,
+  'ternary-swap': ternarySwap,
   'argument-swap': argumentSwap,
   'if-else-invert': ifElseInvert,
   'statement-shuffle': statementShuffle,

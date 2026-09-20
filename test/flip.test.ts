@@ -92,6 +92,23 @@ afterEach(() => {
   for (const dir of sandboxes.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+// PATH-stubbed cp that fails from the Nth copy on (counter file in the
+// sandbox): proves restore_all reports instead of silently half-restoring.
+// Runs everywhere including root — the companion of the chmod-based
+// backup-atomicity test, which stays skip-if-root.
+function stubCpFailFromNth(dir: string, failFrom: number): void {
+  const counter = join(dir, 'cp-count');
+  writeFileSync(counter, '0');
+  const body = [
+    '#!/usr/bin/env bash',
+    `n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "${counter}"`,
+    `if [ "$n" -ge ${failFrom} ]; then echo "stub-cp: refusing copy #$n" >&2; exit 1; fi`,
+    'exec /bin/cp "$@"',
+  ].join('\n');
+  writeFileSync(join(dir, 'stubbin', 'cp'), body + '\n');
+  chmodSync(join(dir, 'stubbin', 'cp'), 0o755);
+}
+
 function readLockDep(dir: string): unknown {
   const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8')) as {
     packages?: Record<string, { dependencies?: Record<string, string> }>;
@@ -290,5 +307,17 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     } finally {
       chmodSync(join(dir, 'package-lock.json'), 0o644);
     }
+  });
+
+  it('reports a failed restore instead of silently half-restoring', { timeout: 60000 }, () => {
+    // Backup copies (#1 pkg, #2 lock) are real; the restore copy (#3)
+    // fails: restore_all must say so and exit nonzero, not silently keep
+    // going and destroy the recovery copies.
+    const dir = sandbox();
+    const { env } = stubNpm(dir, 1);
+    stubCpFailFromNth(dir, 3);
+    const { status, stderr } = runFlip(dir, ['1.0.0'], env);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('restore of package.json failed');
   });
 });

@@ -75,8 +75,11 @@ fi
 cp "$FLIP_PKG" "$BACKUP_PKG" || { echo "error: cannot back up $FLIP_PKG — refusing to flip without rollback" >&2; exit 1; }
 cp "$ROOT/package-lock.json" "$BACKUP_LOCK" || { rm -f "$BACKUP_PKG"; echo "error: cannot back up $ROOT/package-lock.json — pkg backup removed; fix and re-run" >&2; exit 1; }
 restore_all() {
-  cp "$BACKUP_PKG" "$FLIP_PKG"
-  cp "$BACKUP_LOCK" "$ROOT/package-lock.json"
+  # Each copy guarded: restore_all runs under `set -e`-suppressed call
+  # sites (`||`, `elif`, `if !`), so a bare failing cp would be silently
+  # ignored and the caller would destroy the recovery copies anyway.
+  cp "$BACKUP_PKG" "$FLIP_PKG" || { echo "error: restore of package.json failed — backups kept" >&2; return 1; }
+  cp "$BACKUP_LOCK" "$ROOT/package-lock.json" || { echo "error: restore of package-lock.json failed — backups kept" >&2; return 1; }
   # Backups are removed by the restore itself: the live files now hold the
   # ORIGINAL content, so nothing needs recovering and the retry starts
   # clean. Only a KILLED run (no restore) leaves backups behind — those
@@ -156,8 +159,10 @@ if (typeof entry?.resolved !== "string" || entry.resolved.startsWith("file:")) {
 
 # Removal order: the pin first, the backups last — and the pin removal
 # itself restores on failure, so even a failed rm keeps the tree retryable.
+# The final cleanup warns instead of failing: the flip already succeeded,
+# so an unlink failure must not misreport success as failure.
 rm "$FLIP_LOCK" || { restore_all; exit 1; }
-rm -f "$BACKUP_PKG" "$BACKUP_LOCK"
+rm -f "$BACKUP_PKG" "$BACKUP_LOCK" || { echo "warning: flip succeeded but .bak-flip backups could not be removed — remove them by hand" >&2; }
 
 echo "flipped $FLIP_DEP to $FLIP_VERSION; removed toolkit.lock."
 echo "next (human, phase 5): rm -rf vendor node_modules && npm ci && npm run build && npm test"

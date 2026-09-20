@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, afterEach } from 'vitest';
 
 // flip-to-published.sh is a phase-5 HUMAN step: prepared here, NEVER run
 // against this repo (running it would detach the tree from its pinned
@@ -18,6 +18,7 @@ const DEP = '@camerontaylor/cq-toolkit';
 
 function sandbox(): string {
   const dir = mkdtempSync(join(tmpdir(), 'flip-test-'));
+  sandboxes.push(dir);
   cpSync(join(REPO_ROOT, 'package.json'), join(dir, 'package.json'));
   writeFileSync(join(dir, 'toolkit.lock'), 'phase-3-done\n');
   // Minimal lock fixture: the script's post-flip verification reads the
@@ -57,10 +58,12 @@ function stubNpm(dir: string, exitCode: number, syncEntry = true): { env: Record
       'const pkg=JSON.parse(fs.readFileSync("package.json","utf8"));' +
       'const lock=JSON.parse(fs.readFileSync("package-lock.json","utf8"));' +
       'const v=pkg.dependencies["@camerontaylor/cq-toolkit"];' +
-      'lock.packages[""].dependencies["@camerontaylor/cq-toolkit"]=v;' +
+      'const reg="https://registry.npmjs.org/@camerontaylor/cq-toolkit/-/cq-toolkit-"+v+".tgz";' +
+      'if(lock.packages?.[""])lock.packages[""].dependencies["@camerontaylor/cq-toolkit"]=v;' +
+      'if(lock.dependencies?.["@camerontaylor/cq-toolkit"])lock.dependencies["@camerontaylor/cq-toolkit"].version=v;' +
       'if(process.env.NPM_SYNC_ENTRY==="1"){' +
-      'lock.packages["node_modules/@camerontaylor/cq-toolkit"].resolved=' +
-      '"https://registry.npmjs.org/@camerontaylor/cq-toolkit/-/cq-toolkit-"+v+".tgz";}' +
+      'if(lock.packages?.["node_modules/@camerontaylor/cq-toolkit"])lock.packages["node_modules/@camerontaylor/cq-toolkit"].resolved=reg;' +
+      'if(lock.dependencies?.["@camerontaylor/cq-toolkit"])lock.dependencies["@camerontaylor/cq-toolkit"].resolved=reg;}' +
       'fs.writeFileSync("package-lock.json",JSON.stringify(lock,null,2)+"\\n");\'',
   ].join('\n');
   writeFileSync(join(bin, 'npm'), body + '\n');
@@ -75,6 +78,13 @@ function stubNpm(dir: string, exitCode: number, syncEntry = true): { env: Record
     log,
   };
 }
+
+const sandboxes: string[] = [];
+
+afterEach(() => {
+  // The hermetic sandboxes must not litter tmp on every CI run.
+  for (const dir of sandboxes.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 function readLockDep(dir: string): unknown {
   const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8')) as {
@@ -170,9 +180,10 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     const { status, stderr } = runFlip(dir, ['1.0.0'], env);
     expect(status).not.toBe(0);
     expect(stderr).toContain('lock sync failed');
-    // package.json is already rewritten when the sync fails — the message
-    // says how to finish — but toolkit.lock must NOT be removed: removal
-    // claims a completeness the tree does not have.
+    // Rollback: package.json is restored to the file: spec (retryable),
+    // and toolkit.lock must NOT be removed: removal claims a completeness
+    // the tree does not have.
+    expect(readPkg(dir).dependencies?.[DEP]?.startsWith('file:')).toBe(true);
     expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
   });
 
@@ -187,5 +198,34 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     expect(status).not.toBe(0);
     expect(stderr).toContain('package-lock.json entry still resolves');
     expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
+  });
+
+  it('reads a legacy lockfileVersion<=2 lock via the dependencies fallback', { timeout: 60000 }, () => {
+    // The committed lock is v3, but a hand-maintained older lock must fail
+    // on the pin — never on the shape. Seed the v1 shape already synced
+    // (the tolerant stub keeps it synced) and flip through it.
+    const dir = sandbox();
+    writeFileSync(
+      join(dir, 'package-lock.json'),
+      JSON.stringify({
+        name: 'flip-sandbox',
+        version: '0.0.0',
+        lockfileVersion: 1,
+        dependencies: {
+          [DEP]: {
+            version: 'file:vendor/cq-toolkit-0.0.0.tgz',
+            resolved: 'file:vendor/cq-toolkit-0.0.0.tgz',
+          },
+        },
+      }),
+    );
+    const { env } = stubNpm(dir, 0);
+    const { status } = runFlip(dir, ['1.0.0'], env);
+    expect(status).toBe(0);
+    const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8')) as {
+      dependencies?: Record<string, { version?: string; resolved?: string }>;
+    };
+    expect(lock.dependencies?.[DEP]?.version).toBe('1.0.0');
+    expect(lock.dependencies?.[DEP]?.resolved?.startsWith('file:')).toBe(false);
   });
 });

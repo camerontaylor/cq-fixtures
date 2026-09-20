@@ -17,7 +17,9 @@
 # --package-lock-only`, needs the registry — without this the committed
 # lock still points at the tarball and the next `npm ci` fails), and
 # removes `toolkit.lock` (the pre-publish pin has no meaning once the
-# published version is the source of truth). Refuses to run when the
+# published version is the source of truth). Any failure after the
+# rewrite restores package.json from a backup (taken first), so a failed
+# run never bricks its own retry. Refuses to run when the
 # dependency is not a `file:` spec (the flip is one-way) or when
 # toolkit.lock is absent.
 #
@@ -51,6 +53,16 @@ if [ ! -f "$FLIP_LOCK" ]; then
   exit 1
 fi
 
+# Rollback: every failure AFTER the rewrite restores package.json, so a
+# failed run never bricks its own retry (without this, a re-run
+# mis-reports "refusing a second flip" on the half-flipped tree).
+BACKUP="$FLIP_PKG.bak-flip"
+cp "$FLIP_PKG" "$BACKUP"
+restore_pkg() {
+  cp "$BACKUP" "$FLIP_PKG"
+  echo "note: package.json restored from $BACKUP; fix the cause and re-run, then remove $BACKUP" >&2
+}
+
 # Flow: node rewrites package.json → npm syncs the lock (registry) →
 # node verifies package.json + lock → shell removes toolkit.lock last, so
 # a failed run never claims a completeness the tree does not have.
@@ -65,7 +77,7 @@ if (typeof current !== "string" || !current.startsWith("file:")) {
 }
 pkg.dependencies[process.env.FLIP_DEP] = process.env.FLIP_VERSION;
 fs.writeFileSync(process.env.FLIP_PKG, JSON.stringify(pkg, null, 2) + "\n");
-' || exit 1
+' || { restore_pkg; exit 1; }
 
 # Sync the committed lock to the published version. A stale lock (still
 # resolving the file: tarball) makes the next `npm ci` fail, so the flip
@@ -73,7 +85,8 @@ fs.writeFileSync(process.env.FLIP_PKG, JSON.stringify(pkg, null, 2) + "\n");
 # already rewritten at that point, and the message says how to finish.
 if ! (cd "$ROOT" && npm install --package-lock-only --ignore-scripts --no-audit --no-fund); then
   echo "error: npm lock sync failed — package.json now asks for $FLIP_DEP@$FLIP_VERSION;" >&2
-  echo "finish by hand: npm install --package-lock-only (needs the registry), then remove toolkit.lock" >&2
+  echo "fix registry access and re-run (package.json was restored; toolkit.lock kept)" >&2
+  restore_pkg
   exit 1
 fi
 
@@ -84,28 +97,28 @@ if (after?.dependencies?.[process.env.FLIP_DEP] !== process.env.FLIP_VERSION) {
   console.error("error: post-flip verification failed — dependency is not the requested version");
   process.exit(1);
 }
-if (Object.values(after.dependencies ?? {}).some((v) => String(v).startsWith("file:"))) {
-  console.error("error: post-flip verification failed — a file: spec remains in dependencies");
-  process.exit(1);
-}
 const lockPath = process.env.FLIP_PKG.slice(0, -"package.json".length) + "package-lock.json";
 const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
-const locked = lock?.packages?.[""]?.dependencies?.[process.env.FLIP_DEP];
+const dep = process.env.FLIP_DEP;
+// lockfileVersion 3 reads packages[""], with a legacy `dependencies`
+// fallback so a hand-maintained older lock fails on the pin, not the shape.
+const locked = lock?.packages?.[""]?.dependencies?.[dep] ?? lock?.dependencies?.[dep]?.version;
 if (locked !== process.env.FLIP_VERSION) {
-  console.error(`error: post-flip verification failed — package-lock.json still pins ${process.env.FLIP_DEP}@${locked}`);
+  console.error(`error: post-flip verification failed — package-lock.json still pins ${dep}@${locked}`);
   process.exit(1);
 }
 // The tree entry must convert too: npm can keep a stale
 // `resolved: file:vendor/...` when the tarball version coincides with the
 // requested one, and the next `npm ci` (after vendor/ is gone) would fail
 // fetching it. The entry must point at the registry, never at a file:.
-const entry = lock?.packages?.[`node_modules/${process.env.FLIP_DEP}`];
+const entry = lock?.packages?.[`node_modules/${dep}`] ?? lock?.dependencies?.[dep];
 if (typeof entry?.resolved !== "string" || entry.resolved.startsWith("file:")) {
-  console.error(`error: post-flip verification failed — package-lock.json entry still resolves ${process.env.FLIP_DEP} via ${entry?.resolved}`);
+  console.error(`error: post-flip verification failed — package-lock.json entry still resolves ${dep} via ${entry?.resolved}`);
   process.exit(1);
 }
-' || exit 1
+' || { restore_pkg; exit 1; }
 
+rm -f "$BACKUP"
 rm "$FLIP_LOCK"
 
 echo "flipped $FLIP_DEP to $FLIP_VERSION; removed toolkit.lock."

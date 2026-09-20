@@ -18,6 +18,7 @@
     "sourceMap": false,
     "outDir": "dist",
     "rootDir": "runner",
+    "noEmitOnError": true,
     "types": ["node"]
   },
   "include": ["runner/**/*.ts"],

@@ -7,7 +7,7 @@ Thin-custom eval runner — the R7 null hypothesis (plan §3.2; DECISIONS.md): b
 - `openRunLog` — the NDJSON journal: `run-started` / `job-started` / `job-finished` / `run-finished` events, one file per run.
 - `computeCostUSD` / `priceOf` — DD-9 cost: derived ONLY from the price map over observed usage; `null` when the served model has no price (a subscription lane never gets an invented number), `costBasis: "modeled"` when derived.
 
-The boundary is enforced by `test/boundary.test.ts`: runner code and `scripts/pack-toolkit.sh` consume ONLY the bare `@camerontaylor/cq-toolkit` specifier — never a `src`/`dist` deep import, never a relative escape into a vendored tree.
+The boundary is enforced by `test/boundary.test.ts`: runner code, its built `dist/` output (`npm run build`), the test tree, and `scripts/pack-toolkit.sh` + `scripts/flip-to-published.sh` consume ONLY the bare `@camerontaylor/cq-toolkit` specifier — never a `src`/`dist` deep import, never a relative escape into a vendored tree.
 
 ## CLI
 

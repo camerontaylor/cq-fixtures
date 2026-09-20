@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -18,21 +18,48 @@ import { describe, expect, it } from 'vitest';
 
 const RUNNER_DIR = fileURLToPath(new URL('../runner', import.meta.url));
 const DIST_DIR = fileURLToPath(new URL('../dist', import.meta.url));
+const TEST_DIR = fileURLToPath(new URL('.', import.meta.url));
 
 // dist/ is gitignored build output, produced by `npm run build` before
-// `npm test` (CI builds first). The scan FAILS when dist/ is absent or
-// holds no .js: a missing build must never read as a clean boundary.
+// `npm test` (CI builds first). The scan FAILS when dist/ is absent,
+// holds no emitted modules, or holds an unexpected emit shape: a missing
+// or misshapen build must never read as a clean boundary.
 function distEntries(): Array<{ label: string; path: string }> {
-  let files: string[];
+  let names: string[];
   try {
-    files = readdirSync(DIST_DIR, { recursive: true })
-      .map(String)
-      .filter((f) => f.endsWith('.js'))
-      .sort();
+    names = readdirSync(DIST_DIR, { recursive: true }).map(String).sort();
   } catch {
     throw new Error('boundary scan: dist/ is missing — run `npm run build` before `npm test` (CI builds before testing)');
   }
+  const files = names.filter((f) => /\.(js|cjs|mjs)$/.test(f));
+  // Fail closed on unexpected emit shapes: subdirectories are fine, but
+  // any other FILE the emit leaves behind (e.g. an inlined bundle) must
+  // not slip past the scan.
+  const unexpected = names.filter((f) => {
+    if (/\.(js|cjs|mjs|map)$/.test(f)) return false;
+    try {
+      return statSync(join(DIST_DIR, f)).isFile();
+    } catch {
+      return true;
+    }
+  });
+  if (unexpected.length > 0) {
+    throw new Error(`boundary scan: unexpected non-module files in dist/: ${unexpected.join(', ')}`);
+  }
   return files.map((f) => ({ label: `dist/${f.replaceAll('\\', '/')}`, path: join(DIST_DIR, f) }));
+}
+
+// test/*.test.ts import the toolkit bare today; a test-side deep import
+// would false-pass if tests were unscanned. boundary.test.ts itself is
+// EXCLUDED: it intentionally contains violation specimens as synthetic
+// strings (see the matcher self-test below), which the text scan cannot
+// tell apart from real imports.
+function testEntries(): Array<{ label: string; path: string }> {
+  return readdirSync(TEST_DIR)
+    .map(String)
+    .filter((f) => f.endsWith('.test.ts') && f !== 'boundary.test.ts')
+    .sort()
+    .map((f) => ({ label: `test/${f}`, path: join(TEST_DIR, f) }));
 }
 
 const SCANNED_FILES: Array<{ label: string; path: string }> = [
@@ -42,6 +69,7 @@ const SCANNED_FILES: Array<{ label: string; path: string }> = [
     .sort()
     .map((f) => ({ label: `runner/${f.replaceAll('\\', '/')}`, path: join(RUNNER_DIR, f) })),
   ...distEntries(),
+  ...testEntries(),
   { label: 'scripts/pack-toolkit.sh', path: fileURLToPath(new URL('../scripts/pack-toolkit.sh', import.meta.url)) },
   { label: 'scripts/flip-to-published.sh', path: fileURLToPath(new URL('../scripts/flip-to-published.sh', import.meta.url)) },
 ];
@@ -59,7 +87,11 @@ const FORBIDDEN: Array<[string, RegExp]> = [
     'toolkit subpath import in any import form (bare specifier only)',
     /(?:from|import|require)\s*\(\s*['"]@camerontaylor\/cq-toolkit[/.]|(?:from|import|require)\s*['"]@camerontaylor\/cq-toolkit[/.]/,
   ],
-  ["relative escape into a source tree (from '../../src/…')", /from ['"]\.\.\/\.\.\/src\//],
+  // Relative escape into a VENDORED source tree (`../../src/…`, any import
+  // form, any spacing, any quote style): deliberately NOT a bare `../`
+  // match — intra-runner relatives like `../score/fixerWorker.ts` are
+  // legitimate and must not trip the rule.
+  ['relative escape into a vendored tree (any import form)', /(?:from|import|require)\s*\(?\s*['"`]\.\.\/\.\.\/src\//],
 ];
 
 interface Violation {
@@ -98,6 +130,7 @@ describe('toolkit package boundary (public surface only)', () => {
     // must not hide behind the source count.
     const sources = SCANNED_FILES.filter((f) => f.label.startsWith('runner/'));
     const built = SCANNED_FILES.filter((f) => f.label.startsWith('dist/'));
+    const tests = SCANNED_FILES.filter((f) => f.label.startsWith('test/'));
     expect(sources.length).toBeGreaterThanOrEqual(7);
     expect(sources.some((f) => f.label === 'runner/index.ts')).toBe(true);
     // Eight runner modules emit (index, cli, aggregate, suite,
@@ -106,6 +139,11 @@ describe('toolkit package boundary (public surface only)', () => {
     expect(built.length).toBeGreaterThanOrEqual(8);
     expect(built.some((f) => f.label === 'dist/index.js')).toBe(true);
     expect(built.some((f) => f.label === 'dist/cli.js')).toBe(true);
+    // Test files import the toolkit bare today; boundary.test.ts itself is
+    // excluded (it holds synthetic violation specimens — see testEntries).
+    expect(tests.length).toBeGreaterThanOrEqual(8);
+    expect(tests.some((f) => f.label === 'test/flip.test.ts')).toBe(true);
+    expect(tests.some((f) => f.label === 'test/boundary.test.ts')).toBe(false);
     expect(SCANNED_FILES.some((f) => f.label === 'scripts/pack-toolkit.sh')).toBe(true);
     expect(SCANNED_FILES.some((f) => f.label === 'scripts/flip-to-published.sh')).toBe(true);
   });
@@ -146,8 +184,29 @@ describe('boundary matcher self-test (synthetic strings)', () => {
     }
   });
 
-  it('keeps the relative-escape rule honest', () => {
-    expect(escapeRule.test("import { x } from '../../src/internal';")).toBe(true);
-    expect(escapeRule.test("import { x } from '../../lib/internal';")).toBe(false);
+  it('keeps the relative-escape rule honest (any import form, but not bare ../)', () => {
+    // A bare `../` match would false-positive on legitimate intra-runner
+    // relatives (`../score/fixerWorker.ts`); only the `../../src/`
+    // vendored-tree escape counts, in every import spelling.
+    const escapes = [
+      "import { x } from '../../src/internal';",
+      "import { x } from  '../../src/internal';",
+      "const m = await import('../../src/internal');",
+      "const m = require('../../src/internal');",
+      "export * from '../../src/internal';",
+      'import { x } from `../../src/internal`;',
+    ];
+    for (const s of escapes) {
+      expect(escapeRule.test(s), `escape rule must match: ${s}`).toBe(true);
+    }
+    const legitimate = [
+      "import { x } from '../../lib/internal';",
+      "import type { ScoreOutcome } from './fixerWorker.ts';",
+      "import type { ScoreOutcome } from '../score/fixerWorker.ts';",
+      "import { openRunLog } from '@camerontaylor/cq-toolkit';",
+    ];
+    for (const s of legitimate) {
+      expect(escapeRule.test(s), `escape rule must NOT match: ${s}`).toBe(false);
+    }
   });
 });

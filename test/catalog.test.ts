@@ -94,35 +94,45 @@ describe('catalog engines are mutant generators (smoke)', () => {
     const source = 'export function add(a: number, b: number): number {\n  return a + b;\n}\n';
     const mutants = await generateBabelMutants(source, 'sample.ts', { operatorId: 'arithmetic-swap' });
     expect(mutants.length, 'expected at least one arithmetic mutant').toBeGreaterThan(0);
-    const applied = applyMutant(source, mutants[0]!);
-    expect(applied).not.toBe(source);
-    expect(applied).toContain('a - b');
+    const applied = mutants.map((m) => applyMutant(source, m));
+    expect(applied.some((s) => s.includes('a - b')), 'the + mutant must offer a - b').toBe(true);
+    expect(applied.every((s) => s !== source), 'every generated mutant changes the source').toBe(true);
   });
 
   it('ts-morph generates one fault per TS-specific operator', () => {
-    const cases: Record<string, { source: string; contains: string }> = {
-      'shared-reference-return': {
+    const cases: Array<{ operatorId: string; source: string; contains: string }> = [
+      {
+        operatorId: 'shared-reference-return',
         source: 'export function copy(xs: number[]): number[] {\n  return [...xs];\n}\n',
         contains: 'return xs;',
       },
-      'promise-all-sequential': {
+      {
+        operatorId: 'promise-all-sequential',
         source: 'export async function run(xs: number[]): Promise<number[]> {\n  return await Promise.all(xs.map(async (x) => x + 1));\n}\n',
         contains: 'await (xs.map',
       },
-      'default-param-removal': {
+      {
+        operatorId: 'default-param-removal',
         source: 'export function f(x: number = 1): number {\n  return x;\n}\n',
         contains: '(x: number)',
       },
-      'non-null-overreach': {
+      {
+        operatorId: 'non-null-overreach',
         source: 'export function f(o?: { a: number }): number {\n  return o?.a ?? 0;\n}\n',
         contains: 'o!.a',
       },
-      'radix-coercion-drop': {
+      {
+        operatorId: 'non-null-overreach',
+        source: 'export function f(o?: number[]): number {\n  return o?.[0] ?? 0;\n}\n',
+        contains: 'o![0]',
+      },
+      {
+        operatorId: 'radix-coercion-drop',
         source: 'export function f(s: string): number {\n  return parseInt(s, 10);\n}\n',
         contains: 'parseInt(s)',
       },
-    };
-    for (const [operatorId, { source, contains }] of Object.entries(cases)) {
+    ];
+    for (const { operatorId, source, contains } of cases) {
       const mutants = generateTsMorphMutants(source, 'sample.ts', operatorId);
       expect(mutants.length, `${operatorId} should generate a mutant`).toBeGreaterThan(0);
       expect(applyMutant(source, mutants[0]!), `${operatorId} applied fault`).toContain(contains);

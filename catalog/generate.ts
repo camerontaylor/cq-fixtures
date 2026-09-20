@@ -192,8 +192,14 @@ function defaultParamRemoval(sf: SourceFile, fileName: string): GeneratedMutant[
     ...sf.getDescendantsOfKind(SyntaxKind.MethodDeclaration),
   ]) {
     for (const param of fn.getParameters()) {
-      if (param.getInitializer() === undefined) continue;
-      out.push(mutantFromNode('default-param-removal', fileName, param, param.getName(), 'remove parameter default'));
+      const initializer = param.getInitializer();
+      if (initializer === undefined) continue;
+      // Preserve the name AND type annotation; drop only the `= <default>`
+      // tail, so `x: number = 1` becomes `x: number` (not a bare `x`).
+      const text = param.getText();
+      const cut = initializer.getStart() - param.getStart();
+      const replacement = text.slice(0, cut).replace(/=\s*$/, '').trimEnd();
+      out.push(mutantFromNode('default-param-removal', fileName, param, replacement, 'remove parameter default'));
     }
   }
   return out;
@@ -208,7 +214,10 @@ function nonNullOverreach(sf: SourceFile, fileName: string): GeneratedMutant[] {
   ]) {
     const text = node.getText();
     if (!text.includes('?.')) continue;
-    out.push(mutantFromNode('non-null-overreach', fileName, node, text.replace('?.', '!.'), 'replace optional access with non-null assertion'));
+    // Element access `a?.[i]` must become `a![i]`, not `a!.[i]`; the
+    // property-access replacement then handles `a?.b` -> `a!.b`.
+    const replacement = text.replace('?.[', '![').replace('?.', '!.');
+    out.push(mutantFromNode('non-null-overreach', fileName, node, replacement, 'replace optional access with non-null assertion'));
   }
   return out;
 }

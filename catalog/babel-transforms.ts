@@ -31,6 +31,23 @@ function makeMutant(operatorId: string, fileName: string, s: Span, replacement: 
   return { operatorId, fileName, start: s.start, end: s.end, original: s.text, replacement, note };
 }
 
+/**
+ * Swap two non-overlapping spans inside an outer span, offset-based so a
+ * repeated token can never be swapped in the wrong place (the `String.replace`
+ * approach would hit the first textual occurrence, not the intended node).
+ */
+function swapSpans(source: string, outer: Span, a: Span, b: Span): string {
+  const [first, second] = a.start <= b.start ? [a, b] : [b, a];
+  const rel = (n: number): number => n - outer.start;
+  return (
+    outer.text.slice(0, rel(first.start)) +
+    outer.text.slice(rel(second.start), rel(second.end)) +
+    outer.text.slice(rel(first.end), rel(second.start)) +
+    outer.text.slice(rel(first.start), rel(first.end)) +
+    outer.text.slice(rel(second.end))
+  );
+}
+
 /** Depth-first walk over every Babel AST node (comments excluded). */
 function walk(node: unknown, visit: (n: Node) => void): void {
   if (Array.isArray(node)) {
@@ -107,8 +124,7 @@ const argumentSwap: Transform = (source, fileName) => {
     const first = span(source, args[0]!);
     const second = span(source, args[1]!);
     const s = span(source, node);
-    const replacement = s.text.replace(first.text, '\u0000').replace(second.text, first.text).replace('\u0000', second.text);
-    out.push(makeMutant('argument-swap', fileName, s, replacement, 'swap the first two call arguments'));
+    out.push(makeMutant('argument-swap', fileName, s, swapSpans(source, s, first, second), 'swap the first two call arguments'));
   });
   return out;
 };
@@ -123,8 +139,7 @@ const ifElseInvert: Transform = (source, fileName) => {
     const consequent = span(source, stmt.consequent);
     const alternate = span(source, stmt.alternate);
     const s = span(source, node);
-    const replacement = s.text.replace(consequent.text, '\u0000').replace(alternate.text, consequent.text).replace('\u0000', alternate.text);
-    out.push(makeMutant('if-else-invert', fileName, s, replacement, 'swap consequent and alternate'));
+    out.push(makeMutant('if-else-invert', fileName, s, swapSpans(source, s, consequent, alternate), 'swap consequent and alternate'));
   });
   return out;
 };
@@ -139,8 +154,7 @@ const statementShuffle: Transform = (source, fileName) => {
     const first = span(source, body[0]!);
     const second = span(source, body[1]!);
     const s = span(source, node);
-    const replacement = s.text.replace(first.text, '\u0000').replace(second.text, first.text).replace('\u0000', second.text);
-    out.push(makeMutant('statement-shuffle', fileName, s, replacement, 'swap the first two statements'));
+    out.push(makeMutant('statement-shuffle', fileName, s, swapSpans(source, s, first, second), 'swap the first two statements'));
   });
   return out;
 };

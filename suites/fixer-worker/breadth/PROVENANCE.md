@@ -41,7 +41,7 @@ The plan's full-corpus target is 16 easy / 16 medium / 8 hard (F3); F2 seeds a
 | breadth-06 | medium | remove-assignment | missing logic | cache write dropped |
 | breadth-07 | medium | default-param-removal | value misuse | retries default removed |
 | breadth-08 | medium | non-null-overreach | function misuse | `?.` becomes `!` |
-| breadth-09 | hard | shared-reference-return + logical-swap | variable misuse | live stock returned; `&&` becomes `||` |
+| breadth-09 | hard | shared-reference-return + logical-swap | variable misuse | live stock returned; `&&` becomes `\|\|` |
 | breadth-10 | hard | radix-coercion-drop + argument-swap | value misuse | radix dropped; range arguments swapped |
 
 `trivial-prone` operators (constant ±1, remove loop, empty block/arrow) are

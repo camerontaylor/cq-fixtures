@@ -9,15 +9,41 @@ import { describe, expect, it } from 'vitest';
 // src/ or dist/ deep import, and never a relative escape into a vendored
 // source tree. Scanned as TEXT so the rule holds for comments too: a file
 // that merely documents a deep import is already a boundary smell.
+//
+// The scan covers BOTH the runner sources AND the built dist/ output
+// (`npm run build`, tsconfig.build.json): the bare-specifier discipline
+// must survive compilation — a bundler or emit step that rewrote imports
+// into deep paths would break the package boundary exactly where CI stops
+// looking if only sources were scanned.
 
 const RUNNER_DIR = fileURLToPath(new URL('../runner', import.meta.url));
+const DIST_DIR = fileURLToPath(new URL('../dist', import.meta.url));
+
+// dist/ is gitignored build output, produced by `npm run build` before
+// `npm test` (CI builds first). The scan FAILS when dist/ is absent or
+// holds no .js: a missing build must never read as a clean boundary.
+function distEntries(): Array<{ label: string; path: string }> {
+  let files: string[];
+  try {
+    files = readdirSync(DIST_DIR, { recursive: true })
+      .map(String)
+      .filter((f) => f.endsWith('.js'))
+      .sort();
+  } catch {
+    throw new Error('boundary scan: dist/ is missing — run `npm run build` before `npm test` (CI builds before testing)');
+  }
+  return files.map((f) => ({ label: `dist/${f.replaceAll('\\', '/')}`, path: join(DIST_DIR, f) }));
+}
+
 const SCANNED_FILES: Array<{ label: string; path: string }> = [
   ...readdirSync(RUNNER_DIR, { recursive: true })
     .map(String)
     .filter((f) => f.endsWith('.ts'))
     .sort()
     .map((f) => ({ label: `runner/${f.replaceAll('\\', '/')}`, path: join(RUNNER_DIR, f) })),
+  ...distEntries(),
   { label: 'scripts/pack-toolkit.sh', path: fileURLToPath(new URL('../scripts/pack-toolkit.sh', import.meta.url)) },
+  { label: 'scripts/flip-to-published.sh', path: fileURLToPath(new URL('../scripts/flip-to-published.sh', import.meta.url)) },
 ];
 
 const FORBIDDEN: Array<[string, RegExp]> = [
@@ -57,7 +83,7 @@ function findViolations(): Violation[] {
 }
 
 describe('toolkit package boundary (public surface only)', () => {
-  it('no runner file or pack script contains a toolkit deep-import or relative escape', () => {
+  it('no runner source, built dist output, or packaging script contains a toolkit deep-import or relative escape', () => {
     const violations = findViolations();
     const report = violations
       .map((v) => `${v.file}:${v.line} [${v.rule}] ${v.text}`)
@@ -65,12 +91,23 @@ describe('toolkit package boundary (public surface only)', () => {
     expect(violations, `boundary violations:\n${report}`).toEqual([]);
   });
 
-  it('scans the real runner surface (guard against the scan going empty)', () => {
-    // If the runner/ tree or the pack script moved, the scan above would
-    // silently pass over nothing — keep it honest.
-    expect(SCANNED_FILES.length).toBeGreaterThanOrEqual(7);
-    expect(SCANNED_FILES.some((f) => f.label === 'runner/index.ts')).toBe(true);
+  it('scans the real runner surface, sources and build (guard against the scan going empty)', () => {
+    // If the runner/ tree, the dist/ build, or a script moved, the scan
+    // above would silently pass over nothing — keep it honest. Source and
+    // dist counts are asserted SEPARATELY: a present-but-unbuilt dist/
+    // must not hide behind the source count.
+    const sources = SCANNED_FILES.filter((f) => f.label.startsWith('runner/'));
+    const built = SCANNED_FILES.filter((f) => f.label.startsWith('dist/'));
+    expect(sources.length).toBeGreaterThanOrEqual(7);
+    expect(sources.some((f) => f.label === 'runner/index.ts')).toBe(true);
+    // Eight runner modules emit (index, cli, aggregate, suite,
+    // fake-driver, dimensions/schemaCompliance, score/fixerWorker,
+    // score/reviewClassifier): fewer means the build dropped a module.
+    expect(built.length).toBeGreaterThanOrEqual(8);
+    expect(built.some((f) => f.label === 'dist/index.js')).toBe(true);
+    expect(built.some((f) => f.label === 'dist/cli.js')).toBe(true);
     expect(SCANNED_FILES.some((f) => f.label === 'scripts/pack-toolkit.sh')).toBe(true);
+    expect(SCANNED_FILES.some((f) => f.label === 'scripts/flip-to-published.sh')).toBe(true);
   });
 });
 

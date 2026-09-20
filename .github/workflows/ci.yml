@@ -25,6 +25,10 @@ jobs:
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci
+      - name: Build runner dist
+        # boundary.test.ts scans the BUILT dist/ output: the package-surface
+        # discipline must hold through compilation, so the build precedes tests.
+        run: npm run build
       - name: Typecheck
         run: npm run typecheck
       - name: Lint

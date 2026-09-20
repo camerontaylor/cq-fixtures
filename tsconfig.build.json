@@ -1,0 +1,25 @@
+{
+  // Emit build for the thin-custom runner (J6): the package-boundary test
+  // scans the BUILT dist/ output, so the bare-specifier discipline is proven
+  // through compilation, not just on sources. Runner-only: runner/ is
+  // self-contained (its only cross-directory import is dimensions/ -> score/
+  // inside runner/), so nothing else needs emitting.
+  //
+  // allowImportingTsExtensions stays on (sources import with `.ts`
+  // extensions) and rewriteRelativeImportExtensions rewrites them to `.js`
+  // on emit (TS 5.7+). dist/ is gitignored build output; CI runs
+  // `npm run build` before `npm test`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "outDir": "dist",
+    "rootDir": "runner",
+    "types": ["node"]
+  },
+  "include": ["runner/**/*.ts"],
+  "exclude": ["node_modules", "dist", "reports", "tmp", ".gjc", ".paseo", ".claude"]
+}

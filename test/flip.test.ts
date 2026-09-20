@@ -230,4 +230,16 @@ describe('flip-to-published.sh (hermetic, FIXTURES_ROOT sandbox)', () => {
     expect(lock.dependencies?.[DEP]?.version).toBe('1.0.0');
     expect(lock.dependencies?.[DEP]?.resolved?.startsWith('file:')).toBe(false);
   });
+
+  it('refuses loudly when package-lock.json is absent (nothing to back up)', { timeout: 60000 }, () => {
+    const dir = sandbox();
+    const { env } = stubNpm(dir, 0);
+    rmSync(join(dir, 'package-lock.json'));
+    const { status, stderr } = runFlip(dir, ['1.0.0'], env);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('cannot back it up for rollback');
+    // Nothing rewritten, nothing removed: the refusal precedes all writes.
+    expect(readPkg(dir).dependencies?.[DEP]?.startsWith('file:')).toBe(true);
+    expect(readFileSync(join(dir, 'toolkit.lock'), 'utf8')).toContain('phase-3-done');
+  });
 });

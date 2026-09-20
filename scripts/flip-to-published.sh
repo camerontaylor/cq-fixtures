@@ -85,7 +85,7 @@ if (typeof current !== "string" || !current.startsWith("file:")) {
   console.error(`error: ${process.env.FLIP_DEP} is not a file: spec (got: ${current}) — refusing a second flip`);
   process.exit(1);
 }
-pkg.dependencies[process.env.FLIP_DEP] = process.env.FLIP_VERSION;
+(pkg.dependencies ??= {})[process.env.FLIP_DEP] = process.env.FLIP_VERSION;
 fs.writeFileSync(process.env.FLIP_PKG, JSON.stringify(pkg, null, 2) + "\n");
 ' || { restore_all; exit 1; }
 

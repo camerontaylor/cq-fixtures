@@ -78,14 +78,15 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   ['toolkit dist deep-import', /@camerontaylor\/cq-toolkit\/dist/],
   // Only the bare package specifier is allowed: in ANY import form AND
   // any quote style (including backticks) — static `from '...'`, dynamic
-  // `import('...')`, `require('...')`, and `export ... from '...'` — the
-  // package name followed by '/' or '.' is a subpath/deep-import attempt.
-  // One regex covers all the call/keyword shapes; a bare
-  // `from '@camerontaylor/cq-toolkit'` never matches because nothing
-  // follows the package name.
+  // `import('...')`, `require('...')`, `export ... from '...'`, plus the
+  // resolver spellings `require.resolve('...')` and
+  // `import.meta.resolve('...')` — the package name followed by '/' or '.'
+  // is a subpath/deep-import attempt. One regex covers all the
+  // call/keyword shapes; a bare `from '@camerontaylor/cq-toolkit'` never
+  // matches because nothing follows the package name.
   [
     'toolkit subpath import in any import form (bare specifier only)',
-    /(?:from|import|require)\s*\(\s*['"`]@camerontaylor\/cq-toolkit[/.]|(?:from|import|require)\s*['"`]@camerontaylor\/cq-toolkit[/.]/,
+    /(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?)\s*\(\s*['"`]@camerontaylor\/cq-toolkit[/.]|(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?)\s*['"`]@camerontaylor\/cq-toolkit[/.]/,
   ],
   // Relative escape into a VENDORED tree: one-or-more `../` chains into
   // `src/`, `vendor/`, or `lib/` — any import form, any spacing, any quote
@@ -177,6 +178,8 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "import '@camerontaylor/cq-toolkit/depth';",
       'import(`@camerontaylor/cq-toolkit/sub`);',
       'const m = await import(`@camerontaylor/cq-toolkit/src/internal`);',
+      'require.resolve(\'@camerontaylor/cq-toolkit/sub\');',
+      'import.meta.resolve(\'@camerontaylor/cq-toolkit/sub\');',
       "const m = await import('@camerontaylor/cq-toolkit/src/internal');",
     ];
     for (const s of internalImports) {
@@ -192,6 +195,7 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "import('@camerontaylor/cq-toolkit').then(m => m);",
       "require('@camerontaylor/cq-toolkit');",
       'import `@camerontaylor/cq-toolkit`;',
+      'require.resolve(\'@camerontaylor/cq-toolkit\');',
       "export { runSuite } from '@camerontaylor/cq-toolkit';",
     ];
     for (const s of bareImports) {

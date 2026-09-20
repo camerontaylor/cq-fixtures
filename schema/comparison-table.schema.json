@@ -163,7 +163,7 @@
             "minimum": 0,
             "maximum": 1,
             "description": "VERSIONED ADDITIVE change F4 (2026-09-21): fraction of the cell's suspicious-benign rows (row suspiciousBenign === true) whose probe OBSERVED actionable — i.e. the classifier cried wolf on adjudicated-benign content. A benign row missed with any other observed verdict (or a null observed) is a miss, not a false positive. Omitted with fpN when the subset is empty."
-          }
+          },
           "fpN": {
             "type": "integer",
             "minimum": 0,

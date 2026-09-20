@@ -7,7 +7,7 @@
     "origin": "lm-injected",
     "generator": "lane-leader-lm",
     "seed": 0,
-    "engine_version": "ts-morph@28.0.0"
+    "engine_version": "lm"
   },
   "validation": {
     "f2p": ["supplies three retries when the caller omits them"],

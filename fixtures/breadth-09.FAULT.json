@@ -11,7 +11,7 @@
   },
   "validation": {
     "f2p": ["returns a copy that does not alias internal stock", "is complete only when the order is both paid and shipped"],
-    "p2p": ["returns the current stock rows", "is complete when paid and shipped", "marks a paid order"],
+    "p2p": ["returns the current stock rows", "stays complete when paid and shipped", "marks a paid order"],
     "fix": {
       "src/inventory.ts": "import type { Product } from './types.ts';\n\nconst stock: Product[] = [\n  { sku: 'a', qty: 3 },\n  { sku: 'b', qty: 5 },\n];\n\nexport function snapshot(): Product[] {\n  return [...stock];\n}\n",
       "src/orders.ts": "import type { Order } from './types.ts';\n\nexport function statusOf(order: Order): string {\n  if (order.paid && order.shipped) return 'complete';\n  return 'open';\n}\n"

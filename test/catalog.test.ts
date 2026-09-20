@@ -99,6 +99,12 @@ describe('catalog engines are mutant generators (smoke)', () => {
     expect(applied.every((s) => s !== source), 'every generated mutant changes the source').toBe(true);
   });
 
+  it('generateBabelMutants rejects an authored-transform operator id', async () => {
+    await expect(generateBabelMutants('export const x = 1;\n', 'a.ts', { operatorId: 'constant-delta' })).rejects.toThrow(
+      /authored Babel transform/,
+    );
+  });
+
   it('ts-morph generates one fault per TS-specific operator', () => {
     const cases: Array<{ operatorId: string; source: string; contains: string }> = [
       {
@@ -156,11 +162,35 @@ describe('catalog engines are mutant generators (smoke)', () => {
       },
       { operatorId: 'remove-conditional', source: 'export function f(x: boolean): void {\n  if (x) {\n    void x;\n  }\n}\n', check: (a) => expect(a).not.toContain('if (x)') },
       { operatorId: 'remove-assignment', source: 'export function f(): number {\n  let x = 1;\n  x = 2;\n  return x;\n}\n', check: (a) => expect(a).not.toContain('x = 2;') },
+      {
+        operatorId: 'chain-break',
+        source: 'export function f(xs: number[]): number[] {\n  return xs.filter((x) => x > 0).map((x) => x + 1);\n}\n',
+        check: (a) => expect(a).not.toContain('.map('),
+      },
+      {
+        operatorId: 'statement-shuffle',
+        source: 'export function f(): number {\n  const a = 1;\n  const b = 2;\n  return a + b;\n}\n',
+        check: (a) => expect(a.indexOf('const b = 2;')).toBeLessThan(a.indexOf('const a = 1;')),
+      },
     ];
     for (const { operatorId, source, check } of cases) {
       const mutants = await generateForOperator(source, 'sample.ts', operatorId);
       expect(mutants.length, `${operatorId} should generate a mutant`).toBeGreaterThan(0);
       check(applyMutant(source, mutants[0]!));
+    }
+  });
+
+  it('StrykerJS-backed operators each generate a mutant through generateForOperator', async () => {
+    const cases: Array<{ operatorId: string; source: string }> = [
+      { operatorId: 'ternary-swap', source: 'export function f(x: boolean): number {\n  return x ? 1 : 2;\n}\n' },
+      { operatorId: 'method-swap', source: 'export function f(xs: number[]): boolean {\n  return xs.every((x) => x > 0);\n}\n' },
+      { operatorId: 'optional-chaining-removal', source: 'export function f(o?: { a: number }): number | undefined {\n  return o?.a;\n}\n' },
+      { operatorId: 'empty-block', source: 'export function f(): number {\n  const g = () => 1;\n  return g();\n}\n' },
+    ];
+    for (const { operatorId, source } of cases) {
+      const mutants = await generateForOperator(source, 'sample.ts', operatorId);
+      expect(mutants.length, `${operatorId} should generate a mutant`).toBeGreaterThan(0);
+      expect(mutants.some((m) => applyMutant(source, m) !== source), `${operatorId} changes the source`).toBe(true);
     }
   });
 

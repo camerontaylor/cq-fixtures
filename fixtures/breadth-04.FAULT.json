@@ -7,7 +7,7 @@
     "origin": "lm-injected",
     "generator": "lane-leader-lm",
     "seed": 0,
-    "engine_version": "@babel/parser@8.0.6"
+    "engine_version": "lm"
   },
   "validation": {
     "f2p": ["doubles the delay each attempt", "exposes a factor of two"],

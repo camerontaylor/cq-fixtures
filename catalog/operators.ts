@@ -157,9 +157,9 @@ export const OPERATORS: readonly OperatorSpec[] = [
     bugType: 'operator misuse',
     bands: ['medium', 'hard'],
     trivialProne: false,
-    strykerMutators: ['MethodExpression'],
+    strykerMutators: [],
     source: 'swe-smith',
-    description: 'Breaks a method chain, dropping the effect of a later link.',
+    description: 'Breaks a method chain, dropping the effect of a later link (authored Babel transform).',
   },
   {
     id: 'ternary-swap',
@@ -190,9 +190,9 @@ export const OPERATORS: readonly OperatorSpec[] = [
     bugType: 'excess logic',
     bands: ['easy', 'medium', 'hard'],
     trivialProne: false,
-    strykerMutators: ['ConditionalExpression'],
+    strykerMutators: [],
     source: 'swe-smith',
-    description: 'Swaps the consequent and alternate blocks of an if statement.',
+    description: 'Swaps the consequent and alternate blocks of an if statement (authored Babel transform).',
   },
   {
     id: 'statement-shuffle',

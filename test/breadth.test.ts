@@ -38,6 +38,12 @@ function runJudgeOrThrow(caseId: string, checkPath: string, workspace: string): 
         `${(res.error as Error | undefined)?.message ?? `killed by signal ${res.signal ?? 'unknown'}`}`,
     );
   }
+  // The judge fails CLOSED with exit 1 on infrastructure refusals (misuse,
+  // workspace escape, an unspawnable vitest) — those are not an eval-red.
+  const stderr = res.stderr ?? '';
+  for (const marker of ['refusing to judge', 'workspace escape', 'could not execute the vitest run', 'does not resolve (dangling link?)']) {
+    if (stderr.includes(marker)) throw new Error(`${caseId} judge failed closed (infrastructure): ${marker}`);
+  }
   return res.status;
 }
 
@@ -65,9 +71,19 @@ function runVitestJson(workspace: string, label: string): { status: number; test
         `${(res.error as Error | undefined)?.message ?? `killed by signal ${res.signal ?? 'unknown'}`}`,
     );
   }
-  const report = JSON.parse(readFileSync(outFile, 'utf8')) as {
-    testResults: Array<{ assertionResults: Array<{ title: string; status: string }> }>;
-  };
+  const report = (() => {
+    try {
+      return JSON.parse(readFileSync(outFile, 'utf8')) as {
+        testResults: Array<{ assertionResults: Array<{ title: string; status: string }> }>;
+      };
+    } catch (e) {
+      // A vitest crash that never writes the report is infrastructure, not a
+      // per-title verdict — fail closed with the child's tail for diagnosis.
+      throw new Error(
+        `${label} vitest JSON report missing/unparseable (infrastructure): ${(e as Error).message}\n${(res.stderr ?? '').slice(-500)}`,
+      );
+    }
+  })();
   const tests = report.testResults.flatMap((f) => f.assertionResults.map((a) => ({ title: a.title, status: a.status })));
   return { status: res.status, tests };
 }
@@ -115,14 +131,41 @@ function readTestSources(fixtureRef: string): string {
     .join('\n');
 }
 
+/** The exact set of `it('…')` titles declared by a fixture's test files. */
+function declaredTitles(fixtureRef: string): Set<string> {
+  const titles = new Set<string>();
+  for (const match of readTestSources(fixtureRef).matchAll(/\bit\(\s*(['"`])([\s\S]*?)\1/g)) {
+    titles.add(match[2]!);
+  }
+  return titles;
+}
+
+/**
+ * Fix-side lines that carry the answer (a line in the canonical fix that the
+ * stored faulted file does not contain). Used to catch a workspace file that
+ * embeds a fixed snippet without being byte-identical to the fix.
+ */
+function fixSecretLines(fixtureRef: string, record: FaultRecord): string[] {
+  const out: string[] = [];
+  for (const [rel, fixed] of Object.entries(record.validation.fix)) {
+    const stored = readFileSync(join(REPO_ROOT, fixtureRef, rel), 'utf8');
+    const fixedLines = new Set(fixed.split('\n'));
+    for (const line of changedLines(stored, fixed)) {
+      if (line.trim().length >= 12 && fixedLines.has(line)) out.push(line);
+    }
+  }
+  return out;
+}
+
 /**
  * Files in a materialized workspace that leak the fault record: a FAULT.json
- * by name, any file carrying the record's marker key, or any file whose full
- * content equals a canonical fix.
+ * by name, any file carrying the record's marker key, any file whose full
+ * content equals a canonical fix, or any file embedding a fix-side line.
  */
-function scanForFaultLeaks(workspace: string, record: FaultRecord): string[] {
+function scanForFaultLeaks(workspace: string, fixtureRef: string, record: FaultRecord): string[] {
   const leaks: string[] = [];
   const fixValues = Object.values(record.validation.fix);
+  const secretLines = fixSecretLines(fixtureRef, record);
   for (const file of walkFiles(workspace)) {
     if (/\.FAULT\.json$/.test(file)) {
       leaks.push(`${relative(workspace, file)} (FAULT.json by name)`);
@@ -131,6 +174,7 @@ function scanForFaultLeaks(workspace: string, record: FaultRecord): string[] {
     const content = readFileSync(file, 'utf8');
     if (content.includes('"failure_symptoms"')) leaks.push(`${relative(workspace, file)} (FAULT.json marker)`);
     else if (fixValues.some((fix) => fix === content)) leaks.push(`${relative(workspace, file)} (canonical fix content)`);
+    else if (secretLines.some((line) => content.includes(line))) leaks.push(`${relative(workspace, file)} (canonical fix line)`);
   }
   return leaks;
 }
@@ -179,12 +223,12 @@ describe('breadth suite shape (F2 acceptance)', () => {
     }
   });
 
-  it('every f2p/p2p title exists in the fixture test sources', () => {
+  it('every f2p/p2p title is an exact declared it() title', () => {
     for (const c of fixerCases) {
       const record = loadFaultForFixture(REPO_ROOT, c.fixture);
-      const tests = readTestSources(c.fixture);
+      const titles = declaredTitles(c.fixture);
       for (const title of [...record.validation.f2p, ...record.validation.p2p]) {
-        expect(tests, `${c.id} test title '${title}'`).toContain(title);
+        expect(titles.has(title), `${c.id} declared it() title '${title}'`).toBe(true);
       }
     }
   });
@@ -220,7 +264,7 @@ describe('FAULT.json is unreachable from a materialized worker workspace', () =>
       const record = loadFaultForFixture(REPO_ROOT, c.fixture);
       const workspace = materialize(c.fixture);
       try {
-        expect(scanForFaultLeaks(workspace, record), `${c.id} leaks`).toEqual([]);
+        expect(scanForFaultLeaks(workspace, c.fixture, record), `${c.id} leaks`).toEqual([]);
       } finally {
         rmSync(workspace, { recursive: true, force: true });
       }
@@ -256,7 +300,7 @@ describe('FAULT.json is unreachable from a materialized worker workspace', () =>
         const workspace = /\nworkspace: (\S+)$/.exec(invocation.prompt)?.[1];
         if (workspace !== undefined) {
           this.workspaceSeen = workspace;
-          this.leaks = scanForFaultLeaks(workspace, record);
+          this.leaks = scanForFaultLeaks(workspace, 'fixtures/breadth-01', record);
         }
         return {
           model: invocation.modelSpec.model,

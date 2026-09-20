@@ -81,7 +81,7 @@
       "id": "breadth-09",
       "fixture": "fixtures/breadth-09",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. Two faults: snapshot hands out the internal stock array so caller mutations leak back in, and statusOf marks an order complete when it is only paid or only shipped. snapshot must return a copy, and an order must be complete only when it is both paid and shipped.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. Callers report that mutating the array returned by snapshot changes what later snapshots contain, and that an order which is only paid or only shipped already reads as complete; snapshots must be independent of their callers and completion must require both paid and shipped.",
         "notes": "hard · shared-reference-return+logical-swap · variable misuse · canonical fix in fixtures/breadth-09.FAULT.json"
       },
       "probe": { "kind": "check-rerun", "check": "fixtures/breadth-09/check.mjs" }
@@ -90,7 +90,7 @@
       "id": "breadth-10",
       "fixture": "fixtures/breadth-10",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. Two faults: parseAmount misreads non-decimal strings, and rangeLabel prints its bounds in the wrong order. Parsing must be base ten and labels must read from-to.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseAmount misreads strings such as '0x10', and rangeLabel prints a range's bounds in the wrong order; parsing must be base ten and labels must read from-to.",
         "notes": "hard · radix-coercion-drop+argument-swap · value misuse · canonical fix in fixtures/breadth-10.FAULT.json"
       },
       "probe": { "kind": "check-rerun", "check": "fixtures/breadth-10/check.mjs" }

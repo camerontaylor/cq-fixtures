@@ -6,7 +6,7 @@ describe('statusOf', () => {
     expect(statusOf({ id: '1', paid: true, shipped: false })).toBe('open');
   });
 
-  it('is complete when paid and shipped', () => {
+  it('stays complete when paid and shipped', () => {
     expect(statusOf({ id: '2', paid: true, shipped: true })).toBe('complete');
   });
 });

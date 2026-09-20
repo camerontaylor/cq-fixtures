@@ -84,15 +84,16 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   // `vi.doMock('...')` / `jest.mock('...')` / `jest.doMock('...')` (live
   // forms in this repo's own tests) plus the loader spellings
   // `jest.requireMock('...')` / `vi.importActual('...')` /
-  // `vi.importMock('...')`, and block OR line comments in the
-  // keyword-to-specifier gap (`import /*c*/ ('...')`, `import // c` +
-  // newline + `('...')`) — the package name followed by '/' or '.'
+  // `vi.importMock('...')`, the `vitest.*` namespace aliases, and block
+  // OR line comments in the keyword-to-specifier gap (`import /*c*/
+  // ('...')`, `import // c` + newline + `('...')`) as well as around the
+  // dots of compound spellings (`require /*c*/ .resolve('...')`) — the followed by '/' or '.'
   // is a subpath/deep-import attempt. One regex covers all the
   // call/keyword shapes; a bare `from '@camerontaylor/cq-toolkit'` never
   // matches because nothing follows the package name.
   [
     'toolkit subpath import in any import form (bare specifier only)',
-    /(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?|vi\.(?:doMock|mock)|jest\.(?:doMock|mock)|jest\.requireMock|vi\.import(?:Actual|Mock)|jest\.unstable_mockModule|mock\.module|jest\.requireActual|(?:vi|jest)\.unmock|jest\.createMockFromModule|jest\.genMockFromModule|jest\.dontMock|(?:vi|jest)\.doUnmock)\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\(\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`]@camerontaylor\/cq-toolkit[/.]|(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?|vi\.(?:doMock|mock)|jest\.(?:doMock|mock)|jest\.requireMock|vi\.import(?:Actual|Mock)|jest\.unstable_mockModule|mock\.module|jest\.requireActual|(?:vi|jest)\.unmock|jest\.createMockFromModule|jest\.genMockFromModule|jest\.dontMock|(?:vi|jest)\.doUnmock)\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`]@camerontaylor\/cq-toolkit[/.]/,
+    /(?:from|import|require|import\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?meta\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?resolve|require\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?resolve|vi\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?(?:doMock|mock)|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?(?:doMock|mock)|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?requireMock|vi\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?import(?:Actual|Mock)|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?unstable_mockModule|mock\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?module|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?requireActual|(?:vi|jest)\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?unmock|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?createMockFromModule|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?genMockFromModule|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?dontMock|(?:vi|jest)\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?doUnmock|vitest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\(\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`]@camerontaylor\/cq-toolkit[/.]|(?:from|import|require|import\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?meta\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?resolve|require\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?resolve|vi\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?(?:doMock|mock)|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?(?:doMock|mock)|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?requireMock|vi\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?import(?:Actual|Mock)|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?unstable_mockModule|mock\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?module|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?requireActual|(?:vi|jest)\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?unmock|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?createMockFromModule|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?genMockFromModule|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?dontMock|(?:vi|jest)\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?doUnmock|vitest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`]@camerontaylor\/cq-toolkit[/.]/,
   ],
   // Relative escape into a VENDORED tree: one-or-more `../` chains into
   // `src/`, `vendor/`, or `lib/` — any import form, any spacing, any quote
@@ -102,7 +103,7 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   // legitimate and must not trip the rule; and NOT "any path outside
   // runner/", which no text regex can resolve. `../../../src/` and
   // `../vendor/` are caught; `../score/` is not.
-  ['relative escape into a vendored tree (any import form)', /(?:from|import(?:\.meta\.resolve)?|require(?:\.resolve)?|vi\.(?:doMock|mock)|jest\.(?:doMock|mock)|jest\.requireMock|vi\.import(?:Actual|Mock)|jest\.unstable_mockModule|mock\.module|jest\.requireActual|(?:vi|jest)\.unmock|jest\.createMockFromModule|jest\.genMockFromModule|jest\.dontMock|(?:vi|jest)\.doUnmock)\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\(?\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`](?:\.\.\/)+(?:src|vendor|lib)(?:\/|["'`]|$)/],
+  ['relative escape into a vendored tree (any import form)', /(?:from|import|require|import\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?meta\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?resolve|require\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?resolve|vi\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?(?:doMock|mock)|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?(?:doMock|mock)|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?requireMock|vi\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?import(?:Actual|Mock)|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?unstable_mockModule|mock\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?module|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?requireActual|(?:vi|jest)\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?unmock|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?createMockFromModule|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?genMockFromModule|jest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?dontMock|(?:vi|jest)\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?doUnmock|vitest\s*(?:\/\*[\s\S]*?\*\/\s*)?\.\s*(?:\/\*[\s\S]*?\*\/\s*)?(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*\(?\s*(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*['"`](?:\.\.\/)+(?:src|vendor|lib)(?:\/|["'`]|$)/],
 ];
 
 interface Violation {
@@ -212,6 +213,10 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       'jest.dontMock(\'@camerontaylor/cq-toolkit/sub\');',
       'vi.doUnmock(\'@camerontaylor/cq-toolkit/sub\');',
       'jest.doUnmock(\'@camerontaylor/cq-toolkit/sub\');',
+      'vitest.mock(\'@camerontaylor/cq-toolkit/sub\');',
+      'vitest.importMock(\'@camerontaylor/cq-toolkit/sub\');',
+      'require /*c*/ .resolve(\'@camerontaylor/cq-toolkit/sub\');',
+      'import.meta /*c*/ .resolve(\'@camerontaylor/cq-toolkit/sub\');',
       'import /*c*/ (\'@camerontaylor/cq-toolkit/sub\');',
       'import // c\n(\'@camerontaylor/cq-toolkit/sub\');',
       "await import(\n  '@camerontaylor/cq-toolkit/internal'\n);",
@@ -271,6 +276,9 @@ describe('boundary matcher self-test (synthetic strings)', () => {
       "jest.dontMock('../../src/internal');",
       "vi.doUnmock('../../src/internal');",
       "jest.doUnmock('../../src/internal');",
+      "vitest.mock('../../src/internal');",
+      "vitest.importActual('../../src/internal');",
+      "require /*c*/ .resolve('../../src/internal');",
       "vi.mock /*c*/ ('../../src/internal');",
       "vi.mock // c\n('../../src/internal');",
     ];

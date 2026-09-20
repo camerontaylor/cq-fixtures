@@ -40,9 +40,10 @@ release time, with the owner sign-off plan §6 requires).
   gitignored build output, never committed.
 - [ ] **Flip to the published version — prepared, NOT executed (phase-5
   human step).** `scripts/flip-to-published.sh <version>` rewrites the
-  dependency from the `file:` tarball to the published version and
-  removes `toolkit.lock`; it refuses a second run and non-semver input
-  (contract proven by `test/flip.test.ts`, which runs the script
+  dependency from the `file:` tarball to the published version, syncs
+  `package-lock.json` via `npm install --package-lock-only` (a stale lock
+  would fail the next `npm ci`), and removes `toolkit.lock`; it refuses a
+  second run, non-semver input, and a failed lock sync (contract proven by `test/flip.test.ts`, which runs the script
   hermetically against a tmp sandbox — the real tree is never flipped
   by a test). Plan §4 stage 3: run by the human at release, then
   `rm -rf vendor node_modules && npm ci && npm run build && npm test`.

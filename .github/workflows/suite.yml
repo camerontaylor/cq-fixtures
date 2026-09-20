@@ -44,28 +44,43 @@ jobs:
         # micro suites run under the FakeDriver — zero network, zero spend —
         # proving the whole pipeline (suite load, payload injection, judge
         # spawn, scoring, journal, aggregation) stays wired on every push and
-        # every PR. The fake claims --driver-name subprocess per the recorded
-        # J3 decision (suites/README.md): the fake stands in for a local CLI
-        # transport, so `subprocess` is the honest lane label — never
-        # `ai-sdk`, the paid eval axis. --check-timeout-ms 120000 gives the
-        # judge's internal 45s vitest ceiling generous headroom.
+        # every PR. F4 extends the loop to
+        # suites/review-classifier/breadth-verified (30 cases, ~4 min at the
+        # measured ~70 s/10-case micro pace) — breadth-tail stays
+        # dispatch/matrix-only, never smoke. The fake claims --driver-name
+        # subprocess per the recorded J3 decision (suites/README.md): the
+        # fake stands in for a local CLI transport, so `subprocess` is the
+        # honest lane label — never `ai-sdk`, the paid eval axis.
+        # --check-timeout-ms 120000 gives the judge's internal 45s vitest
+        # ceiling generous headroom.
+        #
+        # STEP-NAME STABILITY: the name stays the J4 wording even though the
+        # loop now covers breadth-verified too — test/workflow-contract.test.ts
+        # keys its tripwire assertions on this step name.
         #
         # EXIT DISCIPLINE: rc 0 (no row scored zero) and rc 1 (the suite
         # SCORED ZERO somewhere) are BOTH smoke-green. rc 1 is the honest
-        # fake outcome here — and in practice BOTH suites exit 1: the fake
+        # fake outcome here — and in practice ALL suites exit 1: the fake
         # cannot fix fixtures (every fixer row scores zero across its two
         # DD-4 probes), and its hardcoded 'resolved' verdict misses the 8
-        # non-resolved-expected classifier cases. A scored-zero fake run IS
-        # the success signal; rc >= 2 (usage error, suite load/validation
-        # failure, fixture materialization failure, pre-dispatch
-        # missing-credential) is a hard failure.
+        # non-resolved-expected micro classifier cases and the 24
+        # non-resolved-expected breadth-verified cases. A scored-zero fake
+        # run IS the success signal; rc >= 2 (usage error, suite
+        # load/validation failure, fixture materialization failure,
+        # pre-dispatch missing-credential) is a hard failure.
         run: |
           set -euo pipefail
           hard_fail=0
-          for role_dir in suites/fixer-worker suites/review-classifier; do
-            suite_dir="${role_dir}/micro"
-            role="$(basename "${role_dir}")"
-            out_dir="reports/smoke/${role}"
+          for suite_dir in suites/fixer-worker/micro suites/review-classifier/micro suites/review-classifier/breadth-verified; do
+            role="$(basename "$(dirname "${suite_dir}")")"
+            suite_name="$(basename "${suite_dir}")"
+            # Same-role suites collide on <role>.table.json, so breadth-verified
+            # gets its own out dir; micro keeps its historical path.
+            if [ "${suite_name}" = "micro" ]; then
+              out_dir="reports/smoke/${role}"
+            else
+              out_dir="reports/smoke/${role}-${suite_name}"
+            fi
             rc=0
             node --experimental-strip-types runner/index.ts \
               --suite "${suite_dir}" \
@@ -445,12 +460,15 @@ jobs:
           MATRIX_DRIVER: ${{ matrix.cell.driver }}
         run: |
           set -euo pipefail
-          # Designed discovery (J4): the two micro suites ARE the matrix
-          # payload — a SHALLOW find over their FIXED directories (-maxdepth 1:
-          # only a suite.json placed DIRECTLY in a named dir runs; verified
-          # against both real suites). A nested micro/x/suite.json is a
-          # structuring decision for J5's designed discovery, not an accident
-          # to auto-run here; widening this list stays a deliberate edit.
+          # Designed discovery (J4; F4 extends to the classifier breadth
+          # suites): the micro suites plus
+          # suites/review-classifier/breadth-verified + breadth-tail ARE the
+          # matrix payload — a SHALLOW find over their FIXED directories
+          # (-maxdepth 1: only a suite.json placed DIRECTLY in a named dir
+          # runs; verified against the real suites). A nested
+          # micro/x/suite.json is a structuring decision for J5's designed
+          # discovery, not an accident to auto-run here; widening this list
+          # stays a deliberate edit.
           hard_fail=0
           suite_count=0
           # Review-debt #14: the acp preflight probe spent real inference
@@ -510,16 +528,16 @@ jobs:
               echo "::error::suite ${rel_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
             fi
             suite_count=$((suite_count + 1))
-          done < <(find suites/fixer-worker/micro suites/review-classifier/micro -maxdepth 1 -name suite.json 2>/dev/null | sort)
+          done < <(find suites/fixer-worker/micro suites/review-classifier/micro suites/review-classifier/breadth-verified suites/review-classifier/breadth-tail -maxdepth 1 -name suite.json 2>/dev/null | sort)
           # Discovery drift must be VISIBLE but never fail the cell (it is a
           # structuring signal, not an eval outcome): the list above names
-          # exactly two dirs with one directly-placed suite.json each, so
-          # anything but 2 is drift. Zero keeps the stronger wording — an
+          # exactly four dirs with one directly-placed suite.json each, so
+          # anything but 4 is drift. Zero keeps the stronger wording — an
           # accidental REMOVAL is the urgent case.
           if [ "${suite_count}" -eq 0 ]; then
             echo "::warning::matrix discovery found no suites — if this is an accidental removal, investigate"
-          elif [ "${suite_count}" -ne 2 ]; then
-            echo "::warning::matrix discovery found ${suite_count} suites (expected 2) — investigate if unintended"
+          elif [ "${suite_count}" -ne 4 ]; then
+            echo "::warning::matrix discovery found ${suite_count} suites (expected 4) — investigate if unintended"
           fi
           # The eval-reports artifact must ALWAYS exist — even when the find
           # above came up empty (which can now only happen if the micro

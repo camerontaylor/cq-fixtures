@@ -4,7 +4,7 @@ Scope: root-cause memo for every broken lane in the first live J5 real-driver ma
 (GitHub Actions run `35392822013`, snapshot `reports/snapshots/2026-09-18/`), with no
 re-spend. Each broken lane is classified as exactly one of **toolkit-defect**,
 **CI-wiring**, or **lane-unavailable-on-CI**, with journal/log citations and a routed fix.
-The classifier cells were healthy and are not re-litigated here.
+The classifier cells are largely healthy; they are cited below only as controls for the fixer failures, not re-litigated.
 
 Method: the committed snapshot carries only `*.table.json`; the NDJSON journals and
 `rows.jsonl` live in the run's uploaded artifacts. Those artifacts were downloaded and
@@ -23,7 +23,7 @@ token was spent to produce this memo.
 | `eval-reports-glm-5.3-flash-claude-agent` (10566825116) | claude-agent both roles | journals + `rows.jsonl` + tables |
 | `eval-reports-glm-5.3-flash-subprocess` (10567005463) | subprocess both roles | journals + `rows.jsonl` + tables |
 | `eval-reports-glm-5.3-flash-acp` (10566700607) | acp | preflight died before eval; only `reports/README.md` |
-| job logs 105754963274 / 105754963272 / 105754963242 / 105754963287 / 105754963248 | per-cell stdout/stderr | the only place the subprocess/acp root causes survive |
+| job logs 105754963274 (glm ai-sdk) / 105754963272 (deepseek ai-sdk) / 105754963242 (claude-agent) / 105754963287 (subprocess) / 105754963248 (acp) | per-cell stdout/stderr | install-step and preflight evidence; the drivers' own error text is not surfaced |
 
 Journal paths below are given relative to the artifact root as
 `eval/<model>/<driver>/<role>/micro/journal/<runId>.ndjson`.
@@ -32,8 +32,8 @@ Journal paths below are given relative to the artifact root as
 
 | Lane (model / driver / role) | Observed | Classification | Fix owner |
 |---|---|---|---|
-| ai-sdk fixer, both models | 5/5 cases per model (10/10 across both) `driver stopReason: error` after real spend; classifier healthy on the same driver | **toolkit-defect** | cq-toolkit [#203](https://github.com/camerontaylor/cq-toolkit/issues/203) |
-| claude-agent, both roles | 15/15 cases `driver stopReason: error`, 0 tokens, <1 s each | **toolkit-defect** | cq-toolkit [#204](https://github.com/camerontaylor/cq-toolkit/issues/204) |
+| ai-sdk fixer, both models | 5/5 cases per model (10/10 across both) `driver stopReason: error` after real spend; classifier largely healthy (glm 8/10 `job-finished` ok / 7 passed; deepseek 10/10 ok / 9 passed) | **toolkit-defect** | cq-toolkit [#203](https://github.com/camerontaylor/cq-toolkit/issues/203) |
+| claude-agent, both roles | 15/15 cases `driver stopReason: error`, 0 tokens, <1 s each | **toolkit-defect** (provisional) | cq-toolkit [#204](https://github.com/camerontaylor/cq-toolkit/issues/204) |
 | subprocess, both roles | 15/15 cases `driver stopReason: error`, 0 tokens, <1 s each | **CI-wiring** | cq-fixtures (F1; no upstream issue) |
 | acp | preflight rc 4 before eval; no rows/tables | **lane-unavailable-on-CI** | OWNER-DECISION-PENDING (no cq-toolkit issue) |
 
@@ -43,11 +43,11 @@ Journal paths below are given relative to the artifact root as
 
 Both ai-sdk fixer cells dispatched 5 cases, spent real tokens on every one, and returned
 `driver stopReason: error` on every one. The classifier cells on the **same driver and
-provider** are largely healthy in the same jobs (glm 8/10 `ok`, deepseek 10/10 `ok`), but
+provider** are largely healthy in the same jobs (glm classifier: 8/10 `job-finished` ok, 7/10 probes passed; deepseek classifier: 10/10 `job-finished` ok, 9/10 probes passed), but
 the glm classifier does show the **same error class on 2 of 10 probes** — so the failure is
 concentrated in, not exclusive to, the fixer path.
 
-glm-5.3-flash ai-sdk fixer (`journal/d006d621-…ndjson`), every `job-finished` is the same shape. The record below is the **micro-1** case; the cell totals that follow are the sum of all five cases:
+glm-5.3-flash ai-sdk fixer (`eval/glm-5.3-flash/ai-sdk/fixer-worker/micro/journal/d006d621-bd22-4665-89b1-1f5f207c8dd8.ndjson`), every `job-finished` is the same shape. The record below is the **micro-1** case; the cell totals that follow are the sum of all five cases:
 
 ```json
 {"type":"job-finished","jobId":"micro-1","opId":"fixer-worker","inputsHash":"778a13e1…",
@@ -59,15 +59,18 @@ glm-5.3-flash ai-sdk fixer (`journal/d006d621-…ndjson`), every `job-finished` 
 `costUSD: null`, wall 28.8–36.3 s/case). Cell totals: input 5304 / output 1542 /
 cacheRead 35200, wall 165 084 ms (`fixer-worker.table.json`).
 
-deepseek-chat ai-sdk fixer (`journal/fc30e2cb-…ndjson`) is the same on all 5 cases, with
+deepseek-chat ai-sdk fixer (`eval/deepseek-chat/ai-sdk/fixer-worker/micro/journal/fc30e2cb-9e54-4d5a-9050-cf70112e10f9.ndjson`) is the same on all 5 cases, with
 wall 6.5–6.9 s/case and modeled cost recorded because the row's observed id is priced:
 totals input 8088 / output 2003 / cacheRead 42112, `costUSD` 0.004285 (`costBasis: modeled`).
 
-Corroborating control — glm-5.3-flash ai-sdk review-classifier in the same job: 8 of 10
-`job-finished` are `{"status":"ok","value":{"score":1,…}}`; the two failures
+Corroborating control — glm-5.3-flash ai-sdk review-classifier in the same job
+(`eval/glm-5.3-flash/ai-sdk/review-classifier/micro/journal/07ef168e-6498-45c5-b95e-eb4c32b1680c.ndjson`): 8 of 10
+`job-finished` are `{"status":"ok","value":{"score":1,…}}`, and one further `ok`
+(`thread-04`) scored 0 on the verdict — so 7/10 probes passed. The two failures
 (`thread-01`, `thread-07`) are `driver stopReason: error` **with retained usage**
-(`input 512/output 435` and `input 384/output 524`). deepseek's classifier: 9/10, zero
-driver errors. So the classifier path is largely healthy and the fixer path is uniformly
+(`input 512/output 435` and `input 384/output 524`). deepseek's classifier
+(`eval/deepseek-chat/ai-sdk/review-classifier/micro/journal/efa096aa-fecd-426e-8068-da53c4585738.ndjson`):
+10/10 `job-finished` ok, 9/10 probes passed, zero driver errors. So the classifier path is largely healthy and the fixer path is uniformly
 broken.
 
 ### Root cause (mechanism pinned to the SDK contract; the per-case throw is inferred)
@@ -129,16 +132,16 @@ final object as a *scored* schema failure (absent `structuredOutput`) rather tha
 `error`; (c) either drop the mandatory object from tool-loop ops or request it on the
 final step only.
 
-## Lane 2 — claude-agent (glm-5.3-flash, both roles): toolkit-defect
+## Lane 2 — claude-agent (glm-5.3-flash, both roles): toolkit-defect (provisional)
 
 ### What the artifacts show
 
 All 15 cases failed identically: `driver stopReason: error`, **0 tokens**, sub-second.
 
-- fixer (`journal/bb7fd1d7-…ndjson`): micro-1…micro-5 each
+- fixer (`eval/glm-5.3-flash/claude-agent/fixer-worker/micro/journal/bb7fd1d7-84bd-4e89-a6c2-0c25d8e5f7ef.ndjson`): micro-1…micro-5 each
   `{"result":{"status":"failed","error":"driver stopReason: error"},"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}}`,
   wall 863/586/465/460/451 ms.
-- classifier (`journal/0562d334-…ndjson`): thread-01…thread-10, same shape, wall 429–596 ms.
+- classifier (`eval/glm-5.3-flash/claude-agent/review-classifier/micro/journal/0562d334-f2f3-4f5e-a255-c0e22d466019.ndjson`): thread-01…thread-10, same shape, wall 429–596 ms.
 - Cell totals: fixer 0 tokens / 2825 ms; classifier 0 tokens / 4945 ms (`*.table.json`).
 
 ### What it is not
@@ -172,6 +175,12 @@ name the cause. Two facts make this a toolkit-side defect rather than a fixtures
 - As in Lane 1, the driver discards the failure cause, so the lane cannot be diagnosed
   from CI at all.
 
+The classification is therefore **provisional**: `toolkit-defect` names the owner of the
+SDK↔endpoint contract and of the error-handling defect, and the "What it is not" checks
+above rule out the fixtures-side wiring candidates we can observe (missing key, blocked
+install script, mismatched option shape). It becomes definitive only after deliverable (1)
+surfaces the SDK error; if that shows a fixtures-side environment cause, F1 re-routes it.
+
 ### Routed fix
 
 cq-toolkit, post-v1.0.0 patch: issue **[fixer-driver] claude-agent lane: 0-token CI
@@ -188,8 +197,8 @@ have the preflight prove its absence loudly (the F1 acceptance allows either).
 
 All 15 cases failed identically: `driver stopReason: error`, **0 tokens**, ~0.4–0.5 s each.
 
-- fixer (`journal/b6477fa8-…ndjson`): micro-1…micro-5, zero usage, wall 2682 ms total.
-- classifier (`journal/dc9d8575-…ndjson`): thread-01…thread-10, zero usage, wall 4537 ms total.
+- fixer (`eval/glm-5.3-flash/subprocess/fixer-worker/micro/journal/b6477fa8-f8c5-42eb-84bc-16cd842886f9.ndjson`): micro-1…micro-5, zero usage, wall 2682 ms total.
+- classifier (`eval/glm-5.3-flash/subprocess/review-classifier/micro/journal/dc9d8575-f4f3-4a33-8d8a-4dee0d35faec.ndjson`): thread-01…thread-10, zero usage, wall 4537 ms total.
 - Cell totals: 0 tokens / 2682 ms and 0 tokens / 4537 ms (`*.table.json`).
 
 ### Root cause — the CLI was never installed
@@ -209,12 +218,14 @@ npm warn install-scripts Run `npm install -g --allow-scripts=@anthropic-ai/claud
 (job 105754963287, "Install the subprocess lane CLI").
 
 `@anthropic-ai/claude-code`'s `bin` target is `bin/claude.exe`, which in the published
-tarball is a **placeholder shell script** that prints
-`Error: claude native binary not installed.` and exits 1; `install.cjs` is what copies the
-real platform binary over it. With the script blocked, every `claude` spawn exited 1 in
-~0.4 s with no result event, which the driver maps to `stopReason: 'error'` at zero usage.
-The CLI's stderr was captured into the driver's retained buffer and never surfaced, so the
-message does not appear in the job log.
+tarball (`npm pack @anthropic-ai/claude-code@2.1.276`; verified 2026-09-21) is a 500-byte
+**placeholder shell script** that prints
+`Error: claude native binary not installed.` and exits 1; the package's `postinstall`
+(`install.cjs`) is what copies the real platform binary over it. With the script blocked,
+every `claude` spawn exited 1 in ~0.4 s with no result event, which the driver maps to
+`stopReason: 'error'` at zero usage. The CLI's stderr was captured into the driver's
+retained buffer and never surfaced, so its message does not appear in the job log — only
+the install-step warning above identifies the cause.
 
 ### Routed fix
 
@@ -293,7 +304,7 @@ is a cq-fixtures CI-wiring fix owned by F1, Lane 4 is an owner decision.
 - memo committed under `reports/snapshots/2026-09-18/triage.md` — this file;
 - each lane classified toolkit-defect / CI-wiring / unavailable-on-CI — summary table
   above (ai-sdk fixer and claude-agent = toolkit-defect; subprocess = CI-wiring; acp =
-  unavailable-on-CI / owner-decision-pending);
+  lane-unavailable-on-CI / owner-decision-pending);
 - cq-toolkit issues opened where routed — two, URLs above.
 
 No model was dispatched and no token was spent producing this triage.

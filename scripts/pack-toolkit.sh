@@ -76,19 +76,22 @@ fi
 TMP="$(mktemp -d)"  # outside the repo so the clone never pollutes the worktree
 trap 'rm -rf "$TMP"' EXIT
 
+git init -q "$TMP/cq-toolkit"
+cd "$TMP/cq-toolkit"
+git remote add origin "$REPO_URL"
 if [ "$PIN_KIND" = commit ]; then
-  # `git clone --branch` accepts a branch or tag NAME, never a SHA: init,
-  # fetch exactly the pinned commit (GitHub serves arbitrary SHAs by
-  # upload-pack), and check it out — still a shallow single-commit fetch.
-  git init -q "$TMP/cq-toolkit"
-  cd "$TMP/cq-toolkit"
-  git remote add origin "$REPO_URL"
+  # A SHA is not a ref name: fetch exactly the pinned commit (GitHub serves
+  # arbitrary SHAs by upload-pack) and check it out — a shallow
+  # single-commit fetch.
   git fetch -q --depth 1 origin "$TAG"
-  git checkout -q FETCH_HEAD
 else
-  git clone --depth 1 --branch "$TAG" "$REPO_URL" "$TMP/cq-toolkit"
-  cd "$TMP/cq-toolkit"
+  # Tag pin: fetch the explicit refs/tags/ namespace, so a BRANCH that
+  # happens to share the name can never satisfy the lock — the pin must be
+  # immutable (plan §8.6), and `git clone --branch` would happily take a
+  # branch.
+  git fetch -q --depth 1 origin "refs/tags/$TAG"
 fi
+git checkout -q FETCH_HEAD
 npm ci            # dist/ must be built before packing or the export map dangles
 npm run build
 

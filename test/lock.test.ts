@@ -72,10 +72,30 @@ describe('pack-toolkit.sh pin resolution (tag | commit SHA)', () => {
     expect(() => pinKind(join(root, 'nope.lock'))).toThrow();
   });
 
-  it('the script carries both git paths: --branch for tags, fetch-by-sha for commits', () => {
+  it('the script carries both immutable pin paths: refs/tags for tags, raw SHA for commits', () => {
     const text = readFileSync(SCRIPT, 'utf8');
-    expect(text).toContain('git clone --depth 1 --branch "$TAG" "$REPO_URL"');
+    expect(text).toContain('git fetch -q --depth 1 origin "refs/tags/$TAG"');
     expect(text).toContain('git fetch -q --depth 1 origin "$TAG"');
     expect(text).toContain('git checkout -q FETCH_HEAD');
+  });
+
+  it('a branch-only pin fails loudly (the lock must pin an immutable tag or SHA)', () => {
+    // A hermetic local remote with a branch named `main` and no matching
+    // tag: the tag-path fetch targets refs/tags/main, which does not exist,
+    // so packaging must fail before any build. `git clone --branch` would
+    // have accepted the branch — that is the regression this guards.
+    const repo = join(root, 'remote');
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    writeFileSync(join(repo, 'README.md'), 'probe\n');
+    execFileSync('git', ['-C', repo, 'add', 'README.md']);
+    execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
+    execFileSync('git', ['-C', repo, 'tag', 'sometag']);
+    expect(() =>
+      execFileSync('bash', [SCRIPT], {
+        encoding: 'utf8',
+        stdio: 'pipe',
+        env: { ...process.env, TOOLKIT_LOCK: writeLock('main\n'), TOOLKIT_REPO_URL: `file://${repo}` },
+      }),
+    ).toThrow();
   });
 });

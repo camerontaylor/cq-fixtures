@@ -10,6 +10,11 @@ export default defineConfig({
     // test/micro.test.ts. Excluded from the repo's own `npm test`: a root
     // run over them would be red by design, and the repo's gates must stay
     // green while its fixtures are intentionally broken.
-    exclude: [...defaultExclude, 'fixtures/**'],
+    //
+    // catalog/substrates/** are the CLEAN templates the F3 case generator
+    // copies into fixtures/; their test files are typechecked by tsc but are
+    // not part of the repo's own suite (the generated fixtures are validated
+    // by catalog/pipeline.ts through test/breadth.test.ts).
+    exclude: [...defaultExclude, 'fixtures/**', 'catalog/substrates/**'],
   },
 });

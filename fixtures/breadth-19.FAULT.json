@@ -1,0 +1,35 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "withTax subtracts the rate instead of adding it.",
+  "operator": "arithmetic-swap",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": [
+      "applies the rate on top of the amount"
+    ],
+    "p2p": [
+      "adds two cent amounts",
+      "formats cents as a two-decimal amount",
+      "subtracts the percentage from the amount",
+      "treats a zero balance as not overdrawn"
+    ],
+    "fix": {
+      "src/tax.ts": "export function withTax(amount: number, rate: number): number {\n  return amount * (1 + rate);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/tax.ts",
+    "delete": "return amount * (1 + rate);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A sign swap; the tax contract is test-only."
+  }
+}

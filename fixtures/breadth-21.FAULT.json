@@ -1,0 +1,35 @@
+{
+  "bug_type": "value misuse",
+  "failure_symptoms": "isWeekend does not recognise Sunday as a weekend day.",
+  "operator": "constant-delta",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:authored",
+    "seed": 121,
+    "engine_version": "@babel/parser@8.0.6"
+  },
+  "validation": {
+    "f2p": [
+      "treats Sunday as a weekend day"
+    ],
+    "p2p": [
+      "measures the minutes between two times",
+      "formats minutes as hours and minutes",
+      "does not overlap when one slot ends as the other starts",
+      "orders slots by start time"
+    ],
+    "fix": {
+      "src/calendar.ts": "export function isWeekend(day: number): boolean {\n  return day === 0 || day === 6;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/calendar.ts",
+    "delete": "return day === 0 || day === 6;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A literal change; trivial-prone and easy-tier only."
+  }
+}

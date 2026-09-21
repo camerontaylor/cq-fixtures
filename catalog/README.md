@@ -25,6 +25,21 @@ repo's judge is the scorer; the engines here only GENERATE candidate faults
 - `fault.ts` — loads and validates the fixture-side `FAULT.json` record
   (`schema/fault.schema.json`) and applies its canonical fix. The record lives
   at `fixtures/<name>.FAULT.json`, OUTSIDE the materialized fixture directory.
+- `substrates/` — six clean, zero-dependency multi-module TypeScript packages
+  (`textkit`, `ledger`, `schedule`, `graph`, `validate`, `queue`) used as the
+  generation substrates for the F3 tail. They are typechecked by the repo's
+  `tsc` but excluded from `npm test` (`vitest.config.ts`).
+- `recipes.ts` + `generate-cases.ts` — the deterministic case generator: each
+  recipe names a substrate and its mutation(s); `--write` materializes
+  `fixtures/breadth-11..40` + their `FAULT.json`, and `--check` proves the
+  committed corpus still matches the recipes (CI).
+- `pipeline.ts` — the runnable validation-filter chain (R6 digest §2): the
+  static annotation gate, the reachability gate, the F2P gate, the 100%-green
+  baseline, determinism ×3 both states, the per-title JSON check, the
+  single-statement-deletion adequacy gate, and the format/tell pass. Run it as
+  `node --experimental-strip-types catalog/pipeline.ts --suite <dir> [--full]`;
+  `test/breadth.test.ts` drives it for both breadth suites (both-states for
+  the tail, full chain for the verified tier).
 
 ## License posture
 

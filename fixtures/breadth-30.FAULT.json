@@ -1,0 +1,36 @@
+{
+  "bug_type": "variable misuse",
+  "failure_symptoms": "hasEdge looks for the wrong endpoint, and reachable reports an unreachable target as reachable.",
+  "operator": "argument-swap+equality-boundary",
+  "difficulty": "hard",
+  "provenance": {
+    "origin": "diff-replay",
+    "generator": "fixture-git-replay",
+    "seed": 130,
+    "engine_version": "git-history@f3"
+  },
+  "validation": {
+    "f2p": [
+      "finds a directed edge",
+      "returns false when the target is unreachable"
+    ],
+    "p2p": [
+      "counts the neighbours of a node",
+      "returns a copy of the neighbour list",
+      "detects a self-loop among several nodes"
+    ],
+    "fix": {
+      "src/bfs.ts": "import type { Adjacency } from './edges.ts';\n\nexport function reachable(adj: Adjacency, start: string, target: string): boolean {\n  const seen = new Set<string>([start]);\n  const queue = [start];\n  while (queue.length > 0) {\n    const node = queue.shift()!;\n    if (node === target) return true;\n    for (const next of adj[node] ?? []) {\n      if (!seen.has(next)) {\n        seen.add(next);\n        queue.push(next);\n      }\n    }\n  }\n  return false;\n}\n",
+      "src/edges.ts": "export type Adjacency = Record<string, string[]>;\n\nexport function degree(adj: Adjacency, node: string): number {\n  return (adj[node] ?? []).length;\n}\n\nexport function hasEdge(adj: Adjacency, a: string, b: string): boolean {\n  return (adj[a] ?? []).includes(b);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/edges.ts",
+    "delete": "return (adj[a] ?? []).includes(b);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "told",
+    "notes": "Both diffs are one-token; hard tier is carried by finding two independent faults."
+  }
+}

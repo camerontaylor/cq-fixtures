@@ -1,0 +1,35 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "requireFields lists the present fields instead of the missing ones, and parseAmount parses a hex-looking string as base sixteen.",
+  "operator": "equality-boundary+radix-coercion-drop",
+  "difficulty": "hard",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": [
+      "lists the missing fields",
+      "parses a decimal string as base ten"
+    ],
+    "p2p": [
+      "rejects an address without a dotted domain",
+      "keeps a value inside the range"
+    ],
+    "fix": {
+      "src/number.ts": "export function parseAmount(text: string): number {\n  return parseInt(text, 10);\n}\n",
+      "src/required.ts": "export function requireFields(obj: Record<string, unknown>, fields: string[]): string[] {\n  return fields.filter((field) => obj[field] === undefined);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/required.ts",
+    "delete": "return fields.filter((field) => obj[field] === undefined);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "told",
+    "notes": "Both diffs are one-token; hard tier is carried by finding two independent faults."
+  }
+}

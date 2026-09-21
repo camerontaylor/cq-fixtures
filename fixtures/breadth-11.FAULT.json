@@ -1,0 +1,34 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "truncate returns a shortened string even when the text already fits the limit.",
+  "operator": "equality-boundary",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:EqualityOperator",
+    "seed": 111,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": [
+      "returns the text unchanged at the limit"
+    ],
+    "p2p": [
+      "counts words ignoring surrounding whitespace",
+      "lowercases and hyphen-joins words",
+      "averages the word lengths"
+    ],
+    "fix": {
+      "src/truncate.ts": "export function truncate(text: string, max: number): string {\n  return text.length <= max ? text : text.slice(0, max) + '…';\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/truncate.ts",
+    "delete": "return text.length <= max ? text : text.slice(0, max) + '…';"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A boundary shift; the symptom (text that fits) is not in the diff."
+  }
+}

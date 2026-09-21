@@ -1,0 +1,34 @@
+{
+  "bug_type": "function misuse",
+  "failure_symptoms": "clamp pushes a value out of range instead of keeping it inside.",
+  "operator": "method-swap",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:MethodExpression",
+    "seed": 131,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": [
+      "keeps a value inside the range"
+    ],
+    "p2p": [
+      "rejects an address without a dotted domain",
+      "parses a decimal string as base ten",
+      "lists the missing fields"
+    ],
+    "fix": {
+      "src/range.ts": "export function clamp(value: number, low: number, high: number): number {\n  return Math.min(Math.max(value, low), high);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/range.ts",
+    "delete": "return Math.min(Math.max(value, low), high);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A min/max swap; the clamp contract is test-only."
+  }
+}

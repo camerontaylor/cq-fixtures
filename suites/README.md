@@ -64,10 +64,21 @@ The micro-suites (phase 3, J3) live in `suites/fixer-worker/micro/` and
 `suites/review-classifier/micro/` — see their `PROVENANCE.md` files and `fixtures/README.md` for
 the hand-seeded synthetic fixtures they run against.
 
-The F2 catalog-built seed lives in `suites/fixer-worker/breadth/` (10 cases, 4 easy / 4 medium /
-2 hard). Its per-fault metadata channel is the fixture-side `fixtures/<name>.FAULT.json` record
+The F2 catalog-built seed (now promoted into the F3 suites below, ids unchanged) lived in
+`suites/fixer-worker/breadth/` (10 cases, 4 easy / 4 medium / 2 hard). Its per-fault metadata
+channel is the fixture-side `fixtures/<name>.FAULT.json` record
 (`schema/fault.schema.json`), NOT a suite field — the closed case shape above is unchanged. The
 record is a SIBLING FILE outside the materialized fixture directory, because it carries the
 canonical fix; `test/breadth.test.ts` proves a worker workspace cannot reach it. `deprecated/`
 suites are excluded from the weekly matrix discovery (`.github/workflows/suite.yml`), so a retired
 case never spends tokens.
+
+The F3 corpus promotes that seed into two suites (ids unchanged, `breadth-01..40`):
+`suites/fixer-worker/breadth-verified/` (12 human-reviewed cases, full filter chain in CI) and
+`suites/fixer-worker/breadth-tail/` (28 generated cases, both-states CI). The 30 new cases are
+generated deterministically from `catalog/substrates/` by `catalog/generate-cases.ts`; the
+runnable filter chain is `catalog/pipeline.ts`. The real-driver matrix takes a
+`workflow_dispatch` input `profile: verified|full` — `verified` runs only the breadth-verified
+suites, `full` (the default, and the weekly schedule's value) runs every suite. PR CI stays
+fake-driver: the smoke loop runs the micro suites plus `breadth-verified`. The verified tier's
+≤ 20 min serial per cell is a **projection** (digest ~90 s/case), re-baselined by F1.

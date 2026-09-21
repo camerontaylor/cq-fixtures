@@ -1,0 +1,34 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "requireFields lists the present fields instead of the missing ones.",
+  "operator": "equality-boundary",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:EqualityOperator",
+    "seed": 132,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": [
+      "lists the missing fields"
+    ],
+    "p2p": [
+      "rejects an address without a dotted domain",
+      "parses a decimal string as base ten",
+      "keeps a value inside the range"
+    ],
+    "fix": {
+      "src/required.ts": "export function requireFields(obj: Record<string, unknown>, fields: string[]): string[] {\n  return fields.filter((field) => obj[field] === undefined);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/required.ts",
+    "delete": "return fields.filter((field) => obj[field] === undefined);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "An equality flip; the missing-vs-present contract is test-only."
+  }
+}

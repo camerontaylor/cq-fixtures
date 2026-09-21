@@ -1,0 +1,35 @@
+{
+  "bug_type": "function misuse",
+  "failure_symptoms": "toKebabCase returns uppercase letters, and truncate shortens text that already fits the limit.",
+  "operator": "method-swap+equality-boundary",
+  "difficulty": "hard",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": [
+      "lowercases and hyphen-joins words",
+      "returns the text unchanged at the limit"
+    ],
+    "p2p": [
+      "counts words ignoring surrounding whitespace",
+      "averages the word lengths"
+    ],
+    "fix": {
+      "src/case.ts": "export function toKebabCase(text: string): string {\n  return text.trim().toLowerCase().split(/\\s+/).join('-');\n}\n",
+      "src/truncate.ts": "export function truncate(text: string, max: number): string {\n  return text.length <= max ? text : text.slice(0, max) + '…';\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/case.ts",
+    "delete": "return text.trim().toLowerCase().split(/\\s+/).join('-');"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "told",
+    "notes": "Both diffs are one-token; hard tier is carried by finding two independent faults."
+  }
+}

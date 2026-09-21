@@ -1,0 +1,36 @@
+{
+  "bug_type": "variable misuse",
+  "failure_symptoms": "enqueue puts the new value at the front of the queue, and shouldRetry retries once past the attempt limit.",
+  "operator": "operand-swap+equality-boundary",
+  "difficulty": "hard",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": [
+      "appends a value to the queue",
+      "stops retrying at the attempt limit"
+    ],
+    "p2p": [
+      "returns the first value",
+      "advances a queued task to running",
+      "reports the fraction of successes"
+    ],
+    "fix": {
+      "src/queue.ts": "export function enqueue<T>(items: T[], value: T): T[] {\n  return [...items, value];\n}\n\nexport function dequeue<T>(items: T[]): T | undefined {\n  return items[0];\n}\n",
+      "src/retry.ts": "export function shouldRetry(attempt: number, max: number): boolean {\n  return attempt < max;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/queue.ts",
+    "delete": "return [...items, value];"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "told",
+    "notes": "Both diffs are one-token; hard tier is carried by finding two independent faults."
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "wordCount counts surrounding whitespace as extra words.",
+  "operator": "chain-break",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": [
+      "counts words ignoring surrounding whitespace"
+    ],
+    "p2p": [
+      "lowercases and hyphen-joins words",
+      "returns the text unchanged at the limit",
+      "averages the word lengths"
+    ],
+    "fix": {
+      "src/count.ts": "export function wordCount(text: string): number {\n  return text.trim().split(/\\s+/).length;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/count.ts",
+    "delete": "return text.trim().split(/\\s+/).length;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A dropped trim in a chain; the whitespace symptom is not in the diff."
+  }
+}

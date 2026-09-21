@@ -25,7 +25,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function classifierRow(overrides: Partial<ResultRow> = {}): ResultRow {
+/** A shared valid result row (classifier or fixer) with per-test overrides. */
+function baseRow(overrides: Partial<ResultRow> = {}): ResultRow {
   return {
     role: 'review-classifier',
     suite: 'tiny-classifier',
@@ -50,8 +51,8 @@ describe('regrade --from re-aggregates byte-identically', () => {
   it('rewrites the table from rows.jsonl with the original generatedAt preserved', async () => {
     const outDir = join(root, 'out');
     mkdirSync(outDir, { recursive: true });
-    const rows = [classifierRow({ case: 'c1', outcome: { score: 1, passed: 1, total: 1 } }),
-      classifierRow({ case: 'c2', outcome: { score: 0, passed: 0, total: 1 } })];
+    const rows = [baseRow({ case: 'c1', outcome: { score: 1, passed: 1, total: 1 } }),
+      baseRow({ case: 'c2', outcome: { score: 0, passed: 0, total: 1 } })];
     writeRowsJsonl(outDir, rows);
     // The table the run originally emitted, with a fixed generation stamp.
     const table = aggregate(rows)[0]!;
@@ -155,7 +156,7 @@ function buildTinyFixerRepo(): TinyRepo {
     }, null, 2) + '\n',
   );
   // The recorded (pre-rejudge) outcome: a fixer row carries TWO probes.
-  writeRowsJsonl(outDir, [classifierRow({
+  writeRowsJsonl(outDir, [baseRow({
     role: 'fixer-worker',
     suite: 'tiny-fixer',
     case: 'tiny-1',
@@ -216,7 +217,7 @@ describe('regrade --rejudge re-runs the local judge over persisted predictions',
       }, null, 2) + '\n',
     );
     // Recorded as a MISS; the persisted output says resolved, so re-judge flips it.
-    writeRowsJsonl(outDir, [classifierRow({ outcome: { score: 0, passed: 0, total: 1 } })]);
+    writeRowsJsonl(outDir, [baseRow({ outcome: { score: 0, passed: 0, total: 1 } })]);
 
     await expect(
       cliMain(['regrade', '--from', outDir, '--rejudge', '--repo-root', repoRoot]),
@@ -231,7 +232,7 @@ describe('regrade --rejudge re-runs the local judge over persisted predictions',
   it('refuses a truncated patch and keeps the recorded outcome (with a diagnostic)', async () => {
     const { repoRoot, outDir } = buildTinyFixerRepo();
     // Recorded outcome is a MISS so a wrongly-applied patch would be visible.
-    writeRowsJsonl(outDir, [classifierRow({
+    writeRowsJsonl(outDir, [baseRow({
       role: 'fixer-worker',
       suite: 'tiny-fixer',
       case: 'tiny-1',

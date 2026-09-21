@@ -306,7 +306,8 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
     // themselves are malformed — throw rather than emit a lying table.
     if (acc.total < acc.runs || acc.passed > acc.total) {
       throw new Error(
-        `aggregate: semantic invariant violated for cell ${acc.model}/${acc.driver} ` +
+        `aggregate: semantic invariant violated for cell ${acc.model}/${acc.driver}` +
+          `${acc.variant !== 'default' ? `/variant ${acc.variant}` : ''} ` +
           `(runs=${acc.runs}, passed=${acc.passed}, total=${acc.total})`,
       );
     }

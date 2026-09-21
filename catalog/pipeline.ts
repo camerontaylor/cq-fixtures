@@ -8,16 +8,17 @@
 //                             record or its canonical fix (review-debt #11 class)
 //   F2P gate                — the stored faulted state is red
 //   100%-green baseline     — applying `validation.fix` is green
-//   determinism ×N          — both states repeat identically (full mode)
 //   P2P adequacy            — deleting the recorded statement from the fixed
-//                             source is red (full mode)
+//                             source is red (both modes)
+//   determinism ×N          — both states repeat identically (full mode)
 //   format/tell pass        — the faulted→fixed diff carries no operator
 //                             signature and is operator-sized (full mode)
 //
 // `full: false` runs the both-states subset: annotation, reachability, one
-// faulted + one fixed judge run, and the per-title F2P/P2P checks in BOTH
-// states (a swapped label must not pass on aggregate red/green alone).
-// `full: true` adds determinism ×3, adequacy, and the tell pass.
+// faulted + one fixed judge run, the per-title F2P/P2P checks in BOTH states
+// (a swapped label must not pass on aggregate red/green alone), and
+// single-statement-deletion adequacy.
+// `full: true` adds determinism ×3 and the format/tell pass.
 //
 // The pipeline never edits a fixture: `validation.fix` is applied to a
 // materialized tmpdir copy, and the pristine fixture under repoRoot is never
@@ -213,6 +214,16 @@ function outcomeOf(tests: readonly TestOutcome[], title: string): string | undef
   return tests.find((t) => t.title === title)?.status;
 }
 
+/**
+ * The fail-closed infrastructure markers a judge prints when it could not run
+ * (as opposed to an eval-red case): the first one present in `stderr`, or
+ * `undefined` when the run is a real result. Shared by the faulted, fixed, and
+ * adequacy gates so an infrastructure failure never masquerades as "red".
+ */
+export function judgeInfraMarker(stderr: string): string | undefined {
+  return ['refusing to judge', 'workspace escape', 'could not execute the vitest run'].find((marker) => stderr.includes(marker));
+}
+
 const TELL_MARKERS = /\b(stryker|mutant|FAULT|BUG|TODO|XXX|MUTATION)\b/i;
 
 /**
@@ -240,10 +251,23 @@ export function annotationGate(repoRoot: string, fixtureRef: string, record: Fau
     }
     if (stored === fixed) fixProblems.push(`${rel} is not faulted`);
   }
+  const adequacy = record.adequacy;
+  const adequacyFixed =
+    adequacy !== undefined && Object.keys(record.validation.fix).includes(adequacy.file)
+      ? record.validation.fix[adequacy.file]
+      : undefined;
+  // The gate deletes by first-occurrence replace, so a statement that appears
+  // more than once would silently delete the wrong one — uniqueness is part of
+  // the adequacy contract.
   const adequacyOk =
-    record.adequacy !== undefined &&
-    Object.keys(record.validation.fix).includes(record.adequacy.file) &&
-    record.validation.fix[record.adequacy.file]!.includes(record.adequacy.delete);
+    adequacy !== undefined &&
+    adequacyFixed !== undefined &&
+    adequacyFixed.includes(adequacy.delete) &&
+    adequacyFixed.split(adequacy.delete).length - 1 === 1;
+  const adequacyDetail =
+    adequacy !== undefined && adequacyFixed !== undefined && adequacyFixed.includes(adequacy.delete)
+      ? 'adequacy.delete must occur exactly once in the fixed source'
+      : 'adequacy target missing or not in a fixed file';
   return gate(
     'annotation',
     missingTitles.length === 0 && dupes.length === 0 && bandProblems.length === 0 && fixProblems.length === 0 && adequacyOk,
@@ -257,7 +281,7 @@ export function annotationGate(repoRoot: string, fixtureRef: string, record: Fau
             ? fixProblems.join('; ')
             : adequacyOk
               ? 'schema, catalog bands, unique titles, faulted-different fix, adequacy present'
-              : 'adequacy target missing or not in a fixed file',
+              : adequacyDetail,
   );
 }
 
@@ -297,13 +321,11 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     let faultedDetail = 'stored faulted state is red';
     for (let i = 0; i < faultedRuns; i++) {
       const { status, stderr } = runJudge(repoRoot, checkRel, workspace, timeoutMs);
-      for (const marker of ['refusing to judge', 'workspace escape', 'could not execute the vitest run']) {
-        if (stderr.includes(marker)) {
-          faultedRed = false;
-          faultedDetail = `judge failed closed (infrastructure): ${marker}`;
-        }
-      }
-      if (status === 0) {
+      const marker = judgeInfraMarker(stderr);
+      if (marker !== undefined) {
+        faultedRed = false;
+        faultedDetail = `judge failed closed (infrastructure): ${marker}`;
+      } else if (status === 0) {
         faultedRed = false;
         faultedDetail = `faulted run ${i + 1} was green`;
       }
@@ -336,13 +358,11 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     let fixedDetail = 'canonical fix is green';
     for (let i = 0; i < fixedRuns; i++) {
       const { status, stderr } = runJudge(repoRoot, checkRel, workspace, timeoutMs);
-      for (const marker of ['refusing to judge', 'workspace escape', 'could not execute the vitest run']) {
-        if (stderr.includes(marker)) {
-          fixedGreen = false;
-          fixedDetail = `judge failed closed (infrastructure): ${marker}`;
-        }
-      }
-      if (status !== 0) {
+      const marker = judgeInfraMarker(stderr);
+      if (marker !== undefined) {
+        fixedGreen = false;
+        fixedDetail = `judge failed closed (infrastructure): ${marker}`;
+      } else if (status !== 0) {
         fixedGreen = false;
         fixedDetail = `fixed run ${i + 1} was red`;
       }
@@ -353,19 +373,27 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     const allBad = [...record.validation.f2p, ...record.validation.p2p].filter((t) => outcomeOf(fixedJson.tests, t) !== 'passed');
     gates.push(gate('p2p-fixed', allBad.length === 0, allBad.length === 0 ? 'every declared title passes in the fixed state' : `not passing: ${allBad.join('; ')}`));
 
-    if (full) {
-      // adequacy: delete the recorded statement from the fixed source.
-      const adequacy = record.adequacy;
-      const fixedSource = adequacy !== undefined ? record.validation.fix[adequacy.file] : undefined;
-      if (adequacy === undefined || fixedSource === undefined || !fixedSource.includes(adequacy.delete)) {
-        gates.push(gate('adequacy', false, 'adequacy target missing or not present in the fixed source'));
+    // adequacy: delete the recorded statement from the fixed source. Runs in
+    // BOTH modes — the both-states floor must also prove the recorded
+    // statement is load-bearing, so a suite that stays green with it deleted
+    // can never be seeded into the corpus.
+    const adequacy = record.adequacy;
+    const fixedSource = adequacy !== undefined ? record.validation.fix[adequacy.file] : undefined;
+    if (adequacy === undefined || fixedSource === undefined || !fixedSource.includes(adequacy.delete)) {
+      gates.push(gate('adequacy', false, 'adequacy target missing or not present in the fixed source'));
+    } else {
+      const crippled = fixedSource.replace(adequacy.delete, '');
+      writeFileSync(join(workspace, adequacy.file), crippled);
+      const { status, stderr } = runJudge(repoRoot, checkRel, workspace, timeoutMs);
+      const marker = judgeInfraMarker(stderr);
+      if (marker !== undefined) {
+        gates.push(gate('adequacy', false, `judge failed closed (infrastructure): ${marker}`));
       } else {
-        const crippled = fixedSource.replace(adequacy.delete, '');
-        writeFileSync(join(workspace, adequacy.file), crippled);
-        const { status } = runJudge(repoRoot, checkRel, workspace, timeoutMs);
         gates.push(gate('adequacy', status !== 0, status !== 0 ? 'single-statement deletion is red' : 'deletion stayed green'));
       }
+    }
 
+    if (full) {
       // format/tell: the faulted→fixed diff is operator-sized and signature-free.
       const tellProblems: string[] = [];
       for (const [rel, fixed] of Object.entries(record.validation.fix)) {

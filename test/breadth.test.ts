@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { assertRecordOutsideFixture, runCasePipeline, type CaseReport } from '../catalog/pipeline.ts';
+import { discoverFixerCases, FULL_CHAIN_SUITES } from '../catalog/corpus.ts';
 import { isFixerCase, loadSuite } from '../runner/suite.ts';
 import { loadFaultForFixture } from '../catalog/fault.ts';
 import { CASE_RECIPES } from '../catalog/recipes.ts';
@@ -72,20 +73,24 @@ describe('breadth corpus shape (F3 acceptance)', () => {
   });
 });
 
-describe('both-states CI: every breadth-tail case is buggy-red and fix-green', () => {
-  for (const c of tailCases) {
-    it(`${c.id}: both-states (buggy exit 1, canonical fix exit 0)`, () => {
-      const report = runCasePipeline(c.fixture, { full: false });
-      expect(report.pass, gateSummary(report)).toBe(true);
-    }, 180_000);
-  }
-});
+describe('both-states + adequacy CI for every discovered record-backed fixer case (F7)', () => {
+  const discovered = discoverFixerCases(REPO_ROOT).filter((c) => c.recordBacked);
 
-describe('breadth-verified full filter chain', () => {
-  for (const c of verifiedCases) {
-    it(`${c.id}: annotation, reachability, F2P, baseline, determinism ×3, per-title P2P, adequacy, format`, () => {
-      const report = runCasePipeline(c.fixture, { full: true });
+  it('discovers every breadth-verified and breadth-tail case (the breadth corpus is a subset)', () => {
+    expect(discovered.length).toBeGreaterThanOrEqual(40);
+    const known = new Set(discovered.map((c) => `${c.suiteRel}/${c.caseId}`));
+    for (const c of verifiedCases) {
+      expect(known.has(`suites/fixer-worker/breadth-verified/${c.id}`), `${c.id} discovered`).toBe(true);
+    }
+    for (const c of tailCases) {
+      expect(known.has(`suites/fixer-worker/breadth-tail/${c.id}`), `${c.id} discovered`).toBe(true);
+    }
+  });
+
+  for (const c of discovered) {
+    it(`${c.suiteRel}/${c.caseId}: both-states + adequacy${FULL_CHAIN_SUITES.has(c.suiteRel) ? ' + full chain' : ''}`, () => {
+      const report = runCasePipeline(c.fixture, { full: FULL_CHAIN_SUITES.has(c.suiteRel) });
       expect(report.pass, gateSummary(report)).toBe(true);
-    }, 300_000);
+    }, FULL_CHAIN_SUITES.has(c.suiteRel) ? 300_000 : 180_000);
   }
 });

@@ -6,14 +6,16 @@ import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolk
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runSuite } from '../runner/index.ts';
 import {
+  annotationGate,
   assertRecordOutsideFixture,
   changedLines,
   declaredTitles,
+  duplicateTitles,
   runCasePipeline,
   scanForFaultLeaks,
   PIPELINE_REPO_ROOT,
 } from '../catalog/pipeline.ts';
-import { loadFaultForFixture } from '../catalog/fault.ts';
+import { loadFaultForFixture, type FaultRecord } from '../catalog/fault.ts';
 
 // Pure/lightweight pipeline unit tests. The heavy execution gates are covered
 // per case in test/breadth.test.ts; this file pins the helpers and the
@@ -41,13 +43,39 @@ describe('pipeline helpers', () => {
     expect(titles.has('averages the word lengths')).toBe(true);
   });
 
+  it('duplicateTitles flags a repeated it() title', () => {
+    const fixture = join(wsRoot, 'fixtures', 'dup');
+    mkdirSync(join(fixture, 'test'), { recursive: true });
+    writeFileSync(join(fixture, 'test', 'dup.test.ts'), "import { it } from 'vitest';\nit('same', () => {});\nit('same', () => {});\n");
+    expect(duplicateTitles(wsRoot, 'fixtures/dup')).toEqual(['same']);
+    expect(duplicateTitles(PIPELINE_REPO_ROOT, 'fixtures/breadth-11')).toEqual([]);
+  });
+
+  it('the annotation gate fails closed on a missing fix target', () => {
+    const fixture = join(wsRoot, 'fixtures', 'badfix');
+    mkdirSync(join(fixture, 'src'), { recursive: true });
+    mkdirSync(join(fixture, 'test'), { recursive: true });
+    writeFileSync(join(fixture, 'src', 'a.ts'), 'export const x = 1;\n');
+    writeFileSync(join(fixture, 'test', 'a.test.ts'), "import { it, expect } from 'vitest';\nit('x is one', () => { expect(1).toBe(1); });\n");
+    const base = loadFaultForFixture(PIPELINE_REPO_ROOT, 'fixtures/breadth-11');
+    const record: FaultRecord = {
+      ...base,
+      validation: { f2p: ['x is one'], p2p: [], fix: { 'src/missing.ts': 'export const y = 2;\n' } },
+      adequacy: { file: 'src/missing.ts', delete: 'export const y = 2;' },
+    };
+    const result = annotationGate(wsRoot, 'fixtures/badfix', record);
+    expect(result.pass).toBe(false);
+    expect(result.detail).toContain('src/missing.ts is missing from the fixture');
+  });
+
   it('assertRecordOutsideFixture holds for every case', () => {
     expect(assertRecordOutsideFixture(PIPELINE_REPO_ROOT, 'fixtures/breadth-01')).toBe(true);
     expect(assertRecordOutsideFixture(PIPELINE_REPO_ROOT, 'fixtures/breadth-40')).toBe(true);
   });
 
   it('the pipeline reports every gate for a case without touching the pristine fixture', () => {
-    // full=false keeps this cheap: annotation + reachability + one red + one green.
+    // full=false runs the both-states floor: annotation + reachability + one
+    // faulted and one fixed judge run + the per-title JSON checks.
     const report = runCasePipeline('fixtures/breadth-16', { full: false });
     expect(report.caseId).toBe('breadth-16');
     expect(report.gates.map((g) => g.gate)).toEqual([

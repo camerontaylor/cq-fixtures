@@ -6,7 +6,7 @@ import { assertRecordOutsideFixture, runCasePipeline, type CaseReport } from '..
 import { isFixerCase, loadSuite } from '../runner/suite.ts';
 import { loadFaultForFixture } from '../catalog/fault.ts';
 import { CASE_RECIPES } from '../catalog/recipes.ts';
-import { checkCase } from '../catalog/generate-cases.ts';
+import { checkCase, checkSuiteEntries } from '../catalog/generate-cases.ts';
 
 // F3 breadth-corpus conformance (plan §5 row F3). `catalog/pipeline.ts` is the
 // runnable filter chain: both-states CI for every case (tail) and the full
@@ -65,9 +65,9 @@ describe('breadth corpus shape (F3 acceptance)', () => {
     }
   });
 
-  it('the 30 generated cases still match their recipes (generator --check)', () => {
+  it('the 30 generated cases still match their recipes and suite entries (generator --check)', () => {
     expect(CASE_RECIPES).toHaveLength(30);
-    const mismatches = CASE_RECIPES.flatMap(checkCase);
+    const mismatches = [...CASE_RECIPES.flatMap(checkCase), ...checkSuiteEntries()];
     expect(mismatches, mismatches.join('\n')).toEqual([]);
   });
 });

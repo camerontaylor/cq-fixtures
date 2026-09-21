@@ -14,9 +14,11 @@
 //   format/tell pass        — the faulted→fixed diff carries no operator
 //                             signature and is operator-sized (full mode)
 //
-// `full: false` runs the both-states subset (annotation, reachability, one
-// faulted + one fixed run) — the every-case CI floor. `full: true` adds
-// determinism ×3, the per-title JSON check, adequacy, and the tell pass.
+// `full: false` runs the both-states subset: annotation, reachability, one
+// faulted + one fixed judge run, and the per-title F2P/P2P JSON checks (a
+// swapped label must not pass on aggregate red/green alone). `full: true`
+// adds determinism ×3, the fixed-state per-title check, adequacy, and the
+// tell pass.
 //
 // The pipeline never edits a fixture: `validation.fix` is applied to a
 // materialized tmpdir copy, and the pristine fixture under repoRoot is never
@@ -206,20 +208,11 @@ function outcomeOf(tests: readonly TestOutcome[], title: string): string | undef
 const TELL_MARKERS = /\b(stryker|mutant|FAULT|BUG|TODO|XXX|MUTATION)\b/i;
 
 /**
- * Run the filter chain for one fixture. Returns a per-gate report; the caller
- * decides how to surface it. Never throws for an eval-red case (that is a
- * gate result); throws only on genuinely unexpected infrastructure errors.
+ * The static annotation gate: schema/catalog rules, exact and unique declared
+ * titles, fix targets present and faulted-different, and an adequacy target
+ * present in a fixed file. Pure (no execution) so it can be unit-tested.
  */
-export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {}): CaseReport {
-  const repoRoot = options.repoRoot ?? PIPELINE_REPO_ROOT;
-  const full = options.full ?? false;
-  const runs = options.determinismRuns ?? 3;
-  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
-  const gates: GateResult[] = [];
-  const record = loadFaultForFixture(repoRoot, fixtureRef);
-  const caseId = fixtureRef.split('/').pop() ?? fixtureRef;
-
-  // --- static annotation gate -------------------------------------------
+export function annotationGate(repoRoot: string, fixtureRef: string, record: FaultRecord): GateResult {
   const titles = declaredTitles(repoRoot, fixtureRef);
   const missingTitles = [...record.validation.f2p, ...record.validation.p2p].filter((t) => !titles.has(t));
   const dupes = duplicateTitles(repoRoot, fixtureRef);
@@ -243,23 +236,39 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     record.adequacy !== undefined &&
     Object.keys(record.validation.fix).includes(record.adequacy.file) &&
     record.validation.fix[record.adequacy.file]!.includes(record.adequacy.delete);
-  gates.push(
-    gate(
-      'annotation',
-      missingTitles.length === 0 && dupes.length === 0 && bandProblems.length === 0 && fixProblems.length === 0 && adequacyOk,
-      missingTitles.length > 0
-        ? `missing titles: ${missingTitles.join('; ')}`
-        : dupes.length > 0
-          ? `duplicate titles: ${dupes.join('; ')}`
-          : bandProblems.length > 0
-            ? bandProblems.join('; ')
-            : fixProblems.length > 0
-              ? fixProblems.join('; ')
-              : adequacyOk
-                ? 'schema, catalog bands, unique titles, faulted-different fix, adequacy present'
-                : 'adequacy target missing or not in a fixed file',
-    ),
+  return gate(
+    'annotation',
+    missingTitles.length === 0 && dupes.length === 0 && bandProblems.length === 0 && fixProblems.length === 0 && adequacyOk,
+    missingTitles.length > 0
+      ? `missing titles: ${missingTitles.join('; ')}`
+      : dupes.length > 0
+        ? `duplicate titles: ${dupes.join('; ')}`
+        : bandProblems.length > 0
+          ? bandProblems.join('; ')
+          : fixProblems.length > 0
+            ? fixProblems.join('; ')
+            : adequacyOk
+              ? 'schema, catalog bands, unique titles, faulted-different fix, adequacy present'
+              : 'adequacy target missing or not in a fixed file',
   );
+}
+
+/**
+ * Run the filter chain for one fixture. Returns a per-gate report; the caller
+ * decides how to surface it. Never throws for an eval-red case (that is a
+ * gate result); throws only on genuinely unexpected infrastructure errors.
+ */
+export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {}): CaseReport {
+  const repoRoot = options.repoRoot ?? PIPELINE_REPO_ROOT;
+  const full = options.full ?? false;
+  const runs = options.determinismRuns ?? 3;
+  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const gates: GateResult[] = [];
+  const record = loadFaultForFixture(repoRoot, fixtureRef);
+  const caseId = fixtureRef.split('/').pop() ?? fixtureRef;
+
+  // --- static annotation gate -------------------------------------------
+  gates.push(annotationGate(repoRoot, fixtureRef, record));
 
   // --- reachability gate -------------------------------------------------
   const reachWorkspace = materializeFixture(repoRoot, fixtureRef);

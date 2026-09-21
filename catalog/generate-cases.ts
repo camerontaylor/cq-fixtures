@@ -52,6 +52,14 @@ export function renderCase(recipe: CaseRecipe): RenderedCase {
     files.set(mutation.file, current.replace(mutation.find, mutation.replace));
   }
   files.set('package.json', JSON.stringify({ name: recipe.id, private: true, version: '0.0.0', type: 'module' }, null, 2) + '\n');
+  // The adequacy target must be a UNIQUE statement in the fixed source — the
+  // gate deletes it by first-occurrence replace, so a repeated statement would
+  // silently delete the wrong one.
+  const adequacySource = fix.get(recipe.adequacy.file) ?? files.get(recipe.adequacy.file) ?? '';
+  const adequacyOccurrences = adequacySource.split(recipe.adequacy.delete).length - 1;
+  if (adequacyOccurrences !== 1) {
+    throw new Error(`${recipe.id}: adequacy.delete must occur exactly once in ${recipe.adequacy.file} (found ${adequacyOccurrences})`);
+  }
   files.set(
     'check.mjs',
     `// Thin judge shim for the ${recipe.id} fixture. ALL judge logic lives in the\n` +
@@ -163,29 +171,57 @@ export function substrateNames(): string[] {
   return [...new Set(CASE_RECIPES.map((r) => r.substrate))].sort();
 }
 
-function suiteNameForCase(id: string): string {
-  return Number(id.split('-')[1]) <= 12 ? 'breadth-verified' : 'breadth-tail';
+const SUITE_NAMES = ['breadth-verified', 'breadth-tail'] as const;
+
+interface SuiteDoc {
+  name: string;
+  role: string;
+  provenance: unknown;
+  cases: Array<Record<string, unknown>>;
+}
+
+function readSuiteDoc(name: string): SuiteDoc {
+  return JSON.parse(readFileSync(join(REPO_ROOT, 'suites', 'fixer-worker', name, 'suite.json'), 'utf8')) as SuiteDoc;
+}
+
+function suiteNameForCase(id: string): (typeof SUITE_NAMES)[number] {
+  const matches = SUITE_NAMES.filter((name) => readSuiteDoc(name).cases.some((c) => c.id === id));
+  if (matches.length !== 1) throw new Error(`${id}: expected exactly one suite entry, found ${matches.length}`);
+  return matches[0]!;
 }
 
 /** Verify each recipe's suite.json case entry matches `caseEntry(recipe)`. */
 export function checkSuiteEntries(): string[] {
   const mismatches: string[] = [];
-  const suites = new Map<string, { cases: Array<Record<string, unknown>> }>();
-  for (const name of ['breadth-verified', 'breadth-tail']) {
-    suites.set(name, JSON.parse(readFileSync(join(REPO_ROOT, 'suites', 'fixer-worker', name, 'suite.json'), 'utf8')) as { cases: Array<Record<string, unknown>> });
+  for (const name of SUITE_NAMES) {
+    const cases = readSuiteDoc(name).cases;
+    for (const recipe of CASE_RECIPES) {
+      const entry = cases.find((c) => c.id === recipe.id);
+      if (entry === undefined) continue; // this recipe belongs to the other suite
+      if (JSON.stringify(entry) !== JSON.stringify(caseEntry(recipe))) mismatches.push(`${recipe.id}: suite.json entry differs from the recipe`);
+    }
   }
   for (const recipe of CASE_RECIPES) {
-    const suiteName = suiteNameForCase(recipe.id);
-    const entry = suites.get(suiteName)?.cases.find((c) => c.id === recipe.id);
-    if (entry === undefined) {
-      mismatches.push(`${recipe.id}: missing from ${suiteName}/suite.json`);
-      continue;
-    }
-    if (JSON.stringify(entry) !== JSON.stringify(caseEntry(recipe))) {
-      mismatches.push(`${recipe.id}: suite.json entry differs from the recipe`);
-    }
+    const count = SUITE_NAMES.reduce((n, name) => n + readSuiteDoc(name).cases.filter((c) => c.id === recipe.id).length, 0);
+    if (count !== 1) mismatches.push(`${recipe.id}: appears in ${count} suites (expected 1)`);
   }
   return mismatches;
+}
+
+/** Upsert every recipe's suite.json case entry (the `--write` repair path). */
+function writeSuiteEntries(): void {
+  const docs = new Map(SUITE_NAMES.map((name) => [name, readSuiteDoc(name)]));
+  for (const recipe of CASE_RECIPES) {
+    const name = suiteNameForCase(recipe.id);
+    const cases = docs.get(name)!.cases;
+    const idx = cases.findIndex((c) => c.id === recipe.id);
+    const entry = caseEntry(recipe) as unknown as Record<string, unknown>;
+    if (idx === -1) cases.push(entry);
+    else cases[idx] = entry;
+  }
+  for (const [name, doc] of docs) {
+    writeFileSync(join(REPO_ROOT, 'suites', 'fixer-worker', name, 'suite.json'), JSON.stringify(doc, null, 2) + '\n');
+  }
 }
 
 function main(argv: readonly string[]): number {
@@ -196,7 +232,8 @@ function main(argv: readonly string[]): number {
   }
   if (mode === '--write') {
     for (const recipe of CASE_RECIPES) writeCase(recipe);
-    console.log(`generated ${CASE_RECIPES.length} cases`);
+    writeSuiteEntries();
+    console.log(`generated ${CASE_RECIPES.length} cases and synced their suite entries`);
     return 0;
   }
   const mismatches = [...CASE_RECIPES.flatMap(checkCase), ...checkSuiteEntries()];

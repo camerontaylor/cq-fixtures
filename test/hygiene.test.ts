@@ -108,7 +108,7 @@ describe('canary provenance placement (F7 review round 1)', () => {
   it('a public-bug-canary record outside suites/fixer-worker/canary is an issue', () => {
     withSyntheticRoot((root) => {
       writeSyntheticCase(root, {
-        suiteRel: 'suites/fixer-worker/probe-suite',
+        suiteRel: 'suites/fixer-worker/breadth-tail',
         caseId: 'probe-01',
         fixture: 'fixtures/probe-01',
         provenance: {
@@ -121,7 +121,7 @@ describe('canary provenance placement (F7 review round 1)', () => {
         },
       });
       expect(checkCorpusEvidence(root).issues).toEqual([
-        'case suites/fixer-worker/probe-suite/probe-01: public-bug-canary record must live in suites/fixer-worker/canary',
+        'case suites/fixer-worker/breadth-tail/probe-01: public-bug-canary record must live in suites/fixer-worker/canary',
       ]);
     });
   });
@@ -172,6 +172,15 @@ describe('CI static job runs the corpus gate (F7)', () => {
 describe('canary separation (F7 Slice B; tolerated until the suite lands)', () => {
   const canarySuiteJson = join(REPO_ROOT, 'suites', 'fixer-worker', 'canary', 'suite.json');
 
+  it('the canary suite is never a matrix discovery root in suite.yml', () => {
+    // Unconditional: this reads the workflow as text and does not depend on
+    // the canary suite existing on disk. suite.yml discovers roots explicitly,
+    // so the canary suite must never appear among them (it is reported in its
+    // own namespace, never in headline breadth tables).
+    const suiteYml = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'suite.yml'), 'utf8');
+    expect(suiteYml).not.toContain('suites/fixer-worker/canary');
+  });
+
   it('a canary suite, when present, is its own filespace', () => {
     if (!existsSync(canarySuiteJson)) return;
     const discovered = discoverFixerCases(REPO_ROOT);
@@ -183,6 +192,46 @@ describe('canary separation (F7 Slice B; tolerated until the suite lands)', () =
         .map((c) => c.caseId),
     );
     for (const c of canary) expect(breadthIds.has(c.caseId), c.caseId).toBe(false);
+  });
+});
+
+describe('explicit pipeline tiering + retired-suite notes (F7 review round 2)', () => {
+  it('a record-backed suite in neither tier set is an issue', () => {
+    withSyntheticRoot((root) => {
+      writeSyntheticCase(root, {
+        suiteRel: 'suites/fixer-worker/probe-suite',
+        caseId: 'probe-10',
+        fixture: 'fixtures/probe-10',
+        provenance: { origin: 'operator-catalog', generator: 'catalog:x', seed: 0, engine_version: 'v' },
+      });
+      expect(checkCorpusEvidence(root).issues).toEqual([
+        'suite suites/fixer-worker/probe-suite: record-backed suite is not classified as full-chain or both-states (add it to catalog/corpus.ts FULL_CHAIN_SUITES or BOTH_STATES_SUITES)',
+      ]);
+    });
+  });
+
+  it('a deprecated suite.json without a DEPRECATED.md dated note is an issue', () => {
+    withSyntheticRoot((root) => {
+      mkdirSync(join(root, 'fixtures'), { recursive: true });
+      const suiteDir = join(root, 'suites', 'fixer-worker', 'deprecated', 'old-suite');
+      mkdirSync(suiteDir, { recursive: true });
+      writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify({ name: 'old-suite', role: 'fixer-worker', provenance: {}, cases: [] }));
+      expect(checkCorpusEvidence(root).issues).toEqual([
+        'suite suites/fixer-worker/deprecated/old-suite: contains suite.json but no DEPRECATED.md dated note',
+      ]);
+    });
+  });
+
+  it('a quarantined suite.json without a QUARANTINE.md dated note is an issue', () => {
+    withSyntheticRoot((root) => {
+      mkdirSync(join(root, 'fixtures'), { recursive: true });
+      const suiteDir = join(root, 'suites', 'review-classifier', 'quarantine', 'flaky-suite');
+      mkdirSync(suiteDir, { recursive: true });
+      writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify({ name: 'flaky-suite', role: 'review-classifier', provenance: {}, cases: [] }));
+      expect(checkCorpusEvidence(root).issues).toEqual([
+        'suite suites/review-classifier/quarantine/flaky-suite: contains suite.json but no QUARANTINE.md dated note',
+      ]);
+    });
   });
 });
 

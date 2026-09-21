@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { assertRecordOutsideFixture, runCasePipeline, type CaseReport } from '../catalog/pipeline.ts';
-import { discoverFixerCases } from '../catalog/corpus.ts';
+import { discoverFixerCases, FULL_CHAIN_SUITES } from '../catalog/corpus.ts';
 import { isFixerCase, loadSuite } from '../runner/suite.ts';
 import { loadFaultForFixture } from '../catalog/fault.ts';
 import { CASE_RECIPES } from '../catalog/recipes.ts';
@@ -88,9 +88,9 @@ describe('both-states + adequacy CI for every discovered record-backed fixer cas
   });
 
   for (const c of discovered) {
-    it(`${c.suiteRel}/${c.caseId}: both-states + adequacy${c.suiteRel.endsWith('-verified') ? ' + full chain' : ''}`, () => {
-      const report = runCasePipeline(c.fixture, { full: c.suiteRel.endsWith('-verified') });
+    it(`${c.suiteRel}/${c.caseId}: both-states + adequacy${FULL_CHAIN_SUITES.has(c.suiteRel) ? ' + full chain' : ''}`, () => {
+      const report = runCasePipeline(c.fixture, { full: FULL_CHAIN_SUITES.has(c.suiteRel) });
       expect(report.pass, gateSummary(report)).toBe(true);
-    }, c.suiteRel.endsWith('-verified') ? 300_000 : 180_000);
+    }, FULL_CHAIN_SUITES.has(c.suiteRel) ? 300_000 : 180_000);
   }
 });

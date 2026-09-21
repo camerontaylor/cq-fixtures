@@ -1,9 +1,10 @@
 // Corpus discovery + static evidence inventory (plan WB-6 §F7). This module
 // walks every suite under `suites/` (skipping `deprecated/` and `quarantine/`
-// segments), inventories the FAULT.json records and fixture directories the
-// discovered fixer cases reference, and proves the STATIC half of the
-// adequacy gate without spawning a judge. `catalog/gate.ts` owns the CLI;
-// importing this module is side-effect free.
+// segments for discovery, but checking those retired suites for their dated
+// retirement notes), inventories the FAULT.json records and fixture
+// directories the discovered fixer cases reference, and proves the STATIC half
+// of the adequacy gate without spawning a judge. `catalog/gate.ts` owns the
+// CLI; importing this module is side-effect free.
 
 import { existsSync, readdirSync, readFileSync, type Dirent } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -18,8 +19,22 @@ const GRANDFATHERED_MICRO_SUITE = 'suites/fixer-worker/micro';
 /** The separate contamination-canary suite; the only home for public-bug-canary records. */
 const CANARY_SUITE = 'suites/fixer-worker/canary';
 
+/**
+ * Suites the FULL filter chain runs for (both-states + adequacy + determinism
+ * ×3 + the format/tell pass). Explicit tiering: `test/breadth.test.ts` used to
+ * infer this from an `endsWith('-verified')` heuristic, which silently mis-
+ * tiered any future record-backed suite whose name happened not to match.
+ */
+export const FULL_CHAIN_SUITES = new Set(['suites/fixer-worker/breadth-verified']);
+/** Suites the both-states + adequacy chain runs for (no determinism/format pass). */
+export const BOTH_STATES_SUITES = new Set(['suites/fixer-worker/breadth-tail', 'suites/fixer-worker/canary']);
+
 function toPosix(p: string): string {
   return sep === '/' ? p : p.split(sep).join('/');
+}
+
+function hasExcludedSegment(repoRel: string): boolean {
+  return repoRel.split('/').some((segment) => EXCLUDED_SEGMENTS.has(segment));
 }
 
 function walkForSuites(dir: string, repoRoot: string, found: string[]): void {
@@ -34,8 +49,7 @@ function walkForSuites(dir: string, repoRoot: string, found: string[]): void {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const child = join(dir, entry.name);
-    const segments = toPosix(relative(repoRoot, child)).split('/');
-    if (segments.some((segment) => EXCLUDED_SEGMENTS.has(segment))) continue;
+    if (hasExcludedSegment(toPosix(relative(repoRoot, child)))) continue;
     walkForSuites(child, repoRoot, found);
   }
 }
@@ -44,6 +58,35 @@ function walkForSuites(dir: string, repoRoot: string, found: string[]): void {
 export function discoverSuiteDirs(repoRoot: string): string[] {
   const found: string[] = [];
   walkForSuites(join(repoRoot, 'suites'), repoRoot, found);
+  return found.sort();
+}
+
+function walkRetiredSuites(dir: string, repoRoot: string, found: string[]): void {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const rel = toPosix(relative(repoRoot, dir));
+  if (hasExcludedSegment(rel) && entries.some((e) => e.isFile() && e.name === 'suite.json')) {
+    found.push(rel);
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    walkRetiredSuites(join(dir, entry.name), repoRoot, found);
+  }
+}
+
+/**
+ * Repo-relative POSIX paths of suites sitting under a `deprecated/` or
+ * `quarantine/` segment (the inverse filter of `discoverSuiteDirs`). These are
+ * never discovery roots, but a lingering `suite.json` inside one is the signal
+ * that its dated retirement note must exist beside it.
+ */
+export function discoverRetiredSuiteDirs(repoRoot: string): string[] {
+  const found: string[] = [];
+  walkRetiredSuites(join(repoRoot, 'suites'), repoRoot, found);
   return found.sort();
 }
 
@@ -99,6 +142,19 @@ export function checkCorpusEvidence(repoRoot: string): CorpusIssues {
   const recordBacked = discovered.filter((c) => c.recordBacked);
   const legacy = discovered.filter((c) => !c.recordBacked);
   const fixturesDir = join(repoRoot, 'fixtures');
+
+  // 0. Every suite that evidences a record-backed fixer case must be
+  // explicitly tiered: full-chain or both-states. Suites with no record-backed
+  // cases (micro's grandfathered hand-seeded set, the classifier suites) are
+  // exempt. The membership test is `exactly one of the two sets`, so a suite
+  // accidentally listed in BOTH is an issue too.
+  for (const suiteRel of [...new Set(recordBacked.map((c) => c.suiteRel))].sort()) {
+    if (FULL_CHAIN_SUITES.has(suiteRel) === BOTH_STATES_SUITES.has(suiteRel)) {
+      issues.push(
+        `suite ${suiteRel}: record-backed suite is not classified as full-chain or both-states (add it to catalog/corpus.ts FULL_CHAIN_SUITES or BOTH_STATES_SUITES)`,
+      );
+    }
+  }
 
   // 1. Every record must be referenced by EXACTLY ONE discovered fixer case.
   const recordRefs = new Map<string, number>();
@@ -195,6 +251,18 @@ export function checkCorpusEvidence(repoRoot: string): CorpusIssues {
     const fixtureRef = `fixtures/${entry.name}`;
     if (!referencedFixtures.has(fixtureRef) && !grandfatheredFixtures.has(fixtureRef)) {
       issues.push(`orphan fixture ${entry.name}`);
+    }
+  }
+
+  // 6. A retired suite (under `deprecated/` or `quarantine/`) is not a
+  // discovery root, but if it still carries a `suite.json` it must also carry
+  // its dated note — the audit trail is machine-checked, not merely
+  // documented. Landing-zone dirs with only a README.md carry no suite.json,
+  // so they are exempt.
+  for (const suiteRel of discoverRetiredSuiteDirs(repoRoot)) {
+    const note = suiteRel.split('/').includes('quarantine') ? 'QUARANTINE.md' : 'DEPRECATED.md';
+    if (!existsSync(join(repoRoot, ...suiteRel.split('/'), note))) {
+      issues.push(`suite ${suiteRel}: contains suite.json but no ${note} dated note`);
     }
   }
 

@@ -1,0 +1,36 @@
+{
+  "bug_type": "value misuse",
+  "failure_symptoms": "parseAmount parses a hex-looking string as base sixteen instead of base ten.",
+  "operator": "radix-coercion-drop",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "public-bug-canary",
+    "generator": "canary:public-bug-class",
+    "seed": 0,
+    "engine_version": "synthetic-canary",
+    "reference": "missing-radix parseInt (MDN Web Docs parseInt radix parameter; ESLint radix rule)",
+    "license": "no code vendored; reference is documentation only"
+  },
+  "validation": {
+    "f2p": [
+      "parses a decimal string as base ten"
+    ],
+    "p2p": [
+      "rejects an address without a dotted domain",
+      "keeps a value inside the range",
+      "lists the missing fields"
+    ],
+    "fix": {
+      "src/number.ts": "export function parseAmount(text: string): number {\n  return parseInt(text, 10);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/number.ts",
+    "delete": "return parseInt(text, 10);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "Canary: the missing-radix parsing bug, reproduced synthetically."
+  }
+}

@@ -182,6 +182,13 @@ jobs:
             driver: ai-sdk
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
+            # WB-1.7 dispatch-only role: the ai-sdk fixer is a known toolkit
+            # defect (cq-toolkit#210 — endpoint header timeouts on long tool
+            # loops + a structured-output miss classified as a driver error),
+            # so it publishes NO rows: a loud absence, never a driver-error
+            # zero. The classifier role on this cell stays real.
+            skip_roles: fixer-worker
+            skip_reason: "cq-toolkit#210: ai-sdk fixer — API header timeouts + structured-output miss classified as a driver error (F1 re-diagnosis, run 35553519022)"
           - axis: model
             # Served-id rule (2026-09-14; WB-1.5a): request the id the wire
             # SERVES. The 2026-09-18 matrix requested `deepseek-chat` and the
@@ -195,24 +202,43 @@ jobs:
             driver: ai-sdk
             env_key: DEEPSEEK_API_KEY
             secret_name: DEEPSEEK_API_KEY
+            # WB-1.7 dispatch-only role: the deepseek fixer's structured
+            # output never parsed against the required shape (cq-toolkit#210).
+            skip_roles: fixer-worker
+            skip_reason: "cq-toolkit#210: deepseek-flash fixer — No object generated: could not parse the response (F1 re-diagnosis, run 35553519022)"
           - axis: driver
             model: glm-5.3-flash
             provider: zai
             driver: claude-agent
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
+            # WB-1.7 dispatch-only lane: the claude-agent driver's
+            # `--json-schema` is rejected by the CLI (cq-toolkit#209 — the
+            # serialised schema carries the draft-2020-12 meta-schema URI),
+            # so both roles publish NO rows: a loud absence, never zeros.
+            skip_roles: fixer-worker,review-classifier
+            skip_reason: "cq-toolkit#209: claude-agent — --json-schema rejected (draft-2020-12 meta-schema URI), 0-token pre-model failure (F1 re-diagnosis, run 35553519022)"
           - axis: driver
             model: glm-5.3-flash
             provider: zai
             driver: subprocess
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
+            # WB-1.7 dispatch-only lane: the subprocess driver does not
+            # populate WorkerResult.error (cq-toolkit#208), so its 0-token
+            # failure is undiagnosable; both roles publish NO rows.
+            skip_roles: fixer-worker,review-classifier
+            skip_reason: "cq-toolkit#208: subprocess — WorkerResult.error not populated, failure cause discarded (F1 re-diagnosis, run 35553519022)"
           - axis: driver
             model: glm-5.3-flash
             provider: zai
             driver: acp
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
+            # The acp cell is gated by its own preflight (owner decision
+            # pending); no role list is needed here.
+            skip_roles: ''
+            skip_reason: ''
     steps:
       - name: Check out the repo
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -490,6 +516,10 @@ jobs:
           MATRIX_PROVIDER: ${{ matrix.cell.provider }}
           MATRIX_DRIVER: ${{ matrix.cell.driver }}
           MATRIX_PROFILE: ${{ github.event.inputs.profile || 'full' }}
+          # WB-1.7: comma-separated roles this cell must NOT dispatch (a known
+          # toolkit defect) + the routed-issue reason echoed loudly.
+          SKIP_ROLES: ${{ matrix.cell.skip_roles }}
+          SKIP_REASON: ${{ matrix.cell.skip_reason }}
         run: |
           set -euo pipefail
           # Designed discovery (J4/F3/F4): a SHALLOW find over FIXED suite dirs
@@ -522,6 +552,11 @@ jobs:
           if [ "${MATRIX_DRIVER}" = "acp" ]; then
             probe_extra=(--probe-record reports/eval/ACP-PROBE.json)
           fi
+          # The dispatch-only branch below touches a marker under reports/eval
+          # on the FIRST discovery iteration (fixer-worker sorts first and is
+          # skipped on every non-acp cell), so the dir must exist before the
+          # loop — the end-of-loop mkdir is too late under `set -e`.
+          mkdir -p reports/eval
           while IFS= read -r suite_file; do
             suite_dir="$(dirname "${suite_file}")"
             # G7: out dir mirrors the suite path relative to suites/, PREFIXED
@@ -548,6 +583,26 @@ jobs:
             variant_prefix=""
             if [ "${variant}" != "default" ]; then variant_prefix="${variant}/"; fi
             out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"
+            # rel_dir is <role>/<suite>; the role is its first segment.
+            role="${rel_dir%%/*}"
+            # Discovery drift counts SUITES FOUND, before any skip decision.
+            suite_count=$((suite_count + 1))
+            # WB-1.7 dispatch-only roles: a role whose lane is a known toolkit
+            # defect publishes NO rows — a loud absence, never a driver-error
+            # zero (the honesty rule). The cell config carries the role list
+            # and the routed issue; the marker keeps the snapshot job from
+            # clearing a same-day dir that held real data for this role.
+            skip_list=",${SKIP_ROLES//[[:space:]]/},"
+            if [ "${skip_list#*,$role,}" != "$skip_list" ]; then
+              echo "::warning::${MATRIX_MODEL}@${MATRIX_DRIVER} role ${role} skipped (dispatch-only): ${SKIP_REASON}"
+              {
+                echo "### ${MATRIX_MODEL} @ ${MATRIX_DRIVER} — ${role} skipped (dispatch-only)"
+                echo ""
+                echo "${SKIP_REASON}"
+              } >> "${GITHUB_STEP_SUMMARY}"
+              touch "reports/eval/DISPATCH-ONLY-${MATRIX_MODEL}-${MATRIX_DRIVER}-${role}"
+              continue
+            fi
             rc=0
             # < /dev/null: this loop reads its worklist from the find's stdin
             # (while-read); a stdin-reading driver transport (the subprocess
@@ -590,12 +645,10 @@ jobs:
             # success and the snapshot's full-success path would clear the
             # day's dir, replacing complete data with incomplete data.
             # rel_dir is <role>/<suite>; the role is its first segment.
-            role="${rel_dir%%/*}"
             if [ ! -f "${out_dir}/${role}.table.json" ]; then
               hard_fail=1
               echo "::error::suite ${rel_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
             fi
-            suite_count=$((suite_count + 1))
           # shellcheck disable=SC2086 — ${roots} is intentionally word-split
           # into the profile's suite dirs; quoting it would make find look for
           # one path named "a b c".
@@ -744,10 +797,11 @@ jobs:
           # matrix legs — see the preflight comment), and a skip means
           # MERGE, never clear — an earlier same-day authenticated acp run's
           # tables stay.
-          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ]; then
+          dispatch_only_marker="$(find reports/eval -maxdepth 1 -name 'DISPATCH-ONLY-*' -print -quit 2>/dev/null)"
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ -z "${dispatch_only_marker}" ]; then
             rm -rf "${snap_dir}"
           else
-            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent)) — merging into ${snap_dir} without clearing"
+            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}) — merging into ${snap_dir} without clearing"
           fi
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir (the copy loop is

@@ -21,7 +21,7 @@ export interface CaseRecipe {
   readonly id: string;
   readonly substrate: string;
   readonly difficulty: DifficultyBand;
-  readonly origin: 'operator-catalog' | 'lm-injected' | 'diff-replay';
+  readonly origin: 'operator-catalog' | 'lm-injected' | 'diff-replay' | 'public-bug-canary';
   /** Catalog operator id(s), '+' joined for combined hard faults. */
   readonly operator: string;
   readonly bugType: BugType;
@@ -37,6 +37,10 @@ export interface CaseRecipe {
   readonly generator: string;
   readonly seed: number;
   readonly engineVersion: string;
+  /** Named public reference reproduced (behavior only); canary recipes only. */
+  readonly reference?: string;
+  /** License/provenance note for `reference`; no code is vendored. */
+  readonly license?: string;
 }
 
 const NOT_TOLD = 'lane-leader adversarial diff read (tests withheld)' as const;

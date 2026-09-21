@@ -15,7 +15,7 @@
     "test": "npm run build && vitest run"
   },
   "dependencies": {
-    "@camerontaylor/cq-toolkit": "file:vendor/cq-toolkit-0.0.0.tgz",
+    "@camerontaylor/cq-toolkit": "file:vendor/cq-toolkit-1.0.1.tgz",
     "zod": "4.6.4"
   },
   "devDependencies": {

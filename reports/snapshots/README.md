@@ -14,7 +14,19 @@ in `test/snapshot-index.test.ts` is a hard gate. Regenerate this file with
 | Snapshot | toolkit.lock | suite SHA | run | tables | cells |
 |---|---|---|---|---|---|
 | 2026-09-18 | phase-3-done | 1f397857ca5562718441d6e5aa276306b05363f9 | 35392822013 | 8 | 8 |
+| 2026-09-21 | b06b6a3ac68cf7f7f17d37fd21628773021b002f | 7ced43c3f86c51340310a8a355a0a9174ce8c209 | 35553519022 | 2 | 2 |
 
 ## Score deltas by toolkit.lock SHA
 
-No cross-toolkit.lock deltas yet: every committed snapshot pins the same `toolkit.lock` value (or only one snapshot exists), so CQ-5 has no toolkit-vs-suite attribution to report. The next snapshot whose `toolkit.lock` differs from a predecessor appears here as a per-cell score delta table.
+### 2026-09-18 (toolkit.lock phase-3-done) → 2026-09-21 (toolkit.lock b06b6a3ac68cf7f7f17d37fd21628773021b002f)
+
+| Role / suite | model | driver | variant | old score | new score | Δ | old n | new n |
+|---|---|---|---|---|---|---|---|---|
+| fixer-worker / micro | deepseek-chat | ai-sdk | default | 0.0000 | (absent) | (removed cell) | 10 | 0 |
+| fixer-worker / micro | glm-5.3-flash | ai-sdk | default | 0.0000 | (absent) | (removed cell) | 10 | 0 |
+| fixer-worker / micro | glm-5.3-flash | claude-agent | default | 0.0000 | (absent) | (removed cell) | 10 | 0 |
+| fixer-worker / micro | glm-5.3-flash | subprocess | default | 0.0000 | (absent) | (removed cell) | 10 | 0 |
+| review-classifier / micro | deepseek-flash | ai-sdk | default | 0.9000 | 1.0000 | +0.1000 | 10 | 10 |
+| review-classifier / micro | glm-5.3-flash | ai-sdk | default | 0.7000 | 0.8000 | +0.1000 | 10 | 10 |
+| review-classifier / micro | glm-5.3-flash | claude-agent | default | 0.0000 | (absent) | (removed cell) | 10 | 0 |
+| review-classifier / micro | glm-5.3-flash | subprocess | default | 0.0000 | (absent) | (removed cell) | 10 | 0 |

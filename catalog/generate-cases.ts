@@ -77,6 +77,8 @@ export function renderCase(recipe: CaseRecipe): RenderedCase {
       generator: recipe.generator,
       seed: recipe.seed,
       engine_version: recipe.engineVersion,
+      ...(recipe.reference !== undefined ? { reference: recipe.reference } : {}),
+      ...(recipe.license !== undefined ? { license: recipe.license } : {}),
     },
     validation: {
       f2p: [...recipe.f2p],

@@ -64,6 +64,14 @@ The micro-suites (phase 3, J3) live in `suites/fixer-worker/micro/` and
 `suites/review-classifier/micro/` — see their `PROVENANCE.md` files and `fixtures/README.md` for
 the hand-seeded synthetic fixtures they run against.
 
+## Hygiene gates
+
+The corpus holds itself to five standing gates — the both-states + single-statement adequacy
+gate (buggy → exit 1, canonical fix → exit 0, recorded statement deleted → red),
+deprecate-don't-renumber, the flake quarantine protocol, the license-row rule for externally
+derived content, and the contamination-canary asymmetry alarm. The procedures, the enforcing
+paths, and the reproducing commands are in [docs/hygiene-gates.md](../docs/hygiene-gates.md).
+
 The F2 catalog-built seed (now promoted into the F3 suites below, ids unchanged) lived in
 `suites/fixer-worker/breadth/` (10 cases, 4 easy / 4 medium / 2 hard). Its per-fault metadata
 channel is the fixture-side `fixtures/<name>.FAULT.json` record

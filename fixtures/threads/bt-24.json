@@ -1,0 +1,1 @@
+{"id":483124,"path":"src/retain.ts","line":44,"resolved":false,"comments":[{"author":"belenruiz","body":"How long may we keep these event logs — 30 days or 90? The security team has not issued the retention ruling, so picking either number now risks a compliance miss. Awaiting their decision before this lands.","createdAt":"2026-09-17T15:12:00Z","isReply":false}]}

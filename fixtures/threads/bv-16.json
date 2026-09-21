@@ -1,0 +1,1 @@
+{"id":482116,"path":"lib/stats.ts","line":12,"resolved":true,"comments":[{"author":"oliviaberg","body":"Nit: `data2` tells the reader nothing — `perBucketCounts` matches what it holds.","createdAt":"2026-09-16T13:40:00Z","isReply":false},{"author":"noahfischer","body":"Renamed. Resolving.","createdAt":"2026-09-16T14:05:00Z","isReply":true}]}

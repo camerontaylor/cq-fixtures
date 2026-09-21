@@ -1,0 +1,1 @@
+{"id":482124,"path":"deploy/manifest.yml","line":8,"resolved":false,"comments":[{"author":"stevenkwan","body":"SHIP-STOPPER: if legal does not sign off on the bundled license text we cannot deploy this at all — the whole release waits on their sign-off. Nothing to change in the PR; blocked on legal.","createdAt":"2026-09-18T15:48:00Z","isReply":false}]}

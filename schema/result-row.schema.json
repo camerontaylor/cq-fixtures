@@ -118,6 +118,38 @@
       "type": "string",
       "format": "date-time",
       "description": "When the invocation completed (RFC 3339 date-time)."
+    },
+    "probes": {
+      "type": "array",
+      "description": "VERSIONED ADDITIVE change F4 (2026-09-21): per-probe observed outcomes, so a confusion matrix is computable from rows.jsonl. The runner captures one expected-verdict entry per review-classifier row (expected: the suite's expected verdict, observed: the classifier's verdict or null when missing/unparseable, passed: whether they matched); absent on old rows by design — every committed snapshot still validates. kind/expected are vocabulary-constrained (CodeRabbit bot thread T3) so a typo cannot silently drop a probe from the metrics; observed stays open because out-of-vocabulary observations are intentionally preserved.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "expected", "observed", "passed"],
+        "properties": {
+          "kind": {
+            "const": "expected-verdict",
+            "description": "Which scoring probe this entry records — the review-classifier probe. Constrained to the literal (CodeRabbit bot thread T3): a typo'd kind would otherwise vanish from every classifier metric."
+          },
+          "expected": {
+            "type": "string",
+            "enum": ["actionable", "responded", "resolved", "blocked", "skip"],
+            "description": "The suite's expected verdict, in the classifyThreads vocabulary mirrored by schema/suite.schema.json. Constrained to the enum (CodeRabbit bot thread T3): a typo'd expected would otherwise be silently skipped by the confusion builder."
+          },
+          "observed": {
+            "type": ["string", "null"],
+            "description": "What the worker actually produced (e.g. the observed verdict), or null when missing or unparseable — a null observed is a miss, never a match."
+          },
+          "passed": {
+            "type": "boolean",
+            "description": "Whether observed matched expected for this probe."
+          }
+        }
+      }
+    },
+    "suspiciousBenign": {
+      "type": "boolean",
+      "description": "True when the case's fixture-side label.json carries fp_flag 'suspicious-benign' (an adjudicated suspicious-but-benign negative: alarming-looking content whose expected verdict is not actionable). Absent otherwise — absence means unflagged, never false-by-default; micro suites carry no labels so their rows omit it. The FP rate on this subset is what makes classifier false-positive behavior scoreable."
     }
   },
   "allOf": [

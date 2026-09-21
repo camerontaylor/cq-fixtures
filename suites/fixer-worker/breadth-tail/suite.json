@@ -1,0 +1,345 @@
+{
+  "name": "breadth-tail",
+  "role": "fixer-worker",
+  "provenance": {
+    "origin": "catalog-built synthetic (F3, 2026-09-21): 10 easy / 12 medium / 6 hard; generated from catalog/substrates via catalog/recipes.ts; no public-benchmark content"
+  },
+  "cases": [
+    {
+      "id": "breadth-13",
+      "fixture": "fixtures/breadth-13",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. averageWordLength returns a value far larger than the average word length.",
+        "notes": "medium · arithmetic-swap · operator misuse · canonical fix in fixtures/breadth-13.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-13/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-14",
+      "fixture": "fixtures/breadth-14",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. wordCount counts surrounding whitespace as extra words.",
+        "notes": "medium · chain-break · operator misuse · canonical fix in fixtures/breadth-14.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-14/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-15",
+      "fixture": "fixtures/breadth-15",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. toKebabCase returns uppercase letters, and truncate shortens text that already fits the limit.",
+        "notes": "hard · method-swap+equality-boundary · function misuse · canonical fix in fixtures/breadth-15.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-15/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-16",
+      "fixture": "fixtures/breadth-16",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. isOverdrawn reports a zero balance as overdrawn.",
+        "notes": "easy · equality-boundary · operator misuse · canonical fix in fixtures/breadth-16.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-16/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-17",
+      "fixture": "fixtures/breadth-17",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. formatCents divides the amount by the wrong factor.",
+        "notes": "easy · constant-delta · value misuse · canonical fix in fixtures/breadth-17.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-17/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-18",
+      "fixture": "fixtures/breadth-18",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. applyPercent increases the amount instead of subtracting the percentage.",
+        "notes": "medium · arithmetic-swap · operator misuse · canonical fix in fixtures/breadth-18.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-18/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-19",
+      "fixture": "fixtures/breadth-19",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. withTax subtracts the rate instead of adding it.",
+        "notes": "medium · arithmetic-swap · operator misuse · canonical fix in fixtures/breadth-19.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-19/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-20",
+      "fixture": "fixtures/breadth-20",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. addCents subtracts instead of adds, and isOverdrawn reports a zero balance as overdrawn.",
+        "notes": "hard · arithmetic-swap+equality-boundary · operator misuse · canonical fix in fixtures/breadth-20.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-20/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-21",
+      "fixture": "fixtures/breadth-21",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. isWeekend does not recognise Sunday as a weekend day.",
+        "notes": "easy · constant-delta · value misuse · canonical fix in fixtures/breadth-21.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-21/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-22",
+      "fixture": "fixtures/breadth-22",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. formatDuration reports the wrong hour count.",
+        "notes": "easy · constant-delta · value misuse · canonical fix in fixtures/breadth-22.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-22/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-23",
+      "fixture": "fixtures/breadth-23",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. overlaps reports back-to-back slots as overlapping.",
+        "notes": "medium · logical-swap · operator misuse · canonical fix in fixtures/breadth-23.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-23/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-24",
+      "fixture": "fixtures/breadth-24",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. sortByStart orders slots from latest to earliest.",
+        "notes": "medium · operand-swap · variable misuse · canonical fix in fixtures/breadth-24.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-24/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-25",
+      "fixture": "fixtures/breadth-25",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. minutesBetween returns a negative duration, and overlaps reports back-to-back slots as overlapping.",
+        "notes": "hard · operand-swap+equality-boundary · variable misuse · canonical fix in fixtures/breadth-25.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-25/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-26",
+      "fixture": "fixtures/breadth-26",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. degree undercounts a node's neighbours by one.",
+        "notes": "easy · constant-delta · value misuse · canonical fix in fixtures/breadth-26.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-26/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-27",
+      "fixture": "fixtures/breadth-27",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. hasEdge looks for the wrong endpoint.",
+        "notes": "easy · argument-swap · variable misuse · canonical fix in fixtures/breadth-27.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-27/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-28",
+      "fixture": "fixtures/breadth-28",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. reachable reports an unreachable target as reachable.",
+        "notes": "medium · equality-boundary · operator misuse · canonical fix in fixtures/breadth-28.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-28/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-29",
+      "fixture": "fixtures/breadth-29",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. hasSelfLoop only reports a self-loop when every node has one.",
+        "notes": "medium · method-swap · function misuse · canonical fix in fixtures/breadth-29.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-29/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-30",
+      "fixture": "fixtures/breadth-30",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. hasEdge looks for the wrong endpoint, and reachable reports an unreachable target as reachable.",
+        "notes": "hard · argument-swap+equality-boundary · variable misuse · canonical fix in fixtures/breadth-30.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-30/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-31",
+      "fixture": "fixtures/breadth-31",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. clamp pushes a value out of range instead of keeping it inside.",
+        "notes": "easy · method-swap · function misuse · canonical fix in fixtures/breadth-31.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-31/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-32",
+      "fixture": "fixtures/breadth-32",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. requireFields lists the present fields instead of the missing ones.",
+        "notes": "easy · equality-boundary · operator misuse · canonical fix in fixtures/breadth-32.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-32/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-33",
+      "fixture": "fixtures/breadth-33",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseAmount parses a hex-looking string as base sixteen.",
+        "notes": "medium · radix-coercion-drop · value misuse · canonical fix in fixtures/breadth-33.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-33/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-34",
+      "fixture": "fixtures/breadth-34",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. clamp swaps the bounds, pushing a value out of range.",
+        "notes": "medium · argument-swap · variable misuse · canonical fix in fixtures/breadth-34.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-34/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-35",
+      "fixture": "fixtures/breadth-35",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. requireFields lists the present fields instead of the missing ones, and parseAmount parses a hex-looking string as base sixteen.",
+        "notes": "hard · equality-boundary+radix-coercion-drop · operator misuse · canonical fix in fixtures/breadth-35.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-35/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-36",
+      "fixture": "fixtures/breadth-36",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. shouldRetry retries once past the attempt limit.",
+        "notes": "easy · equality-boundary · operator misuse · canonical fix in fixtures/breadth-36.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-36/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-37",
+      "fixture": "fixtures/breadth-37",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. nextState leaves a queued task queued instead of advancing it.",
+        "notes": "easy · constant-delta · value misuse · canonical fix in fixtures/breadth-37.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-37/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-38",
+      "fixture": "fixtures/breadth-38",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. successRate always reports one, ignoring failures.",
+        "notes": "medium · chain-break · operator misuse · canonical fix in fixtures/breadth-38.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-38/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-39",
+      "fixture": "fixtures/breadth-39",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. enqueue puts the new value at the front of the queue.",
+        "notes": "medium · operand-swap · variable misuse · canonical fix in fixtures/breadth-39.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-39/check.mjs"
+      }
+    },
+    {
+      "id": "breadth-40",
+      "fixture": "fixtures/breadth-40",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. enqueue puts the new value at the front of the queue, and shouldRetry retries once past the attempt limit.",
+        "notes": "hard · operand-swap+equality-boundary · variable misuse · canonical fix in fixtures/breadth-40.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/breadth-40/check.mjs"
+      }
+    }
+  ]
+}

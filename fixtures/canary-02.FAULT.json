@@ -1,0 +1,37 @@
+{
+  "bug_type": "variable misuse",
+  "failure_symptoms": "neighbors hands back its internal neighbour list, so mutating the returned array corrupts later results.",
+  "operator": "shared-reference-return",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "public-bug-canary",
+    "generator": "canary:public-bug-class",
+    "seed": 0,
+    "engine_version": "synthetic-canary",
+    "reference": "defensive-copy aliasing defect: returning a live internal array (MDN Array.prototype.slice copy guidance)",
+    "license": "no code vendored; reference is documentation only"
+  },
+  "validation": {
+    "f2p": [
+      "returns a copy of the neighbour list"
+    ],
+    "p2p": [
+      "counts the neighbours of a node",
+      "finds a directed edge",
+      "detects a self-loop among several nodes",
+      "returns false when the target is unreachable"
+    ],
+    "fix": {
+      "src/paths.ts": "import type { Adjacency } from './edges.ts';\n\nexport function neighbors(adj: Adjacency, node: string): string[] {\n  return [...(adj[node] ?? [])];\n}\n\nexport function hasSelfLoop(adj: Adjacency): boolean {\n  return Object.entries(adj).some(([node, next]) => next.includes(node));\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/paths.ts",
+    "delete": "return [...(adj[node] ?? [])];"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "Canary: defensive-copy aliasing defect, reproduced synthetically."
+  }
+}

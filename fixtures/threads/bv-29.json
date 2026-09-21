@@ -1,0 +1,1 @@
+{"id":482129,"path":"billing/tax.ts","line":15,"resolved":false,"comments":[{"author":"oskarny","body":"Nit (non-blocking, but I feel strongly): `calc` is a TERRIBLE name for a tax function — someone will misread this as a calculator widget and break compliance some day! Prefer `computeTax`.","createdAt":"2026-09-19T13:55:00Z","isReply":false}]}

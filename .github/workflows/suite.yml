@@ -16,6 +16,14 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Eval profile: full runs every suite; verified runs only the breadth-verified suites'
+        type: choice
+        options:
+          - full
+          - verified
+        default: full
   schedule:
     # Plan §9 weekly cadence: 03:17 UTC every Monday. workflow_dispatch stays
     # the on-demand path (an eval re-run never waits for the window).
@@ -39,33 +47,45 @@ jobs:
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci
-      - name: Fake-driver smoke over the micro suites
+      - name: Fake-driver smoke over the micro and breadth suites
         # Goal J4 replaced the J3 hard-fail seam with the REAL smoke: both
         # micro suites run under the FakeDriver — zero network, zero spend —
         # proving the whole pipeline (suite load, payload injection, judge
         # spawn, scoring, journal, aggregation) stays wired on every push and
-        # every PR. The fake claims --driver-name subprocess per the recorded
-        # J3 decision (suites/README.md): the fake stands in for a local CLI
-        # transport, so `subprocess` is the honest lane label — never
-        # `ai-sdk`, the paid eval axis. --check-timeout-ms 120000 gives the
-        # judge's internal 45s vitest ceiling generous headroom.
+        # every PR. F4 extends the loop to
+        # suites/review-classifier/breadth-verified (30 cases, ~4 min at the
+        # measured ~70 s/10-case micro pace) — breadth-tail stays
+        # dispatch/matrix-only, never smoke. The fake claims --driver-name
+        # subprocess per the recorded J3 decision (suites/README.md): the
+        # fake stands in for a local CLI transport, so `subprocess` is the
+        # honest lane label — never `ai-sdk`, the paid eval axis.
+        # --check-timeout-ms 120000 gives the judge's internal 45s vitest
+        # ceiling generous headroom.
+        #
+        # STEP-NAME STABILITY: the smoke step name is pinned by
+        # test/workflow-contract.test.ts tripwire assertions — a rename must
+        # update the test in the same commit (renamed in F3 to cover micro
+        # and breadth suites, test updated in lockstep).
         #
         # EXIT DISCIPLINE: rc 0 (no row scored zero) and rc 1 (the suite
         # SCORED ZERO somewhere) are BOTH smoke-green. rc 1 is the honest
-        # fake outcome here — and in practice BOTH suites exit 1: the fake
+        # fake outcome here — and in practice ALL suites exit 1: the fake
         # cannot fix fixtures (every fixer row scores zero across its two
         # DD-4 probes), and its hardcoded 'resolved' verdict misses the 8
-        # non-resolved-expected classifier cases. A scored-zero fake run IS
-        # the success signal; rc >= 2 (usage error, suite load/validation
-        # failure, fixture materialization failure, pre-dispatch
-        # missing-credential) is a hard failure.
+        # non-resolved-expected micro classifier cases and the 24
+        # non-resolved-expected breadth-verified cases. A scored-zero fake
+        # run IS the success signal; rc >= 2 (usage error, suite
+        # load/validation failure, fixture materialization failure,
+        # pre-dispatch missing-credential) is a hard failure.
         run: |
           set -euo pipefail
           hard_fail=0
-          for role_dir in suites/fixer-worker suites/review-classifier; do
-            suite_dir="${role_dir}/micro"
-            role="$(basename "${role_dir}")"
-            out_dir="reports/smoke/${role}"
+          for suite_dir in suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/review-classifier/micro suites/review-classifier/breadth-verified; do
+            role="$(basename "$(dirname "${suite_dir}")")"
+            suite_name="$(basename "${suite_dir}")"
+            # Same-role suites collide on <role>.table.json, so the out dir
+            # nests per suite (F3 shape); micro keeps breadth-separated paths.
+            out_dir="reports/smoke/${role}/${suite_name}"
             rc=0
             node --experimental-strip-types runner/index.ts \
               --suite "${suite_dir}" \
@@ -495,28 +515,33 @@ jobs:
           MATRIX_MODEL: ${{ matrix.cell.model }}
           MATRIX_PROVIDER: ${{ matrix.cell.provider }}
           MATRIX_DRIVER: ${{ matrix.cell.driver }}
+          MATRIX_PROFILE: ${{ github.event.inputs.profile || 'full' }}
           # WB-1.7: comma-separated roles this cell must NOT dispatch (a known
           # toolkit defect) + the routed-issue reason echoed loudly.
           SKIP_ROLES: ${{ matrix.cell.skip_roles }}
           SKIP_REASON: ${{ matrix.cell.skip_reason }}
         run: |
           set -euo pipefail
-          # Designed discovery (J4): the two micro suites ARE the matrix
-          # payload — a SHALLOW find over their FIXED directories (-maxdepth 1:
-          # only a suite.json placed DIRECTLY in a named dir runs; verified
-          # against both real suites). A nested micro/x/suite.json is a
-          # structuring decision for J5's designed discovery, not an accident
-          # to auto-run here; widening this list stays a deliberate edit.
+          # Designed discovery (J4/F3/F4): a SHALLOW find over FIXED suite dirs
+          # (-maxdepth 1: only a suite.json placed DIRECTLY in a named dir
+          # runs). The dispatch input `profile` selects the roots (F3,
+          # WB-2.5): `verified` runs only the breadth-verified suites; `full`
+          # (the default, and the weekly schedule's value) runs every suite.
+          # F4 adds the classifier breadth suites: breadth-verified rides
+          # both profiles, breadth-tail is full-only (dispatch/matrix).
+          # Declaring the roots explicitly keeps widening a deliberate edit.
           #
           # deprecated/ exclusion (F2, WB-2.1): retirement moves a case to a
           # sibling deprecated/ suite (deprecate-don't-renumber), and a retired
           # case must NEVER spend weekly tokens. -not -path drops any suite
-          # whose path carries a deprecated/ segment, so a future widening of
-          # the discovery roots cannot re-enable a retired suite by accident.
-          # Verified with a dry-run listing over a tree carrying a deprecated
-          # suite (F2 PR verification).
+          # whose path carries a deprecated/ segment.
           hard_fail=0
           suite_count=0
+          case "${MATRIX_PROFILE}" in
+            verified) roots="suites/fixer-worker/breadth-verified suites/review-classifier/breadth-verified" ;;
+            full) roots="suites/fixer-worker/micro suites/review-classifier/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail suites/review-classifier/breadth-verified suites/review-classifier/breadth-tail" ;;
+            *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full)"; exit 2 ;;
+          esac
           # Review-debt #14: the acp preflight probe spent real inference
           # before this step — its record rides into the runner so the probe
           # is admitted through the same governor and journaled with the run
@@ -608,16 +633,25 @@ jobs:
               hard_fail=1
               echo "::error::suite ${rel_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
             fi
-          done < <(find suites/fixer-worker/micro suites/review-classifier/micro -maxdepth 1 -name suite.json -not -path '*/deprecated/*' 2>/dev/null | sort)
-          # Discovery drift must be VISIBLE but never fail the cell (it is a
-          # structuring signal, not an eval outcome): the list above names
-          # exactly two dirs with one directly-placed suite.json each, so
-          # anything but 2 is drift. Zero keeps the stronger wording — an
-          # accidental REMOVAL is the urgent case.
+          # shellcheck disable=SC2086 — ${roots} is intentionally word-split
+          # into the profile's suite dirs; quoting it would make find look for
+          # one path named "a b c".
+          done < <(find ${roots} -maxdepth 1 -name suite.json -not -path '*/deprecated/*' 2>/dev/null | sort)
+          # Discovery drift is VISIBLE: a count other than the profile's
+          # expected count is a WARNING (a later phase adding a suite is a
+          # structuring change, not an eval failure). ZERO suites is the
+          # urgent case — an accidental removal or a broken root would
+          # otherwise let the cell succeed with no tables and the snapshot's
+          # full-success path clear the day's dir — so zero HARD-FAILS the
+          # cell (the snapshot job still runs on a failed matrix and merges
+          # surviving tables).
+          expected_count=6
+          if [ "${MATRIX_PROFILE}" = "verified" ]; then expected_count=2; fi
           if [ "${suite_count}" -eq 0 ]; then
-            echo "::warning::matrix discovery found no suites — if this is an accidental removal, investigate"
-          elif [ "${suite_count}" -ne 2 ]; then
-            echo "::warning::matrix discovery found ${suite_count} suites (expected 2) — investigate if unintended"
+            hard_fail=1
+            echo "::error::matrix discovery found no suites for profile ${MATRIX_PROFILE} — an accidental removal or a broken root; failing the cell so the snapshot cannot publish an empty day"
+          elif [ "${suite_count}" -ne "${expected_count}" ]; then
+            echo "::warning::matrix discovery found ${suite_count} suites (expected ${expected_count} for profile ${MATRIX_PROFILE}) — investigate if unintended"
           fi
           # The eval-reports artifact must ALWAYS exist — even when the find
           # above came up empty (which can now only happen if the micro

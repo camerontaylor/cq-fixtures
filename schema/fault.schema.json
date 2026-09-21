@@ -33,8 +33,8 @@
       "properties": {
         "origin": {
           "type": "string",
-          "enum": ["operator-catalog", "lm-injected", "diff-replay"],
-          "description": "Generation mix source (plan WB-2.4: 60% procedural / 30% LM-injected / 10% diff-replay)."
+          "enum": ["operator-catalog", "lm-injected", "diff-replay", "public-bug-canary"],
+          "description": "Generation mix source (plan WB-2.4: 60% procedural / 30% LM-injected / 10% diff-replay). 'public-bug-canary' marks a synthetic reproduction of a well-known public bug class seeded into the SEPARATE contamination-canary suite (never part of the headline breadth mix)."
         },
         "generator": {
           "type": "string",
@@ -49,6 +49,16 @@
           "type": "string",
           "minLength": 1,
           "description": "Engine + version the operator semantics follow, e.g. '@stryker-mutator/instrumenter@10.0.0' or 'ts-morph@28.0.0' or 'lm'."
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Named public reference the fault reproduces (a bug class, advisory, or documentation page). Behavior only — no third-party code is vendored. Required in practice for origin 'public-bug-canary'."
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1,
+          "description": "License/provenance note for the reference, e.g. 'no code vendored; reference is documentation only'."
         }
       }
     },
@@ -99,5 +109,26 @@
         "notes": { "type": "string" }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "provenance": {
+            "type": "object",
+            "properties": { "origin": { "const": "public-bug-canary" } },
+            "required": ["origin"]
+          }
+        },
+        "required": ["provenance"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "provenance": { "type": "object", "required": ["reference", "license"] }
+        }
+      }
+    }
+  ]
 }

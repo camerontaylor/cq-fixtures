@@ -23,6 +23,8 @@ Node >= 23.6 runs the TypeScript directly (type stripping); CI uses node 24. `--
 
 Per-role scorers live in `runner/score/`: `check-rerun` (fixer-worker) re-runs the seeded check with cwd set to the fixture workspace — the worker's answer does not influence the probe, re-running the check IS the contract; `expected-verdict` (review-classifier) compares the classifier's `structuredOutput.verdict` against the suite's expected value from the toolkit's classifyThreads vocabulary (actionable | responded | resolved | blocked | skip). A probe that cannot execute scores 0 with diagnostics and never aborts the run. Fixer cases carry a SECOND scored probe (DD-4, phase-3 J4): `runner/dimensions/schemaCompliance.ts` grades whether the worker's `structuredOutput` holds the strict `{fixed: boolean, notes: string}` shape it was asked to declare — so a fixer row's `outcome.total` is 2 (check probe + schema probe) and a model's json-fidelity is visible in its score.
 
+Per-verdict metrics F4 (2026-09-21): review-classifier rows carry `probes[]` with the observed verdict per case (null when missing/unparseable — a miss with no predicted bucket) plus `suspiciousBenign: true` when the case's fixture-side `label.json` (beside the thread payload) carries fp_flag `suspicious-benign`; `runner/aggregate.ts` folds these into per-cell `byVerdict` confusion counts, `macroF1`, and `fpRate`/`fpN`. The sidecar read never throws (missing/unreadable sidecars stay unflagged — micro suites carry no labels) and fixer cells keep their exact pre-F4 shape.
+
 ## Served ids
 
 The row's `model` is the OBSERVED id the driver reports from the wire (a gateway's silent remap surfaces as data, never silently rewritten); the requested id is only the fallback for lanes that cannot observe it.

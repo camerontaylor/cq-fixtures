@@ -16,10 +16,14 @@ import ajvFormats from 'ajv-formats';
 import { checkOperatorAssignment, operatorById, type BugType, type DifficultyBand, type OperatorSpec } from './operators.ts';
 
 export interface FaultProvenance {
-  origin: 'operator-catalog' | 'lm-injected' | 'diff-replay';
+  origin: 'operator-catalog' | 'lm-injected' | 'diff-replay' | 'public-bug-canary';
   generator: string;
   seed: number;
   engine_version: string;
+  /** Named public reference reproduced (behavior only); set on canary records. */
+  reference?: string;
+  /** License/provenance note for `reference`; no code is vendored. */
+  license?: string;
 }
 
 export interface FaultValidation {

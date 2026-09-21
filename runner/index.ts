@@ -184,6 +184,43 @@ function tokensOf(usage: Usage): ResultRow['tokens'] {
   };
 }
 
+// F4: resolve the fixture-side adjudication sidecar for a classifier case.
+// The label.json lives beside the thread payload (`<fixture>.json` ->
+// `<fixture>.label.json`) and carries the adjudicated fp_flag; the runner
+// reads ONLY that flag — concern group and adjudication records stay in the
+// file for the label-drift CI check, never in rows. A missing or unparseable
+// sidecar is NOT silent (r1-F3): the caller surfaces it as a case diagnostic
+// so a damaged sidecar undercounts fpN/fpRate loudly instead of invisibly —
+// micro suites carry no labels, so their runs note the omission per case.
+// This helper never throws past its caller. 'unflagged' covers only a
+// present sidecar whose fp_flag is the recognized value 'none'; 'invalid'
+// covers parsed JSON whose fp_flag is missing or unrecognized (e.g. {} or
+// a typo — CodeRabbit bot thread T2). Validity beyond the flag read stays
+// the drift check's job, but an invalid sidecar is diagnosed like absent and
+// unparseable rather than silently treated as unflagged. The row omits
+// suspiciousBenign for every status but 'flagged'.
+type SidecarFlag = 'flagged' | 'absent' | 'unparseable' | 'unflagged' | 'invalid';
+function suspiciousBenignFlag(repoRoot: string, fixture: string): SidecarFlag {
+  if (!fixture.endsWith('.json')) return 'unflagged';
+  let raw: string;
+  try {
+    raw = readFileSync(join(repoRoot, `${fixture.slice(0, -'.json'.length)}.label.json`), 'utf8');
+  } catch {
+    return 'absent';
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return 'unparseable';
+  }
+  if (typeof parsed !== 'object' || parsed === null) return 'invalid';
+  const flag = (parsed as { fp_flag?: unknown }).fp_flag;
+  if (flag === 'suspicious-benign') return 'flagged';
+  if (flag === 'none') return 'unflagged';
+  return 'invalid';
+}
+
 export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const suite = loadSuite(opts.suiteDir);
   const repoRoot = opts.repoRoot ?? DEFAULT_REPO_ROOT;
@@ -436,6 +473,11 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       let outcome: { score: number; passed: number; total: number };
       let journalResult: OpResult<unknown>;
       let diagnostics: string | undefined;
+      // F4: classifier-only row fields, set in the review-classifier branch
+      // below; fixer rows and every zero path leave them unset, so those
+      // rows keep their exact pre-F4 shape.
+      let rowProbes: ResultRow['probes'];
+      let sidecarFlag: SidecarFlag | undefined;
       // DD-4: the probe ceiling holds even on the zero paths below — a case
       // configures its probes up front, so a worker that never produced a
       // gradeable result failed every one of them (passed 0 of the full
@@ -495,6 +537,23 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         outcome = { score: s.score, passed: s.passed, total: s.total };
         journalResult = { status: 'ok', value: outcome };
         diagnostics = s.diagnostics;
+        // F4: capture the observed verdict per case into the row's probes[]
+        // so the confusion matrix, macro-F1, and FP rate are computable from
+        // rows.jsonl — the outcome triple alone cannot supply them.
+        rowProbes = [{ kind: 'expected-verdict', expected: c.probe.expected, observed: s.observed ?? null, passed: s.passed === 1 }];
+        sidecarFlag = suspiciousBenignFlag(repoRoot, c.fixture);
+        // r1-F3: a damaged sidecar is a case diagnostic (row shape
+        // unchanged) — silent omission would undercount fpN/fpRate with
+        // zero signal on any run the drift gate does not cover.
+        if (sidecarFlag === 'absent' || sidecarFlag === 'unparseable' || sidecarFlag === 'invalid') {
+          const why =
+            sidecarFlag === 'invalid'
+              ? 'invalid content (fp_flag missing or outside none|suspicious-benign)'
+              : sidecarFlag;
+          caseDiagnostics.push(
+            `case ${c.id}: label sidecar '${c.fixture.slice(0, -'.json'.length)}.label.json' ${why} — suspiciousBenign flag omitted`,
+          );
+        }
       }
       if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);
       await append({
@@ -509,6 +568,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         role: suite.role, suite: suite.name, case: c.id, model, driver: driverName,
         outcome, costUSD: cost ?? null,
         ...(cost !== undefined ? { costBasis: 'modeled' as const } : {}),
+        ...(rowProbes !== undefined ? { probes: rowProbes } : {}),
+        ...(sidecarFlag === 'flagged' ? { suspiciousBenign: true } : {}),
         wallTimeMs, tokens: tokensOf(usage), runId, timestamp: now(),
       });
       console.error(`  case ${c.id}: score ${outcome.score}${diagnostics !== undefined ? ` — ${diagnostics.split('\n')[0]}` : ''}`);

@@ -1,0 +1,1 @@
+{"id":482103,"path":"db/pool.ts","line":112,"resolved":false,"comments":[{"author":"ingridsolberg","body":"On the error path below, the checked-out client is never released — `client.release()` only runs on success. Every failed query leaks a connection until the pool is exhausted and the service stalls. Release in a finally.","createdAt":"2026-09-12T14:02:00Z","isReply":false}]}

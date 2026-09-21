@@ -1,0 +1,34 @@
+{
+  "bug_type": "function misuse",
+  "failure_symptoms": "toKebabCase returns uppercase letters instead of a lowercase slug.",
+  "operator": "method-swap",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:MethodExpression",
+    "seed": 112,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": [
+      "lowercases and hyphen-joins words"
+    ],
+    "p2p": [
+      "counts words ignoring surrounding whitespace",
+      "returns the text unchanged at the limit",
+      "averages the word lengths"
+    ],
+    "fix": {
+      "src/case.ts": "export function toKebabCase(text: string): string {\n  return text.trim().toLowerCase().split(/\\s+/).join('-');\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/case.ts",
+    "delete": "return text.trim().toLowerCase().split(/\\s+/).join('-');"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A case-folding swap; the slug contract lives only in the tests."
+  }
+}

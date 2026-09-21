@@ -110,7 +110,7 @@ function matrixCells(): string[] {
 
 describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
   it('the smoke loop hard-fails on rc>=2 (rc capture, -ge 2 branch, exit "${hard_fail}")', () => {
-    const smoke = stepChunk('Fake-driver smoke over the micro suites');
+    const smoke = stepChunk('Fake-driver smoke over the micro and breadth suites');
     for (const marker of RC_EXIT_DISCIPLINE) {
       expect(smoke, `smoke step must carry '${marker}'`).toContain(marker);
     }
@@ -313,6 +313,39 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell, 'the exclusion rides the suite.json discovery find').toMatch(/-name suite\.json -not -path/);
   });
 
+  it('the dispatch profile selects the discovery roots (F3, WB-2.5)', () => {
+    // `verified` runs only the breadth-verified suites; `full` (the default,
+    // and the weekly schedule's value) runs every suite. Scope the assertions
+    // to the workflow_dispatch.inputs.profile block so unrelated text (suite
+    // paths elsewhere) cannot satisfy them.
+    const profileIdx = text.indexOf('\n      profile:\n');
+    expect(profileIdx, 'profile input declared under workflow_dispatch.inputs').toBeGreaterThan(-1);
+    const profileBlock = text.slice(profileIdx, text.indexOf('\n  schedule:', profileIdx));
+    expect(profileBlock, 'profile is a choice input').toContain('type: choice');
+    expect(profileBlock, 'profile options include full').toContain('- full');
+    expect(profileBlock, 'profile options include verified').toContain('- verified');
+    expect(profileBlock, 'profile defaults to full').toContain('default: full');
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'eval step reads the profile').toContain("MATRIX_PROFILE: ${{ github.event.inputs.profile || 'full' }}");
+    expect(evalCell, 'verified root').toContain('suites/fixer-worker/breadth-verified');
+    expect(evalCell, 'tail root').toContain('suites/fixer-worker/breadth-tail');
+    expect(evalCell, 'unknown profiles fail loud').toContain('unknown profile');
+  });
+
+  it('zero suite discovery hard-fails the matrix cell (F3)', () => {
+    // An empty discovery (removed/broken root) must not let the cell succeed
+    // with no tables — the snapshot's full-success path would clear the day.
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'zero discovery is a hard error').toContain('matrix discovery found no suites for profile');
+    expect(evalCell, 'count drift stays a warning').toContain('matrix discovery found ${suite_count} suites (expected ${expected_count}');
+  });
+
+  it('the smoke loop exercises breadth-verified too (F3, WB-2.5)', () => {
+    const smoke = stepChunk('Fake-driver smoke over the micro and breadth suites');
+    expect(smoke, 'breadth-verified is smoked').toContain('suites/fixer-worker/breadth-verified');
+    expect(smoke, 'per-suite out dirs avoid role collisions').toContain('out_dir="reports/smoke/${role}/${suite_name}"');
+  });
+
   it('lane installs are conditional: subprocess claude-code pinned, acp pinned 0.43.3, claude-agent none', () => {
     const sub = stepChunk('Install the subprocess lane CLI');
     expect(sub).toContain("if: matrix.cell.driver == 'subprocess'");
@@ -402,7 +435,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // dying mid-emit on the last suite reports success and the snapshot's
     // full-success path replaces complete data with incomplete data.
     for (const { label, chunk } of [
-      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro suites') },
+      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro and breadth suites') },
       { label: 'matrix eval cell', chunk: stepChunk('Eval cell —') },
     ] as const) {
       expect(chunk, `${label}: table-existence guard`).toContain('-f "${out_dir}/${role}.table.json"');
@@ -417,7 +450,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // outcome can never be reclassified into a job failure (nor a hard fail
     // hidden as a warning).
     const cases = [
-      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro suites'), marker: '::notice::' },
+      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro and breadth suites'), marker: '::notice::' },
       { label: 'matrix eval cell', chunk: stepChunk('Eval cell —'), marker: '::warning::' },
     ] as const;
     for (const { label, chunk, marker } of cases) {

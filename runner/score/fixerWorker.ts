@@ -9,6 +9,14 @@ export interface ScoreOutcome {
   total: number;
   /** Why the probe failed or could not run — surfaced on stderr, never in rows. */
   diagnostics?: string;
+  /**
+   * What the worker actually produced for the probe's expected value, or
+   * null when missing/unparseable. ADDITIVE F4 (2026-09-21): the
+   * review-classifier scorer sets this to the observed verdict so the
+   * runner can capture it into the row's probes[]; the fixer scorer leaves
+   * it unset (the check probe grades workspace state, not worker output).
+   */
+  observed?: string | null;
 }
 
 /** Structural shape of a check-rerun case (suite.schema.json, narrowed by loadSuite). */

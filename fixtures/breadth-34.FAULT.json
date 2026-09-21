@@ -1,0 +1,34 @@
+{
+  "bug_type": "variable misuse",
+  "failure_symptoms": "clamp swaps the bounds, pushing a value out of range.",
+  "operator": "argument-swap",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": [
+      "keeps a value inside the range"
+    ],
+    "p2p": [
+      "rejects an address without a dotted domain",
+      "parses a decimal string as base ten",
+      "lists the missing fields"
+    ],
+    "fix": {
+      "src/range.ts": "export function clamp(value: number, low: number, high: number): number {\n  return Math.min(Math.max(value, low), high);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/range.ts",
+    "delete": "return Math.min(Math.max(value, low), high);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "An argument swap; the bound order contract is test-only."
+  }
+}

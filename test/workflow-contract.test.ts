@@ -306,7 +306,16 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell.indexOf('mkdir -p reports/eval')).toBeGreaterThan(-1);
     expect(evalCell.indexOf('mkdir -p reports/eval')).toBeLessThan(evalCell.indexOf('DISPATCH-ONLY-'));
     // The snapshot job must not clear a same-day dir that held real data.
-    expect(stepChunk('Commit report snapshots')).toContain('DISPATCH-ONLY-*');
+    const snapshotStep = stepChunk('Commit report snapshots');
+    expect(snapshotStep).toContain('DISPATCH-ONLY-*');
+    // ... and it must withhold an empty-but-valid table whose run.json
+    // records dispatch-only absences: the absence belongs in run.json, not
+    // in a zero-cell table that reads as "0 cases" (CodeRabbit cycle 1).
+    expect(snapshotStep).toContain('run.json');
+    expect(snapshotStep).toContain('absences');
+    expect(snapshotStep).toContain('.table.json');
+    expect(snapshotStep).toContain('skipping empty dispatch-only table');
+    expect(snapshotStep).toContain('continue');
   });
 
   it('deprecated/ suites are excluded from matrix discovery (F2, WB-2.1)', () => {

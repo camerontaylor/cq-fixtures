@@ -815,8 +815,35 @@ jobs:
           # (the regrade input), run.json (the suite + toolkit.lock/suite-SHA
           # manifest), and the worker's patches/ and outputs/ artifacts. The
           # ACP-SKIPPED / ACP-PROBE.json / EMPTY markers do NOT match these
-          # predicates and stay in the artifact only.
+          # predicates and stay in the artifact only. F1b (WB-1): an
+          # empty-but-valid table whose run.json records dispatch-only
+          # absences is withheld below (the absence lives in run.json, never
+          # as a zero-cell data table).
           while IFS= read -r f; do
+            # F1b (WB-1): a suite whose cases ALL became dispatch-only
+            # absences emits an empty-but-valid <role>.table.json (cells: [])
+            # plus a run.json whose runs[].absences records the causes.
+            # Publish the absence record, never the zero-cell table: a data
+            # table that reads as "0 cases" would misrepresent infrastructure
+            # as an outcome. Non-empty tables and clean (absence-free) empty
+            # tables are copied unchanged.
+            if [[ "${f}" == *.table.json ]]; then
+              table_fate="$(node -e '
+                const fs = require("node:fs");
+                const path = require("node:path");
+                const table = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                let hasAbsences = false;
+                try {
+                  const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[1]), "run.json"), "utf8"));
+                  hasAbsences = (manifest.runs || []).some((r) => (r.absences || []).length > 0);
+                } catch { hasAbsences = false; }
+                process.stdout.write((table.cells || []).length === 0 && hasAbsences ? "skip" : "keep");
+              ' "${f}")"
+              if [ "${table_fate}" = "skip" ]; then
+                echo "snapshot: skipping empty dispatch-only table ${f#reports/eval/} (absences recorded in run.json)"
+                continue
+              fi
+            fi
             rel="${f#reports/eval/}"
             mkdir -p "${snap_dir}/$(dirname "${rel}")"
             cp "${f}" "${snap_dir}/${rel}"

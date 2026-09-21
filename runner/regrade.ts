@@ -219,21 +219,32 @@ export function regrade(opts: RegradeOptions): RegradeResult {
         continue;
       }
       const recorded = row.outcome;
-      if (isFixerCase(suiteCase)) {
-        const r = rejudgeFixer(from, suiteCase, row.case, repoRoot, timeoutMs, diagnostics);
-        if (r === undefined) continue;
-        rejudged += 1;
-        const outcome = { score: r.passed / r.total, passed: r.passed, total: r.total };
-        if (outcome.passed !== recorded.passed || outcome.total !== recorded.total || outcome.score !== recorded.score) changed += 1;
-        row.outcome = outcome;
-      } else {
-        const r = rejudgeClassifier(from, suiteCase, row.case, diagnostics);
-        if (r === undefined) continue;
-        rejudged += 1;
-        const outcome = r.outcome;
-        if (outcome.passed !== recorded.passed || outcome.total !== recorded.total || outcome.score !== recorded.score) changed += 1;
-        row.outcome = outcome;
-        row.probes = r.probes;
+      // A damaged artifact (corrupt output JSON, unreadable patch, missing
+      // pristine fixture, git-apply spawn error) must keep the recorded
+      // outcome with a diagnostic, never abort the regrade of the remaining
+      // rows (the module contract). The rows.jsonl/run.json validation above
+      // stays fail-loud — only per-case artifact handling is best-effort.
+      try {
+        if (isFixerCase(suiteCase)) {
+          const r = rejudgeFixer(from, suiteCase, row.case, repoRoot, timeoutMs, diagnostics);
+          if (r === undefined) continue;
+          rejudged += 1;
+          const outcome = { score: r.passed / r.total, passed: r.passed, total: r.total };
+          if (outcome.passed !== recorded.passed || outcome.total !== recorded.total || outcome.score !== recorded.score) changed += 1;
+          row.outcome = outcome;
+        } else {
+          const r = rejudgeClassifier(from, suiteCase, row.case, diagnostics);
+          if (r === undefined) continue;
+          rejudged += 1;
+          const outcome = r.outcome;
+          if (outcome.passed !== recorded.passed || outcome.total !== recorded.total || outcome.score !== recorded.score) changed += 1;
+          row.outcome = outcome;
+          row.probes = r.probes;
+        }
+      } catch (e) {
+        diagnostics.push(
+          `regrade: case ${row.case}: ${e instanceof Error ? e.message : String(e)} — recorded outcome kept`,
+        );
       }
     }
   }

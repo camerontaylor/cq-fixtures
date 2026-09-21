@@ -262,6 +262,52 @@ describe('regrade --rejudge re-runs the local judge over persisted predictions',
     expect(rows[0]!.outcome).toEqual({ score: 0, passed: 0, total: 2 });
     expect(errors.join('\n')).toContain('truncated');
   });
+  it('keeps the recorded outcome when a persisted artifact is corrupt (never aborts the regrade)', async () => {
+    const repoRoot = join(root, 'repo');
+    const suiteDir = join(repoRoot, 'suites', 'review-classifier', 'tiny');
+    mkdirSync(suiteDir, { recursive: true });
+    writeFileSync(
+      join(suiteDir, 'suite.json'),
+      JSON.stringify({
+        name: 'tiny-classifier',
+        role: 'review-classifier',
+        servedModel: 'glm-5.3-flash',
+        provenance: { origin: 'hand-labeled' },
+        cases: [{
+          id: 'tiny-c1',
+          fixture: 'fixtures/threads/thread-01.json',
+          task: { prompt: 'classify the thread' },
+          probe: { kind: 'expected-verdict', expected: 'resolved' },
+        }],
+      }, null, 2) + '\n',
+    );
+    const outDir = join(root, 'corrupt-out');
+    mkdirSync(join(outDir, 'outputs'), { recursive: true });
+    writeFileSync(join(outDir, 'outputs', 'tiny-c1.json'), '{not json\n');
+    writeFileSync(
+      join(outDir, 'run.json'),
+      JSON.stringify({
+        runs: [{
+          role: 'review-classifier', suite: 'tiny-classifier', suiteDir: 'suites/review-classifier/tiny',
+          model: 'glm-5.3-flash', driver: 'subprocess', variant: 'default',
+          toolkitLock: null, suiteSha: null, runId: 'run-tiny', generatedAt: '2026-09-18T00:00:00.000Z',
+        }],
+      }, null, 2) + '\n',
+    );
+    writeRowsJsonl(outDir, [baseRow({ outcome: { score: 0, passed: 0, total: 1 } })]);
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(' ')); });
+    try {
+      await expect(
+        cliMain(['regrade', '--from', outDir, '--rejudge', '--repo-root', repoRoot]),
+      ).resolves.toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+    const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ResultRow);
+    expect(rows[0]!.outcome).toEqual({ score: 0, passed: 0, total: 1 });
+    expect(errors.join('\n')).toContain('recorded outcome kept');
+  });
 });
 
 // A regression tripwire for the acceptance: the committed 2026-09-18 snapshot's

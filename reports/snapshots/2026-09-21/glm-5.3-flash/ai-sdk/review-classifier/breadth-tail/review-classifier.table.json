@@ -1,0 +1,66 @@
+{
+  "role": "review-classifier",
+  "suite": "breadth-tail",
+  "generatedAt": "2026-09-21T03:38:38.654Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "ai-sdk",
+      "runs": 30,
+      "passed": 19,
+      "total": 30,
+      "score": 0.6333333333333333,
+      "costUSD": 0.007427,
+      "costBasis": "modeled",
+      "byVerdict": {
+        "actionable": {
+          "expected": 4,
+          "correct": 3,
+          "predicted": {
+            "actionable": 3,
+            "responded": 1
+          }
+        },
+        "responded": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "responded": 2
+          }
+        },
+        "resolved": {
+          "expected": 5,
+          "correct": 5,
+          "predicted": {
+            "resolved": 5
+          }
+        },
+        "blocked": {
+          "expected": 5,
+          "correct": 5,
+          "predicted": {
+            "blocked": 5
+          }
+        },
+        "skip": {
+          "expected": 5,
+          "correct": 4,
+          "predicted": {
+            "skip": 4,
+            "responded": 1
+          }
+        }
+      },
+      "macroF1": 0.8825396825396826,
+      "fpRate": 0,
+      "fpN": 7,
+      "wallTimeMs": 314617,
+      "tokens": {
+        "input": 11372,
+        "output": 11236,
+        "cacheRead": 3456,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

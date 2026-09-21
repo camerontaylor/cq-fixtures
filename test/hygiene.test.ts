@@ -9,6 +9,9 @@ import { checkCorpusEvidence, discoverFixerCases } from '../catalog/corpus.ts';
 // both-states evidence and a unique single-statement adequacy target, and the
 // CI static job runs that inventory. The EXECUTING half lives in
 // test/breadth.test.ts (discovery-driven over every record-backed case).
+// Slice C adds the policy-doc describe: docs/hygiene-gates.md is the single
+// deprecation/quarantine/license/canary policy file, and these tests pin its
+// load-bearing phrases, its enforcing paths, and the inert landing zones.
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const FIXTURES_DIR = join(REPO_ROOT, 'fixtures');
@@ -73,5 +76,73 @@ describe('canary separation (F7 Slice B; tolerated until the suite lands)', () =
         .map((c) => c.caseId),
     );
     for (const c of canary) expect(breadthIds.has(c.caseId), c.caseId).toBe(false);
+  });
+});
+
+// F7 slice C: the hygiene policy is a repo artifact, not tribal knowledge.
+const HYGIENE_DOC_REL = 'docs/hygiene-gates.md';
+const LANDING_ZONES = [
+  'suites/fixer-worker/deprecated',
+  'suites/fixer-worker/quarantine',
+  'suites/review-classifier/deprecated',
+  'suites/review-classifier/quarantine',
+];
+
+describe('hygiene-gates policy doc (F7 slice C)', () => {
+  const doc = readFileSync(join(REPO_ROOT, HYGIENE_DOC_REL), 'utf8');
+
+  it('states every load-bearing policy phrase', () => {
+    // Each entry is one policy concept with the spellings a later edit may
+    // legitimately choose (ASCII hyphen/apostrophe vs typographic).
+    const concepts: Array<[string, string[]]> = [
+      ['deprecate-don\'t-renumber', ["deprecate-don't-renumber", "deprecate-don't renumber"]],
+      ['the SWT-bench P→P floor', ['10–17%', '10-17%']],
+      ['license row', ['license row']],
+      ['contamination', ['contamination']],
+      ['quarantine', ['quarantine']],
+      ['adequacy', ['adequacy']],
+      ['both-states', ['both-states']],
+    ];
+    for (const [concept, spellings] of concepts) {
+      expect(spellings.some((s) => doc.includes(s)), concept).toBe(true);
+    }
+  });
+
+  it('names the enforcing paths and the procedures it prescribes', () => {
+    for (const needle of [
+      'catalog/pipeline.ts',
+      'catalog/gate.ts',
+      'catalog/corpus.ts',
+      'test/breadth.test.ts',
+      'test/hygiene.test.ts',
+      '.github/workflows/suite.yml',
+      "not -path '*/deprecated/*'",
+      'suites/<role>/deprecated/<original-suite>/',
+      'suites/<role>/quarantine/<suite>/',
+      'DEPRECATED.md',
+      'QUARANTINE.md',
+      'consecutive green both-states runs',
+      'reports/canaries/<model>/<driver>/',
+      'node --experimental-strip-types runner/index.ts',
+      '--suite suites/fixer-worker/canary',
+      '20 percentage points',
+      'Vendored: none',
+    ]) {
+      expect(doc, needle).toContain(needle);
+    }
+  });
+
+  it('suites/README.md links the policy doc', () => {
+    const suitesReadme = readFileSync(join(REPO_ROOT, 'suites', 'README.md'), 'utf8');
+    expect(suitesReadme).toContain(`[${HYGIENE_DOC_REL}](../${HYGIENE_DOC_REL})`);
+  });
+
+  it('the four landing zones are inert: README only, no suite.json', () => {
+    for (const rel of LANDING_ZONES) {
+      const dir = join(REPO_ROOT, ...rel.split('/'));
+      expect(existsSync(join(dir, 'README.md')), rel).toBe(true);
+      expect(readFileSync(join(dir, 'README.md'), 'utf8'), rel).toContain(HYGIENE_DOC_REL);
+      expect(readdirSync(dir).includes('suite.json'), rel).toBe(false);
+    }
   });
 });

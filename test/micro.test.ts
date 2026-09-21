@@ -512,7 +512,7 @@ describe('fake-driver smoke over the micro suites (D2 subprocess lane)', () => {
   }, 60_000);
 
   it('every smoke row carries token-derived costUSD with costBasis modeled (glm-5.3-flash/zai is priced since the F1 price-map pin)', async () => {
-    // Re-pinned at the F1 interim lock (cq-toolkit main b06b6a3, v1.0.1): the
+    // Re-pinned at the F1b interim lock (cq-toolkit main 5e52707, v1.0.1): the
     // price map now lists glm-5.3-flash on the zai handle, so the honest value
     // is a modeled number — never a null (the pre-price-map expectation this
     // test used to carry). The DD-9 null corollary is still covered in

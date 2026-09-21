@@ -15,7 +15,8 @@ import {
   type Driver,
 } from '@camerontaylor/cq-toolkit';
 import { z } from 'zod';
-import { runSuite, type PreflightProbe } from './index.ts';
+import { PREFLIGHT_PROBE_RESERVE_TOKENS, runSuite, type PreflightProbe } from './index.ts';
+import { perSuiteTokenCap } from './budget.ts';
 import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
 import { loadSuite, type Suite } from './suite.ts';
 import { FakeDriver } from './fake-driver.ts';
@@ -41,8 +42,9 @@ const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
   '--driver fake|ai-sdk|claude-agent|subprocess|acp --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
   '(--driver-name is required with --driver fake — a fake run must name the lane it stands in for) ' +
-  '[--max-usd <n>] [--max-tokens <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>]\n' +
+  '[--max-usd <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
+  "caps: --max-tokens caps ONE suite run (each runSuite owns its governor); --max-tokens-per-case is multiplied by that suite's case count (WB-1.6) — pass one, never both\n" +
   'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure';
 
 export class UsageError extends Error {}
@@ -117,6 +119,7 @@ interface CliOptions {
   provider: string;
   maxUsd?: number;
   maxTokens?: number;
+  maxTokensPerCase?: number;
   checkTimeoutMs: number;
   journal?: string;
   out?: string;
@@ -136,6 +139,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let driverName = '';
   let maxUsd: number | undefined;
   let maxTokens: number | undefined;
+  let maxTokensPerCase: number | undefined;
   let checkTimeoutMs = 60_000;
   let journal: string | undefined;
   let out: string | undefined;
@@ -157,11 +161,19 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--journal': journal = nextValue(argv, i, flag); i++; break;
       case '--out': out = nextValue(argv, i, flag); i++; break;
       case '--probe-record': probeRecord = nextValue(argv, i, flag); i++; break;
-      case '--max-usd': case '--max-tokens': case '--check-timeout-ms': {
+      case '--max-usd': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
+        // Token/time budgets are whole units: a fractional value would
+        // round-trip into the governor unpredictably, and an unsafe integer
+        // (1e308) overflows perSuiteTokenCap's product — fail loud at parse
+        // time instead. --max-usd stays fractional (a USD cap may be 0.5).
+        if (flag !== '--max-usd' && !Number.isSafeInteger(n)) {
+          throw new UsageError(`${flag} must be a positive safe integer`);
+        }
         if (flag === '--max-usd') maxUsd = n;
         else if (flag === '--max-tokens') maxTokens = n;
+        else if (flag === '--max-tokens-per-case') maxTokensPerCase = n;
         else checkTimeoutMs = n;
         i++; break;
       }
@@ -195,7 +207,15 @@ function parseArgs(argv: readonly string[]): CliOptions {
         '(schema/comparison-table.schema.json)',
     );
   }
-  return { suites, driver, model, provider, maxUsd, maxTokens, checkTimeoutMs, journal, out, probeRecord, driverName };
+  // WB-1.6: the two caps are different denominations — silently preferring
+  // one would hide an operator error (an absolute cap where a per-case
+  // budget was meant, or the reverse).
+  if (maxTokens !== undefined && maxTokensPerCase !== undefined) {
+    throw new UsageError(
+      "--max-tokens and --max-tokens-per-case are mutually exclusive: the first is an absolute per-suite-run cap, the second is multiplied by that suite's case count (WB-1.6) — pass one",
+    );
+  }
+  return { suites, driver, model, provider, maxUsd, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -287,7 +307,22 @@ async function main(argv: readonly string[]): Promise<number> {
       const result = await runSuite({
         suiteDir, driver,
         model: opts.model, provider: opts.provider,
-        maxUsd: opts.maxUsd, maxTokens: opts.maxTokens,
+        maxUsd: opts.maxUsd,
+        // WB-1.6: allocate each suite its OWN cap (perCase × that suite's
+        // case count), so a multi-suite invocation's allowance is
+        // non-overlapping instead of each runSuite resetting to the
+        // invocation total. The preflight probe's conservative reservation
+        // is charged per suite run because each runSuite owns its own
+        // governor and admits the probe into it (review-debt #14) — the
+        // same conservative direction the runner documents.
+        maxTokens:
+          opts.maxTokensPerCase !== undefined
+            ? perSuiteTokenCap(
+                opts.maxTokensPerCase,
+                suite.cases.length,
+                preflightProbe !== undefined ? PREFLIGHT_PROBE_RESERVE_TOKENS : 0,
+              )
+            : opts.maxTokens,
         checkTimeoutMs: opts.checkTimeoutMs,
         journalPath: opts.journal, driverName: opts.driverName,
         preflightProbe,

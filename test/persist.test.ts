@@ -102,6 +102,21 @@ describe('publishArtifacts (F6/WB-5.2a)', () => {
     expect(diagnostics.some((d) => d.includes('withheld') && d.includes('class:client-names'))).toBe(true);
   });
 
+  it('withholds an artifact whose case id is not a path-safe segment (never escapes <out>)', () => {
+    const { published, diagnostics } = publishArtifacts(
+      root,
+      [
+        { case: '../escape', kind: 'patch', content: 'x\n' },
+        { case: 'a/b', kind: 'output', content: '{}\n' },
+      ],
+      repoRoot,
+    );
+    expect(published.every((p) => p.withheld === 'unsafe-case-id')).toBe(true);
+    expect(existsSync(join(root, 'patches'))).toBe(false);
+    expect(existsSync(join(root, 'outputs'))).toBe(false);
+    expect(diagnostics.some((d) => d.includes('path-safe'))).toBe(true);
+  });
+
   it('truncates an over-cap patch with the marker (never publishes unbounded bytes)', () => {
     const big = 'x'.repeat(MAX_PATCH_BYTES + 32);
     const { published, diagnostics } = publishArtifacts(root, [{ case: 'case-3', kind: 'patch', content: big }], repoRoot);

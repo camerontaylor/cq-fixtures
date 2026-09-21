@@ -392,7 +392,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // case still runs and scores — but the patch is then unavailable, and
         // that is recorded rather than silently lost.
         if (!gitBaseline(workspace)) {
-          caseDiagnostics.push(`case ${c.id}: git baseline failed — patch not persisted`);
+          const detail = `case ${c.id}: git baseline failed — patch not persisted`;
+          caseDiagnostics.push(detail);
+          console.error(`  ${detail}`);
         }
       } catch (e) {
         if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
@@ -499,6 +501,13 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       const cost = computeCostUSD({ model, provider: opts.provider }, usage);
       governor.observeResult(c.id, { usage, costUSD: cost });
 
+      // F6 (WB-5.2a): capture the worker's diff BEFORE the check probe runs —
+      // the judge mutates the workspace (restores pristine tests, scrubs
+      // planted configs), so a post-scoring diff would be post-judge state,
+      // not the worker's prediction. undefined = git unavailable or failed.
+      const fixerPatch =
+        isFixerCase(c) && workspace !== undefined && worker !== undefined ? gitPatch(workspace) : undefined;
+
       let outcome: { score: number; passed: number; total: number };
       let journalResult: OpResult<unknown>;
       let diagnostics: string | undefined;
@@ -600,8 +609,13 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       if (worker !== undefined) {
         if (isFixerCase(c)) {
           if (workspace !== undefined) {
-            const patch = gitPatch(workspace);
-            if (patch !== undefined) artifacts.push({ case: c.id, kind: 'patch', content: patch });
+            if (fixerPatch !== undefined) {
+              artifacts.push({ case: c.id, kind: 'patch', content: fixerPatch });
+            } else {
+              const detail = `case ${c.id}: patch unavailable (git diff failed) — prediction not persisted`;
+              caseDiagnostics.push(detail);
+              console.error(`  ${detail}`);
+            }
           }
           if (worker.structuredOutput !== undefined) {
             artifacts.push({ case: c.id, kind: 'output', content: JSON.stringify(worker.structuredOutput, null, 2) + '\n' });

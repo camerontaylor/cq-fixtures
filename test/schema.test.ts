@@ -427,6 +427,22 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
     (table.cells[0] as Record<string, unknown>)['variant'] = 'a/b';
     expect(tableSchema(table)).toBe(false);
   });
+
+  it('accepts a cell carrying the Wilson scoreCI (F6/WB-5.2c)', () => {
+    const table = validTable();
+    (table.cells[0] as Record<string, unknown>)['scoreCI'] = { lower: 0.52, upper: 0.83, confidence: 0.95 };
+    expect(tableSchema(table)).toBe(true);
+  });
+
+  it('rejects a scoreCI missing confidence or out of [0,1] (F6)', () => {
+    const table = validTable();
+    (table.cells[0] as Record<string, unknown>)['scoreCI'] = { lower: 0.52, upper: 0.83 };
+    expect(tableSchema(table)).toBe(false);
+    (table.cells[0] as Record<string, unknown>)['scoreCI'] = { lower: -0.1, upper: 1.4, confidence: 0.95 };
+    expect(tableSchema(table)).toBe(false);
+    (table.cells[0] as Record<string, unknown>)['scoreCI'] = { lower: 0.52, upper: 0.83, confidence: 0.95, method: 'wilson' };
+    expect(tableSchema(table)).toBe(false);
+  });
 });
 
 describe('suite schema (ws-j item 3)', () => {

@@ -24,6 +24,17 @@ export function isTruncated(content: string): boolean {
   return content.includes(TRUNCATION_MARKER_PREFIX);
 }
 
+/**
+ * F6: a case id becomes a filename segment (`patches/<id>.patch`,
+ * `outputs/<id>.json`). The suite schema only requires a non-empty unique id,
+ * so a `/`, `\`, or `..` id could escape `<out>`; every artifact path is
+ * built from this guard and an unsafe id is withheld/diagnosed, never written
+ * (publish) or read (regrade).
+ */
+export function isSafeCaseSegment(id: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id);
+}
+
 /** One artifact a run produced for a case (raw, not yet bounded/scanned). */
 export interface CaseArtifact {
   case: string;
@@ -63,6 +74,11 @@ export function publishArtifacts(
   const published: PublishedArtifact[] = [];
   const diagnostics: string[] = [];
   for (const a of artifacts) {
+    if (!isSafeCaseSegment(a.case)) {
+      diagnostics.push(`case ${a.case}: ${a.kind} withheld — case id is not a path-safe segment`);
+      published.push({ case: a.case, kind: a.kind, relPath: '', withheld: 'unsafe-case-id' });
+      continue;
+    }
     const cap = a.kind === 'patch' ? MAX_PATCH_BYTES : MAX_OUTPUT_BYTES;
     let content = a.content;
     let truncated = false;

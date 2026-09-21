@@ -1180,6 +1180,10 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     expect(cell.scoreCI!.upper).toBeGreaterThan(0.7);
     expect(cell.scoreCI!.lower).toBeGreaterThanOrEqual(0);
     expect(cell.scoreCI!.upper).toBeLessThanOrEqual(1);
+    // The emitted interval must be schema-legal — the closed table schema
+    // rejects unknown cell keys, so an n>=30 cell failing this is a
+    // smoke-breaking regression (round-1 review finding 1).
+    assertSchemaValid([], [table]);
   });
 
   it('a cell below n=30 carries no Wilson interval (F6: the floor)', () => {

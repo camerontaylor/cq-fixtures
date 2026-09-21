@@ -13,15 +13,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { Ajv2020 } from 'ajv/dist/2020.js';
+import ajvFormats from 'ajv-formats';
 import type { WorkerResult } from '@camerontaylor/cq-toolkit';
 import { aggregate, type ComparisonTable, type ResultRow } from './aggregate.ts';
 import { scoreSchemaCompliance } from './dimensions/schemaCompliance.ts';
 import { DEFAULT_CHECK_TIMEOUT_MS, FIXER_PROBE_COUNT, scoreFixerWorker } from './score/fixerWorker.ts';
 import { scoreReviewClassifier } from './score/reviewClassifier.ts';
 import { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
-import { isTruncated, type RunManifestEntry } from './persist.ts';
+import { isSafeCaseSegment, isTruncated, type RunManifestEntry } from './persist.ts';
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+// F6: a regrade overwrites the run's rows/tables, so it validates every
+// parsed row against the SAME schema the live runner emits before touching
+// anything (a malformed rows.jsonl must fail loud, never be re-aggregated
+// into a misleading overwrite).
+const ajv = ajvFormats(new Ajv2020({ allErrors: true }));
+const validateRow = ajv.compile(
+  JSON.parse(readFileSync(new URL('../schema/result-row.schema.json', import.meta.url), 'utf8')) as object,
+);
 
 export interface RegradeOptions {
   /** The run's out dir (holds rows.jsonl, and — with rejudge — run.json + patches/ + outputs/). */
@@ -44,25 +55,46 @@ export interface RegradeResult {
   diagnostics: string[];
 }
 
-/** Parse the persisted NDJSON rows; a blank line is not a row. */
+/** Parse the persisted NDJSON rows; a blank line is not a row. Every row is schema-validated. */
 function readRows(from: string): ResultRow[] {
-  const raw = readFileSync(join(from, 'rows.jsonl'), 'utf8');
+  const path = join(from, 'rows.jsonl');
+  const raw = readFileSync(path, 'utf8');
   const rows: ResultRow[] = [];
-  for (const line of raw.split('\n')) {
-    const t = line.trim();
-    if (t !== '') rows.push(JSON.parse(t) as ResultRow);
+  let line = 0;
+  for (const text of raw.split('\n')) {
+    line += 1;
+    const t = text.trim();
+    if (t === '') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(t);
+    } catch (e) {
+      throw new Error(`regrade: ${path} line ${line} is not JSON: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (!validateRow(parsed)) {
+      throw new Error(`regrade: ${path} line ${line} failed result-row schema validation: ${ajv.errorsText(validateRow.errors)}`);
+    }
+    rows.push(parsed as ResultRow);
   }
   return rows;
 }
 
-/** Parse the run manifest (written by the run-mode emit phase). */
+/** Parse and shape-check the run manifest (written by the run-mode emit phase). */
 function readManifest(from: string): RunManifestEntry[] {
   const path = join(from, 'run.json');
-  const parsed = JSON.parse(readFileSync(path, 'utf8')) as { runs?: RunManifestEntry[] };
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as { runs?: unknown };
   if (!Array.isArray(parsed.runs)) {
     throw new Error(`regrade: ${path} has no runs[] manifest — --rejudge needs the run's suite identity`);
   }
-  return parsed.runs;
+  return parsed.runs.map((entry, i) => {
+    const e = entry as Record<string, unknown>;
+    for (const k of ['role', 'suite', 'suiteDir', 'model', 'driver', 'variant', 'runId']) {
+      if (typeof e[k] !== 'string' || (e[k] as string).length === 0) {
+        throw new Error(`regrade: ${path} runs[${i}] has no valid '${k}' — --rejudge needs the run's suite identity`);
+      }
+    }
+    return entry as RunManifestEntry;
+  });
 }
 
 /** A persisted classifier/fixer structured output: `found` distinguishes an absent file from a JSON null. */
@@ -79,6 +111,10 @@ function rejudgeClassifier(
   caseId: string,
   diagnostics: string[],
 ): { outcome: ResultRow['outcome']; probes: ResultRow['probes'] } | undefined {
+  if (!isSafeCaseSegment(caseId)) {
+    diagnostics.push(`regrade: case ${caseId}: unsafe case id — recorded outcome kept`);
+    return undefined;
+  }
   const out = readOutput(from, caseId);
   if (!out.found) {
     diagnostics.push(`regrade: case ${caseId}: no persisted output — recorded outcome kept`);
@@ -107,6 +143,10 @@ function rejudgeFixer(
   timeoutMs: number,
   diagnostics: string[],
 ): { passed: number; total: number } | undefined {
+  if (!isSafeCaseSegment(caseId)) {
+    diagnostics.push(`regrade: case ${caseId}: unsafe case id — recorded outcome kept`);
+    return undefined;
+  }
   const patchPath = join(from, 'patches', `${caseId}.patch`);
   if (!existsSync(patchPath)) {
     diagnostics.push(`regrade: case ${caseId}: no persisted patch — recorded outcome kept`);

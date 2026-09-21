@@ -71,6 +71,13 @@ describe('regrade --from re-aggregates byte-identically', () => {
     await expect(cliMain(['regrade', '--from', outDir])).resolves.toBe(2);
   });
 
+  it('exits 2 on a schema-invalid rows.jsonl (never re-aggregates garbage into an overwrite)', async () => {
+    const outDir = join(root, 'bad-rows');
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(join(outDir, 'rows.jsonl'), '{"role":"review-classifier"}\n');
+    await expect(cliMain(['regrade', '--from', outDir])).resolves.toBe(2);
+  });
+
   it('exits 2 on a missing --from', async () => {
     await expect(cliMain(['regrade'])).resolves.toBe(2);
   });

@@ -68,6 +68,26 @@ describe('pipeline helpers', () => {
     expect(result.detail).toContain('src/missing.ts is missing from the fixture');
   });
 
+  it('the annotation gate rejects an adequacy target that is not a unique statement', () => {
+    const fixture = join(wsRoot, 'fixtures', 'dup-adequacy');
+    mkdirSync(join(fixture, 'src'), { recursive: true });
+    mkdirSync(join(fixture, 'test'), { recursive: true });
+    writeFileSync(join(fixture, 'src', 'a.ts'), 'export function f(x: number): number {\n  return x;\n  return x + 1;\n}\n');
+    writeFileSync(join(fixture, 'test', 'a.test.ts'), "import { it, expect } from 'vitest';\nit('f is identity', () => { expect(1).toBe(1); });\n");
+    const base = loadFaultForFixture(PIPELINE_REPO_ROOT, 'fixtures/breadth-11');
+    const record: FaultRecord = {
+      ...base,
+      // The recorded statement appears twice in the fixed source, so the
+      // first-occurrence delete could remove the wrong one — not a valid
+      // adequacy target even though `.includes()` would see it.
+      validation: { f2p: ['f is identity'], p2p: [], fix: { 'src/a.ts': 'export function f(x: number): number {\n  return x;\n  return x;\n}\n' } },
+      adequacy: { file: 'src/a.ts', delete: 'return x;' },
+    };
+    const result = annotationGate(wsRoot, 'fixtures/dup-adequacy', record);
+    expect(result.pass).toBe(false);
+    expect(result.detail).toContain('adequacy.delete must occur exactly once');
+  });
+
   it('assertRecordOutsideFixture holds for every case', () => {
     expect(assertRecordOutsideFixture(PIPELINE_REPO_ROOT, 'fixtures/breadth-01')).toBe(true);
     expect(assertRecordOutsideFixture(PIPELINE_REPO_ROOT, 'fixtures/breadth-40')).toBe(true);
@@ -86,6 +106,7 @@ describe('pipeline helpers', () => {
       'p2p-per-test',
       'baseline',
       'p2p-fixed',
+      'adequacy',
     ]);
     expect(report.pass, report.gates.map((g) => `${g.gate}=${g.pass}`).join(' ')).toBe(true);
   }, 180_000);

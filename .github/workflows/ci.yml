@@ -35,3 +35,10 @@ jobs:
         run: npm run lint
       - name: Unit tests
         run: npm test
+      - name: Fixture gate — both-states + adequacy evidence (every case)
+        # WB-6/F7 static inventory gate: every non-deprecated fixer case carries a FAULT.json
+        # with complete both-states evidence and a single-statement adequacy target; every
+        # record is referenced exactly once. The EXECUTING proof (buggy -> exit 1, canonical
+        # fix -> exit 0, deleted statement -> red) runs in the same static job via `npm test`
+        # (test/breadth.test.ts is discovery-driven over every record-backed case).
+        run: node --experimental-strip-types catalog/gate.ts --check

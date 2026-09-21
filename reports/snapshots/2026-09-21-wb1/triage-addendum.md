@@ -45,9 +45,11 @@ defect. The F1b re-diagnosis is recorded on cq-toolkit #210 as a closing comment
 already closed).
 
 WB-1.1 asked for "a green real-scored fixer cell". F1b delivers a **real-scored** fixer cell for
-every lane (the zeros are honest model outcomes), but no **green** ai-sdk fixer cell: the fixer
-tool loop's mandatory structured output is where both flash-class models fail. That is the
-honest disposition — the cell is no longer an infrastructure failure.
+every evaluated lane — all four matrix cells that ran (glm/ai-sdk, deepseek/ai-sdk,
+claude-agent, subprocess); the zeros are honest model outcomes. It delivers no **green** ai-sdk
+fixer cell: the fixer tool loop's mandatory structured output is where both flash-class models
+fail. That is the honest disposition — the cell is no longer an infrastructure failure. (The acp
+lane is excluded from the claim: it produced no evaluation data — its preflight failed, Lane 4.)
 
 ## Lane 2 — claude-agent: fixed (#211), budget-gated tail
 

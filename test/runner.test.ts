@@ -658,7 +658,10 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     const result = await runSuite(opts(dir, { driver: errorDriver(MISS_CAUSE), journalPath }));
     expect(result.rows).toHaveLength(1);
     // F1b: the run identity is exposed regardless of how the rows came out.
-    expect(result.runId).toMatch(/^[0-9a-f-]{36}$/);
+    // (Exact UUID v4 shape — CodeRabbit App thread 3.)
+    expect(result.runId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(result.rows[0]).toMatchObject({ case: 'fix-miss', outcome: { score: 0, passed: 0, total: 2 } });
     expect(result.tables[0]?.cells).toEqual([expect.objectContaining({ runs: 1, passed: 0, total: 2, score: 0 })]);
     expect(result.absences).toEqual([]);
@@ -693,7 +696,10 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     expect(result.rows).toEqual([]);
     // F1b: even a suite whose every case is an absence ran and carries its
     // identity (the manifest entry records it instead of 'unknown').
-    expect(result.runId).toMatch(/^[0-9a-f-]{36}$/);
+    // (Exact UUID v4 shape — CodeRabbit App thread 3.)
+    expect(result.runId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(result.tables[0]?.cells).toEqual([]);
     expect(result.absences).toEqual([{ case: 'fix-timeout', role: 'fixer-worker', cause }]);
     expect(result.artifacts).toEqual([]); // no prediction artifact for an unpublished case

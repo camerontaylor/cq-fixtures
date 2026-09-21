@@ -831,21 +831,24 @@ jobs:
             # as an outcome. Non-empty tables and clean (absence-free) empty
             # tables are copied unchanged.
             if [[ "${f}" == *.table.json ]]; then
-              # A missing or malformed sibling run.json must fail LOUD (the
-              # eval step already hard-fails the cell on that condition), not
-              # silently fail open: a non-zero node exit maps to an explicit
-              # manifest-error branch that warns and keeps the table.
-              table_fate="$(node -e '
+              # A missing or malformed sibling run.json FAILS the snapshot
+              # step (::error:: + exit 1): the table's absence metadata is
+              # unknown, so publishing it could present a zero-cell table as
+              # clean data. The eval cell should have failed on the same
+              # condition; this is the defense for a partially uploaded
+              # artifact. The node helper must NOT swallow read/parse errors.
+              if ! table_fate="$(node -e '
                 const fs = require("node:fs");
                 const path = require("node:path");
                 const table = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
                 const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[1]), "run.json"), "utf8"));
                 const hasAbsences = (manifest.runs || []).some((r) => (r.absences || []).length > 0);
                 process.stdout.write((table.cells || []).length === 0 && hasAbsences ? "skip" : "keep");
-              ' "${f}")" || table_fate="manifest-error"
-              if [ "${table_fate}" = "manifest-error" ]; then
-                echo "::warning::snapshot: could not read run.json beside ${f#reports/eval/} — keeping the table"
-              elif [ "${table_fate}" = "skip" ]; then
+              ' "${f}")"; then
+                echo "::error::snapshot: cannot read run.json beside ${f#reports/eval/} — refusing to publish a table without its absence metadata"
+                exit 1
+              fi
+              if [ "${table_fate}" = "skip" ]; then
                 echo "snapshot: skipping empty dispatch-only table ${f#reports/eval/} (absences recorded in run.json)"
                 continue
               fi

@@ -1,0 +1,58 @@
+{
+  "name": "canary",
+  "role": "fixer-worker",
+  "provenance": {
+    "origin": "public-bug-canary: four synthetic reproductions of well-known public bug classes (F7 slice B, 2026-09-21); reported separately from the headline breadth corpus; no content vendored",
+    "reference": "public bug classes only — half-open interval off-by-one; defensive-copy aliasing; missing-radix parseInt; prototype pollution (behavior of lodash CVE-2019-10744 / CVE-2018-3721); no code copied"
+  },
+  "cases": [
+    {
+      "id": "canary-01",
+      "fixture": "fixtures/canary-01",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. overlaps reports back-to-back slots as overlapping when one slot ends exactly as the other starts.",
+        "notes": "medium · equality-boundary · operator misuse · canonical fix in fixtures/canary-01.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/canary-01/check.mjs"
+      }
+    },
+    {
+      "id": "canary-02",
+      "fixture": "fixtures/canary-02",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. neighbors hands back its internal neighbour list, so mutating the returned array corrupts later results.",
+        "notes": "medium · shared-reference-return · variable misuse · canonical fix in fixtures/canary-02.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/canary-02/check.mjs"
+      }
+    },
+    {
+      "id": "canary-03",
+      "fixture": "fixtures/canary-03",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseAmount parses a hex-looking string as base sixteen instead of base ten.",
+        "notes": "medium · radix-coercion-drop · value misuse · canonical fix in fixtures/canary-03.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/canary-03/check.mjs"
+      }
+    },
+    {
+      "id": "canary-04",
+      "fixture": "fixtures/canary-04",
+      "task": {
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. merge copies dangerous keys from the source, so a crafted payload can pollute Object.prototype.",
+        "notes": "medium · remove-conditional · missing logic · canonical fix in fixtures/canary-04.FAULT.json"
+      },
+      "probe": {
+        "kind": "check-rerun",
+        "check": "fixtures/canary-04/check.mjs"
+      }
+    }
+  ]
+}

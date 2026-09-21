@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   PREFLIGHT_PROBE_JOB_ID,
   PREFLIGHT_PROBE_RESERVE_TOKENS,
+  boundDriverCause,
   runSuite,
   type PreflightProbe,
   type RunSuiteOptions,
@@ -610,6 +611,85 @@ describe('fixture materialization honesty (T2)', () => {
   }, 15_000);
 });
 
+describe('driver-error cause surfacing (cq-toolkit #206/#207 -> F1)', () => {
+  it('a driver error journals the toolkit-provided cause, not a bare status', async () => {
+    const dir = reviewSuite('err-suite', 'err-suite', [reviewCase('rev-1', 'resolved')]);
+    const journalPath = join(root, 'err-journal');
+    const failing: Driver = {
+      async run(): Promise<WorkerResult> {
+        return {
+          usage: { input: 1200, output: 300, cacheRead: 0, cacheWrite: 0 },
+          denials: [],
+          stopReason: 'error',
+          error:
+            "ai-sdk driver: structured output was not produced (final step finishReason 'tool-calls', steps 8): NoOutputGeneratedError",
+        };
+      },
+    };
+    const result = await runSuite(opts(dir, { driver: failing, journalPath }));
+    // Still an honest zero row — a driver error never becomes a score (I9).
+    expect(result.rows[0]).toMatchObject({ case: 'rev-1', outcome: { passed: 0, total: 1 } });
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result).toMatchObject({
+      status: 'failed',
+      error: expect.stringContaining('structured output was not produced'),
+    });
+  }, 15_000);
+
+  it('a driver error with no cause falls back to a named placeholder (never empty)', async () => {
+    const dir = reviewSuite('err-nocause', 'err-nocause', [reviewCase('rev-1', 'resolved')]);
+    const journalPath = join(root, 'err-nocause-journal');
+    const failing: Driver = {
+      async run(): Promise<WorkerResult> {
+        return { usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'error' };
+      },
+    };
+    await runSuite(opts(dir, { driver: failing, journalPath }));
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result).toMatchObject({
+      status: 'failed',
+      error: expect.stringContaining('driver reported no cause'),
+    });
+  }, 15_000);
+
+  it('boundDriverCause truncates and redacts credential shapes (defense in depth)', () => {
+    const long = `ai-sdk driver: run failed — ${'x'.repeat(600)}`;
+    const bounded = boundDriverCause(long);
+    expect(bounded.length).toBeLessThanOrEqual(500 + '…[truncated]'.length);
+    expect(bounded).toContain('[truncated]');
+
+    expect(boundDriverCause('Bearer abcdefghijklmnopqrstuvwxyz')).toContain('Bearer [redacted]');
+    expect(boundDriverCause('sk-abcdefghijklmnopqrstuvwxyz')).toContain('[redacted]');
+    expect(boundDriverCause('DEEPSEEK_API_KEY=supersecretvalue')).toContain('DEEPSEEK_API_KEY=[redacted]');
+    // Ordinary diagnostic text is preserved verbatim.
+    expect(boundDriverCause('claude-agent driver: query failed — exited with code 1')).toBe(
+      'claude-agent driver: query failed — exited with code 1',
+    );
+  });
+
+  it('a THROWN driver message is bounded and redacted before journaling', async () => {
+    const dir = reviewSuite('err-throw', 'err-throw', [reviewCase('rev-1', 'resolved')]);
+    const journalPath = join(root, 'err-throw-journal');
+    const throwing: Driver = {
+      async run(): Promise<WorkerResult> {
+        throw new Error(`boom DEEPSEEK_API_KEY=${'y'.repeat(600)}`);
+      },
+    };
+    await runSuite(opts(dir, { driver: throwing, journalPath }));
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    const err = (finished?.result as { error?: string }).error ?? '';
+    expect(err).toContain('DEEPSEEK_API_KEY=[redacted]');
+    expect(err).not.toContain('yyyyyyyyyy');
+    expect(err.length).toBeLessThanOrEqual(500 + '…[truncated]'.length);
+  }, 15_000);
+});
+
 describe('budget honesty (I9)', () => {
   it('a tripped token cap gates admission: rows carry ONLY admitted cases and the journal records the honest stop', async () => {
     const dir = reviewSuite('budget-suite', 'budget-suite', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
@@ -638,11 +718,12 @@ describe('budget honesty (I9)', () => {
   }, 15_000);
 
   it('an unpriced lane under a TOKEN-ONLY cap dispatches ALL cases (no USD fail-closed)', async () => {
-    // glm-5.3-flash on zai is unpriced: with no maxUsd configured, the
-    // governor has no USD cap to fail closed on, so the token cap binds
-    // alone and both cases dispatch (F1/DD-9).
+    // glm-5.3-flash on the anthropic handle is unpriced (the pinned price map
+    // lists it under zai only): with no maxUsd configured, the governor has
+    // no USD cap to fail closed on, so the token cap binds alone and both
+    // cases dispatch (F1/DD-9).
     const dir = reviewSuite('token-only', 'token-only', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
-    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxTokens: 10_000 }));
+    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'anthropic', maxTokens: 10_000 }));
     expect(result.gatedByBudget).toBe(false);
     expect(result.rows).toHaveLength(2);
     expect(result.rows.map((r) => r.case)).toEqual(['rev-1', 'rev-2']);
@@ -654,7 +735,7 @@ describe('budget honesty (I9)', () => {
     // Keeping the honest-stop contract honest in the other direction: a
     // configured USD cap over unpriced usage MUST trip (never run unbounded).
     const dir = reviewSuite('usd-fail-closed', 'usd-fail-closed', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
-    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxUsd: 0.000001, maxTokens: 1_000_000 }));
+    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'anthropic', maxUsd: 0.000001, maxTokens: 1_000_000 }));
     expect(result.gatedByBudget).toBe(true);
     expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
   }, 15_000);
@@ -760,7 +841,7 @@ describe('pre-runner probe accounting (review-debt #14)', () => {
     // unpriced usage — identical shape to the no-probe run.
     const dir = reviewSuite('probe-usd', 'probe-usd', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
     const result = await runSuite(
-      opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxUsd: 0.000001, maxTokens: 1_000_000, preflightProbe: probe }),
+      opts(dir, { model: 'glm-5.3-flash', provider: 'anthropic', maxUsd: 0.000001, maxTokens: 1_000_000, preflightProbe: probe }),
     );
     expect(result.gatedByBudget).toBe(true);
     expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
@@ -779,14 +860,14 @@ describe('DD-9 cost derivation', () => {
   }, 15_000);
 
   it('an unpriced model yields costUSD null with no costBasis (never invented)', async () => {
-    // Verified against the toolkit price map directly: glm-5.3-flash on the
-    // zai handle has no entry (checked anthropic too — also absent).
-    const spec = { model: 'glm-5.3-flash', provider: 'zai' };
+    // Verified against the pinned toolkit price map directly: glm-5.3-flash
+    // on the anthropic handle has no entry (it is listed under zai only).
+    const spec = { model: 'glm-5.3-flash', provider: 'anthropic' };
     expect(priceOf(spec)).toBeUndefined();
     expect(computeCostUSD(spec, { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 })).toBeUndefined();
 
     const dir = reviewSuite('cost-unpriced', 'cost-unpriced', [reviewCase('rev-1', 'resolved')]);
-    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai' }));
+    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'anthropic' }));
     const row = result.rows[0]!;
     expect(row.costUSD).toBeNull();
     expect('costBasis' in row).toBe(false);

@@ -106,8 +106,8 @@ describe('pack-toolkit.sh pin resolution (tag | commit SHA)', () => {
     // REPO_ROOT/vendor/ never touches the real repo.
     const remote = join(root, 'sha-remote');
     execFileSync('git', ['init', '-q', '-b', 'main', remote]);
-    writeFileSync(join(remote, 'package.json'), JSON.stringify({ name: '@camerontaylor/cq-toolkit', version: '0.0.0', scripts: { build: 'true' } }));
-    writeFileSync(join(remote, 'package-lock.json'), JSON.stringify({ name: '@camerontaylor/cq-toolkit', version: '0.0.0', lockfileVersion: 3, requires: true, packages: { '': { name: '@camerontaylor/cq-toolkit', version: '0.0.0' } } }));
+    writeFileSync(join(remote, 'package.json'), JSON.stringify({ name: '@camerontaylor/cq-toolkit', version: '1.0.1', scripts: { build: 'true' } }));
+    writeFileSync(join(remote, 'package-lock.json'), JSON.stringify({ name: '@camerontaylor/cq-toolkit', version: '1.0.1', lockfileVersion: 3, requires: true, packages: { '': { name: '@camerontaylor/cq-toolkit', version: '1.0.1' } } }));
     execFileSync('git', ['-C', remote, 'add', '-A']);
     execFileSync('git', ['-C', remote, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
     const sha = execFileSync('git', ['-C', remote, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -124,6 +124,6 @@ describe('pack-toolkit.sh pin resolution (tag | commit SHA)', () => {
       env: { ...process.env, TOOLKIT_LOCK: lock, TOOLKIT_REPO_URL: `file://${remote}` },
     });
     expect(out).toContain(`(pin: ${sha})`);
-    expect(existsSync(join(scriptRoot, 'vendor', 'cq-toolkit-0.0.0.tgz'))).toBe(true);
+    expect(existsSync(join(scriptRoot, 'vendor', 'cq-toolkit-1.0.1.tgz'))).toBe(true);
   }, 60_000);
 });

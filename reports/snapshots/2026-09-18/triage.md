@@ -308,3 +308,47 @@ is a cq-fixtures CI-wiring fix owned by F1, Lane 4 is an owner decision.
 - cq-toolkit issues opened where routed — two, URLs above.
 
 No model was dispatched and no token was spent producing this triage.
+
+---
+
+## F1 addendum (2026-09-21) — re-diagnosis from the real re-run
+
+The F1 matrix re-run dispatched the five cells with the post-v1.0.0 toolkit pinned
+(`toolkit.lock` = cq-toolkit main `b06b6a3`, version 1.0.1, carrying #206 + #207), after the
+fixtures-side served-id, per-suite-cap and subprocess-install fixes. The runner was extended to
+surface `WorkerResult.error` (cq-toolkit #206/#207 deferred that consumption to F1), so the
+causes below are the drivers' own bounded, secret-redacted messages — not inferences.
+
+Run ids: `35552908933` (first, pre-surfacing) and `35553519022` (second, causes visible).
+
+### What is real now
+- **ai-sdk review-classifier, both models — REAL scored runs.** run 1 (`35552908933`): glm
+  9/10, deepseek 8/10. run 2 (`35553519022`, the published snapshot): glm 8/10 (one
+  structured-output miss), deepseek 10/10. Both priced (`costBasis: modeled`); the deepseek rows
+  carry the observed served id `deepseek-flash`.
+- **The subprocess CI-wiring fix worked**: `claude --version` → `2.1.276 (Claude Code)` on the
+  runner. The lane's remaining failure is not the install.
+
+### Updated per-lane classification and routed issues
+
+| Lane | Cause (driver-reported) | Classification | Routed |
+|---|---|---|---|
+| ai-sdk fixer, glm-5.3-flash | 3/5 `Cannot connect to API: Headers Timeout Error`; 2/5 `No object generated: response did not match schema` / `could not parse the response` | **toolkit-defect** — no retry on the endpoint header timeout (the classifier on the same endpoint/wire is healthy), and the structured-output miss is still classified a driver error (the F0 memo's fix (b) was not taken) | cq-toolkit [#210](https://github.com/camerontaylor/cq-toolkit/issues/210) |
+| ai-sdk fixer, deepseek-flash | 5/5 `No object generated: could not parse the response` | **toolkit-defect** (same structured-output classification; no timeout class here) | cq-toolkit [#210](https://github.com/camerontaylor/cq-toolkit/issues/210) |
+| claude-agent, both roles | 15/15 `claude-agent driver: query failed — Claude Code process exited with code 1. stderr: Error: --json-schema is not a valid JSON Schema: no schema with key or ref "https://json-schema.org/draft/2020-12/schema"`, 0 tokens | **toolkit-defect** — the serialised output schema carries the draft-2020-12 meta-schema URI the CLI rejects; pre-model, so the lane cannot run at all | cq-toolkit [#209](https://github.com/camerontaylor/cq-toolkit/issues/209) |
+| subprocess, both roles | 15/15 `driver stopReason: error (driver reported no cause)`, 0 tokens | **toolkit-defect** — the subprocess driver does not populate `WorkerResult.error` (the #206/#207 error channel covered ai-sdk and claude-agent only), so the 0-token failure is undiagnosable | cq-toolkit [#208](https://github.com/camerontaylor/cq-toolkit/issues/208) |
+| acp | preflight rc 4 / skip before eval; no `eval/` artifact | **lane-unavailable-on-CI** (unchanged) | owner decision pending |
+
+### F1 disposition
+Per the plan's WB-1.7 acceptance, a lane that cannot produce a real score must be a **loud
+dispatch-only absence**, never a driver-error zero. The matrix cell config now names the
+dispatch-only roles with the routed issue (`skip_roles`/`skip_reason`), and the eval loop
+skips them loudly (warning + step summary + `DISPATCH-ONLY-*` marker) before any runner
+invocation. The affected roles are the ai-sdk fixers (#210) and both claude-agent (#209) and
+subprocess (#208) roles. The classifier cells remain real. Re-enabling a role is a one-line
+cell-config edit once its toolkit issue lands.
+
+### Re-run budget
+Two full re-runs were used (the F1 bound): run 1 proved the fixes that landed and exposed the
+journal-surfacing gap; run 2 captured the causes above. No further re-run is spent on
+toolkit-side defects; the routed issues own the next step.

@@ -19,8 +19,8 @@ REPO_URL="${TOOLKIT_REPO_URL:-https://github.com/camerontaylor/cq-toolkit.git}"
 # npm names scoped tarballs "<scope>-<name>-<version>.tgz"; the flat name is
 # what package.json's file: spec installs. Both names change iff the version
 # does, so a mismatch below means the pin/version moved and docs must follow.
-PACKED="camerontaylor-cq-toolkit-0.0.0.tgz"
-EXPECTED="cq-toolkit-0.0.0.tgz"
+PACKED="camerontaylor-cq-toolkit-1.0.1.tgz"
+EXPECTED="cq-toolkit-1.0.1.tgz"
 
 # Pin: argv overrides, else the single non-empty line in toolkit.lock. The
 # pin is a branch/tag NAME or a full 40-hex commit SHA (interim post-v1.0.0
@@ -128,4 +128,4 @@ if [ ! -f "$TARBALL" ]; then
   exit 1
 fi
 
-echo "packed @camerontaylor/cq-toolkit@0.0.0 (pin: $TAG) -> $TARBALL"
+echo "packed @camerontaylor/cq-toolkit (pin: $TAG) -> $TARBALL"

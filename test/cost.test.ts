@@ -40,6 +40,8 @@ const PRICED_CANDIDATES: ReadonlyArray<{ model: string; provider: string }> = [
   { model: 'gpt-4o', provider: 'openai' },
   { model: 'claude-3-5-sonnet', provider: 'anthropic' },
   { model: 'deepseek-chat', provider: 'deepseek' },
+  { model: 'deepseek-flash', provider: 'deepseek' },
+  { model: 'glm-5.3-flash', provider: 'zai' },
   { model: 'claude-haiku-4-5', provider: 'anthropic' },
   { model: 'gpt-5', provider: 'openai' },
   { model: 'glm-4.6', provider: 'zai' },
@@ -160,10 +162,10 @@ describe('cost column: token-derived USD on every lane (D2)', () => {
     });
     // Leg 2 — the subprocess lane label, the axis-legal fixed served id
     // glm-5.3-flash @ zai (schema/comparison-table.schema.json pins every
-    // non-ai-sdk cell to that id, and the price map does not list it — so a
-    // subprocess RUN through the pipeline can only honestly emit the
-    // unpriced pairing; the runner's derivation itself is what this leg
-    // proves lane-blind).
+    // non-ai-sdk cell to that id). Since the F1 interim price-map pin
+    // (cq-toolkit main b06b6a3, v1.0.1) that pair IS priced, so the honest
+    // shape is a modeled number on the subprocess lane too — the derivation
+    // itself is what this leg proves lane-blind.
     const fakeLaneDriver = new FixedUsageDriver(STUB_USAGE);
     subprocess = await runSuite({
       suiteDir: CLASSIFIER_SUITE_DIR,
@@ -187,24 +189,23 @@ describe('cost column: token-derived USD on every lane (D2)', () => {
     assertCostHonesty(aiSdk.rows, priced?.provider ?? 'zai');
   });
 
-  it('subprocess lane: the derivation is lane-blind — the same tokens recompute to the exact ai-sdk USD; nulls are the price map, not the lane', () => {
+  it('subprocess lane: the derivation is lane-blind — the same tokens recompute to the exact served-id USD', () => {
     expect(subprocess.rows).toHaveLength(10);
     assertSchemaValid(subprocess.rows, subprocess.tables);
-    // 1. The rows are honest per the validator: glm-5.3-flash@zai is
-    //    unpriced, so nulls — with FULL token records, never holes.
+    // 1. The rows are honest per the validator: glm-5.3-flash@zai is priced
+    //    since the F1 price-map pin, so every row carries a modeled number —
+    //    with FULL token records, never holes.
     assertCostHonesty(subprocess.rows, 'zai');
-    expect(subprocess.rows.every((r) => r.costUSD === null)).toBe(true);
-    // 2. Lane-blindness: recomputing the SAME stub usage under the priced
-    //    candidate returns exactly the number the ai-sdk lane's rows carry —
-    //    the lane label is not an input to cost derivation
-    //    (runner/index.ts calls computeCostUSD identically for every lane),
-    //    so a subprocess wire serving a priced (model, provider) would
-    //    populate the column identically. "Every lane, including subprocess"
-    //    is a property of the derivation, with DD-9 owning the nulls.
-    if (priced !== undefined) {
-      const aiSdkCost = aiSdk.rows[0]!.costUSD as number;
-      expect(computeCostUSD(priced, STUB_USAGE)).toBe(aiSdkCost);
-    }
+    expect(subprocess.rows.every((r) => typeof r.costUSD === 'number' && r.costUSD > 0)).toBe(true);
+    // 2. Lane-blindness: recomputing the SAME stub usage under this lane's
+    //    (model, provider) returns exactly the number its rows carry — the
+    //    lane label is not an input to cost derivation (runner/index.ts
+    //    calls computeCostUSD identically for every lane). "Every lane,
+    //    including subprocess" is a property of the derivation; DD-9 still
+    //    owns the null-on-unpriced corollary (covered in runner.test.ts).
+    const expected = computeCostUSD({ model: 'glm-5.3-flash', provider: 'zai' }, STUB_USAGE);
+    expect(expected).toBeGreaterThan(0);
+    expect(subprocess.rows.every((r) => r.costUSD === expected)).toBe(true);
   });
 
   it('aggregate: cost sums per-cell from its rows, nulls propagate as null cells, and 0 is never invented', () => {
@@ -222,11 +223,13 @@ describe('cost column: token-derived USD on every lane (D2)', () => {
       expect(cell.costUSD).toBeGreaterThan(0);
       expect(cell.costBasis).toBe('modeled');
     }
-    // The unpriced cell stays null — never 0, never a partial sum, and no
-    // costBasis on a null cell (DD-9).
-    const nullCell = byDriver.get('subprocess')!;
-    expect(nullCell.costUSD).toBeNull();
-    expect('costBasis' in nullCell).toBe(false);
+    // The subprocess cell is priced too since the F1 price-map pin: it sums
+    // its rows the same way (never a partial sum, never an invented 0).
+    const subprocessCell = byDriver.get('subprocess')!;
+    const subprocessSum = subprocess.rows.reduce((s, r) => s + (r.costUSD as number), 0);
+    expect(subprocessCell.costUSD).toBe(Math.round(subprocessSum * 1e6) / 1e6);
+    expect(subprocessCell.costUSD).toBeGreaterThan(0);
+    expect(subprocessCell.costBasis).toBe('modeled');
 
     // Direct propagation proof: ONE null row inside an otherwise numeric
     // cell forces the whole cell null — the aggregate refuses to sum a cell
@@ -236,5 +239,20 @@ describe('cost column: token-derived USD on every lane (D2)', () => {
     const mixedTables = aggregate(mixed);
     expect(mixedTables[0]!.cells[0]!.costUSD).toBeNull();
     expect('costBasis' in mixedTables[0]!.cells[0]!).toBe(false);
+  });
+});
+
+describe('F1 price-map pin (interim toolkit.lock b06b6a3)', () => {
+  it('pins the two eval-matrix ids directly (not only via the fallback chain)', () => {
+    for (const spec of [
+      { model: 'glm-5.3-flash', provider: 'zai' },
+      { model: 'deepseek-flash', provider: 'deepseek' },
+    ] as const) {
+      expect(priceOf(spec), `${spec.model}@${spec.provider} must be priced`).toBeDefined();
+      expect(
+        computeCostUSD(spec, STUB_USAGE),
+        `${spec.model}@${spec.provider} must derive a cost`,
+      ).toBeGreaterThan(0);
+    }
   });
 });

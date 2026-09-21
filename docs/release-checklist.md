@@ -35,7 +35,7 @@ release time, with the owner sign-off plan §6 requires).
   specifier may appear — no `src/`/`dist/` deep import, no subpath, no
   relative escape. The dist leg proves the discipline survives
   compilation. Until publish, the package arrives as the
-  `file:vendor/cq-toolkit-0.0.0.tgz` tarball packed at the
+  `file:vendor/cq-toolkit-1.0.1.tgz` tarball packed at the
   `toolkit.lock` pin, tag or commit SHA (`scripts/pack-toolkit.sh`); `vendor/` is
   gitignored build output, never committed.
 - [ ] **Flip to the published version — prepared, NOT executed (phase-5

@@ -10,7 +10,7 @@
 // case is red-buggy / green-fixed.
 
 import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CASE_RECIPES, type CaseRecipe } from './recipes.ts';
 import type { FaultRecord } from './fault.ts';
@@ -141,9 +141,10 @@ export function checkCase(recipe: CaseRecipe): string[] {
   }
   // A committed file the recipe does not produce is drift too (a stale file
   // left behind by an earlier recipe shape would otherwise pass `--check`).
+  // walkFiles returns fixture-relative paths.
   let committedFiles: string[] = [];
   try {
-    committedFiles = walkFiles(fixtureDir).map((f) => relative(fixtureDir, f));
+    committedFiles = walkFiles(fixtureDir);
   } catch {
     committedFiles = [];
   }

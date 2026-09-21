@@ -1,0 +1,35 @@
+{
+  "bug_type": "variable misuse",
+  "failure_symptoms": "hasEdge looks for the wrong endpoint.",
+  "operator": "argument-swap",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:authored",
+    "seed": 127,
+    "engine_version": "@babel/parser@8.0.6"
+  },
+  "validation": {
+    "f2p": [
+      "finds a directed edge"
+    ],
+    "p2p": [
+      "counts the neighbours of a node",
+      "returns a copy of the neighbour list",
+      "detects a self-loop among several nodes",
+      "returns false when the target is unreachable"
+    ],
+    "fix": {
+      "src/edges.ts": "export type Adjacency = Record<string, string[]>;\n\nexport function degree(adj: Adjacency, node: string): number {\n  return (adj[node] ?? []).length;\n}\n\nexport function hasEdge(adj: Adjacency, a: string, b: string): boolean {\n  return (adj[a] ?? []).includes(b);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/edges.ts",
+    "delete": "return (adj[a] ?? []).includes(b);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "An argument swap; the edge direction contract is test-only."
+  }
+}

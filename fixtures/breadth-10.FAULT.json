@@ -1,0 +1,29 @@
+{
+  "bug_type": "value misuse",
+  "failure_symptoms": "Two independent faults: amounts are parsed without a radix (so '0x10' becomes 16), and range labels print the bounds reversed ('range 7-3' for rangeLabel(3, 7)).",
+  "operator": "radix-coercion-drop+argument-swap",
+  "difficulty": "hard",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel+ts-morph",
+    "seed": 110,
+    "engine_version": "@babel/parser@8.0.6+ts-morph@28.0.0"
+  },
+  "validation": {
+    "f2p": ["parses a decimal string as base ten", "labels the range in from-to order"],
+    "p2p": ["parses a plain integer", "renders from-to in order", "accepts a positive amount", "rejects zero and negatives"],
+    "fix": {
+      "src/parse.ts": "export function parseAmount(text: string): number {\n  return parseInt(text, 10);\n}\n",
+      "src/format.ts": "export function formatRange(from: number, to: number): string {\n  return `${from}-${to}`;\n}\n\nexport function rangeLabel(from: number, to: number): string {\n  return `range ${formatRange(from, to)}`;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/parse.ts",
+    "delete": "return parseInt(text, 10);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "The radix drop is a subtle deletion; the argument swap is visible only at the call site, not in the function under test."
+  }
+}

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
@@ -119,6 +119,18 @@ function reviewCase(id: string, expected: string): object {
   };
 }
 
+function fixerCase(id: string): object {
+  // The fixer probe is a real check-rerun judge; the untouched micro-1
+  // fixture fails it (score 0) but still produces a row — the multi-suite
+  // cap test counts dispatched rows, not scores.
+  return {
+    id,
+    fixture: 'fixtures/micro-1',
+    task: { prompt: 'Fix the failing vitest suite.' },
+    probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' },
+  };
+}
+
 function cliArgs(suiteDir: string): string[] {
   return ['--suite', suiteDir, '--driver', 'ai-sdk', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'];
 }
@@ -224,6 +236,109 @@ describe('--probe-record (review-debt #14: the pre-runner probe rides inside the
     // Budget-gated, not scored: the empty-but-valid table, no rows.
     const table = JSON.parse(readFileSync(join(outDir, 'review-classifier.table.json'), 'utf8')) as { cells: unknown[] };
     expect(table.cells).toEqual([]);
+  }, 15_000);
+});
+
+describe('--max-tokens-per-case (WB-1.6: the cap scales with suite size)', () => {
+  it('is mutually exclusive with --max-tokens (two denominations) — exit 2', async () => {
+    const dir = writeSuite('cap-both', { name: 'cap-both', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain([...cliArgs(dir), '--max-tokens', '200000', '--max-tokens-per-case', '60000'])).resolves.toBe(2);
+  }, 15_000);
+
+  it('rejects a non-positive per-case budget — exit 2', async () => {
+    const dir = writeSuite('cap-zero', { name: 'cap-zero', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '0'])).resolves.toBe(2);
+  }, 15_000);
+
+  it('rejects fractional token budgets but keeps a fractional --max-usd legal', async () => {
+    const dir = writeSuite('cap-frac', { name: 'cap-frac', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain([...cliArgs(dir), '--max-tokens', '1.5'])).resolves.toBe(2);
+    await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '1.5'])).resolves.toBe(2);
+    // --max-usd stays fractional (a USD cap may be 0.5). One case: the
+    // unpriced glm lane trips the USD cap fail-closed AFTER the only case,
+    // so no admission is refused and the run is clean (exit 0).
+    await expect(cliMain([...cliArgs(dir), '--max-usd', '0.5'])).resolves.toBe(0);
+  }, 15_000);
+
+  it('gates admission at perCase × caseCount (NOT a flat cap): 3 cases at 5 tokens/case trips after case 2', async () => {
+    // The mocked driver reports 15 tokens/case. cap = 5 × 3 = 15: case 1
+    // observes 15 (not > 15), case 2 pushes the fold to 30 (> 15) and trips,
+    // so case 3 is refused admission and gets NO row (I9). A flat 200000 cap
+    // would have dispatched all three.
+    const dir = writeSuite('cap-scale', {
+      name: 'cap-scale',
+      role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved'), reviewCase('rev-3', 'resolved')],
+    });
+    const outDir = join(root, 'cap-scale-out');
+    const journalDir = join(outDir, 'journal');
+    await expect(
+      cliMain([...cliArgs(dir), '--max-tokens-per-case', '5', '--journal', journalDir, '--out', outDir]),
+    ).resolves.toBe(1);
+    const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { case?: string });
+    expect(rows.map((r) => r.case)).toEqual(['rev-1', 'rev-2']);
+    // I9: the honest stop is journaled, not merely implied by the missing row.
+    const journalFile = readdirSync(journalDir)[0]!;
+    const events = readFileSync(join(journalDir, journalFile), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { type: string; stoppedEarly?: boolean; earlyStopReason?: string });
+    const finished = events.find((e) => e.type === 'run-finished');
+    expect(finished).toMatchObject({ stoppedEarly: true, earlyStopReason: 'budget' });
+  }, 15_000);
+
+  it('a per-case budget large enough dispatches every case cleanly — exit 0', async () => {
+    const dir = writeSuite('cap-roomy', {
+      name: 'cap-roomy',
+      role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved'), reviewCase('rev-3', 'resolved')],
+    });
+    await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '60000'])).resolves.toBe(0);
+  }, 15_000);
+
+  it('allocates a NON-OVERLAPPING cap per suite in one invocation (not one reset total)', async () => {
+    // Two suites (one per role, B4) at perCase 5 × 2 cases = cap 10 each. The
+    // mock reports 15 tokens/case, so each suite admits exactly its first
+    // case and gates its second. A single invocation-wide cap reset per suite
+    // (the retired bug) would give each suite 5 × 4 = 20 and dispatch all
+    // four cases.
+    const fixer = writeSuite('multi-fixer', {
+      name: 'multi-fixer',
+      role: 'fixer-worker',
+      cases: [fixerCase('fix-1'), fixerCase('fix-2')],
+    });
+    const clf = writeSuite('multi-clf', {
+      name: 'multi-clf',
+      role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')],
+    });
+    const outDir = join(root, 'multi-out');
+    await expect(
+      cliMain([
+        '--suite', fixer, '--suite', clf,
+        '--driver', 'ai-sdk', '--driver-name', 'ai-sdk',
+        '--model', 'glm-5.3-flash', '--provider', 'zai',
+        '--max-tokens-per-case', '5', '--out', outDir,
+      ]),
+    ).resolves.toBe(1);
+    const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { case?: string });
+    expect(rows.map((r) => r.case)).toEqual(['fix-1', 'rev-1']);
+  }, 30_000);
+
+  it('the ACP probe reservation rides ON TOP of the per-case budget (not deducted from it)', async () => {
+    // perCase 5 × 2 cases = cap 10; with the probe reservation added on top
+    // the cap is 2010, so the 2000-token reservation is admitted and case 1
+    // runs (2015 > 2010 trips before case 2, which is refused — one row).
+    // If the reservation were deducted from the case budget (cap 10), the
+    // probe would trip the governor before case 1 and yield ZERO rows.
+    const dir = writeSuite('cap-probe', {
+      name: 'cap-probe',
+      role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')],
+    });
+    const rec = join(root, 'cap-probe-record.json');
+    writeFileSync(rec, JSON.stringify({ probe: 'acp-auth-preflight', at: '2026-09-20T00:00:00.000Z', promptChars: 30, replyChars: 120, replyPreview: 'ready' }));
+    const outDir = join(root, 'cap-probe-out');
+    await expect(cliMain([...cliArgs(dir), '--probe-record', rec, '--max-tokens-per-case', '5', '--out', outDir])).resolves.toBe(1);
+    const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { case?: string });
+    expect(rows.map((r) => r.case)).toEqual(['rev-1']);
   }, 15_000);
 });
 

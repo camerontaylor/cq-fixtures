@@ -110,7 +110,7 @@ function matrixCells(): string[] {
 
 describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
   it('the smoke loop hard-fails on rc>=2 (rc capture, -ge 2 branch, exit "${hard_fail}")', () => {
-    const smoke = stepChunk('Fake-driver smoke over the micro suites');
+    const smoke = stepChunk('Fake-driver smoke over the micro and breadth suites');
     for (const marker of RC_EXIT_DISCIPLINE) {
       expect(smoke, `smoke step must carry '${marker}'`).toContain(marker);
     }
@@ -146,10 +146,16 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
         expect(axis, 'a non-ai-sdk lane IS the driver axis').toBe('driver');
       }
     }
-    // Axis-1 spread: deepseek-chat exactly once, glm-5.3-flash on the other
+    // Axis-1 spread: deepseek-flash exactly once, glm-5.3-flash on the other
     // four cells, ai-sdk exactly twice (one per model) — and the fixed
     // served id's ai-sdk point is ONE cell, not one per axis.
-    expect(models.filter((m) => m === 'deepseek-chat')).toHaveLength(1);
+    expect(models.filter((m) => m === 'deepseek-flash')).toHaveLength(1);
+    // WB-1.5a served-id rule: the deepseek cell requests the id the wire
+    // serves, not the pre-2026-09-18 `deepseek-chat` request.
+    const deepseekCell = cells.find((c) => c.includes('provider: deepseek'));
+    expect(deepseekCell, 'the deepseek model-axis cell exists').toBeDefined();
+    expect(deepseekCell).toContain('model: deepseek-flash');
+    expect(cells.some((c) => c.includes('model: deepseek-chat'))).toBe(false);
     expect(models.filter((m) => m === 'glm-5.3-flash')).toHaveLength(4);
     expect(drivers.filter((d) => d === 'ai-sdk')).toHaveLength(2);
     expect(cells.filter((c) => c.includes('driver: ai-sdk') && c.includes('model: glm-5.3-flash'))).toHaveLength(1);
@@ -249,15 +255,69 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // identity nests <date>/<model>/<driver>/<role>/<suite>/ off this path.
     expect(evalCell).toContain('out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}"');
     // DD-9: a token cap binds alone on every cell — never a USD cap.
-    expect(evalCell).toContain('--max-tokens 200000');
+    // WB-1.6: the cap is PER CASE and the runner scales it by the suite's
+    // case count; the retired flat per-invocation cap must not return.
+    expect(evalCell).toContain('--max-tokens-per-case 60000');
+    expect(evalCell, 'the flat per-invocation cap is gone').not.toContain('--max-tokens 200000');
+    expect(evalCell, 'DD-9: no USD cap rides the cells').not.toContain('--max-usd');
     // The worklist rides stdin; the driver must never eat it.
     expect(evalCell).toContain('< /dev/null');
+  });
+
+  it('deprecated/ suites are excluded from matrix discovery (F2, WB-2.1)', () => {
+    // Retirement moves a case to a sibling deprecated/ suite, never renumbers
+    // it — and a retired suite must never spend weekly tokens. The discovery
+    // find must drop any path carrying a deprecated/ segment, so widening the
+    // roots later cannot silently re-enable a retired suite.
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'the suite find drops deprecated/ suites').toContain("-not -path '*/deprecated/*'");
+    expect(evalCell, 'the exclusion rides the suite.json discovery find').toMatch(/-name suite\.json -not -path/);
+  });
+
+  it('the dispatch profile selects the discovery roots (F3, WB-2.5)', () => {
+    // `verified` runs only the breadth-verified suites; `full` (the default,
+    // and the weekly schedule's value) runs every suite. Scope the assertions
+    // to the workflow_dispatch.inputs.profile block so unrelated text (suite
+    // paths elsewhere) cannot satisfy them.
+    const profileIdx = text.indexOf('\n      profile:\n');
+    expect(profileIdx, 'profile input declared under workflow_dispatch.inputs').toBeGreaterThan(-1);
+    const profileBlock = text.slice(profileIdx, text.indexOf('\n  schedule:', profileIdx));
+    expect(profileBlock, 'profile is a choice input').toContain('type: choice');
+    expect(profileBlock, 'profile options include full').toContain('- full');
+    expect(profileBlock, 'profile options include verified').toContain('- verified');
+    expect(profileBlock, 'profile defaults to full').toContain('default: full');
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'eval step reads the profile').toContain("MATRIX_PROFILE: ${{ github.event.inputs.profile || 'full' }}");
+    expect(evalCell, 'verified root').toContain('suites/fixer-worker/breadth-verified');
+    expect(evalCell, 'tail root').toContain('suites/fixer-worker/breadth-tail');
+    expect(evalCell, 'unknown profiles fail loud').toContain('unknown profile');
+  });
+
+  it('zero suite discovery hard-fails the matrix cell (F3)', () => {
+    // An empty discovery (removed/broken root) must not let the cell succeed
+    // with no tables — the snapshot's full-success path would clear the day.
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'zero discovery is a hard error').toContain('matrix discovery found no suites for profile');
+    expect(evalCell, 'count drift stays a warning').toContain('matrix discovery found ${suite_count} suites (expected ${expected_count}');
+  });
+
+  it('the smoke loop exercises breadth-verified too (F3, WB-2.5)', () => {
+    const smoke = stepChunk('Fake-driver smoke over the micro and breadth suites');
+    expect(smoke, 'breadth-verified is smoked').toContain('suites/fixer-worker/breadth-verified');
+    expect(smoke, 'per-suite out dirs avoid role collisions').toContain('out_dir="reports/smoke/${role}/${suite_name}"');
   });
 
   it('lane installs are conditional: subprocess claude-code pinned, acp pinned 0.43.3, claude-agent none', () => {
     const sub = stepChunk('Install the subprocess lane CLI');
     expect(sub).toContain("if: matrix.cell.driver == 'subprocess'");
-    expect(sub).toContain('npm install -g @anthropic-ai/claude-code@2.1.276');
+    // WB-1.2 (F0 triage Lane 3): npm blocks lifecycle scripts by default,
+    // so the package's postinstall never ran and every spawn exited 1 at
+    // zero usage. The install must allow exactly this package's script.
+    expect(sub).toContain('npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.276');
+    // A silent postinstall failure must fail HERE, not as driver-error zeros.
+    const subVerify = stepChunk('Verify the subprocess lane CLI is installed');
+    expect(subVerify).toContain("if: matrix.cell.driver == 'subprocess'");
+    expect(subVerify).toContain('claude --version');
     const acp = stepChunk('Install the acp lane harness');
     expect(acp).toContain("if: matrix.cell.driver == 'acp'");
     // PINNED to the probed version (2026-09-19): >=0.43 moved the stdio ACP
@@ -336,7 +396,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // dying mid-emit on the last suite reports success and the snapshot's
     // full-success path replaces complete data with incomplete data.
     for (const { label, chunk } of [
-      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro suites') },
+      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro and breadth suites') },
       { label: 'matrix eval cell', chunk: stepChunk('Eval cell —') },
     ] as const) {
       expect(chunk, `${label}: table-existence guard`).toContain('-f "${out_dir}/${role}.table.json"');
@@ -351,7 +411,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // outcome can never be reclassified into a job failure (nor a hard fail
     // hidden as a warning).
     const cases = [
-      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro suites'), marker: '::notice::' },
+      { label: 'smoke', chunk: stepChunk('Fake-driver smoke over the micro and breadth suites'), marker: '::notice::' },
       { label: 'matrix eval cell', chunk: stepChunk('Eval cell —'), marker: '::warning::' },
     ] as const;
     for (const { label, chunk, marker } of cases) {

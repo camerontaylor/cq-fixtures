@@ -1,0 +1,35 @@
+{
+  "bug_type": "function misuse",
+  "failure_symptoms": "hasSelfLoop only reports a self-loop when every node has one.",
+  "operator": "method-swap",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": [
+      "detects a self-loop among several nodes"
+    ],
+    "p2p": [
+      "counts the neighbours of a node",
+      "finds a directed edge",
+      "returns a copy of the neighbour list",
+      "returns false when the target is unreachable"
+    ],
+    "fix": {
+      "src/paths.ts": "import type { Adjacency } from './edges.ts';\n\nexport function neighbors(adj: Adjacency, node: string): string[] {\n  return [...(adj[node] ?? [])];\n}\n\nexport function hasSelfLoop(adj: Adjacency): boolean {\n  return Object.entries(adj).some(([node, next]) => next.includes(node));\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/paths.ts",
+    "delete": "return Object.entries(adj).some(([node, next]) => next.includes(node));"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A quantifier swap; the any-vs-all contract is test-only."
+  }
+}

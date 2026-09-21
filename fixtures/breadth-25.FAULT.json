@@ -1,0 +1,36 @@
+{
+  "bug_type": "variable misuse",
+  "failure_symptoms": "minutesBetween returns a negative duration, and overlaps reports back-to-back slots as overlapping.",
+  "operator": "operand-swap+equality-boundary",
+  "difficulty": "hard",
+  "provenance": {
+    "origin": "diff-replay",
+    "generator": "fixture-git-replay",
+    "seed": 125,
+    "engine_version": "git-history@f3"
+  },
+  "validation": {
+    "f2p": [
+      "measures the minutes between two times",
+      "does not overlap when one slot ends as the other starts"
+    ],
+    "p2p": [
+      "formats minutes as hours and minutes",
+      "treats Sunday as a weekend day",
+      "orders slots by start time"
+    ],
+    "fix": {
+      "src/slots.ts": "export function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {\n  return aStart < bEnd && bStart < aEnd;\n}\n",
+      "src/time.ts": "export function minutesBetween(start: number, end: number): number {\n  return end - start;\n}\n\nexport function formatDuration(minutes: number): string {\n  return `${Math.floor(minutes / 60)}h${minutes % 60}m`;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/time.ts",
+    "delete": "return end - start;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "told",
+    "notes": "Both diffs are one-token; hard tier is carried by finding two independent faults."
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "bug_type": "function misuse",
+  "failure_symptoms": "allInStock reports true as soon as a single item is in stock, so a catalog with an out-of-stock row still reads as fully stocked.",
+  "operator": "method-swap",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:MethodExpression",
+    "seed": 105,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": ["is false when any item is out of stock"],
+    "p2p": ["is true when every item is in stock", "sums the item prices", "lists three stocked or unstocked rows"],
+    "fix": {
+      "src/totals.ts": "import type { Item } from './types.ts';\n\nexport function allInStock(items: Item[]): boolean {\n  return items.every((item) => item.inStock);\n}\n\nexport function totalPrice(items: Item[]): number {\n  return items.reduce((sum, item) => sum + item.price, 0);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/totals.ts",
+    "delete": "return items.every((item) => item.inStock);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "The diff swaps every for some; the all-vs-any symptom must be inferred from the call sites."
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "shouldRetry retries once past the attempt limit.",
+  "operator": "equality-boundary",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:EqualityOperator",
+    "seed": 136,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": [
+      "stops retrying at the attempt limit"
+    ],
+    "p2p": [
+      "appends a value to the queue",
+      "returns the first value",
+      "advances a queued task to running",
+      "reports the fraction of successes"
+    ],
+    "fix": {
+      "src/retry.ts": "export function shouldRetry(attempt: number, max: number): boolean {\n  return attempt < max;\n}\n\nexport function nextState(state: string): string {\n  if (state === 'queued') return 'running';\n  if (state === 'running') return 'done';\n  return state;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/retry.ts",
+    "delete": "return attempt < max;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A boundary shift; the limit contract is test-only."
+  }
+}

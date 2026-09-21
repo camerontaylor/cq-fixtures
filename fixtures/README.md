@@ -51,3 +51,20 @@ copy and asserts the judge now passes.
 `resolved`, `comments[]` with `author`/`body`/`createdAt`/`isReply`). Two payloads per expected
 verdict (`actionable`, `responded`, `resolved`, `blocked`, `skip`); the payload-to-verdict
 mapping is tabled in `suites/review-classifier/micro/PROVENANCE.md`.
+
+## Breadth fixtures (`breadth-{01..40}`)
+
+Forty synthetic zero-dependency multi-module TypeScript packages (F2 seed + F3, 2026-09-21),
+graded by `suites/fixer-worker/breadth-verified` (12) and `suites/fixer-worker/breadth-tail`
+(28). Each package has 3-5 `src/` files, 1-3 `test/` files and a `check.mjs` shim over
+`fixtures/judge-lib.mjs` (same immutable-judge contract as the micro fixtures). breadth-01..10
+are hand-authored; breadth-11..40 are generated deterministically from six clean substrates under
+`catalog/substrates/` by `catalog/generate-cases.ts` (recipes in `catalog/recipes.ts`).
+
+The authoritative per-fault record is `fixtures/breadth-NN.FAULT.json` — a SIBLING FILE, never
+inside the fixture directory. It is HumanEvalFix-shaped (`bug_type`, `failure_symptoms`,
+`operator`, `difficulty`, `provenance`, `validation{f2p,p2p,fix}`) and carries the canonical fix,
+so it must stay outside the tree the runner materializes into a worker workspace; the runner
+copies only `fixtures/<name>/` (`runner/index.ts`), and `catalog/pipeline.ts` (driven by
+`test/breadth.test.ts`) proves the record is unreachable from that workspace. See the two suites'
+`PROVENANCE.md` files for the tier and generation mixes.

@@ -1,0 +1,35 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "successRate always reports one, ignoring failures.",
+  "operator": "chain-break",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:authored",
+    "seed": 138,
+    "engine_version": "@babel/parser@8.0.6"
+  },
+  "validation": {
+    "f2p": [
+      "reports the fraction of successes"
+    ],
+    "p2p": [
+      "appends a value to the queue",
+      "returns the first value",
+      "advances a queued task to running",
+      "stops retrying at the attempt limit"
+    ],
+    "fix": {
+      "src/stats.ts": "export function successRate(events: boolean[]): number {\n  if (events.length === 0) return 0;\n  return events.filter(Boolean).length / events.length;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/stats.ts",
+    "delete": "return events.filter(Boolean).length / events.length;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A dropped filter in a chain; the success-fraction contract is test-only."
+  }
+}

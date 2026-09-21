@@ -1,0 +1,28 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "Members are charged the full price and non-members get the ten-percent discount; the membership branch is inverted.",
+  "operator": "ternary-swap",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": ["gives members the discounted rate", "charges non-members the full rate"],
+    "p2p": ["rounds to cents"],
+    "fix": {
+      "src/discount.ts": "// The membership discount rate: members get ten percent off.\nexport function discountRate(isMember: boolean): number {\n  return isMember ? 0.1 : 0;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/discount.ts",
+    "delete": "return isMember ? 0.1 : 0;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "The diff swaps the ternary arms; the membership semantics are not spelled out in the diff."
+  }
+}

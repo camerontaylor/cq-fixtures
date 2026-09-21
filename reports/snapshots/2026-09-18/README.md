@@ -1,5 +1,16 @@
 # Snapshot 2026-09-18 — first live J5 real-driver matrix (run 35392822013)
 
+> **Superseded for lane health by the F1 re-run — see
+> [`../2026-09-21/README.md`](../2026-09-21/README.md).** This page is the historical record of
+> the first live matrix: every fixer zero and the claude-agent / subprocess zeros below are
+> DRIVER FAILURES, not model outcomes. F1 re-diagnosed them (driver-reported causes in
+> `triage.md`'s F1 addendum) and routed them to cq-toolkit
+> [#208](https://github.com/camerontaylor/cq-toolkit/issues/208) (subprocess cause not surfaced),
+> [#209](https://github.com/camerontaylor/cq-toolkit/issues/209) (claude-agent `--json-schema`
+> rejected), and [#210](https://github.com/camerontaylor/cq-toolkit/issues/210) (ai-sdk fixer
+> timeouts + structured-output classification). The F1 re-run publishes real scored classifier
+> cells and loud dispatch-only absences, and no driver-error zero as data.
+
 First real-driver run of the five-cell axes matrix (ADR-0001 as revised 2026-09-14), dispatched
 manually at J5 (`workflow_dispatch` on main after PR #13). Read the "What is proven" section
 before the numbers: NONE of this run's zeros are model outcomes.

@@ -264,6 +264,34 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell).toContain('< /dev/null');
   });
 
+  it('dispatch-only roles publish a loud absence, never driver-error zeros (WB-1.7)', () => {
+    // The matrix cell config names the roles a known toolkit defect must not
+    // dispatch, with the routed issue; the eval loop warns, writes the step
+    // summary, drops a marker, and skips the runner invocation (so no row is
+    // ever written for that role).
+    const cells = matrixCells();
+    const claudeAgent = cells.find((c) => c.includes('driver: claude-agent'));
+    expect(claudeAgent).toContain('skip_roles: fixer-worker,review-classifier');
+    expect(claudeAgent).toContain('cq-toolkit#209');
+    const subprocess = cells.find((c) => c.includes('driver: subprocess'));
+    expect(subprocess).toContain('skip_roles: fixer-worker,review-classifier');
+    expect(subprocess).toContain('cq-toolkit#208');
+    const glmAiSdk = cells.find((c) => c.includes('driver: ai-sdk') && c.includes('model: glm-5.3-flash'));
+    expect(glmAiSdk).toContain('skip_roles: fixer-worker');
+    expect(glmAiSdk).toContain('cq-toolkit#210');
+    const deepseek = cells.find((c) => c.includes('provider: deepseek'));
+    expect(deepseek).toContain('skip_roles: fixer-worker');
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell).toContain('SKIP_ROLES: ${{ matrix.cell.skip_roles }}');
+    expect(evalCell).toContain('SKIP_REASON: ${{ matrix.cell.skip_reason }}');
+    expect(evalCell).toContain('skipped (dispatch-only)');
+    expect(evalCell).toContain('DISPATCH-ONLY-');
+    // The skip must precede the runner invocation, so the role never dispatches.
+    expect(evalCell.indexOf('DISPATCH-ONLY-')).toBeLessThan(evalCell.indexOf('node --experimental-strip-types runner/index.ts'));
+    // The snapshot job must not clear a same-day dir that held real data.
+    expect(stepChunk('Commit report snapshots')).toContain('DISPATCH-ONLY-*');
+  });
+
   it('deprecated/ suites are excluded from matrix discovery (F2, WB-2.1)', () => {
     // Retirement moves a case to a sibling deprecated/ suite, never renumbers
     // it — and a retired suite must never spend weekly tokens. The discovery

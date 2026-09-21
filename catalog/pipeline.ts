@@ -15,10 +15,9 @@
 //                             signature and is operator-sized (full mode)
 //
 // `full: false` runs the both-states subset: annotation, reachability, one
-// faulted + one fixed judge run, and the per-title F2P/P2P JSON checks (a
-// swapped label must not pass on aggregate red/green alone). `full: true`
-// adds determinism ×3, the fixed-state per-title check, adequacy, and the
-// tell pass.
+// faulted + one fixed judge run, and the per-title F2P/P2P checks in BOTH
+// states (a swapped label must not pass on aggregate red/green alone).
+// `full: true` adds determinism ×3, adequacy, and the tell pass.
 //
 // The pipeline never edits a fixture: `validation.fix` is applied to a
 // materialized tmpdir copy, and the pristine fixture under repoRoot is never

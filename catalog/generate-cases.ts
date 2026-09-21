@@ -125,7 +125,15 @@ function writeCase(recipe: CaseRecipe): void {
 /** Return human-readable mismatches between a recipe and the committed case. */
 export function checkCase(recipe: CaseRecipe): string[] {
   const mismatches: string[] = [];
-  const { files, fault } = renderCase(recipe);
+  let rendered: RenderedCase;
+  try {
+    rendered = renderCase(recipe);
+  } catch (e) {
+    // A render-time rule failure (e.g. a non-unique adequacy target) is a
+    // mismatch line, not a stack trace that aborts the remaining checks.
+    return [`${recipe.id}: ${(e as Error).message}`];
+  }
+  const { files, fault } = rendered;
   const fixtureDir = join(FIXTURES_DIR, recipe.id);
   for (const [rel, content] of files) {
     let committed: string | undefined;
@@ -184,10 +192,15 @@ function readSuiteDoc(name: string): SuiteDoc {
   return JSON.parse(readFileSync(join(REPO_ROOT, 'suites', 'fixer-worker', name, 'suite.json'), 'utf8')) as SuiteDoc;
 }
 
-function suiteNameForCase(id: string): (typeof SUITE_NAMES)[number] {
+function suiteNameForWrite(id: string): (typeof SUITE_NAMES)[number] {
   const matches = SUITE_NAMES.filter((name) => readSuiteDoc(name).cases.some((c) => c.id === id));
-  if (matches.length !== 1) throw new Error(`${id}: expected exactly one suite entry, found ${matches.length}`);
-  return matches[0]!;
+  if (matches.length > 1) throw new Error(`${id}: appears in multiple suites`);
+  if (matches.length === 1) return matches[0]!;
+  // No entry yet (or a deleted one): fall back to the numeric id rule so
+  // --write can repair the "appears in 0 suites" drift --check reports.
+  const n = Number(id.split('-')[1]);
+  if (!Number.isFinite(n)) throw new Error(`${id}: cannot resolve a suite (no entry and unparseable id)`);
+  return n <= 12 ? 'breadth-verified' : 'breadth-tail';
 }
 
 /** Verify each recipe's suite.json case entry matches `caseEntry(recipe)`. */
@@ -212,7 +225,7 @@ export function checkSuiteEntries(): string[] {
 function writeSuiteEntries(): void {
   const docs = new Map(SUITE_NAMES.map((name) => [name, readSuiteDoc(name)]));
   for (const recipe of CASE_RECIPES) {
-    const name = suiteNameForCase(recipe.id);
+    const name = suiteNameForWrite(recipe.id);
     const cases = docs.get(name)!.cases;
     const idx = cases.findIndex((c) => c.id === recipe.id);
     const entry = caseEntry(recipe) as unknown as Record<string, unknown>;

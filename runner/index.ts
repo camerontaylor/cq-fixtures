@@ -127,6 +127,15 @@ export interface RunSuiteOptions {
   driverName?: string;
 }
 
+/** F1b (WB-1): a driver failure caused by something other than the model's
+ * structured output — classified from the driver-reported cause token. It
+ * publishes NO row (a loud dispatch-only absence, never a fabricated zero). */
+export interface DriverAbsence {
+  case: string;
+  role: string;
+  cause: string;
+}
+
 export interface RunSuiteResult {
   rows: ResultRow[];
   tables: ComparisonTable[];
@@ -147,6 +156,11 @@ export interface RunSuiteResult {
    * structured outputs) a caller persists — bounded and denylist-scanned by
    * `publishArtifacts` at emit time. */
   artifacts: CaseArtifact[];
+  /** F1b (WB-1): non-model driver causes classified as dispatch-only
+   * absences — those cases published NO row (infrastructure, never a
+   * fabricated zero). The scored-miss class (`structured-output-miss`) is a
+   * MODEL outcome and rides `rows` as a real zero instead. */
+  absences: DriverAbsence[];
 }
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -211,6 +225,23 @@ export function boundDriverCause(cause: string, max = 500): string {
       '$1=[redacted]',
     );
   return redacted.length <= max ? redacted : `${redacted.slice(0, max)}…[truncated]`;
+}
+
+/** The ai-sdk driver's model-outcome class token (cq-toolkit #210/#212). */
+const STRUCTURED_OUTPUT_MISS_TOKEN = 'structured-output-miss';
+
+/**
+ * True iff `cause` begins with the ai-sdk class-token form
+ * `ai-sdk driver: [<token>]` and `<token>` is EXACTLY `structured-output-miss`.
+ *
+ * The toolkit guarantees every ai-sdk `error` verdict's `WorkerResult.error`
+ * starts with that form, so the class token is consumed from position zero:
+ * a longer token (`[structured-output-miss-extra]`), a mid-message mention of
+ * the phrase, or another lane's cause is false — no substring drift.
+ */
+export function isStructuredOutputMissCause(cause: string): boolean {
+  const m = /^ai-sdk driver: \[([a-z-]+)\](?: |$)/.exec(cause);
+  return m !== null && m[1] === STRUCTURED_OUTPUT_MISS_TOKEN;
 }
 
 function tokensOf(usage: Usage): ResultRow['tokens'] {
@@ -349,6 +380,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
 
   const rows: ResultRow[] = [];
   const artifacts: CaseArtifact[] = [];
+  const absences: DriverAbsence[] = [];
   const caseDiagnostics: string[] = [];
   const materializationDiagnostics: string[] = [];
   let materializationFailures = 0;
@@ -535,6 +567,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // rows keep their exact pre-F4 shape.
       let rowProbes: ResultRow['probes'];
       let sidecarFlag: SidecarFlag | undefined;
+      // F1b: set false on a non-model driver failure, so neither a row nor a
+      // prediction artifact is fabricated for infrastructure.
+      let emitRow = true;
       // DD-4: the probe ceiling holds even on the zero paths below — a case
       // configures its probes up front, so a worker that never produced a
       // gradeable result failed every one of them (passed 0 of the full
@@ -552,20 +587,33 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         journalResult = { status: 'budget-exhausted' };
         diagnostics = 'driver stopped on budget';
       } else if (worker.stopReason === 'error') {
-        outcome = zeroOutcome(probeCount);
-        // Post-v1.0.0 toolkit (cq-toolkit #206/#207, pinned 1.0.1) carries the
-        // driver's own cause in `WorkerResult.error` (bounded and
-        // secret-redacted by the toolkit). Surface it verbatim so a driver
-        // failure is diagnosable from the journal instead of the bare status
-        // the F0 triage could not read (its cross-cutting finding). The row
-        // stays a zero-outcome row: a driver failure is NEVER a model score
-        // (I9).
+        // Post-v1.0.0 toolkit (cq-toolkit #206/#210/#212, pinned 1.0.1)
+        // carries the driver's own cause in `WorkerResult.error` (bounded and
+        // secret-redacted by the toolkit) with a class token as its second
+        // component. Consume that token to separate a MODEL outcome from
+        // infrastructure:
+        //   [structured-output-miss] — the model emitted unparseable
+        //     structured output. That is a model outcome, so the case
+        //     publishes an honest DD-4 scored-miss row (outcome 0, passed 0,
+        //     the configured probe ceiling) — a real zero in the tables.
+        //   anything else ([endpoint-timeout], [provider-error], a missing
+        //     cause, an unknown cause) — infrastructure. NO row is published,
+        //     so a driver failure never masquerades as a model score (I9);
+        //     the absence is recorded for the caller and the journal keeps
+        //     the cause verbatim.
         const cause =
           worker.error !== undefined && worker.error.trim() !== ''
             ? boundDriverCause(worker.error)
             : 'driver stopReason: error (driver reported no cause)';
         journalResult = { status: 'failed', error: cause };
         diagnostics = cause;
+        if (!isStructuredOutputMissCause(cause)) {
+          emitRow = false;
+          absences.push({ case: c.id, role: suite.role, cause });
+        }
+        // Either way the worker produced no gradeable result, so every
+        // configured probe failed (passed 0 of the full ceiling).
+        outcome = zeroOutcome(probeCount);
       } else if (worker.stopReason === 'aborted') {
         outcome = zeroOutcome(probeCount);
         journalResult = { status: 'indeterminate', detail: 'driver stopReason: aborted' };
@@ -621,7 +669,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         result: journalResult,
         ...(worker !== undefined ? { usage } : {}),
       });
-      rows.push({
+      if (emitRow) rows.push({
         role: suite.role, suite: suite.name, case: c.id, model, driver: driverName,
         // F6/CQ-4: only a non-default variant rides the row, so the default
         // posture (and every pre-F6 row) keeps its exact shape.
@@ -639,7 +687,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // classifier's output is its raw structured output. The fixer's
       // structuredOutput is persisted too (the DD-4 schema-compliance probe's
       // input) so `regrade --rejudge` can re-run BOTH probes offline.
-      if (worker !== undefined) {
+      if (emitRow && worker !== undefined) {
         if (isFixerCase(c)) {
           if (workspace !== undefined) {
             if (fixerPatch !== undefined) {
@@ -661,7 +709,11 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           });
         }
       }
-      console.error(`  case ${c.id}: score ${outcome.score}${diagnostics !== undefined ? ` — ${diagnostics.split('\n')[0]}` : ''}`);
+      if (emitRow) {
+        console.error(`  case ${c.id}: score ${outcome.score}${diagnostics !== undefined ? ` — ${diagnostics.split('\n')[0]}` : ''}`);
+      } else {
+        console.error(`  case ${c.id}: not published — driver error (dispatch-only absence): ${diagnostics?.split('\n')[0] ?? ''}`);
+      }
     } finally {
       // The materialized workspace is the driver's scratch: graded against,
       // then removed — even when the case aborts mid-flight. The pristine
@@ -704,6 +756,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     materializationFailures,
     materializationDiagnostics,
     artifacts,
+    absences,
   };
 }
 

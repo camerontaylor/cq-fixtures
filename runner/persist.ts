@@ -135,6 +135,11 @@ export interface RunManifestEntry {
   suiteSha: string | null;
   runId: string;
   generatedAt: string;
+  /** F1b (WB-1): non-model driver causes classified as dispatch-only
+   * absences — those cases published NO row. SURFACED BY `run.json` so the
+   * workflow can render a warning + step summary + DISPATCH-ONLY marker
+   * instead of publishing a driver-error zero. */
+  absences?: Array<{ case: string; cause: string }>;
 }
 
 export interface RunManifest {

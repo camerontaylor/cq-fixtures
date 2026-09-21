@@ -19,6 +19,7 @@ import {
   PREFLIGHT_PROBE_JOB_ID,
   PREFLIGHT_PROBE_RESERVE_TOKENS,
   boundDriverCause,
+  isStructuredOutputMissCause,
   runSuite,
   type PreflightProbe,
   type RunSuiteOptions,
@@ -611,50 +612,121 @@ describe('fixture materialization honesty (T2)', () => {
   }, 15_000);
 });
 
-describe('driver-error cause surfacing (cq-toolkit #206/#207 -> F1)', () => {
-  it('a driver error journals the toolkit-provided cause, not a bare status', async () => {
-    const dir = reviewSuite('err-suite', 'err-suite', [reviewCase('rev-1', 'resolved')]);
-    const journalPath = join(root, 'err-journal');
-    const failing: Driver = {
+describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', () => {
+  const MISS_CAUSE =
+    "ai-sdk driver: [structured-output-miss] structured output was not produced (final step finishReason 'tool-calls', steps 8): NoOutputGeneratedError";
+
+  function fixerSuite(dirName: string, caseId: string): string {
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    return writeSuite(dirName, {
+      name: dirName,
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: caseId, fixture: 'fixture', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+  }
+
+  function errorDriver(error?: string): Driver {
+    return {
       async run(): Promise<WorkerResult> {
         return {
           usage: { input: 1200, output: 300, cacheRead: 0, cacheWrite: 0 },
           denials: [],
           stopReason: 'error',
-          error:
-            "ai-sdk driver: structured output was not produced (final step finishReason 'tool-calls', steps 8): NoOutputGeneratedError",
+          ...(error !== undefined ? { error } : {}),
         };
       },
     };
-    const result = await runSuite(opts(dir, { driver: failing, journalPath }));
-    // Still an honest zero row — a driver error never becomes a score (I9).
-    expect(result.rows[0]).toMatchObject({ case: 'rev-1', outcome: { passed: 0, total: 1 } });
+  }
+
+  it('a fixer structured-output-miss publishes an honest DD-4 scored-miss row (0/2), cause verbatim in the journal', async () => {
+    // The model emitted unparseable structured output — a MODEL outcome, so
+    // the case is a real zero in the tables (both DD-4 probes fail: the
+    // schema probe has no valid structuredOutput and the judge probe has no
+    // patch to re-run). It must NOT be an absence.
+    const dir = fixerSuite('err-miss-fixer', 'fix-miss');
+    const journalPath = join(root, 'err-miss-journal');
+    const result = await runSuite(opts(dir, { driver: errorDriver(MISS_CAUSE), journalPath }));
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ case: 'fix-miss', outcome: { score: 0, passed: 0, total: 2 } });
+    expect(result.tables[0]?.cells).toEqual([expect.objectContaining({ runs: 1, passed: 0, total: 2, score: 0 })]);
+    expect(result.absences).toEqual([]);
+    assertSchemaValid(result.rows, result.tables);
     const log = openRunLog(journalPath);
     const events = await log.read((await log.runs())[0]!);
     const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
     expect(finished?.result).toMatchObject({
       status: 'failed',
-      error: expect.stringContaining('structured output was not produced'),
+      error: expect.stringContaining('ai-sdk driver: [structured-output-miss]'),
     });
   }, 15_000);
 
-  it('a driver error with no cause falls back to a named placeholder (never empty)', async () => {
-    const dir = reviewSuite('err-nocause', 'err-nocause', [reviewCase('rev-1', 'resolved')]);
-    const journalPath = join(root, 'err-nocause-journal');
-    const failing: Driver = {
-      async run(): Promise<WorkerResult> {
-        return { usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'error' };
-      },
-    };
-    await runSuite(opts(dir, { driver: failing, journalPath }));
+  it('a classifier structured-output-miss publishes a scored-miss row (0/1) with no fabricated probes[]', async () => {
+    const dir = reviewSuite('err-miss-clf', 'err-miss-clf', [reviewCase('rev-1', 'resolved')]);
+    const result = await runSuite(opts(dir, { driver: errorDriver(MISS_CAUSE) }));
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ case: 'rev-1', outcome: { score: 0, passed: 0, total: 1 } });
+    expect(result.absences).toEqual([]);
+    // No parseable verdict existed, so the row carries no probes[] — the same
+    // shape as the other zero paths (byVerdict counts probed rows only).
+    expect('probes' in result.rows[0]!).toBe(false);
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('an [endpoint-timeout] cause publishes NO row: a loud dispatch-only absence, never a driver-error zero', async () => {
+    const dir = fixerSuite('err-timeout', 'fix-timeout');
+    const journalPath = join(root, 'err-timeout-journal');
+    const cause = 'ai-sdk driver: [endpoint-timeout] run failed — headers timeout';
+    const result = await runSuite(opts(dir, { driver: errorDriver(cause), journalPath }));
+    // No row, no cell — infrastructure is never fabricated into a score.
+    expect(result.rows).toEqual([]);
+    expect(result.tables[0]?.cells).toEqual([]);
+    expect(result.absences).toEqual([{ case: 'fix-timeout', role: 'fixer-worker', cause }]);
+    assertSchemaValid(result.rows, result.tables);
     const log = openRunLog(journalPath);
     const events = await log.read((await log.runs())[0]!);
     const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
-    expect(finished?.result).toMatchObject({
-      status: 'failed',
-      error: expect.stringContaining('driver reported no cause'),
-    });
+    expect(finished?.result).toMatchObject({ status: 'failed', error: cause });
   }, 15_000);
+
+  it('a [provider-error] cause publishes NO row (absence, cause recorded)', async () => {
+    const dir = reviewSuite('err-provider', 'err-provider', [reviewCase('rev-1', 'resolved')]);
+    const cause = 'ai-sdk driver: [provider-error] run failed — 401 invalid api key';
+    const result = await runSuite(opts(dir, { driver: errorDriver(cause) }));
+    expect(result.rows).toEqual([]);
+    expect(result.absences).toEqual([{ case: 'rev-1', role: 'review-classifier', cause }]);
+  }, 15_000);
+
+  it('a driver error with no cause publishes NO row and names the placeholder in the absence', async () => {
+    const dir = reviewSuite('err-nocause', 'err-nocause', [reviewCase('rev-1', 'resolved')]);
+    const journalPath = join(root, 'err-nocause-journal');
+    const result = await runSuite(opts(dir, { driver: errorDriver(), journalPath }));
+    expect(result.rows).toEqual([]);
+    expect(result.absences).toHaveLength(1);
+    expect(result.absences[0]!.cause).toContain('driver reported no cause');
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result).toMatchObject({ status: 'failed', error: expect.stringContaining('driver reported no cause') });
+  }, 15_000);
+
+  it('isStructuredOutputMissCause matches the exact class token only (no substring drift)', () => {
+    // Positive: the toolkit's guaranteed prefix form, with and without a
+    // trailing diagnostic (`end of string` covered by the first case).
+    expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss]')).toBe(true);
+    expect(isStructuredOutputMissCause(MISS_CAUSE)).toBe(true);
+    // Negative: a longer token, a missing bracket, a mid-message mention, a
+    // different class, a bare phrase, a different case, an empty string.
+    expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss-extra] x')).toBe(false);
+    expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss x')).toBe(false);
+    expect(isStructuredOutputMissCause('prefix: ai-sdk driver: [structured-output-miss] x')).toBe(false);
+    expect(isStructuredOutputMissCause('ai-sdk driver: [endpoint-timeout] x')).toBe(false);
+    expect(isStructuredOutputMissCause('ai-sdk driver: [provider-error] x')).toBe(false);
+    expect(isStructuredOutputMissCause('structured-output-miss')).toBe(false);
+    expect(isStructuredOutputMissCause('AI-SDK DRIVER: [structured-output-miss] x')).toBe(false);
+    expect(isStructuredOutputMissCause('')).toBe(false);
+  });
 
   it('boundDriverCause truncates and redacts credential shapes (defense in depth)', () => {
     const long = `ai-sdk driver: run failed — ${'x'.repeat(600)}`;

@@ -44,6 +44,9 @@ interface RowSample {
   // suspicious-benign flag. Old rows omit both by design.
   probes?: Array<{ kind: string; expected: string; observed: string | null; passed: boolean }>;
   suspiciousBenign?: boolean;
+  // F6 additive-optional field: the prompt/tool-surface bundle id. Old rows
+  // (and default-posture rows) omit it by design.
+  variant?: string;
 }
 
 function validRow(overrides: Partial<RowSample> = {}): RowSample {
@@ -165,6 +168,14 @@ describe('result-row schema (plan §8 field list)', () => {
       outcome: { score: 0, passed: 0, total: 1 },
       probes: [{ kind: 'expected-verdict', expected: 'skip', observed: 'maybe', passed: false }],
     }))).toBe(true);
+  });
+
+  it('accepts a row carrying a non-default suite variant (F6/CQ-4)', () => {
+    expect(rowSchema(validRow({ variant: 'minimal-tools' }))).toBe(true);
+  });
+
+  it('rejects a row variant that is not a path-safe slug (F6)', () => {
+    expect(rowSchema(validRow({ variant: 'a/b' }))).toBe(false);
   });
 });
 
@@ -404,6 +415,34 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
     cell['macroF1'] = 1.25;
     expect(tableSchema(table)).toBe(false);
   });
+
+  it('accepts a cell carrying a non-default suite variant (F6/CQ-4)', () => {
+    const table = validTable();
+    (table.cells[0] as Record<string, unknown>)['variant'] = 'minimal-tools';
+    expect(tableSchema(table)).toBe(true);
+  });
+
+  it('rejects a cell variant that is not a path-safe slug (F6)', () => {
+    const table = validTable();
+    (table.cells[0] as Record<string, unknown>)['variant'] = 'a/b';
+    expect(tableSchema(table)).toBe(false);
+  });
+
+  it('accepts a cell carrying the Wilson scoreCI (F6/WB-5.2c)', () => {
+    const table = validTable();
+    (table.cells[0] as Record<string, unknown>)['scoreCI'] = { lower: 0.52, upper: 0.83, confidence: 0.95 };
+    expect(tableSchema(table)).toBe(true);
+  });
+
+  it('rejects a scoreCI missing confidence or out of [0,1] (F6)', () => {
+    const table = validTable();
+    (table.cells[0] as Record<string, unknown>)['scoreCI'] = { lower: 0.52, upper: 0.83 };
+    expect(tableSchema(table)).toBe(false);
+    (table.cells[0] as Record<string, unknown>)['scoreCI'] = { lower: -0.1, upper: 1.4, confidence: 0.95 };
+    expect(tableSchema(table)).toBe(false);
+    (table.cells[0] as Record<string, unknown>)['scoreCI'] = { lower: 0.52, upper: 0.83, confidence: 0.95, method: 'wilson' };
+    expect(tableSchema(table)).toBe(false);
+  });
 });
 
 describe('suite schema (ws-j item 3)', () => {
@@ -481,6 +520,24 @@ describe('suite schema (ws-j item 3)', () => {
     delete (suite as { provenance?: unknown }).provenance;
     expect(suiteSchema(suite)).toBe(false);
   });
+
+  it('accepts a suite declaring a non-default variant (F6/CQ-4)', () => {
+    const suite = validFixerSuite() as { variant?: string };
+    suite.variant = 'minimal-tools';
+    expect(suiteSchema(suite)).toBe(true);
+  });
+
+  it('rejects a suite variant that is not a path-safe slug (F6)', () => {
+    const suite = validFixerSuite() as { variant?: string };
+    suite.variant = 'a/b';
+    expect(suiteSchema(suite)).toBe(false);
+  });
+
+  it('rejects an empty suite variant (minLength 1)', () => {
+    const suite = validFixerSuite() as { variant?: string };
+    suite.variant = '';
+    expect(suiteSchema(suite)).toBe(false);
+  });
 });
 
 describe('F4 acceptance: committed 2026-09-18 snapshots still validate against the versioned schemas', () => {
@@ -502,8 +559,8 @@ describe('F4 acceptance: committed 2026-09-18 snapshots still validate against t
       };
       expect(tableSchema(doc), `${f}: ${ajv.errorsText(tableSchema.errors)}`).toBe(true);
       for (const cell of doc.cells) {
-        for (const k of ['byVerdict', 'macroF1', 'fpRate', 'fpN']) {
-          expect(cell, `${f} cell carries pre-F4-absent key '${k}'`).not.toHaveProperty(k);
+        for (const k of ['byVerdict', 'macroF1', 'fpRate', 'fpN', 'variant', 'scoreCI']) {
+          expect(cell, `${f} cell carries pre-additive-absent key '${k}'`).not.toHaveProperty(k);
         }
       }
     }

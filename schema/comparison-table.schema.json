@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "comparison-table.schema.json",
   "title": "Per-role comparison table",
-  "description": "Aggregates eval result rows (result-row.schema.json, plan §8 field list) into one table per role, with one cell per (model, driver) pair. Axis 1 (ADR-0001, revised 2026-09-14) populates cells with driver \"ai-sdk\" across models; axis 2 populates cells with the fixed served GLM model id (glm-5.3-flash) across all four drivers. All model ids in cells are served ids per the served-id decision (2026-09-14).",
+  "description": "Aggregates eval result rows (result-row.schema.json, plan §8 field list) into one table per role, with one cell per (model, driver, variant) identity. Axis 1 (ADR-0001, revised 2026-09-14) populates cells with driver \"ai-sdk\" across models; axis 2 populates cells with the fixed served GLM model id (glm-5.3-flash) across all four drivers. All model ids in cells are served ids per the served-id decision (2026-09-14).",
   "type": "object",
   "additionalProperties": false,
   "required": ["role", "suite", "cells"],
@@ -25,7 +25,7 @@
     "cells": {
       "type": "array",
       "minItems": 0,
-      "description": "One cell per (model, driver) pair with at least one result row; an empty suite yields an empty-but-valid table (cells: []) — the J2 runner's conformance property.",
+      "description": "One cell per (model, driver, variant) identity with at least one result row; an empty suite yields an empty-but-valid table (cells: []) — the J2 runner's conformance property.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -168,6 +168,23 @@
             "type": "integer",
             "minimum": 0,
             "description": "VERSIONED ADDITIVE change F4 (2026-09-21): denominator of fpRate — the count of suspicious-benign rows in this cell. Omitted when zero."
+          },
+          "variant": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "description": "VERSIONED ADDITIVE change F6 (2026-09-21): the prompt/tool-surface bundle id that distinguishes this cell. Omitted for the default posture, so pre-F6 tables and default cells keep their shape. Cells are unique on (model, driver, variant)."
+          },
+          "scoreCI": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lower", "upper", "confidence"],
+            "description": "VERSIONED ADDITIVE change F6 (2026-09-21): Wilson score interval for the cell's score at 95% confidence, emitted only when the cell's probe total n >= 30 (below that the interval is too wide to be evidence). Absent on old tables and on small-n cells.",
+            "properties": {
+              "lower": { "type": "number", "minimum": 0, "maximum": 1 },
+              "upper": { "type": "number", "minimum": 0, "maximum": 1 },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
           }
         },
         "dependentRequired": {

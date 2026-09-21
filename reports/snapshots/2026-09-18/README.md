@@ -1,3 +1,10 @@
+<!-- cq-fixtures snapshot header (F6) — machine-read by scripts/snapshot-index.mjs -->
+toolkit.lock: phase-3-done
+suite-sha: 1f397857ca5562718441d6e5aa276306b05363f9
+snapshot-date: 2026-09-18
+run-id: 35392822013
+<!-- /cq-fixtures snapshot header -->
+
 # Snapshot 2026-09-18 — first live J5 real-driver matrix (run 35392822013)
 
 > **Superseded for lane health by the F1 re-run — see

@@ -36,6 +36,11 @@ export interface ResultRow {
    * 'suspicious-benign'. Absent otherwise — absence means unflagged.
    */
   suspiciousBenign?: boolean;
+  /**
+   * F6/CQ-4: the prompt/tool-surface bundle id of the suite this row ran
+   * under. Absent for the default posture (and on all pre-F6 rows).
+   */
+  variant?: string;
   costUSD: number | null;
   costBasis?: 'modeled' | 'billed';
   wallTimeMs: number;
@@ -54,6 +59,8 @@ export interface ResultRow {
 export interface ComparisonTableCell {
   model: string;
   driver: string;
+  /** F6/CQ-4: prompt/tool-surface bundle id; omitted for the default posture. */
+  variant?: string;
   runs: number;
   passed: number;
   total: number;
@@ -74,6 +81,12 @@ export interface ComparisonTableCell {
   fpRate?: number;
   /** F4: denominator of fpRate — the suspicious-benign row count. Omitted when zero. */
   fpN?: number;
+  /**
+   * F6 (WB-5.2c): Wilson score interval for the cell's score at 95%
+   * confidence, emitted only when the cell's probe total n >= WILSON_MIN_N.
+   * Absent on old tables and on small-n cells.
+   */
+  scoreCI?: { lower: number; upper: number; confidence: number };
   costUSD: number | null;
   costBasis?: 'billed' | 'modeled';
   wallTimeMs: number;
@@ -91,6 +104,8 @@ export interface ComparisonTable {
 interface CellAccumulator {
   model: string;
   driver: string;
+  /** F6/CQ-4: the cell's resolved variant id (default posture when the rows omit it). */
+  variant: string;
   runs: number;
   passed: number;
   total: number;
@@ -112,6 +127,33 @@ interface CellAccumulator {
 /** Cost sums are rounded to 6 decimals — finer precision is price-map noise. */
 function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6;
+}
+
+/** F6 (WB-5.2c): the n >= 30 floor below which a Wilson interval is not emitted. */
+export const WILSON_MIN_N = 30;
+/** 95% two-sided normal quantile for the Wilson score interval. */
+export const WILSON_Z_95 = 1.959963984540054;
+
+/**
+ * F6 (WB-5.2c): Wilson score interval for passed/total at the given z,
+ * clamped to [0,1]. n = 0 returns {0,0} (unreachable for a cell: total >=
+ * runs >= 1). The Wilson interval is used over the normal approximation
+ * because scores sit near 0 or 1 at small n, where the normal interval is
+ * wrong (it can exceed [0,1]).
+ */
+export function wilsonInterval(
+  passed: number,
+  total: number,
+  z: number = WILSON_Z_95,
+): { lower: number; upper: number } {
+  if (total <= 0) return { lower: 0, upper: 0 };
+  const n = total;
+  const phat = passed / n;
+  const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const center = (phat + z2 / (2 * n)) / denom;
+  const half = (z * Math.sqrt((phat * (1 - phat)) / n + z2 / (4 * n * n))) / denom;
+  return { lower: Math.max(0, center - half), upper: Math.min(1, center + half) };
 }
 
 /**
@@ -184,12 +226,16 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
   }
   const cells = new Map<string, CellAccumulator>();
   for (const row of rows) {
-    const key = `${row.model}\n${row.driver}`;
+    // F6/CQ-4: the variant is part of the cell identity — two variants of one
+    // suite on the same (model, driver) must land as DISTINCT cells, never
+    // collide. Absent variant = the default posture.
+    const key = `${row.model}\n${row.driver}\n${row.variant ?? 'default'}`;
     let acc = cells.get(key);
     if (acc === undefined) {
       acc = {
         model: row.model,
         driver: row.driver,
+        variant: row.variant ?? 'default',
         runs: 0,
         passed: 0,
         total: 0,
@@ -260,7 +306,8 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
     // themselves are malformed — throw rather than emit a lying table.
     if (acc.total < acc.runs || acc.passed > acc.total) {
       throw new Error(
-        `aggregate: semantic invariant violated for cell ${acc.model}/${acc.driver} ` +
+        `aggregate: semantic invariant violated for cell ${acc.model}/${acc.driver}` +
+          `${acc.variant !== 'default' ? `/variant ${acc.variant}` : ''} ` +
           `(runs=${acc.runs}, passed=${acc.passed}, total=${acc.total})`,
       );
     }
@@ -280,6 +327,7 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
     out.push({
       model: acc.model,
       driver: acc.driver,
+      ...(acc.variant !== 'default' ? { variant: acc.variant } : {}),
       runs: acc.runs,
       passed: acc.passed,
       total: acc.total,
@@ -288,6 +336,9 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       ...(costBasis !== undefined ? { costBasis } : {}),
       ...(verdictStats !== undefined ? { byVerdict: verdictStats.byVerdict, macroF1: verdictStats.macroF1 } : {}),
       ...(acc.fpTotal > 0 ? { fpRate: acc.fpWrong / acc.fpTotal, fpN: acc.fpTotal } : {}),
+      ...(acc.total >= WILSON_MIN_N
+        ? { scoreCI: { ...wilsonInterval(acc.passed, acc.total), confidence: 0.95 } }
+        : {}),
       wallTimeMs: acc.wallTimeMs,
       tokens: {
         input: acc.tokens.input,

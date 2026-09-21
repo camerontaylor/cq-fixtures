@@ -22,6 +22,12 @@
       "minLength": 1,
       "description": "The served model id cases in this suite are executed against (served-id decision 2026-09-14: the eval wires request the id the wire actually serves, e.g. glm-5.3-flash on the GLM coding wire)."
     },
+    "variant": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "VERSIONED ADDITIVE change F6 (2026-09-21): optional prompt/tool-surface bundle id (CQ-4) for the same suite run under two harness postures. Absent means the default posture (\"default\"). Constrained to a path-safe slug because the snapshot path gains a <variant>/ segment only when non-default. Part of the table cell identity: cells are unique on (model, driver, variant)."
+    },
     "provenance": {
       "type": "object",
       "additionalProperties": false,

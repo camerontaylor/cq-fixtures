@@ -1205,9 +1205,88 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     expect('probes' in result.rows[0]!).toBe(false);
     expect('suspiciousBenign' in result.rows[0]!).toBe(false);
     const cell = result.tables[0]!.cells[0]!;
-    for (const k of ['byVerdict', 'macroF1', 'fpRate', 'fpN']) expect(cell).not.toHaveProperty(k);
+    for (const k of ['byVerdict', 'macroF1', 'fpRate', 'fpN', 'variant', 'scoreCI']) expect(cell).not.toHaveProperty(k);
     assertSchemaValid(result.rows, result.tables);
   }, 15_000);
+
+  it('two variants of one suite land as DISTINCT cells (F6/CQ-4)', () => {
+    const row = (variant?: string): ResultRow => ({
+      role: 'review-classifier',
+      suite: 'variant-cells',
+      case: 'c1',
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: 1, passed: 1, total: 1 },
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-variant',
+      timestamp: '2026-09-21T00:00:00Z',
+      ...(variant !== undefined ? { variant } : {}),
+    });
+    const [table] = aggregate([row(), row('minimal-tools')]);
+    expect(table!.cells).toHaveLength(2);
+    const def = table!.cells.find((c) => c.variant === undefined)!;
+    const minimal = table!.cells.find((c) => c.variant === 'minimal-tools')!;
+    // The default posture keeps the pre-F6 cell shape exactly...
+    expect(def).not.toHaveProperty('variant');
+    // ...and the non-default variant is a distinct, labelled cell.
+    expect(minimal.variant).toBe('minimal-tools');
+  });
+
+  it('a cell with 30+ probes carries the Wilson score interval (F6/WB-5.2c)', () => {
+    const row = (id: string, passed: boolean): ResultRow => ({
+      role: 'review-classifier',
+      suite: 'wilson-cell',
+      case: id,
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: passed ? 1 : 0, passed: passed ? 1 : 0, total: 1 },
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-wilson',
+      timestamp: '2026-09-21T00:00:00Z',
+    });
+    const rows = Array.from({ length: 30 }, (_, i) => row(`c-${i}`, i < 21));
+    const [table] = aggregate(rows);
+    const cell = table!.cells[0]!;
+    expect(cell).toMatchObject({ runs: 30, passed: 21, total: 30 });
+    expect(cell.scoreCI).toBeDefined();
+    expect(cell.scoreCI!.confidence).toBe(0.95);
+    // Hand-computed Wilson 95% interval for 21/30.
+    expect(cell.scoreCI!.lower).toBeCloseTo(0.5212421254128504, 10);
+    expect(cell.scoreCI!.upper).toBeCloseTo(0.8333525173175619, 10);
+    expect(cell.scoreCI!.lower).toBeLessThan(0.7);
+    expect(cell.scoreCI!.upper).toBeGreaterThan(0.7);
+    expect(cell.scoreCI!.lower).toBeGreaterThanOrEqual(0);
+    expect(cell.scoreCI!.upper).toBeLessThanOrEqual(1);
+    // The emitted interval must be schema-legal — the closed table schema
+    // rejects unknown cell keys, so an n>=30 cell failing this is a
+    // smoke-breaking regression (round-1 review finding 1).
+    assertSchemaValid([], [table]);
+  });
+
+  it('a cell below n=30 carries no Wilson interval (F6: the floor)', () => {
+    const row = (id: string, passed: boolean): ResultRow => ({
+      role: 'review-classifier',
+      suite: 'wilson-floor',
+      case: id,
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: passed ? 1 : 0, passed: passed ? 1 : 0, total: 1 },
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-wilson-floor',
+      timestamp: '2026-09-21T00:00:00Z',
+    });
+    const rows = Array.from({ length: 29 }, (_, i) => row(`c-${i}`, i < 20));
+    const [table] = aggregate(rows);
+    const cell = table!.cells[0]!;
+    expect(cell).toMatchObject({ runs: 29, total: 29 });
+    expect(cell).not.toHaveProperty('scoreCI');
+  });
 
   it('scoreReviewClassifier reports the observed verdict (null when missing, the string when out-of-vocabulary)', () => {
     const hit = scoreReviewClassifier(

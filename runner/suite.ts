@@ -35,8 +35,15 @@ export interface Suite {
   name: string;
   role: SuiteRole;
   servedModel?: string;
+  /** F6/CQ-4: optional prompt/tool-surface bundle id; absent means the default posture. */
+  variant?: string;
   provenance: { origin: string; reference?: string };
   cases: SuiteCase[];
+}
+
+/** F6/CQ-4: the suite's variant id, defaulting to the default posture. */
+export function suiteVariant(s: Suite): string {
+  return s.variant ?? 'default';
 }
 
 // Type predicate: TS does not narrow the containing union through the nested

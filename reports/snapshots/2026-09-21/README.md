@@ -1,3 +1,10 @@
+<!-- cq-fixtures snapshot header (F6) — machine-read by scripts/snapshot-index.mjs -->
+toolkit.lock: b06b6a3ac68cf7f7f17d37fd21628773021b002f
+suite-sha: 7ced43c3f86c51340310a8a355a0a9174ce8c209
+snapshot-date: 2026-09-21
+run-id: 35553519022
+<!-- /cq-fixtures snapshot header -->
+
 # Snapshot 2026-09-21 — F1 real-driver matrix re-run (run 35553519022)
 
 The F1 re-run of the five-cell axes matrix (ADR-0001 as revised 2026-09-14), dispatched via

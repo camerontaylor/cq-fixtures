@@ -243,7 +243,11 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     const evalCell = stepChunk('Eval cell —');
     expect(evalCell, 'the acp cell passes the record into the runner').toContain('--probe-record reports/eval/ACP-PROBE.json');
     expect(evalCell, 'the flag is acp-only').toContain('if [ "${MATRIX_DRIVER}" = "acp" ]');
-    expect(stepChunk('Commit report snapshots'), 'the snapshot still copies tables only').toContain("-name '*.table.json'");
+    expect(stepChunk('Commit report snapshots'), 'F6: the snapshot publishes the predictions + manifest beside the tables').toContain("-name '*.table.json'");
+    expect(stepChunk('Commit report snapshots'), 'F6: rows.jsonl (regrade input) is published').toContain("-name 'rows.jsonl'");
+    expect(stepChunk('Commit report snapshots'), 'F6: run.json (toolkit.lock/suite-SHA manifest) is published').toContain("-name 'run.json'");
+    expect(stepChunk('Commit report snapshots'), 'F6: worker patches are published').toContain("-path '*/patches/*'");
+    expect(stepChunk('Commit report snapshots'), 'F6: classifier outputs are published').toContain("-path '*/outputs/*'");
   });
 
   it('the eval step dispatches the CELL driver and nests out dirs by model/driver (G7)', () => {
@@ -252,8 +256,12 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell).toContain('--driver "${MATRIX_DRIVER}"');
     expect(evalCell).toContain('--driver-name "${MATRIX_DRIVER}"');
     // Same-model driver cells must never collide on one table; the snapshot
-    // identity nests <date>/<model>/<driver>/<role>/<suite>/ off this path.
-    expect(evalCell).toContain('out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}"');
+    // identity nests <date>/<model>/<driver>/<variant?>/<role>/<suite>/ off
+    // this path (F6/CQ-4 adds the <variant?>/ segment only when non-default).
+    expect(evalCell).toContain('out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"');
+    expect(evalCell, 'F6: the variant segment is empty for the default posture').toContain('if [ "${variant}" != "default" ]; then variant_prefix="${variant}/"; fi');
+    expect(evalCell, 'F6: an unsafe variant fails the cell loudly').toContain('invalid variant');
+    expect(evalCell, 'F6: the variant rides the suite.json the runner loads').toContain('${suite_dir}/suite.json');
     // DD-9: a token cap binds alone on every cell — never a USD cap.
     // WB-1.6: the cap is PER CASE and the runner scales it by the suite's
     // case count; the retired flat per-invocation cap must not return.

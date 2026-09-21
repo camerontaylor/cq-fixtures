@@ -26,6 +26,14 @@ interface CheckRerunCase {
 }
 
 const OUTPUT_TAIL_CHARS = 2000;
+/**
+ * DD-4: a fixer-worker case configures TWO scoring probes — the check-rerun
+ * judge (does the workspace pass now) and the schema-compliance probe (could
+ * the model hold the declared {fixed, notes} json shape). Every other role
+ * configures one. Shared by the live runner and the offline `regrade
+ * --rejudge` path so the two can never drift on the probe count.
+ */
+export const FIXER_PROBE_COUNT = 2;
 /** Ceiling for a probe with no runner-known wall clock: a looping check must never stall the suite. */
 export const DEFAULT_CHECK_TIMEOUT_MS = 60_000;
 

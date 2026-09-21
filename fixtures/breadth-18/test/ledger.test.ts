@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { applyPercent } from '../src/discount.ts';
-import { withTax } from '../src/tax.ts';
+import { addCents, formatCents } from '../src/money.ts';
+import { applyPercent, withTax } from '../src/discount.ts';
 import { isOverdrawn } from '../src/balance.ts';
+
+describe('addCents', () => {
+  it('adds two cent amounts', () => {
+    expect(addCents(250, 125)).toBe(375);
+  });
+});
+
+describe('formatCents', () => {
+  it('formats cents as a two-decimal amount', () => {
+    expect(formatCents(1234)).toBe('12.34');
+  });
+});
 
 describe('applyPercent', () => {
   it('subtracts the percentage from the amount', () => {

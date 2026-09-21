@@ -20,7 +20,7 @@
       "treats Sunday as a weekend day"
     ],
     "fix": {
-      "src/order.ts": "export function sortByStart(slots: number[]): number[] {\n  return [...slots].sort((a, b) => a - b);\n}\n"
+      "src/order.ts": "export function isWeekend(day: number): boolean {\n  return day === 0 || day === 6;\n}\n\nexport function sortByStart(slots: number[]): number[] {\n  return [...slots].sort((a, b) => a - b);\n}\n"
     }
   },
   "adequacy": {

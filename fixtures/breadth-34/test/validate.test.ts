@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { isEmail, requireFields } from '../src/required.ts';
 import { parseAmount } from '../src/number.ts';
 import { clamp } from '../src/range.ts';
-import { requireFields } from '../src/required.ts';
+
+describe('isEmail', () => {
+  it('rejects an address without a dotted domain', () => {
+    expect(isEmail('a@b')).toBe(false);
+  });
+});
 
 describe('parseAmount', () => {
   it('parses a decimal string as base ten', () => {

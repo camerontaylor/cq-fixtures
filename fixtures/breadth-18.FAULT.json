@@ -20,7 +20,7 @@
       "treats a zero balance as not overdrawn"
     ],
     "fix": {
-      "src/discount.ts": "export function applyPercent(amount: number, percent: number): number {\n  return amount - (amount * percent) / 100;\n}\n"
+      "src/discount.ts": "export function applyPercent(amount: number, percent: number): number {\n  return amount - (amount * percent) / 100;\n}\n\nexport function withTax(amount: number, rate: number): number {\n  return amount * (1 + rate);\n}\n"
     }
   },
   "adequacy": {

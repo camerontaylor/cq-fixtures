@@ -20,7 +20,7 @@
       "reports the fraction of successes"
     ],
     "fix": {
-      "src/retry.ts": "export function shouldRetry(attempt: number, max: number): boolean {\n  return attempt < max;\n}\n"
+      "src/retry.ts": "export function shouldRetry(attempt: number, max: number): boolean {\n  return attempt < max;\n}\n\nexport function nextState(state: string): string {\n  if (state === 'queued') return 'running';\n  if (state === 'running') return 'done';\n  return state;\n}\n"
     }
   },
   "adequacy": {

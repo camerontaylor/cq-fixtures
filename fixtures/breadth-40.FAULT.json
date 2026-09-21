@@ -21,7 +21,7 @@
     ],
     "fix": {
       "src/queue.ts": "export function enqueue<T>(items: T[], value: T): T[] {\n  return [...items, value];\n}\n\nexport function dequeue<T>(items: T[]): T | undefined {\n  return items[0];\n}\n",
-      "src/retry.ts": "export function shouldRetry(attempt: number, max: number): boolean {\n  return attempt < max;\n}\n"
+      "src/retry.ts": "export function shouldRetry(attempt: number, max: number): boolean {\n  return attempt < max;\n}\n\nexport function nextState(state: string): string {\n  if (state === 'queued') return 'running';\n  if (state === 'running') return 'done';\n  return state;\n}\n"
     }
   },
   "adequacy": {

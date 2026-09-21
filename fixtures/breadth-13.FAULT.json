@@ -19,11 +19,11 @@
       "returns the text unchanged at the limit"
     ],
     "fix": {
-      "src/aggregate.ts": "export function averageWordLength(text: string): number {\n  const words = text.trim().split(/\\s+/);\n  const total = words.reduce((sum, word) => sum + word.length, 0);\n  return total / words.length;\n}\n"
+      "src/count.ts": "export function wordCount(text: string): number {\n  return text.trim().split(/\\s+/).length;\n}\n\nexport function averageWordLength(text: string): number {\n  const words = text.trim().split(/\\s+/);\n  const total = words.reduce((sum, word) => sum + word.length, 0);\n  return total / words.length;\n}\n"
     }
   },
   "adequacy": {
-    "file": "src/aggregate.ts",
+    "file": "src/count.ts",
     "delete": "return total / words.length;"
   },
   "tell_audit": {

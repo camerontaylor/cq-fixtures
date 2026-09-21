@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
+import { minutesBetween, formatDuration } from '../src/time.ts';
 import { overlaps } from '../src/slots.ts';
-import { isWeekend } from '../src/calendar.ts';
-import { sortByStart } from '../src/order.ts';
+import { isWeekend, sortByStart } from '../src/order.ts';
+
+describe('minutesBetween', () => {
+  it('measures the minutes between two times', () => {
+    expect(minutesBetween(10, 40)).toBe(30);
+  });
+});
+
+describe('formatDuration', () => {
+  it('formats minutes as hours and minutes', () => {
+    expect(formatDuration(90)).toBe('1h30m');
+  });
+});
 
 describe('overlaps', () => {
   it('does not overlap when one slot ends as the other starts', () => {

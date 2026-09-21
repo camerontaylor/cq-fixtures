@@ -20,7 +20,7 @@
     ],
     "fix": {
       "src/number.ts": "export function parseAmount(text: string): number {\n  return parseInt(text, 10);\n}\n",
-      "src/required.ts": "export function requireFields(obj: Record<string, unknown>, fields: string[]): string[] {\n  return fields.filter((field) => obj[field] === undefined);\n}\n"
+      "src/required.ts": "export function isEmail(text: string): boolean {\n  return /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(text);\n}\n\nexport function requireFields(obj: Record<string, unknown>, fields: string[]): string[] {\n  return fields.filter((field) => obj[field] === undefined);\n}\n"
     }
   },
   "adequacy": {

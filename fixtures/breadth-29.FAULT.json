@@ -20,11 +20,11 @@
       "returns false when the target is unreachable"
     ],
     "fix": {
-      "src/cycle.ts": "import type { Adjacency } from './edges.ts';\n\nexport function hasSelfLoop(adj: Adjacency): boolean {\n  return Object.entries(adj).some(([node, next]) => next.includes(node));\n}\n"
+      "src/paths.ts": "import type { Adjacency } from './edges.ts';\n\nexport function neighbors(adj: Adjacency, node: string): string[] {\n  return [...(adj[node] ?? [])];\n}\n\nexport function hasSelfLoop(adj: Adjacency): boolean {\n  return Object.entries(adj).some(([node, next]) => next.includes(node));\n}\n"
     }
   },
   "adequacy": {
-    "file": "src/cycle.ts",
+    "file": "src/paths.ts",
     "delete": "return Object.entries(adj).some(([node, next]) => next.includes(node));"
   },
   "tell_audit": {

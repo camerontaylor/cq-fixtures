@@ -1,0 +1,24 @@
+{
+  "role": "fixer-worker",
+  "suite": "breadth-tail",
+  "generatedAt": "2026-09-21T08:08:52.589Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "runs": 10,
+      "passed": 10,
+      "total": 20,
+      "score": 0.5,
+      "costUSD": 0.117639,
+      "costBasis": "modeled",
+      "wallTimeMs": 4528303,
+      "tokens": {
+        "input": 130679,
+        "output": 107240,
+        "cacheRead": 1480576,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

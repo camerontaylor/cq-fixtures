@@ -1,0 +1,24 @@
+{
+  "role": "fixer-worker",
+  "suite": "breadth-tail",
+  "generatedAt": "2026-09-21T07:18:47.781Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "subprocess",
+      "runs": 5,
+      "passed": 5,
+      "total": 10,
+      "score": 0.5,
+      "costUSD": 0.096982,
+      "costBasis": "modeled",
+      "wallTimeMs": 1529833,
+      "tokens": {
+        "input": 133278,
+        "output": 34836,
+        "cacheRead": 1985728,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

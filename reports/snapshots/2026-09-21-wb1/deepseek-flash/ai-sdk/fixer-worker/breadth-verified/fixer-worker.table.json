@@ -1,0 +1,24 @@
+{
+  "role": "fixer-worker",
+  "suite": "breadth-verified",
+  "generatedAt": "2026-09-21T06:59:36.493Z",
+  "cells": [
+    {
+      "model": "deepseek-flash",
+      "driver": "ai-sdk",
+      "runs": 12,
+      "passed": 0,
+      "total": 24,
+      "score": 0,
+      "costUSD": 0.010367,
+      "costBasis": "modeled",
+      "wallTimeMs": 110201,
+      "tokens": {
+        "input": 30265,
+        "output": 9242,
+        "cacheRead": 94080,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

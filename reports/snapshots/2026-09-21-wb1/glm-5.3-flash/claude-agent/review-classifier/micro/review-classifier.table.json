@@ -1,0 +1,63 @@
+{
+  "role": "review-classifier",
+  "suite": "micro",
+  "generatedAt": "2026-09-21T09:27:14.379Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "runs": 10,
+      "passed": 9,
+      "total": 10,
+      "score": 0.9,
+      "costUSD": 0.003021,
+      "costBasis": "modeled",
+      "byVerdict": {
+        "actionable": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "actionable": 2
+          }
+        },
+        "responded": {
+          "expected": 2,
+          "correct": 1,
+          "predicted": {
+            "responded": 1,
+            "resolved": 1
+          }
+        },
+        "resolved": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "resolved": 2
+          }
+        },
+        "blocked": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "blocked": 2
+          }
+        },
+        "skip": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "skip": 2
+          }
+        }
+      },
+      "macroF1": 0.8933333333333333,
+      "wallTimeMs": 161807,
+      "tokens": {
+        "input": 5796,
+        "output": 4304,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

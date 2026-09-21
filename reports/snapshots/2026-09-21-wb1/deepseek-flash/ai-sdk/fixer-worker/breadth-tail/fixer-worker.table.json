@@ -1,0 +1,29 @@
+{
+  "role": "fixer-worker",
+  "suite": "breadth-tail",
+  "generatedAt": "2026-09-21T06:57:45.434Z",
+  "cells": [
+    {
+      "model": "deepseek-flash",
+      "driver": "ai-sdk",
+      "runs": 28,
+      "passed": 0,
+      "total": 56,
+      "score": 0,
+      "costUSD": 0.026659,
+      "costBasis": "modeled",
+      "scoreCI": {
+        "lower": 6.938893903907228e-18,
+        "upper": 0.06419393671876342,
+        "confidence": 0.95
+      },
+      "wallTimeMs": 274625,
+      "tokens": {
+        "input": 71650,
+        "output": 25407,
+        "cacheRead": 222336,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

@@ -15,6 +15,7 @@ in `test/snapshot-index.test.ts` is a hard gate. Regenerate this file with
 |---|---|---|---|---|---|
 | 2026-09-18 | phase-3-done | 1f397857ca5562718441d6e5aa276306b05363f9 | 35392822013 | 8 | 8 |
 | 2026-09-21 | b06b6a3ac68cf7f7f17d37fd21628773021b002f | 7ced43c3f86c51340310a8a355a0a9174ce8c209 | 35553519022 | 2 | 2 |
+| 2026-09-21 | 5e5270724df9bf72d7834c4461074f9ab0b62413 | ad7d24452b47e26a5820c484025264d9ab400ab6 | 35570311785 | 24 | 24 |
 
 ## Score deltas by toolkit.lock SHA
 
@@ -30,3 +31,32 @@ in `test/snapshot-index.test.ts` is a hard gate. Regenerate this file with
 | review-classifier / micro | glm-5.3-flash | ai-sdk | default | 0.7000 | 0.8000 | +0.1000 | 10 | 10 |
 | review-classifier / micro | glm-5.3-flash | claude-agent | default | 0.0000 | (absent) | (removed cell) | 10 | 0 |
 | review-classifier / micro | glm-5.3-flash | subprocess | default | 0.0000 | (absent) | (removed cell) | 10 | 0 |
+
+### 2026-09-21 (toolkit.lock b06b6a3ac68cf7f7f17d37fd21628773021b002f) → 2026-09-21 (toolkit.lock 5e5270724df9bf72d7834c4461074f9ab0b62413)
+
+| Role / suite | model | driver | variant | old score | new score | Δ | old n | new n |
+|---|---|---|---|---|---|---|---|---|
+| fixer-worker / breadth-tail | deepseek-flash | ai-sdk | default | (absent) | 0.0000 | (new cell) | 0 | 56 |
+| fixer-worker / breadth-tail | glm-5.3-flash | ai-sdk | default | (absent) | 0.0000 | (new cell) | 0 | 42 |
+| fixer-worker / breadth-tail | glm-5.3-flash | claude-agent | default | (absent) | 0.5000 | (new cell) | 0 | 20 |
+| fixer-worker / breadth-tail | glm-5.3-flash | subprocess | default | (absent) | 0.5000 | (new cell) | 0 | 10 |
+| fixer-worker / breadth-verified | deepseek-flash | ai-sdk | default | (absent) | 0.0000 | (new cell) | 0 | 24 |
+| fixer-worker / breadth-verified | glm-5.3-flash | ai-sdk | default | (absent) | 0.0000 | (new cell) | 0 | 18 |
+| fixer-worker / breadth-verified | glm-5.3-flash | claude-agent | default | (absent) | 0.5000 | (new cell) | 0 | 10 |
+| fixer-worker / breadth-verified | glm-5.3-flash | subprocess | default | (absent) | 0.5000 | (new cell) | 0 | 4 |
+| fixer-worker / micro | deepseek-flash | ai-sdk | default | (absent) | 0.0000 | (new cell) | 0 | 10 |
+| fixer-worker / micro | glm-5.3-flash | ai-sdk | default | (absent) | 0.0000 | (new cell) | 0 | 8 |
+| fixer-worker / micro | glm-5.3-flash | claude-agent | default | (absent) | 0.5000 | (new cell) | 0 | 6 |
+| fixer-worker / micro | glm-5.3-flash | subprocess | default | (absent) | 0.0000 | (new cell) | 0 | 2 |
+| review-classifier / breadth-tail | deepseek-flash | ai-sdk | default | (absent) | 0.8333 | (new cell) | 0 | 30 |
+| review-classifier / breadth-tail | glm-5.3-flash | ai-sdk | default | (absent) | 0.6000 | (new cell) | 0 | 30 |
+| review-classifier / breadth-tail | glm-5.3-flash | claude-agent | default | (absent) | 0.8333 | (new cell) | 0 | 30 |
+| review-classifier / breadth-tail | glm-5.3-flash | subprocess | default | (absent) | 0.9000 | (new cell) | 0 | 30 |
+| review-classifier / breadth-verified | deepseek-flash | ai-sdk | default | (absent) | 0.9000 | (new cell) | 0 | 30 |
+| review-classifier / breadth-verified | glm-5.3-flash | ai-sdk | default | (absent) | 0.6667 | (new cell) | 0 | 30 |
+| review-classifier / breadth-verified | glm-5.3-flash | claude-agent | default | (absent) | 0.9000 | (new cell) | 0 | 30 |
+| review-classifier / breadth-verified | glm-5.3-flash | subprocess | default | (absent) | 0.8667 | (new cell) | 0 | 30 |
+| review-classifier / micro | deepseek-flash | ai-sdk | default | 1.0000 | 1.0000 | +0.0000 | 10 | 10 |
+| review-classifier / micro | glm-5.3-flash | ai-sdk | default | 0.8000 | 0.9000 | +0.1000 | 10 | 10 |
+| review-classifier / micro | glm-5.3-flash | claude-agent | default | (absent) | 0.9000 | (new cell) | 0 | 10 |
+| review-classifier / micro | glm-5.3-flash | subprocess | default | (absent) | 0.9000 | (new cell) | 0 | 10 |

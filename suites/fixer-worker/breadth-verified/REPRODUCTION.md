@@ -39,7 +39,7 @@ edited.
 | breadth-07 | PASS | faulted `retries?: number` + cast vs fix `retries: number = 3` = default-param-removal/value misuse; f2p withDefaults({})={retries:3} (faulted undefined) fails; p2p explicit-5, parseBool×2, isValidRetries×2 unaffected |
 | breadth-08 | PASS | faulted `profile!.address?.city` vs fix `profile?.address?.city` = non-null-overreach/function misuse; f2p cityOf(undefined)='unknown' (faulted throws) fails; p2p missing-address, present-city, displayName unaffected |
 | breadth-09 | PASS | faulted `return stock` + `paid \|\| shipped` vs fix `[...stock]` + `&&` = shared-reference-return+logical-swap/variable misuse; both f2p fail; p2p stock-rows, paid&shipped→complete, auditLine unaffected; adequacy covers the inventory fault |
-| breadth-10 | PASS | faulted `parseInt(text)` + `formatRange(to, from)` vs fix radix + `(from, to)` = radix-drop+argument-swap/value misuse; both f2p fail; p2p '42', direct formatRange, isPositive×2 unaffected |
+| breadth-10 | PASS | faulted `parseInt(text)` + `formatRange(to, from)` vs fix radix + `(from, to)` = radix-coercion-drop+argument-swap/value misuse; both f2p fail; p2p '42', direct formatRange, isPositive×2 unaffected |
 | breadth-11 | PASS | faulted `length < max` vs fix `<=` = equality-boundary/operator misuse; f2p truncate('hello',5)='hello' (faulted 'hello…') fails; p2p wordCount, toKebabCase, averageWordLength unaffected |
 | breadth-12 | PASS | faulted `toUpperCase()` vs fix `toLowerCase()` = method-swap/function misuse; f2p toKebabCase('Hello Big World')='hello-big-world' (faulted uppercase) fails; p2p wordCount, truncate-at-limit, averageWordLength unaffected |
 

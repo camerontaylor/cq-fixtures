@@ -50,7 +50,15 @@ describe('pipeline helpers', () => {
     // full=false keeps this cheap: annotation + reachability + one red + one green.
     const report = runCasePipeline('fixtures/breadth-16', { full: false });
     expect(report.caseId).toBe('breadth-16');
-    expect(report.gates.map((g) => g.gate)).toEqual(['annotation', 'reachability', 'f2p', 'baseline']);
+    expect(report.gates.map((g) => g.gate)).toEqual([
+      'annotation',
+      'reachability',
+      'f2p',
+      'f2p-per-test',
+      'p2p-per-test',
+      'baseline',
+      'p2p-fixed',
+    ]);
     expect(report.pass, report.gates.map((g) => `${g.gate}=${g.pass}`).join(' ')).toBe(true);
   }, 180_000);
 });

@@ -71,9 +71,22 @@ export function declaredTitles(repoRoot: string, fixtureRef: string): Set<string
   for (const file of walkFiles(testDir)) {
     if (!file.endsWith('.test.ts')) continue;
     const source = readFileSync(file, 'utf8');
-    for (const match of source.matchAll(/\bit\(\s*(['"`])([\s\S]*?)\1/g)) titles.add(match[2]!);
+    for (const match of source.matchAll(/\bit(?:\.\w+)?\(\s*(['"`])([\s\S]*?)\1/g)) titles.add(match[2]!);
   }
   return titles;
+}
+
+/** Declared `it()` titles that appear more than once (per-title gates need uniqueness). */
+export function duplicateTitles(repoRoot: string, fixtureRef: string): string[] {
+  const counts = new Map<string, number>();
+  for (const file of walkFiles(join(repoRoot, fixtureRef, 'test'))) {
+    if (!file.endsWith('.test.ts')) continue;
+    const source = readFileSync(file, 'utf8');
+    for (const match of source.matchAll(/\bit(?:\.\w+)?\(\s*(['"`])([\s\S]*?)\1/g)) {
+      counts.set(match[2]!, (counts.get(match[2]!) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].filter(([, n]) => n > 1).map(([title]) => title);
 }
 
 function walkFiles(dir: string): string[] {
@@ -209,6 +222,7 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
   // --- static annotation gate -------------------------------------------
   const titles = declaredTitles(repoRoot, fixtureRef);
   const missingTitles = [...record.validation.f2p, ...record.validation.p2p].filter((t) => !titles.has(t));
+  const dupes = duplicateTitles(repoRoot, fixtureRef);
   const bandProblems = record.operator
     .split('+')
     .map((id) => checkOperatorAssignment(id, record.difficulty))
@@ -216,7 +230,13 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     .map((c) => (c as { reason: string }).reason);
   const fixProblems: string[] = [];
   for (const [rel, fixed] of Object.entries(record.validation.fix)) {
-    const stored = readFileSync(join(repoRoot, fixtureRef, rel), 'utf8');
+    let stored: string;
+    try {
+      stored = readFileSync(join(repoRoot, fixtureRef, rel), 'utf8');
+    } catch {
+      fixProblems.push(`${rel} is missing from the fixture`);
+      continue;
+    }
     if (stored === fixed) fixProblems.push(`${rel} is not faulted`);
   }
   const adequacyOk =
@@ -226,16 +246,18 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
   gates.push(
     gate(
       'annotation',
-      missingTitles.length === 0 && bandProblems.length === 0 && fixProblems.length === 0 && adequacyOk,
+      missingTitles.length === 0 && dupes.length === 0 && bandProblems.length === 0 && fixProblems.length === 0 && adequacyOk,
       missingTitles.length > 0
         ? `missing titles: ${missingTitles.join('; ')}`
-        : bandProblems.length > 0
-          ? bandProblems.join('; ')
-          : fixProblems.length > 0
-            ? fixProblems.join('; ')
-            : adequacyOk
-              ? 'schema, catalog bands, titles, faulted-different fix, adequacy present'
-              : 'adequacy target missing or not in a fixed file',
+        : dupes.length > 0
+          ? `duplicate titles: ${dupes.join('; ')}`
+          : bandProblems.length > 0
+            ? bandProblems.join('; ')
+            : fixProblems.length > 0
+              ? fixProblems.join('; ')
+              : adequacyOk
+                ? 'schema, catalog bands, unique titles, faulted-different fix, adequacy present'
+                : 'adequacy target missing or not in a fixed file',
     ),
   );
 
@@ -271,25 +293,25 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     }
     gates.push(gate('f2p', faultedRed, faultedDetail));
 
-    if (full) {
-      const faultedJson = runVitestJson(repoRoot, workspace, join(reportDir, `${caseId}-faulted.json`), timeoutMs);
-      const f2pBad = record.validation.f2p.filter((t) => outcomeOf(faultedJson.tests, t) !== 'failed');
-      const p2pBad = record.validation.p2p.filter((t) => outcomeOf(faultedJson.tests, t) !== 'passed');
-      gates.push(
-        gate(
-          'f2p-per-test',
-          f2pBad.length === 0,
-          f2pBad.length === 0 ? 'every declared f2p title fails in the faulted state' : `not failing: ${f2pBad.join('; ')}`,
-        ),
-      );
-      gates.push(
-        gate(
-          'p2p-per-test',
-          p2pBad.length === 0,
-          p2pBad.length === 0 ? 'every declared p2p title passes in the faulted state' : `not passing: ${p2pBad.join('; ')}`,
-        ),
-      );
-    }
+    // Per-title F2P/P2P run in BOTH modes: a swapped f2p/p2p label must not
+    // pass on aggregate red/green alone (tail cases included).
+    const faultedJson = runVitestJson(repoRoot, workspace, join(reportDir, `${caseId}-faulted.json`), timeoutMs);
+    const f2pBad = record.validation.f2p.filter((t) => outcomeOf(faultedJson.tests, t) !== 'failed');
+    const p2pBad = record.validation.p2p.filter((t) => outcomeOf(faultedJson.tests, t) !== 'passed');
+    gates.push(
+      gate(
+        'f2p-per-test',
+        f2pBad.length === 0,
+        f2pBad.length === 0 ? 'every declared f2p title fails in the faulted state' : `not failing: ${f2pBad.join('; ')}`,
+      ),
+    );
+    gates.push(
+      gate(
+        'p2p-per-test',
+        p2pBad.length === 0,
+        p2pBad.length === 0 ? 'every declared p2p title passes in the faulted state' : `not passing: ${p2pBad.join('; ')}`,
+      ),
+    );
 
     applyFaultFix(record, workspace);
     const fixedRuns = full ? runs : 1;
@@ -310,11 +332,11 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     }
     gates.push(gate('baseline', fixedGreen, fixedDetail));
 
-    if (full) {
-      const fixedJson = runVitestJson(repoRoot, workspace, join(reportDir, `${caseId}-fixed.json`), timeoutMs);
-      const allBad = [...record.validation.f2p, ...record.validation.p2p].filter((t) => outcomeOf(fixedJson.tests, t) !== 'passed');
-      gates.push(gate('p2p-fixed', allBad.length === 0, allBad.length === 0 ? 'every declared title passes in the fixed state' : `not passing: ${allBad.join('; ')}`));
+    const fixedJson = runVitestJson(repoRoot, workspace, join(reportDir, `${caseId}-fixed.json`), timeoutMs);
+    const allBad = [...record.validation.f2p, ...record.validation.p2p].filter((t) => outcomeOf(fixedJson.tests, t) !== 'passed');
+    gates.push(gate('p2p-fixed', allBad.length === 0, allBad.length === 0 ? 'every declared title passes in the fixed state' : `not passing: ${allBad.join('; ')}`));
 
+    if (full) {
       // adequacy: delete the recorded statement from the fixed source.
       const adequacy = record.adequacy;
       const fixedSource = adequacy !== undefined ? record.validation.fix[adequacy.file] : undefined;

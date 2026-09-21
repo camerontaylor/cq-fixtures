@@ -529,6 +529,9 @@ jobs:
               echo "::error::suite ${rel_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
             fi
             suite_count=$((suite_count + 1))
+          # shellcheck disable=SC2086 — ${roots} is intentionally word-split
+          # into the profile's suite dirs; quoting it would make find look for
+          # one path named "a b c".
           done < <(find ${roots} -maxdepth 1 -name suite.json -not -path '*/deprecated/*' 2>/dev/null | sort)
           # Discovery drift is VISIBLE: a count other than the profile's
           # expected count is a WARNING (a later phase adding a suite is a

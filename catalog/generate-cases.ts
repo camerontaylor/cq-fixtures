@@ -163,6 +163,31 @@ export function substrateNames(): string[] {
   return [...new Set(CASE_RECIPES.map((r) => r.substrate))].sort();
 }
 
+function suiteNameForCase(id: string): string {
+  return Number(id.split('-')[1]) <= 12 ? 'breadth-verified' : 'breadth-tail';
+}
+
+/** Verify each recipe's suite.json case entry matches `caseEntry(recipe)`. */
+export function checkSuiteEntries(): string[] {
+  const mismatches: string[] = [];
+  const suites = new Map<string, { cases: Array<Record<string, unknown>> }>();
+  for (const name of ['breadth-verified', 'breadth-tail']) {
+    suites.set(name, JSON.parse(readFileSync(join(REPO_ROOT, 'suites', 'fixer-worker', name, 'suite.json'), 'utf8')) as { cases: Array<Record<string, unknown>> });
+  }
+  for (const recipe of CASE_RECIPES) {
+    const suiteName = suiteNameForCase(recipe.id);
+    const entry = suites.get(suiteName)?.cases.find((c) => c.id === recipe.id);
+    if (entry === undefined) {
+      mismatches.push(`${recipe.id}: missing from ${suiteName}/suite.json`);
+      continue;
+    }
+    if (JSON.stringify(entry) !== JSON.stringify(caseEntry(recipe))) {
+      mismatches.push(`${recipe.id}: suite.json entry differs from the recipe`);
+    }
+  }
+  return mismatches;
+}
+
 function main(argv: readonly string[]): number {
   const mode = argv[0];
   if (mode !== '--write' && mode !== '--check') {
@@ -174,7 +199,7 @@ function main(argv: readonly string[]): number {
     console.log(`generated ${CASE_RECIPES.length} cases`);
     return 0;
   }
-  const mismatches = CASE_RECIPES.flatMap(checkCase);
+  const mismatches = [...CASE_RECIPES.flatMap(checkCase), ...checkSuiteEntries()];
   if (mismatches.length > 0) {
     for (const m of mismatches) console.error(`MISMATCH ${m}`);
     return 1;

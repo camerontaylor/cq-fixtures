@@ -16,6 +16,18 @@ import { isFixerCase, loadSuite } from '../runner/suite.ts';
 const EXCLUDED_SEGMENTS = new Set(['deprecated', 'quarantine']);
 /** The documented hand-seeded, record-less micro suite (phase-3 J3). */
 const GRANDFATHERED_MICRO_SUITE = 'suites/fixer-worker/micro';
+/**
+ * The five grandfathered hand-seeded micro fixtures. Static (not derived from
+ * discovery) so a micro fixture dropped from `suite.json` is still exempt from
+ * the orphan-fixture check, exactly as the grandfather rule documents.
+ */
+const GRANDFATHERED_MICRO_FIXTURES = new Set([
+  'fixtures/micro-1',
+  'fixtures/micro-2',
+  'fixtures/micro-3',
+  'fixtures/micro-4',
+  'fixtures/micro-5',
+]);
 /** The separate contamination-canary suite; the only home for public-bug-canary records. */
 const CANARY_SUITE = 'suites/fixer-worker/canary';
 
@@ -245,11 +257,10 @@ export function checkCorpusEvidence(repoRoot: string): CorpusIssues {
   // 5. Every fixer fixture directory (a `fixtures/<id>/check.mjs`) must be
   // referenced by a discovered fixer case or be part of the grandfathered set.
   const referencedFixtures = new Set(discovered.map((c) => c.fixture));
-  const grandfatheredFixtures = new Set(legacy.filter((c) => c.suiteRel === GRANDFATHERED_MICRO_SUITE).map((c) => c.fixture));
   for (const entry of readdirSync(fixturesDir, { withFileTypes: true })) {
     if (!entry.isDirectory() || !existsSync(join(fixturesDir, entry.name, 'check.mjs'))) continue;
     const fixtureRef = `fixtures/${entry.name}`;
-    if (!referencedFixtures.has(fixtureRef) && !grandfatheredFixtures.has(fixtureRef)) {
+    if (!referencedFixtures.has(fixtureRef) && !GRANDFATHERED_MICRO_FIXTURES.has(fixtureRef)) {
       issues.push(`orphan fixture ${entry.name}`);
     }
   }
@@ -261,8 +272,11 @@ export function checkCorpusEvidence(repoRoot: string): CorpusIssues {
   // so they are exempt.
   for (const suiteRel of discoverRetiredSuiteDirs(repoRoot)) {
     const note = suiteRel.split('/').includes('quarantine') ? 'QUARANTINE.md' : 'DEPRECATED.md';
-    if (!existsSync(join(repoRoot, ...suiteRel.split('/'), note))) {
+    const notePath = join(repoRoot, ...suiteRel.split('/'), note);
+    if (!existsSync(notePath)) {
       issues.push(`suite ${suiteRel}: contains suite.json but no ${note} dated note`);
+    } else if (!/\d{4}-\d{2}-\d{2}/.test(readFileSync(notePath, 'utf8'))) {
+      issues.push(`suite ${suiteRel}: ${note} has no YYYY-MM-DD retirement date`);
     }
   }
 
@@ -272,7 +286,8 @@ export function checkCorpusEvidence(repoRoot: string): CorpusIssues {
 /**
  * The corpus gate: static evidence first (cheap, no judge), then the
  * executing pipeline for every record-backed case. Green iff the inventory is
- * clean and every case passes.
+ * clean and every case passes. `opts.full` forces one mode for every case;
+ * when omitted, each case is tiered by `FULL_CHAIN_SUITES` membership.
  */
 export function runCorpusGate(repoRoot: string, opts?: { full?: boolean }): { issues: string[]; reports: CaseReport[]; failed: number } {
   const evidence = checkCorpusEvidence(repoRoot);
@@ -280,8 +295,13 @@ export function runCorpusGate(repoRoot: string, opts?: { full?: boolean }): { is
   if (issues.length > 0) return { issues, reports: [], failed: 0 };
   const reports: CaseReport[] = [];
   for (const c of evidence.recordBacked) {
+    // An explicit `full` applies to every case (back-compat for callers that
+    // want the whole chain). When omitted, tier each case by the same
+    // FULL_CHAIN_SUITES membership `test/breadth.test.ts` uses, so the CLI
+    // proof and the CI test proof cannot diverge.
+    const full = typeof opts?.full === 'boolean' ? opts.full : FULL_CHAIN_SUITES.has(c.suiteRel);
     try {
-      reports.push(runCasePipeline(c.fixture, { repoRoot, full: opts?.full ?? true }));
+      reports.push(runCasePipeline(c.fixture, { repoRoot, full }));
     } catch (e) {
       issues.push(`case ${c.suiteRel}/${c.caseId}: ${(e as Error).message}`);
     }

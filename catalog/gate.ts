@@ -1,7 +1,9 @@
 // Corpus gate CLI (plan WB-6 §F7). `--check` runs the static evidence
-// inventory only (no judge spawn); `--all` runs the full pipeline for every
-// record-backed case. Either exits 1 on any issue/failure, so CI can gate on
-// the cheap mode and a human can reproduce the executing proof locally.
+// inventory only (no judge spawn); `--all` runs the executing chain for every
+// record-backed case, tiered exactly like test/breadth.test.ts (full chain for
+// FULL_CHAIN_SUITES, both-states + adequacy otherwise). Either exits 1 on any
+// issue/failure, so CI can gate on the cheap mode and a human can reproduce
+// the executing proof locally.
 //
 //   node --experimental-strip-types catalog/gate.ts --check
 //   node --experimental-strip-types catalog/gate.ts --all
@@ -21,13 +23,13 @@ function runCheck(repoRoot: string): number {
 }
 
 function runAll(repoRoot: string): number {
-  const result = runCorpusGate(repoRoot, { full: true });
+  const result = runCorpusGate(repoRoot);
   for (const issue of result.issues) console.log(`ISSUE ${issue}`);
   for (const report of result.reports) {
     console.log(`${report.pass ? 'PASS' : 'FAIL'} ${report.caseId}`);
     for (const g of report.gates) if (!g.pass) console.log(`   ${g.gate}: ${g.detail}`);
   }
-  console.log(`${result.reports.length - result.failed}/${result.reports.length} cases pass (full chain) · ${result.issues.length} issues`);
+  console.log(`${result.reports.length - result.failed}/${result.reports.length} cases pass (tiered chain) · ${result.issues.length} issues`);
   return result.issues.length === 0 && result.failed === 0 ? 0 : 1;
 }
 

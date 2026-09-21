@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { checkCorpusEvidence, discoverFixerCases } from '../catalog/corpus.ts';
+import { checkCorpusEvidence, discoverFixerCases, FULL_CHAIN_SUITES, BOTH_STATES_SUITES } from '../catalog/corpus.ts';
 
 // F7 hygiene gates (plan WB-6). The STATIC half of the corpus gate: every
 // non-deprecated fixer case carries a FAULT.json record with complete
@@ -196,6 +196,19 @@ describe('canary separation (F7 Slice B; tolerated until the suite lands)', () =
 });
 
 describe('explicit pipeline tiering + retired-suite notes (F7 review round 2)', () => {
+  it('every discovered record-backed suite is in exactly one tier set', () => {
+    const suites = new Set(discoverFixerCases(REPO_ROOT).filter((c) => c.recordBacked).map((c) => c.suiteRel));
+    expect(suites.size).toBeGreaterThan(0);
+    for (const suiteRel of suites) {
+      // Exactly one: neither (untiered) and both (ambiguous) are failures, so
+      // `gate --all` and test/breadth.test.ts can never disagree on the mode.
+      expect(
+        FULL_CHAIN_SUITES.has(suiteRel) !== BOTH_STATES_SUITES.has(suiteRel),
+        `${suiteRel} must be in exactly one of FULL_CHAIN_SUITES / BOTH_STATES_SUITES`,
+      ).toBe(true);
+    }
+  });
+
   it('a record-backed suite in neither tier set is an issue', () => {
     withSyntheticRoot((root) => {
       writeSyntheticCase(root, {
@@ -218,6 +231,30 @@ describe('explicit pipeline tiering + retired-suite notes (F7 review round 2)', 
       writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify({ name: 'old-suite', role: 'fixer-worker', provenance: {}, cases: [] }));
       expect(checkCorpusEvidence(root).issues).toEqual([
         'suite suites/fixer-worker/deprecated/old-suite: contains suite.json but no DEPRECATED.md dated note',
+      ]);
+    });
+  });
+
+  it('a deprecated suite.json with a dated DEPRECATED.md note is not an issue', () => {
+    withSyntheticRoot((root) => {
+      mkdirSync(join(root, 'fixtures'), { recursive: true });
+      const suiteDir = join(root, 'suites', 'fixer-worker', 'deprecated', 'old-suite');
+      mkdirSync(suiteDir, { recursive: true });
+      writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify({ name: 'old-suite', role: 'fixer-worker', provenance: {}, cases: [] }));
+      writeFileSync(join(suiteDir, 'DEPRECATED.md'), '# old-suite — DEPRECATED 2026-09-20\n\n- Date retired: 2026-09-20 (UTC)\n');
+      expect(checkCorpusEvidence(root).issues).toEqual([]);
+    });
+  });
+
+  it('a deprecated suite.json with an undated DEPRECATED.md note is an issue', () => {
+    withSyntheticRoot((root) => {
+      mkdirSync(join(root, 'fixtures'), { recursive: true });
+      const suiteDir = join(root, 'suites', 'fixer-worker', 'deprecated', 'old-suite');
+      mkdirSync(suiteDir, { recursive: true });
+      writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify({ name: 'old-suite', role: 'fixer-worker', provenance: {}, cases: [] }));
+      writeFileSync(join(suiteDir, 'DEPRECATED.md'), '# old-suite\n\nRetired; see the replacement suite.\n');
+      expect(checkCorpusEvidence(root).issues).toEqual([
+        'suite suites/fixer-worker/deprecated/old-suite: DEPRECATED.md has no YYYY-MM-DD retirement date',
       ]);
     });
   });

@@ -109,5 +109,26 @@
         "notes": { "type": "string" }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "provenance": {
+            "type": "object",
+            "properties": { "origin": { "const": "public-bug-canary" } },
+            "required": ["origin"]
+          }
+        },
+        "required": ["provenance"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "provenance": { "type": "object", "required": ["reference", "license"] }
+        }
+      }
+    }
+  ]
 }

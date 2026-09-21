@@ -42,7 +42,9 @@ case never enters the corpus.
   Gate order in `full: false` (both-states) mode is
   `annotation, reachability, f2p, f2p-per-test, p2p-per-test, baseline,
   p2p-fixed, adequacy`;
-  `full: true` adds determinism ×3 and the format/tell pass. The adequacy gate
+  `full: true` adds a determinism ×3 repeat of the judge runs (three exit-code
+  repetitions per state; the per-title vitest-JSON outcomes are still sampled
+  once per state) and the format/tell pass. The adequacy gate
   sits immediately after `p2p-fixed` and runs in BOTH modes (it writes the
   crippled fixed source into the materialized workspace copy and expects the
   judge to fail). The pipeline never edits a fixture on disk: `validation.fix`
@@ -63,7 +65,8 @@ case never enters the corpus.
 - `test/breadth.test.ts` — the discovery-driven describe
   `both-states + adequacy CI for every discovered record-backed fixer case (F7)`
   calls `discoverFixerCases(REPO_ROOT).filter((c) => c.recordBacked)` and runs
-  `runCasePipeline` once per case (`full: true` for the `-verified` tier). A
+  `runCasePipeline` once per case (`full: true` for suites in
+  `FULL_CHAIN_SUITES`, both-states + adequacy otherwise). A
   newly seeded record-backed case is therefore gated the moment it is committed
   — there is no list to update.
 - `test/hygiene.test.ts` — the static gate at test grain: zero issues from
@@ -100,8 +103,10 @@ They predate the FAULT.json record channel: their fault manifests live in
 implementations live only in this repo's own harness (`test/micro.test.ts`),
 deliberately not shipped as readable repo files. `catalog/corpus.ts` grandfathers
 exactly that one suite (`GRANDFATHERED_MICRO_SUITE = 'suites/fixer-worker/micro'`,
-`catalog/corpus.ts` line 17): a record-less case there is not an issue, and a
-`fixtures/micro-N/check.mjs` directory there is not an orphan fixture. Every
+`catalog/corpus.ts` line 18): a record-less case there is not an issue, and the
+five hand-seeded fixtures are exempt from the orphan-fixture check via the
+static `GRANDFATHERED_MICRO_FIXTURES` set — so `fixtures/micro-1..5` stay
+non-orphans even if a case is dropped from `suite.json`. Every
 other record-less case fails with
 
 ```text
@@ -168,7 +173,7 @@ under that id.
   therefore never spends eval tokens.
 - `catalog/corpus.ts`: `discoverSuiteDirs` walks `suites/` and skips any
   directory whose repo-relative POSIX path contains a `deprecated` or
-  `quarantine` segment (`EXCLUDED_SEGMENTS`, line 15), so a moved suite leaves
+  `quarantine` segment (`EXCLUDED_SEGMENTS`, line 16), so a moved suite leaves
   the static inventory, the corpus gate, and the discovery-driven tests in
   `test/breadth.test.ts` in one step.
 - `suites/<role>/deprecated/` itself is a landing zone with no `suite.json`

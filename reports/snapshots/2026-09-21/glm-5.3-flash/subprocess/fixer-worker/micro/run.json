@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "fixer-worker",
+      "suite": "micro",
+      "suiteDir": "suites/fixer-worker/micro",
+      "model": "glm-5.3-flash",
+      "driver": "subprocess",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "c8b1008d-7f75-4a18-b1f8-7362112aa833",
+      "generatedAt": "2026-09-21T07:33:26.606Z"
+    }
+  ]
+}

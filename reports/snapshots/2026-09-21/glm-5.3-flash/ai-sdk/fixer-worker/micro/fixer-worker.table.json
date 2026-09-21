@@ -1,22 +1,22 @@
 {
   "role": "fixer-worker",
   "suite": "micro",
-  "generatedAt": "2026-09-21T02:33:04.299Z",
+  "generatedAt": "2026-09-21T07:38:52.448Z",
   "cells": [
     {
       "model": "glm-5.3-flash",
       "driver": "ai-sdk",
-      "runs": 5,
+      "runs": 4,
       "passed": 0,
-      "total": 10,
+      "total": 8,
       "score": 0,
-      "costUSD": 0.002751,
+      "costUSD": 0.002737,
       "costBasis": "modeled",
-      "wallTimeMs": 1060846,
+      "wallTimeMs": 177777,
       "tokens": {
-        "input": 7375,
-        "output": 1553,
-        "cacheRead": 28928,
+        "input": 6714,
+        "output": 1989,
+        "cacheRead": 24512,
         "cacheWrite": 0
       }
     }

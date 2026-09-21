@@ -1,31 +1,30 @@
 {
   "role": "review-classifier",
   "suite": "breadth-tail",
-  "generatedAt": "2026-09-21T03:38:38.654Z",
+  "generatedAt": "2026-09-21T07:45:15.160Z",
   "cells": [
     {
       "model": "glm-5.3-flash",
       "driver": "ai-sdk",
       "runs": 30,
-      "passed": 19,
+      "passed": 18,
       "total": 30,
-      "score": 0.6333333333333333,
-      "costUSD": 0.007427,
+      "score": 0.6,
+      "costUSD": 0.00771,
       "costBasis": "modeled",
       "byVerdict": {
         "actionable": {
-          "expected": 4,
+          "expected": 3,
           "correct": 3,
           "predicted": {
-            "actionable": 3,
-            "responded": 1
+            "actionable": 3
           }
         },
         "responded": {
-          "expected": 2,
-          "correct": 2,
+          "expected": 3,
+          "correct": 3,
           "predicted": {
-            "responded": 2
+            "responded": 3
           }
         },
         "resolved": {
@@ -36,29 +35,34 @@
           }
         },
         "blocked": {
-          "expected": 5,
-          "correct": 5,
+          "expected": 4,
+          "correct": 4,
           "predicted": {
-            "blocked": 5
+            "blocked": 4
           }
         },
         "skip": {
-          "expected": 5,
-          "correct": 4,
+          "expected": 4,
+          "correct": 3,
           "predicted": {
-            "skip": 4,
+            "skip": 3,
             "responded": 1
           }
         }
       },
-      "macroF1": 0.8825396825396826,
+      "macroF1": 0.9428571428571428,
       "fpRate": 0,
-      "fpN": 7,
-      "wallTimeMs": 314617,
+      "fpN": 6,
+      "scoreCI": {
+        "lower": 0.42320360253322475,
+        "upper": 0.7540937188319815,
+        "confidence": 0.95
+      },
+      "wallTimeMs": 382136,
       "tokens": {
-        "input": 11372,
-        "output": 11236,
-        "cacheRead": 3456,
+        "input": 11244,
+        "output": 11831,
+        "cacheRead": 3584,
         "cacheWrite": 0
       }
     }

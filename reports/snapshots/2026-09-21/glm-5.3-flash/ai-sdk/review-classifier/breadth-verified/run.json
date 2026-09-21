@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "review-classifier",
+      "suite": "breadth-verified",
+      "suiteDir": "suites/review-classifier/breadth-verified",
+      "model": "glm-5.3-flash",
+      "driver": "ai-sdk",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "1620201c-3b3a-4653-b136-845a27709844",
+      "generatedAt": "2026-09-21T07:51:54.462Z"
+    }
+  ]
+}

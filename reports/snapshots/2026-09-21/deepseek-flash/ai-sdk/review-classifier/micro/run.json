@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "review-classifier",
+      "suite": "micro",
+      "suiteDir": "suites/review-classifier/micro",
+      "model": "deepseek-flash",
+      "driver": "ai-sdk",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "9c179fed-53eb-4086-99f1-e9c03ded0351",
+      "generatedAt": "2026-09-21T07:02:22.115Z"
+    }
+  ]
+}

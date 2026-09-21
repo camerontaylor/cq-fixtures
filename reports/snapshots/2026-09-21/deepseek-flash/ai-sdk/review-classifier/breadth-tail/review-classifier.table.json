@@ -1,16 +1,16 @@
 {
   "role": "review-classifier",
   "suite": "breadth-tail",
-  "generatedAt": "2026-09-21T03:34:01.715Z",
+  "generatedAt": "2026-09-21T07:01:20.698Z",
   "cells": [
     {
       "model": "deepseek-flash",
       "driver": "ai-sdk",
       "runs": 30,
-      "passed": 24,
+      "passed": 25,
       "total": 30,
-      "score": 0.8,
-      "costUSD": 0.005414,
+      "score": 0.8333333333333334,
+      "costUSD": 0.0042,
       "costBasis": "modeled",
       "byVerdict": {
         "actionable": {
@@ -45,23 +45,27 @@
         },
         "skip": {
           "expected": 6,
-          "correct": 3,
+          "correct": 4,
           "predicted": {
-            "skip": 3,
+            "skip": 4,
             "responded": 1,
-            "actionable": 1,
-            "resolved": 1
+            "actionable": 1
           }
         }
       },
-      "macroF1": 0.7933333333333332,
+      "macroF1": 0.8314285714285715,
       "fpRate": 0,
       "fpN": 10,
-      "wallTimeMs": 46358,
+      "scoreCI": {
+        "lower": 0.6643564949358398,
+        "upper": 0.9266345762815145,
+        "confidence": 0.95
+      },
+      "wallTimeMs": 54732,
       "tokens": {
-        "input": 17000,
-        "output": 4774,
-        "cacheRead": 0,
+        "input": 6121,
+        "output": 5416,
+        "cacheRead": 10879,
         "cacheWrite": 0
       }
     }

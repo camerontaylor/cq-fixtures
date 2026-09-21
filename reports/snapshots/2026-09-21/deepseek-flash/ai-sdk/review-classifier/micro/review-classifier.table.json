@@ -1,7 +1,7 @@
 {
   "role": "review-classifier",
   "suite": "micro",
-  "generatedAt": "2026-09-21T03:34:54.761Z",
+  "generatedAt": "2026-09-21T07:02:22.112Z",
   "cells": [
     {
       "model": "deepseek-flash",
@@ -10,7 +10,7 @@
       "passed": 10,
       "total": 10,
       "score": 1,
-      "costUSD": 0.000766,
+      "costUSD": 0.00122,
       "costBasis": "modeled",
       "byVerdict": {
         "actionable": {
@@ -50,10 +50,10 @@
         }
       },
       "macroF1": 1,
-      "wallTimeMs": 11687,
+      "wallTimeMs": 16401,
       "tokens": {
         "input": 2026,
-        "output": 749,
+        "output": 1505,
         "cacheRead": 4224,
         "cacheWrite": 0
       }

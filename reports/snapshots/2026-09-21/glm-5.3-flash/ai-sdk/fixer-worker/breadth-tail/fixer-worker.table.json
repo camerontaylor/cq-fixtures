@@ -1,0 +1,29 @@
+{
+  "role": "fixer-worker",
+  "suite": "breadth-tail",
+  "generatedAt": "2026-09-21T07:28:23.636Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "ai-sdk",
+      "runs": 21,
+      "passed": 0,
+      "total": 42,
+      "score": 0,
+      "costUSD": 0.015692,
+      "costBasis": "modeled",
+      "scoreCI": {
+        "lower": 0,
+        "upper": 0.08379879086570391,
+        "confidence": 0.95
+      },
+      "wallTimeMs": 1029441,
+      "tokens": {
+        "input": 40254,
+        "output": 12146,
+        "cacheRead": 119360,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

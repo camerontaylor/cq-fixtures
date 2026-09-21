@@ -1,0 +1,4 @@
+{
+  "fixed": false,
+  "notes": "Could not apply the fix: the fixture path /tmp/cq-fixture-bt2klF is outside this session's allowed working directory (/tmp/cq-harness/ws-M1pdZQ), which is empty and itself write-blocked. Every read of the fixture was permission-blocked (Read tool, Bash ls/cat, and the same via a subagent), and Write/Bash redirection failed even inside the allowed dir, so no source could be inspected or edited. Likely harness misconfiguration — relaunch with /tmp/cq-fixture-bt2klF as the session's working directory (or copy the fixture into the workspace). The intended fix per the task is a one-line change in formatCents: divide cents by 100 to get dollars instead of the wrong divisor currently used."
+}

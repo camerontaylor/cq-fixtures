@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "fixer-worker",
+      "suite": "micro",
+      "suiteDir": "suites/fixer-worker/micro",
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "a2e4cddb-2db7-4048-aa66-691d984ab491",
+      "generatedAt": "2026-09-21T09:04:32.898Z"
+    }
+  ]
+}

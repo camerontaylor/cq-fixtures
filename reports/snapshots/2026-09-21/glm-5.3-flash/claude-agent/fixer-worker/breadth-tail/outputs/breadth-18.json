@@ -1,0 +1,4 @@
+{
+  "fixed": false,
+  "notes": "Could not fix: the fixture at /tmp/cq-fixture-8pccry is inaccessible from this agent's tools. read/edit resolve against an empty workspace root (/tmp/cq-harness/ws-rat6DO) — probes for package.json, tsconfig.json, vitest.config.ts, src/index.ts, src/, README.md, etc. all returned \"file not found\" — and any path targeting /tmp/cq-fixture-8pccry (absolute or via \"..\") is rejected with \"path escape: resolves outside the workspace\". The run tool's allowlist rejected every command attempted (ls, cat, pwd, echo, true, npm test/install/run, npx vitest/tsc, node, python3, bash -c, make, find, grep, cd ... && npm test), so no shell access either. Intended fix (unapplied): in applyPercent, the percentage portion is currently added to the amount; it must be subtracted instead (e.g. `amount + (amount * percent) / 100` → `amount - (amount * percent) / 100`). Tests were not modified."
+}

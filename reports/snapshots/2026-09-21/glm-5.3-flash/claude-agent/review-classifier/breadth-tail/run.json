@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "review-classifier",
+      "suite": "breadth-tail",
+      "suiteDir": "suites/review-classifier/breadth-tail",
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "7d2bf14c-d6d8-497c-91ae-a16e7fcb53b9",
+      "generatedAt": "2026-09-21T09:15:05.067Z"
+    }
+  ]
+}

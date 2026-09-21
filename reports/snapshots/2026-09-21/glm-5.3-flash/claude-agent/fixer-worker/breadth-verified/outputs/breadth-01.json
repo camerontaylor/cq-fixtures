@@ -1,0 +1,4 @@
+{
+  "fixed": false,
+  "notes": "Could not fix: the fixture at /tmp/cq-fixture-i4ufJh is unreachable. read/edit are sandboxed to /tmp/cq-harness/ws-AcxybW, which is completely empty (all candidate paths — package.json, src/rectangleArea.ts, tests, etc. — return \"file not found\"; only \".\" resolves as an empty directory). Every read/edit of the fixture path is refused with \"path escape: resolves outside the workspace\". The run tool's allowlist rejected every command attempted (~40, including ls, cat, find, node, npx vitest run, npm test, and fixture-anchored absolute invocations), so there was no way to inspect or patch the fixture. The known correct change is to make rectangleArea return width * height (replacing the wrong computation such as width * width or width + height), but it could not be applied. Environment needs re-provisioning with the fixture mounted as the tools' workspace root and a functional run allowlist."
+}

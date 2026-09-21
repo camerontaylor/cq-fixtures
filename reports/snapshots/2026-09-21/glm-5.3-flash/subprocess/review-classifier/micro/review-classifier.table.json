@@ -1,7 +1,7 @@
 {
   "role": "review-classifier",
   "suite": "micro",
-  "generatedAt": "2026-09-21T02:05:05.453Z",
+  "generatedAt": "2026-09-21T02:15:40.388Z",
   "cells": [
     {
       "model": "glm-5.3-flash",
@@ -12,7 +12,7 @@
       "score": 0,
       "costUSD": 0,
       "costBasis": "modeled",
-      "wallTimeMs": 4029,
+      "wallTimeMs": 4708,
       "tokens": {
         "input": 0,
         "output": 0,

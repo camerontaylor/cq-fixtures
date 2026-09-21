@@ -1,7 +1,7 @@
 {
   "role": "fixer-worker",
   "suite": "micro",
-  "generatedAt": "2026-09-21T02:05:00.946Z",
+  "generatedAt": "2026-09-21T02:15:35.220Z",
   "cells": [
     {
       "model": "glm-5.3-flash",
@@ -12,7 +12,7 @@
       "score": 0,
       "costUSD": 0,
       "costBasis": "modeled",
-      "wallTimeMs": 2001,
+      "wallTimeMs": 3096,
       "tokens": {
         "input": 0,
         "output": 0,

@@ -1,7 +1,7 @@
 {
   "role": "fixer-worker",
   "suite": "micro",
-  "generatedAt": "2026-09-21T02:08:29.463Z",
+  "generatedAt": "2026-09-21T02:33:04.299Z",
   "cells": [
     {
       "model": "glm-5.3-flash",
@@ -10,13 +10,13 @@
       "passed": 0,
       "total": 10,
       "score": 0,
-      "costUSD": 0.003293,
+      "costUSD": 0.002751,
       "costBasis": "modeled",
-      "wallTimeMs": 213683,
+      "wallTimeMs": 1060846,
       "tokens": {
-        "input": 9321,
-        "output": 2058,
-        "cacheRead": 28864,
+        "input": 7375,
+        "output": 1553,
+        "cacheRead": 28928,
         "cacheWrite": 0
       }
     }

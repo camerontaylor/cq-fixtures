@@ -148,9 +148,15 @@ describe('canary provenance placement (F7 review round 1)', () => {
         fixture: 'fixtures/probe-03',
         provenance: { origin: 'public-bug-canary', generator: 'canary:public-bug-class', seed: 0, engine_version: 'synthetic-canary' },
       });
-      expect(checkCorpusEvidence(root).issues).toEqual([
-        'case suites/fixer-worker/canary/canary-98: public-bug-canary record must carry provenance.reference and provenance.license',
-      ]);
+      // The schema's `if/then` makes this schema-INVALID before the corpus
+      // gate ever sees it, so `loadFaultForFixture` is the failure point here
+      // (the runtime canary-reference check in checkCorpusEvidence is
+      // belt-and-braces for records that reach it without schema validation).
+      const issues = checkCorpusEvidence(root).issues;
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toContain('failed fault.schema.json validation');
+      expect(issues[0]).toContain("must have required property 'reference'");
+      expect(issues[0]).toContain("must have required property 'license'");
     });
   });
 });

@@ -10,7 +10,7 @@
 
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
@@ -204,7 +204,13 @@ export function regrade(opts: RegradeOptions): RegradeResult {
     const suites = new Map<string, Suite>();
     for (const entry of readManifest(from)) {
       const key = `${entry.role}\n${entry.suite}`;
-      if (!suites.has(key)) suites.set(key, loadSuite(join(repoRoot, entry.suiteDir)));
+      // A manifest suiteDir is normally repo-root-relative (run mode records
+      // it that way), but tolerate an absolute one from a hand-written
+      // manifest rather than mangling it through join().
+      if (!suites.has(key)) {
+        const dir = isAbsolute(entry.suiteDir) ? entry.suiteDir : join(repoRoot, entry.suiteDir);
+        suites.set(key, loadSuite(dir));
+      }
     }
     for (const row of rows) {
       if (row.case === undefined) continue;

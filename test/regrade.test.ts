@@ -236,6 +236,46 @@ describe('regrade --rejudge re-runs the local judge over persisted predictions',
     ]);
   });
 
+  it('resolves an absolute manifest suiteDir (run mode records repo-root-relative, but tolerate either)', async () => {
+    const repoRoot = join(root, 'repo');
+    const suiteDir = join(repoRoot, 'suites', 'review-classifier', 'tiny');
+    mkdirSync(suiteDir, { recursive: true });
+    writeFileSync(
+      join(suiteDir, 'suite.json'),
+      JSON.stringify({
+        name: 'tiny-classifier',
+        role: 'review-classifier',
+        servedModel: 'glm-5.3-flash',
+        provenance: { origin: 'hand-labeled' },
+        cases: [{
+          id: 'tiny-c1',
+          fixture: 'fixtures/threads/thread-01.json',
+          task: { prompt: 'classify the thread' },
+          probe: { kind: 'expected-verdict', expected: 'resolved' },
+        }],
+      }, null, 2) + '\n',
+    );
+    const outDir = join(root, 'abs-out');
+    mkdirSync(join(outDir, 'outputs'), { recursive: true });
+    writeFileSync(join(outDir, 'outputs', 'tiny-c1.json'), JSON.stringify({ verdict: 'resolved' }) + '\n');
+    writeFileSync(
+      join(outDir, 'run.json'),
+      JSON.stringify({
+        runs: [{
+          role: 'review-classifier', suite: 'tiny-classifier', suiteDir,
+          model: 'glm-5.3-flash', driver: 'subprocess', variant: 'default',
+          toolkitLock: null, suiteSha: null, runId: 'run-tiny', generatedAt: '2026-09-18T00:00:00.000Z',
+        }],
+      }, null, 2) + '\n',
+    );
+    writeRowsJsonl(outDir, [baseRow({ outcome: { score: 0, passed: 0, total: 1 } })]);
+    await expect(
+      cliMain(['regrade', '--from', outDir, '--rejudge', '--repo-root', join(root, 'unrelated')]),
+    ).resolves.toBe(0);
+    const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ResultRow);
+    expect(rows[0]!.outcome).toEqual({ score: 1, passed: 1, total: 1 });
+  });
+
   it('refuses a truncated patch and keeps the recorded outcome (with a diagnostic)', async () => {
     const { repoRoot, outDir } = buildTinyFixerRepo();
     // Recorded outcome is a MISS so a wrongly-applied patch would be visible.

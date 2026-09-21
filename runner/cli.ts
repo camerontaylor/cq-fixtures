@@ -5,7 +5,7 @@
 // its rc>=2 branch). Invoked via runner/index.ts.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   AcpDriver,
@@ -363,7 +363,10 @@ async function main(argv: readonly string[]): Promise<number> {
       manifestEntries.push({
         role: suite.role,
         suite: suite.name,
-        suiteDir,
+        // F6: the manifest records a repo-root-relative suiteDir so regrade
+        // can resolve it against its own --repo-root; a caller's absolute
+        // --suite would otherwise be unusable there.
+        suiteDir: relative(repoRoot, resolve(suiteDir)),
         model: opts.model,
         driver: opts.driverName,
         variant: suiteVariant(suite),

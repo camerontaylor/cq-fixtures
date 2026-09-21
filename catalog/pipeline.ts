@@ -325,8 +325,7 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
       if (marker !== undefined) {
         faultedRed = false;
         faultedDetail = `judge failed closed (infrastructure): ${marker}`;
-      }
-      if (status === 0) {
+      } else if (status === 0) {
         faultedRed = false;
         faultedDetail = `faulted run ${i + 1} was green`;
       }
@@ -363,8 +362,7 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
       if (marker !== undefined) {
         fixedGreen = false;
         fixedDetail = `judge failed closed (infrastructure): ${marker}`;
-      }
-      if (status !== 0) {
+      } else if (status !== 0) {
         fixedGreen = false;
         fixedDetail = `fixed run ${i + 1} was red`;
       }

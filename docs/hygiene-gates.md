@@ -370,7 +370,7 @@ headline corpus first:
 
 1. Leakage: re-read `fixtures/<name>.FAULT.json` reachability — the record must
    stay outside the materialized fixture tree (the `reachability` gate in
-   `catalog/pipeline.ts`, `assertRecordOutsideFixture`), and no prompt, task
+   `catalog/pipeline.ts`, `scanForFaultLeaks`), and no prompt, task
    spec, or suite metadata may carry the canonical fix.
 2. Provenance: confirm no headline case is a verbatim public benchmark instance
    or a named public bug class (§4) — those belong in the canary suite.

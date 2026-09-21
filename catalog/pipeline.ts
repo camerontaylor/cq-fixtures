@@ -139,7 +139,16 @@ export function scanForFaultLeaks(workspace: string, fixtureRef: string, record:
   const fixValues = Object.values(record.validation.fix);
   const secretLines: string[] = [];
   for (const [rel, fixed] of Object.entries(record.validation.fix)) {
-    const stored = readFileSync(join(repoRoot, fixtureRef, rel), 'utf8');
+    let stored: string;
+    try {
+      stored = readFileSync(join(repoRoot, fixtureRef, rel), 'utf8');
+    } catch {
+      // A fix target missing from the fixture is a broken fixture, not a
+      // workspace leak — surface it as a fail-closed leak entry instead of
+      // throwing out of the reachability gate.
+      leaks.push(`${rel} (fix target missing from the fixture)`);
+      continue;
+    }
     const fixedLines = new Set(fixed.split('\n'));
     for (const line of changedLines(stored, fixed)) {
       if (line.trim().length >= 12 && fixedLines.has(line)) secretLines.push(line);

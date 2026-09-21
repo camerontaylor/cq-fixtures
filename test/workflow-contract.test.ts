@@ -272,43 +272,91 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell).toContain('< /dev/null');
   });
 
-  it('dispatch-only roles publish a loud absence, never driver-error zeros (WB-1.7)', () => {
-    // The matrix cell config names the roles a known toolkit defect must not
-    // dispatch, with the routed issue; the eval loop warns, writes the step
-    // summary, drops a marker, and skips the runner invocation (so no row is
-    // ever written for that role).
+  it('driver-cause classification: a non-model cause publishes a loud dispatch-only absence via run.json (F1b/WB-1)', () => {
+    // F1b removed the static skip_roles pre-skip (the F1 workaround): every
+    // cell dispatches and the RUNNER classifies each driver error from its
+    // class token — an unparseable structured output is a real scored-miss
+    // row, any other cause publishes no row. The eval step reads the
+    // runner's run.json absences[] and renders the loud absence (warning +
+    // step summary + marker) that the old pre-skip used to.
     const cells = matrixCells();
-    const claudeAgent = cells.find((c) => c.includes('driver: claude-agent'));
-    expect(claudeAgent).toContain('skip_roles: fixer-worker,review-classifier');
-    expect(claudeAgent).toContain('cq-toolkit#209');
-    const subprocess = cells.find((c) => c.includes('driver: subprocess'));
-    expect(subprocess).toContain('skip_roles: fixer-worker,review-classifier');
-    expect(subprocess).toContain('cq-toolkit#208');
-    const glmAiSdk = cells.find((c) => c.includes('driver: ai-sdk') && c.includes('model: glm-5.3-flash'));
-    expect(glmAiSdk).toContain('skip_roles: fixer-worker');
-    expect(glmAiSdk).toContain('cq-toolkit#210');
-    const deepseek = cells.find((c) => c.includes('provider: deepseek'));
-    expect(deepseek).toContain('skip_roles: fixer-worker');
+    for (const cell of cells) {
+      expect(cell, 'the static role skip is gone — the runner classifies').not.toContain('skip_roles:');
+      expect(cell, 'the static skip reason is gone').not.toContain('skip_reason:');
+    }
     const evalCell = stepChunk('Eval cell —');
-    expect(evalCell).toContain('SKIP_ROLES: ${{ matrix.cell.skip_roles }}');
-    expect(evalCell).toContain('SKIP_REASON: ${{ matrix.cell.skip_reason }}');
-    expect(evalCell).toContain('skipped (dispatch-only)');
+    expect(evalCell, 'the SKIP_ROLES env is gone').not.toContain('SKIP_ROLES');
+    expect(evalCell, 'the SKIP_REASON env is gone').not.toContain('SKIP_REASON');
+    expect(evalCell, 'the pre-runner role skip is gone').not.toContain('skipped (dispatch-only)');
+    // The runner invocation is unconditional now (the pre-skip `continue`
+    // before it is gone): each discovered suite dispatches.
+    const runnerAt = evalCell.indexOf('node --experimental-strip-types runner/index.ts');
+    expect(runnerAt, 'the eval cell invokes the runner').toBeGreaterThan(-1);
+    // The absence rendering reads the runner's manifest ...
+    expect(evalCell).toContain('${out_dir}/run.json');
+    expect(evalCell).toContain('absences');
+    expect(evalCell).toContain('::warning::');
+    expect(evalCell).toContain('${GITHUB_STEP_SUMMARY}');
     expect(evalCell).toContain('DISPATCH-ONLY-');
-    // The skip must precede the runner invocation, so the role never dispatches.
-    expect(evalCell.indexOf('DISPATCH-ONLY-')).toBeLessThan(evalCell.indexOf('node --experimental-strip-types runner/index.ts'));
-    // The skipped role must `continue` before the runner invocation, and the
-    // discovery count must advance exactly once per suite.
-    const markerAt = evalCell.indexOf('DISPATCH-ONLY-');
-    const continueAt = evalCell.indexOf('continue', markerAt);
-    expect(continueAt).toBeGreaterThan(markerAt);
-    expect(evalCell.indexOf('node --experimental-strip-types runner/index.ts')).toBeGreaterThan(continueAt);
+    // ... and drops the marker AFTER the runner ran (it used to precede it).
+    expect(evalCell.indexOf('DISPATCH-ONLY-')).toBeGreaterThan(runnerAt);
+    // The discovery count still advances exactly once per suite.
     expect(evalCell.match(/suite_count=\$\(\(suite_count \+ 1\)\)/g)).toHaveLength(1);
-    // The marker dir must exist before the loop (the first discovery entry is
-    // a skipped fixer-worker on every non-acp cell).
+    // The marker dir must exist before the loop.
     expect(evalCell.indexOf('mkdir -p reports/eval')).toBeGreaterThan(-1);
     expect(evalCell.indexOf('mkdir -p reports/eval')).toBeLessThan(evalCell.indexOf('DISPATCH-ONLY-'));
     // The snapshot job must not clear a same-day dir that held real data.
-    expect(stepChunk('Commit report snapshots')).toContain('DISPATCH-ONLY-*');
+    const snapshotStep = stepChunk('Commit report snapshots');
+    expect(snapshotStep).toContain('DISPATCH-ONLY-*');
+    // ... and it must withhold an empty-but-valid table whose run.json
+    // records dispatch-only absences: the absence belongs in run.json, not
+    // in a zero-cell table that reads as "0 cases" (CodeRabbit cycle 1).
+    expect(snapshotStep).toContain('run.json');
+    expect(snapshotStep).toContain('absences');
+    expect(snapshotStep).toContain('.table.json');
+    expect(snapshotStep).toContain('skipping empty dispatch-only table');
+    // CodeRabbit App thread 4: bind the `continue` to the dispatch-only
+    // skip branch by ORDER (an unrelated `continue` elsewhere in the step
+    // must not satisfy it): the skip `if` precedes its diagnostic, which
+    // precedes the `continue`, whose very next token is that branch's `fi`.
+    const skipBranchAt = snapshotStep.indexOf('if [ "${table_fate}" = "skip" ]; then');
+    const skipNoteAt = snapshotStep.indexOf('skipping empty dispatch-only table');
+    const skipContinueAt = snapshotStep.indexOf('continue', skipNoteAt);
+    expect(skipBranchAt, 'the table_fate skip branch exists').toBeGreaterThan(-1);
+    expect(skipNoteAt, 'the diagnostic sits inside the skip branch').toBeGreaterThan(skipBranchAt);
+    expect(skipContinueAt, 'the continue follows the diagnostic').toBeGreaterThan(skipNoteAt);
+    expect(
+      snapshotStep.slice(skipContinueAt + 'continue'.length).trimStart().startsWith('fi'),
+      'the continue is the last statement of the skip branch',
+    ).toBe(true);
+    // CodeRabbit App thread 1: an unreadable/malformed sibling run.json now
+    // FAILS the step (::error:: + exit 1) instead of publishing the table.
+    expect(snapshotStep, 'a bad manifest fails the snapshot step').toContain(
+      '::error::snapshot: cannot read run.json beside',
+    );
+    expect(snapshotStep).toContain('exit 1');
+    expect(snapshotStep, 'no warn-and-keep fallback remains').not.toContain('manifest-error');
+    // F1b r1: the untrusted endpoint cause text is HTML-escaped before it
+    // reaches the markdown step summary (the raw text stays in ::warning::).
+    expect(evalCell, 'the summary absence line is HTML-escaped').toContain('escaped="$(printf');
+    expect(evalCell).toContain('s/&/\\&amp;/g');
+    expect(evalCell).toContain('- dispatch-only absence: ${escaped}');
+    // F1b r2: the ::warning:: annotation separately escapes workflow-command
+    // `%` sequences (a literal %0A/%0D/%25 in endpoint cause text must not be
+    // decoded into annotation line breaks), and BOTH node run.json helpers fail
+    // closed on a valid-JSON-but-wrong-shape manifest (`runs` not an array)
+    // instead of reading it as absence-free.
+    expect(evalCell, 'the annotation escapes workflow-command % sequences').toContain('s/%/%25/g');
+    expect(evalCell, 'the eval manifest read guards its shape').toContain('Array.isArray(doc.runs)');
+    expect(snapshotStep, 'the snapshot manifest read guards its shape').toContain('Array.isArray(manifest.runs)');
+    // F1b r3: a malformed manifest read in the EVAL step fails the cell loudly
+    // (::error:: + hard_fail) instead of a bare `set -e` exit with no
+    // diagnostic, and the snapshot's table-shape read guards `cells` too.
+    expect(evalCell, 'the eval absence read fails loud with a diagnostic').toContain(
+      'cannot read ${out_dir}/run.json — absence records unknown',
+    );
+    expect(evalCell, 'the eval absence read sets hard_fail').toMatch(/hard_fail=1\n\s+absent_lines=""/);
+    expect(snapshotStep, 'the snapshot table read guards its shape').toContain('Array.isArray(table.cells)');
   });
 
   it('deprecated/ suites are excluded from matrix discovery (F2, WB-2.1)', () => {

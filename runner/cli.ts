@@ -372,8 +372,18 @@ async function main(argv: readonly string[]): Promise<number> {
         variant: suiteVariant(suite),
         toolkitLock: readToolkitLock(repoRoot),
         suiteSha,
-        runId: result.rows[0]?.runId ?? 'unknown',
+        // F1b: the run identity the runner generated — used verbatim, so a
+        // suite whose every case was a dispatch-only absence (zero rows)
+        // still records its real runId instead of an 'unknown' placeholder.
+        runId: result.runId,
         generatedAt: new Date().toISOString(),
+        // F1b (WB-1): a non-model driver cause publishes NO row — record the
+        // absence in the manifest so the workflow can warn loudly and drop a
+        // dispatch-only marker instead of a fabricated zero. Only on a
+        // non-empty list, so a clean run's run.json bytes are unchanged.
+        ...(result.absences.length > 0
+          ? { absences: result.absences.map((a) => ({ case: a.case, cause: a.cause })) }
+          : {}),
       });
       // X2 inputs arrive STRUCTURED from the runner (round 3): the runner
       // classifies its own infrastructure refusals, so the CLI prints them
@@ -383,10 +393,19 @@ async function main(argv: readonly string[]): Promise<number> {
       const passed = result.rows.reduce((n, r) => n + r.outcome.passed, 0);
       const total = result.rows.reduce((n, r) => n + r.outcome.total, 0);
       if (result.rows.some((r) => r.outcome.passed === 0)) anyFailed = true;
+      // F1b (WB-1): a suite whose cases all became dispatch-only absences has
+      // no rows, so the passed/total fold alone would report it clean. An
+      // absence is never a clean run — it is a loud, non-zero outcome.
+      for (const a of result.absences) {
+        console.error(`  ${opts.model}@${opts.driverName} ${a.role} case ${a.case}: not published — ${a.cause}`);
+      }
+      if (result.absences.length > 0) anyFailed = true;
       // A budget-gated run did not complete: never report it as clean (the
       // gated cases are also visible on the run-finished journal event).
       if (result.gatedByBudget) anyFailed = true;
-      const runSuffix = result.rows[0] !== undefined ? `, run ${result.rows[0].runId}` : '';
+      // F1b: the run identity comes from the runner, not from the first row —
+      // an all-absence suite has no rows but still has a run to name.
+      const runSuffix = `, run ${result.runId}`;
       const suiteName = result.rows[0]?.suite ?? suiteDir;
       console.log(`suite ${suiteName}: ${passed}/${total} probes passed across ${result.rows.length} case(s)${runSuffix}`);
     }

@@ -1,0 +1,46 @@
+{
+  "runs": [
+    {
+      "role": "fixer-worker",
+      "suite": "breadth-tail",
+      "suiteDir": "suites/fixer-worker/breadth-tail",
+      "model": "glm-5.3-flash",
+      "driver": "ai-sdk",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "bf470e5c-bd08-400b-8d50-70f7ab50ac0e",
+      "generatedAt": "2026-09-21T07:28:23.640Z",
+      "absences": [
+        {
+          "case": "breadth-13",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Step timeout of 120000ms exceeded"
+        },
+        {
+          "case": "breadth-18",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Step timeout of 120000ms exceeded"
+        },
+        {
+          "case": "breadth-26",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Step timeout of 120000ms exceeded"
+        },
+        {
+          "case": "breadth-28",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Step timeout of 120000ms exceeded"
+        },
+        {
+          "case": "breadth-34",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Step timeout of 120000ms exceeded"
+        },
+        {
+          "case": "breadth-36",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Step timeout of 120000ms exceeded"
+        },
+        {
+          "case": "breadth-40",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Step timeout of 120000ms exceeded"
+        }
+      ]
+    }
+  ]
+}

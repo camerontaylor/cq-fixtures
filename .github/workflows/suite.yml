@@ -182,13 +182,11 @@ jobs:
             driver: ai-sdk
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
-            # WB-1.7 dispatch-only role: the ai-sdk fixer is a known toolkit
-            # defect (cq-toolkit#210 — endpoint header timeouts on long tool
-            # loops + a structured-output miss classified as a driver error),
-            # so it publishes NO rows: a loud absence, never a driver-error
-            # zero. The classifier role on this cell stays real.
-            skip_roles: fixer-worker
-            skip_reason: "cq-toolkit#210: ai-sdk fixer — API header timeouts + structured-output miss classified as a driver error (F1 re-diagnosis, run 35553519022)"
+            # F1b/WB-1: the ai-sdk fixer dispatches again on the post-#212 pin.
+            # The runner classifies each driver error from its class token: an
+            # unparseable structured output is an honest scored-miss row (a real
+            # zero — a MODEL outcome), while a transient endpoint failure is a
+            # loud dispatch-only absence. No static role skip.
           - axis: model
             # Served-id rule (2026-09-14; WB-1.5a): request the id the wire
             # SERVES. The 2026-09-18 matrix requested `deepseek-chat` and the
@@ -202,33 +200,29 @@ jobs:
             driver: ai-sdk
             env_key: DEEPSEEK_API_KEY
             secret_name: DEEPSEEK_API_KEY
-            # WB-1.7 dispatch-only role: the deepseek fixer's structured
-            # output never parsed against the required shape (cq-toolkit#210).
-            skip_roles: fixer-worker
-            skip_reason: "cq-toolkit#210: deepseek-flash fixer — No object generated: could not parse the response (F1 re-diagnosis, run 35553519022)"
+            # F1b/WB-1: the deepseek fixer dispatches; #212 classifies its
+            # unparseable structured output as [structured-output-miss], which
+            # the runner publishes as a real scored-miss row, not a
+            # driver-error zero.
           - axis: driver
             model: glm-5.3-flash
             provider: zai
             driver: claude-agent
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
-            # WB-1.7 dispatch-only lane: the claude-agent driver's
-            # `--json-schema` is rejected by the CLI (cq-toolkit#209 — the
-            # serialised schema carries the draft-2020-12 meta-schema URI),
-            # so both roles publish NO rows: a loud absence, never zeros.
-            skip_roles: fixer-worker,review-classifier
-            skip_reason: "cq-toolkit#209: claude-agent — --json-schema rejected (draft-2020-12 meta-schema URI), 0-token pre-model failure (F1 re-diagnosis, run 35553519022)"
+            # F1b/WB-1: #211 strips the draft-2020-12 meta-schema URI, so the
+            # claude-agent lane dispatches both roles again. Any remaining
+            # non-model failure is a runner-classified loud absence, never a
+            # static skip.
           - axis: driver
             model: glm-5.3-flash
             provider: zai
             driver: subprocess
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
-            # WB-1.7 dispatch-only lane: the subprocess driver does not
-            # populate WorkerResult.error (cq-toolkit#208), so its 0-token
-            # failure is undiagnosable; both roles publish NO rows.
-            skip_roles: fixer-worker,review-classifier
-            skip_reason: "cq-toolkit#208: subprocess — WorkerResult.error not populated, failure cause discarded (F1 re-diagnosis, run 35553519022)"
+            # F1b/WB-1: #213 populates WorkerResult.error on the subprocess
+            # error path, so the lane dispatches both roles and a failure now
+            # surfaces its cause (lane wiring, not a static skip).
           - axis: driver
             model: glm-5.3-flash
             provider: zai
@@ -236,9 +230,8 @@ jobs:
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
             # The acp cell is gated by its own preflight (owner decision
-            # pending); no role list is needed here.
-            skip_roles: ''
-            skip_reason: ''
+            # pending); every cell's driver failures are classified by the
+            # runner, so no cell carries a role list.
     steps:
       - name: Check out the repo
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -516,10 +509,6 @@ jobs:
           MATRIX_PROVIDER: ${{ matrix.cell.provider }}
           MATRIX_DRIVER: ${{ matrix.cell.driver }}
           MATRIX_PROFILE: ${{ github.event.inputs.profile || 'full' }}
-          # WB-1.7: comma-separated roles this cell must NOT dispatch (a known
-          # toolkit defect) + the routed-issue reason echoed loudly.
-          SKIP_ROLES: ${{ matrix.cell.skip_roles }}
-          SKIP_REASON: ${{ matrix.cell.skip_reason }}
         run: |
           set -euo pipefail
           # Designed discovery (J4/F3/F4): a SHALLOW find over FIXED suite dirs
@@ -552,10 +541,10 @@ jobs:
           if [ "${MATRIX_DRIVER}" = "acp" ]; then
             probe_extra=(--probe-record reports/eval/ACP-PROBE.json)
           fi
-          # The dispatch-only branch below touches a marker under reports/eval
-          # on the FIRST discovery iteration (fixer-worker sorts first and is
-          # skipped on every non-acp cell), so the dir must exist before the
-          # loop — the end-of-loop mkdir is too late under `set -e`.
+          # The runner-driven absence branch below touches a DISPATCH-ONLY
+          # marker under reports/eval when a non-model driver cause published
+          # no row, so the dir must exist before the loop — the end-of-loop
+          # mkdir is too late under `set -e`.
           mkdir -p reports/eval
           while IFS= read -r suite_file; do
             suite_dir="$(dirname "${suite_file}")"
@@ -587,22 +576,6 @@ jobs:
             role="${rel_dir%%/*}"
             # Discovery drift counts SUITES FOUND, before any skip decision.
             suite_count=$((suite_count + 1))
-            # WB-1.7 dispatch-only roles: a role whose lane is a known toolkit
-            # defect publishes NO rows — a loud absence, never a driver-error
-            # zero (the honesty rule). The cell config carries the role list
-            # and the routed issue; the marker keeps the snapshot job from
-            # clearing a same-day dir that held real data for this role.
-            skip_list=",${SKIP_ROLES//[[:space:]]/},"
-            if [ "${skip_list#*,$role,}" != "$skip_list" ]; then
-              echo "::warning::${MATRIX_MODEL}@${MATRIX_DRIVER} role ${role} skipped (dispatch-only): ${SKIP_REASON}"
-              {
-                echo "### ${MATRIX_MODEL} @ ${MATRIX_DRIVER} — ${role} skipped (dispatch-only)"
-                echo ""
-                echo "${SKIP_REASON}"
-              } >> "${GITHUB_STEP_SUMMARY}"
-              touch "reports/eval/DISPATCH-ONLY-${MATRIX_MODEL}-${MATRIX_DRIVER}-${role}"
-              continue
-            fi
             rc=0
             # < /dev/null: this loop reads its worklist from the find's stdin
             # (while-read); a stdin-reading driver transport (the subprocess
@@ -648,6 +621,55 @@ jobs:
             if [ ! -f "${out_dir}/${role}.table.json" ]; then
               hard_fail=1
               echo "::error::suite ${rel_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
+            fi
+            # F1b (WB-1) runner-side class mapping: a driver error whose cause
+            # is not the model's unparseable structured output published NO row
+            # — a loud dispatch-only absence, never a fabricated zero.
+            # runner/cli.ts records each such case in run.json's absences[];
+            # render it as a warning + step-summary line and drop the marker so
+            # the snapshot job never clears a same-day dir that held real data
+            # for the role. A malformed run.json is our own bug: fail loudly.
+            if [ -f "${out_dir}/run.json" ]; then
+              # A malformed/wrong-shape run.json is our own bug: fail the cell
+              # LOUDLY (::error:: + hard_fail), never a bare `set -e` exit with
+              # no diagnostic and never a silent absence-free read.
+              absent_lines=""
+              if ! absent_lines="$(node -e '
+                const fs = require("node:fs");
+                const doc = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                // Valid-JSON-but-wrong-shape fails closed: a `runs` that is not
+                // an array would otherwise read as absence-free and hide a real
+                // absence record (the eval step is our own writer's consumer,
+                // so a wrong shape is a bug worth failing on).
+                if (!Array.isArray(doc.runs)) {
+                  throw new Error("run.json runs is not an array");
+                }
+                const lines = [];
+                for (const run of doc.runs) {
+                  for (const a of run.absences || []) {
+                    lines.push(`${run.model}@${run.driver} ${run.role} case ${a.case}: ${String(a.cause).replace(/[\r\n]+/g, " ")}`);
+                  }
+                }
+                process.stdout.write(lines.join("\n"));
+              ' "${out_dir}/run.json")"; then
+                echo "::error::${MATRIX_MODEL}@${MATRIX_DRIVER} ${role}: cannot read ${out_dir}/run.json — absence records unknown"
+                hard_fail=1
+                absent_lines=""
+              fi
+              if [ -n "${absent_lines}" ]; then
+                while IFS= read -r absent_line; do
+                  # The endpoint's cause text is untrusted in BOTH sinks. The
+                  # ::warning:: annotation must escape workflow-command `%`
+                  # sequences (a literal %0A/%0D/%25 in the cause would
+                  # otherwise be decoded into a line break); the markdown
+                  # step-summary line escapes HTML instead.
+                  annotated="$(printf '%s' "${absent_line}" | sed 's/%/%25/g')"
+                  echo "::warning::${annotated} (dispatch-only absence — no row published)"
+                  escaped="$(printf '%s' "${absent_line}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+                  echo "- dispatch-only absence: ${escaped}" >> "${GITHUB_STEP_SUMMARY}"
+                done <<< "${absent_lines}"
+                touch "reports/eval/DISPATCH-ONLY-${MATRIX_MODEL}-${MATRIX_DRIVER}-${role}"
+              fi
             fi
           # shellcheck disable=SC2086 — ${roots} is intentionally word-split
           # into the profile's suite dirs; quoting it would make find look for
@@ -815,8 +837,52 @@ jobs:
           # (the regrade input), run.json (the suite + toolkit.lock/suite-SHA
           # manifest), and the worker's patches/ and outputs/ artifacts. The
           # ACP-SKIPPED / ACP-PROBE.json / EMPTY markers do NOT match these
-          # predicates and stay in the artifact only.
+          # predicates and stay in the artifact only. F1b (WB-1): an
+          # empty-but-valid table whose run.json records dispatch-only
+          # absences is withheld below (the absence lives in run.json, never
+          # as a zero-cell data table).
           while IFS= read -r f; do
+            # F1b (WB-1): a suite whose cases ALL became dispatch-only
+            # absences emits an empty-but-valid <role>.table.json (cells: [])
+            # plus a run.json whose runs[].absences records the causes.
+            # Publish the absence record, never the zero-cell table: a data
+            # table that reads as "0 cases" would misrepresent infrastructure
+            # as an outcome. Non-empty tables and clean (absence-free) empty
+            # tables are copied unchanged.
+            if [[ "${f}" == *.table.json ]]; then
+              # A missing or malformed sibling run.json FAILS the snapshot
+              # step (::error:: + exit 1): the table's absence metadata is
+              # unknown, so publishing it could present a zero-cell table as
+              # clean data. The eval cell should have failed on the same
+              # condition; this is the defense for a partially uploaded
+              # artifact. The node helper must NOT swallow read/parse errors.
+              if ! table_fate="$(node -e '
+                const fs = require("node:fs");
+                const path = require("node:path");
+                const table = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[1]), "run.json"), "utf8"));
+                // Same fail-closed shape rule as the eval step: a `runs` that is
+                // not an array throws, and the `if ! table_fate=...` guard turns
+                // it into ::error:: + exit 1 rather than a clean-looking table.
+                if (!Array.isArray(manifest.runs)) {
+                  throw new Error("run.json runs is not an array");
+                }
+                // Shape-corrupt table (valid JSON, `cells` missing or not an
+                // array) fails the step rather than publishing silently.
+                if (!Array.isArray(table.cells)) {
+                  throw new Error("table cells is not an array");
+                }
+                const hasAbsences = manifest.runs.some((r) => (r.absences || []).length > 0);
+                process.stdout.write(table.cells.length === 0 && hasAbsences ? "skip" : "keep");
+              ' "${f}")"; then
+                echo "::error::snapshot: cannot read run.json beside ${f#reports/eval/} — refusing to publish a table without its absence metadata"
+                exit 1
+              fi
+              if [ "${table_fate}" = "skip" ]; then
+                echo "snapshot: skipping empty dispatch-only table ${f#reports/eval/} (absences recorded in run.json)"
+                continue
+              fi
+            fi
             rel="${f#reports/eval/}"
             mkdir -p "${snap_dir}/$(dirname "${rel}")"
             cp "${f}" "${snap_dir}/${rel}"

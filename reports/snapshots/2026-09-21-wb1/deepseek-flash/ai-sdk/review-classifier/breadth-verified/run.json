@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "review-classifier",
+      "suite": "breadth-verified",
+      "suiteDir": "suites/review-classifier/breadth-verified",
+      "model": "deepseek-flash",
+      "driver": "ai-sdk",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "0231bd88-8a38-4e1e-962a-1429d2d64ac0",
+      "generatedAt": "2026-09-21T07:02:05.164Z"
+    }
+  ]
+}

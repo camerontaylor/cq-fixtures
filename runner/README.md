@@ -25,6 +25,45 @@ Per-role scorers live in `runner/score/`: `check-rerun` (fixer-worker) re-runs t
 
 Per-verdict metrics F4 (2026-09-21): review-classifier rows carry `probes[]` with the observed verdict per case (null when missing/unparseable — a miss with no predicted bucket) plus `suspiciousBenign: true` when the case's fixture-side `label.json` (beside the thread payload) carries fp_flag `suspicious-benign`; `runner/aggregate.ts` folds these into per-cell `byVerdict` confusion counts, `macroF1`, and `fpRate`/`fpN`. The sidecar read never throws (missing/unreadable sidecars stay unflagged — micro suites carry no labels) and fixer cells keep their exact pre-F4 shape.
 
+## Driver failures — scored miss vs loud absence (F1b/WB-1)
+
+A case whose driver returns `stopReason: 'error'` is classified from the
+bounded `WorkerResult.error` cause the toolkit surfaces (cq-toolkit #206/#210/#212).
+The cause's class token is its second component: `ai-sdk driver: [<token>]`.
+
+- Exactly `ai-sdk driver: [structured-output-miss]` is a MODEL outcome: the
+  worker emitted unparseable structured output. The case publishes an honest
+  DD-4 scored-miss row — `outcome {score: 0, passed: 0, total: <probe ceiling>}`
+  (2 for a fixer, 1 for a classifier) — so it counts in the tables as a real
+  zero. The journal keeps the cause verbatim; `structuredOutput` is never
+  fabricated. The match is exact (the predicate `isStructuredOutputMissCause`
+  reads the token from position zero and compares it with `===`): a longer
+  token, a mid-message mention, or another lane's cause is not a miss. Only the
+  separator AFTER the closing bracket is a character class — any non-identifier
+  character (space, tab, comma, newline) or end-of-string; the toolkit emits a
+  space, but a different separator must never flip a model outcome into an
+  infrastructure absence.
+- Every other cause (`[endpoint-timeout]`, `[provider-error]`, no cause, an
+  unknown one) is infrastructure: NO row and NO prediction artifact is
+  published — a driver failure never masquerades as a model score (I9). The
+  case is recorded in `RunSuiteResult.absences` and, in the out dir's
+  `run.json`, in the entry's optional `absences[]`; the journal keeps the
+  cause verbatim with status `failed`. The workflow renders that as a
+  `::warning::`, a step-summary line, and a `DISPATCH-ONLY-*` marker (so the
+  snapshot job never clears a same-day dir), and the CLI exits 1.
+- A driver that THROWS (`worker === undefined`) is the same infrastructure
+  class — no `WorkerResult`, no class token — so it publishes no row and is
+  recorded as an absence carrying the bounded/redacted thrown message.
+
+Governed stops are NOT absences: `stopReason: 'budget'` (the driver's own
+`stopWhen`/length stop) and `stopReason: 'aborted'` (the governor's
+cancellation signal fired) both mean the case RAN and was deliberately cut
+off, so they keep publishing honest incomplete rows (`outcome 0` over the
+probe ceiling) with their own journal statuses (`budget-exhausted` /
+`indeterminate`). Only the `error` verdict's non-model causes — and a thrown
+driver — become absences, because those are the paths where the model was
+never given a gradeable, completed chance at all.
+
 ## Served ids
 
 The row's `model` is the OBSERVED id the driver reports from the wire (a gateway's silent remap surfaces as data, never silently rewritten); the requested id is only the fallback for lanes that cannot observe it.

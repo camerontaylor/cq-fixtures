@@ -1,0 +1,24 @@
+{
+  "role": "fixer-worker",
+  "suite": "micro",
+  "generatedAt": "2026-09-21T09:04:32.896Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "runs": 3,
+      "passed": 3,
+      "total": 6,
+      "score": 0.5,
+      "costUSD": 0.032042,
+      "costBasis": "modeled",
+      "wallTimeMs": 1235127,
+      "tokens": {
+        "input": 44385,
+        "output": 32520,
+        "cacheRead": 304128,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

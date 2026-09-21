@@ -1,0 +1,62 @@
+{
+  "role": "review-classifier",
+  "suite": "micro",
+  "generatedAt": "2026-09-21T07:02:22.112Z",
+  "cells": [
+    {
+      "model": "deepseek-flash",
+      "driver": "ai-sdk",
+      "runs": 10,
+      "passed": 10,
+      "total": 10,
+      "score": 1,
+      "costUSD": 0.00122,
+      "costBasis": "modeled",
+      "byVerdict": {
+        "actionable": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "actionable": 2
+          }
+        },
+        "responded": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "responded": 2
+          }
+        },
+        "resolved": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "resolved": 2
+          }
+        },
+        "blocked": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "blocked": 2
+          }
+        },
+        "skip": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "skip": 2
+          }
+        }
+      },
+      "macroF1": 1,
+      "wallTimeMs": 16401,
+      "tokens": {
+        "input": 2026,
+        "output": 1505,
+        "cacheRead": 4224,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

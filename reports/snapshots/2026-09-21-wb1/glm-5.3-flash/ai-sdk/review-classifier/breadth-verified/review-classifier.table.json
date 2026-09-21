@@ -1,0 +1,70 @@
+{
+  "role": "review-classifier",
+  "suite": "breadth-verified",
+  "generatedAt": "2026-09-21T07:51:54.459Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "ai-sdk",
+      "runs": 30,
+      "passed": 20,
+      "total": 30,
+      "score": 0.6666666666666666,
+      "costUSD": 0.008074,
+      "costBasis": "modeled",
+      "byVerdict": {
+        "actionable": {
+          "expected": 5,
+          "correct": 4,
+          "predicted": {
+            "actionable": 4,
+            "responded": 1
+          }
+        },
+        "responded": {
+          "expected": 4,
+          "correct": 4,
+          "predicted": {
+            "responded": 4
+          }
+        },
+        "resolved": {
+          "expected": 6,
+          "correct": 6,
+          "predicted": {
+            "resolved": 6
+          }
+        },
+        "blocked": {
+          "expected": 4,
+          "correct": 4,
+          "predicted": {
+            "blocked": 4
+          }
+        },
+        "skip": {
+          "expected": 2,
+          "correct": 2,
+          "predicted": {
+            "skip": 2
+          }
+        }
+      },
+      "macroF1": 0.9555555555555555,
+      "fpRate": 0,
+      "fpN": 8,
+      "scoreCI": {
+        "lower": 0.4878005164454384,
+        "upper": 0.8076950191632386,
+        "confidence": 0.95
+      },
+      "wallTimeMs": 398707,
+      "tokens": {
+        "input": 10784,
+        "output": 12697,
+        "cacheRead": 3584,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

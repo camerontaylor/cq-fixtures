@@ -162,8 +162,8 @@ describe('cost column: token-derived USD on every lane (D2)', () => {
     });
     // Leg 2 — the subprocess lane label, the axis-legal fixed served id
     // glm-5.3-flash @ zai (schema/comparison-table.schema.json pins every
-    // non-ai-sdk cell to that id). Since the F1 interim price-map pin
-    // (cq-toolkit main b06b6a3, v1.0.1) that pair IS priced, so the honest
+    // non-ai-sdk cell to that id). Since the F1b interim price-map pin
+    // (cq-toolkit main 5e52707, v1.0.1) that pair IS priced, so the honest
     // shape is a modeled number on the subprocess lane too — the derivation
     // itself is what this leg proves lane-blind.
     const fakeLaneDriver = new FixedUsageDriver(STUB_USAGE);
@@ -242,7 +242,7 @@ describe('cost column: token-derived USD on every lane (D2)', () => {
   });
 });
 
-describe('F1 price-map pin (interim toolkit.lock b06b6a3)', () => {
+describe('F1b price-map pin (interim toolkit.lock 5e52707)', () => {
   it('pins the two eval-matrix ids directly (not only via the fallback chain)', () => {
     for (const spec of [
       { model: 'glm-5.3-flash', provider: 'zai' },

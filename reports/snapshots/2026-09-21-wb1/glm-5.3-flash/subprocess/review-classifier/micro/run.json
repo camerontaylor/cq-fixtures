@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "review-classifier",
+      "suite": "micro",
+      "suiteDir": "suites/review-classifier/micro",
+      "model": "glm-5.3-flash",
+      "driver": "subprocess",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "6c7e1bbc-0297-4687-8b16-33e35fc2a06b",
+      "generatedAt": "2026-09-21T07:59:01.545Z"
+    }
+  ]
+}

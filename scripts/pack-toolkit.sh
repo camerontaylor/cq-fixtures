@@ -57,7 +57,11 @@ else
 fi
 
 PIN_KIND=tag
-case "$TAG" in
+# Uppercase A-F is hex too: normalize before the case match so an uppercase
+# 40-char pin follows the commit-fetch path instead of being read as a tag
+# (git accepts uppercase hex object names).
+NORMALIZED_TAG="$(printf '%s' "$TAG" | tr '[:upper:]' '[:lower:]')"
+case "$NORMALIZED_TAG" in
   *[!0-9a-f]*) ;;
   *) if [ "${#TAG}" -eq 40 ]; then PIN_KIND=commit; fi ;;
 esac

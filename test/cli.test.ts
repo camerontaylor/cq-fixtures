@@ -119,6 +119,18 @@ function reviewCase(id: string, expected: string): object {
   };
 }
 
+function fixerCase(id: string): object {
+  // The fixer probe is a real check-rerun judge; the untouched micro-1
+  // fixture fails it (score 0) but still produces a row — the multi-suite
+  // cap test counts dispatched rows, not scores.
+  return {
+    id,
+    fixture: 'fixtures/micro-1',
+    task: { prompt: 'Fix the failing vitest suite.' },
+    probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' },
+  };
+}
+
 function cliArgs(suiteDir: string): string[] {
   return ['--suite', suiteDir, '--driver', 'ai-sdk', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'];
 }
@@ -262,6 +274,35 @@ describe('--max-tokens-per-case (WB-1.6: the cap scales with suite size)', () =>
     });
     await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '60000'])).resolves.toBe(0);
   }, 15_000);
+
+  it('allocates a NON-OVERLAPPING cap per suite in one invocation (not one reset total)', async () => {
+    // Two suites (one per role, B4) at perCase 5 × 2 cases = cap 10 each. The
+    // mock reports 15 tokens/case, so each suite admits exactly its first
+    // case and gates its second. A single invocation-wide cap reset per suite
+    // (the retired bug) would give each suite 5 × 4 = 20 and dispatch all
+    // four cases.
+    const fixer = writeSuite('multi-fixer', {
+      name: 'multi-fixer',
+      role: 'fixer-worker',
+      cases: [fixerCase('fix-1'), fixerCase('fix-2')],
+    });
+    const clf = writeSuite('multi-clf', {
+      name: 'multi-clf',
+      role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')],
+    });
+    const outDir = join(root, 'multi-out');
+    await expect(
+      cliMain([
+        '--suite', fixer, '--suite', clf,
+        '--driver', 'ai-sdk', '--driver-name', 'ai-sdk',
+        '--model', 'glm-5.3-flash', '--provider', 'zai',
+        '--max-tokens-per-case', '5', '--out', outDir,
+      ]),
+    ).resolves.toBe(1);
+    const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { case?: string });
+    expect(rows.map((r) => r.case)).toEqual(['fix-1', 'rev-1']);
+  }, 30_000);
 });
 
 describe('gate checks (B2 axes, B3 servedModel, B4 same-role collision, B7 required --driver)', () => {

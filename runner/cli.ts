@@ -276,19 +276,6 @@ async function main(argv: readonly string[]): Promise<number> {
   // FakeDriver is unchanged and stays schema-blind: it never emits the
   // fixer's {fixed, notes} shape, so a fake fixer row honestly fails the
   // schema-compliance probe.
-  // WB-1.6: --max-tokens-per-case scales the run cap with the suite's case
-  // count, so a 40-case suite is not gated after ~5k tokens/case. The
-  // preflight probe's conservative reservation is added on top so it never
-  // eats the cases' budget (review-debt #14). --max-tokens stays the
-  // absolute escape hatch (tests, ad-hoc runs).
-  const maxTokens =
-    opts.maxTokensPerCase !== undefined
-      ? perSuiteTokenCap(
-          opts.maxTokensPerCase,
-          suites.reduce((n, s) => n + s.cases.length, 0),
-          preflightProbe !== undefined ? PREFLIGHT_PROBE_RESERVE_TOKENS : 0,
-        )
-      : opts.maxTokens;
   const rows: ResultRow[] = [];
   const tables: ComparisonTable[] = [];
   let anyFailed = false;
@@ -313,7 +300,22 @@ async function main(argv: readonly string[]): Promise<number> {
       const result = await runSuite({
         suiteDir, driver,
         model: opts.model, provider: opts.provider,
-        maxUsd: opts.maxUsd, maxTokens,
+        maxUsd: opts.maxUsd,
+        // WB-1.6: allocate each suite its OWN cap (perCase × that suite's
+        // case count), so a multi-suite invocation's allowance is
+        // non-overlapping instead of each runSuite resetting to the
+        // invocation total. The preflight probe's conservative reservation
+        // is charged per suite run because each runSuite owns its own
+        // governor and admits the probe into it (review-debt #14) — the
+        // same conservative direction the runner documents.
+        maxTokens:
+          opts.maxTokensPerCase !== undefined
+            ? perSuiteTokenCap(
+                opts.maxTokensPerCase,
+                suite.cases.length,
+                preflightProbe !== undefined ? PREFLIGHT_PROBE_RESERVE_TOKENS : 0,
+              )
+            : opts.maxTokens,
         checkTimeoutMs: opts.checkTimeoutMs,
         journalPath: opts.journal, driverName: opts.driverName,
         preflightProbe,

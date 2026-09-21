@@ -46,6 +46,10 @@ describe('pack-toolkit.sh pin resolution (tag | commit SHA)', () => {
     expect(pinKind(writeLock('8fda0531cae7974b3cbf049565366099ee7ac247\n'))).toBe('commit');
   });
 
+  it('resolves an uppercase 40-hex commit SHA too (hex is case-insensitive)', () => {
+    expect(pinKind(writeLock('8FDA0531CAE7974B3CBF049565366099EE7AC247\n'))).toBe('commit');
+  });
+
   it('an explicit argv pin overrides the lock', () => {
     const lock = writeLock('phase-3-done\n');
     expect(pinKind(lock, '8fda0531cae7974b3cbf049565366099ee7ac247')).toBe('commit');

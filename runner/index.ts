@@ -161,6 +161,11 @@ export interface RunSuiteResult {
    * fabricated zero). The scored-miss class (`structured-output-miss`) is a
    * MODEL outcome and rides `rows` as a real zero instead. */
   absences: DriverAbsence[];
+  /** The run identity generated for this invocation. Set even when `rows` is
+   * empty: a suite whose every case is a dispatch-only absence still ran and
+   * must record its identity (the journal's `runId` and the manifest entry's
+   * `runId`), never a `'unknown'` placeholder. */
+  runId: string;
 }
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -757,6 +762,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     materializationDiagnostics,
     artifacts,
     absences,
+    runId,
   };
 }
 

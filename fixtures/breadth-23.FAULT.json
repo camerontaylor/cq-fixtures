@@ -1,0 +1,35 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "overlaps reports back-to-back slots as overlapping.",
+  "operator": "logical-swap",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:LogicalOperator",
+    "seed": 123,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": [
+      "does not overlap when one slot ends as the other starts"
+    ],
+    "p2p": [
+      "measures the minutes between two times",
+      "formats minutes as hours and minutes",
+      "treats Sunday as a weekend day",
+      "orders slots by start time"
+    ],
+    "fix": {
+      "src/slots.ts": "export function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {\n  return aStart < bEnd && bStart < aEnd;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/slots.ts",
+    "delete": "return aStart < bEnd && bStart < aEnd;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A logical swap; the back-to-back rule is test-only."
+  }
+}

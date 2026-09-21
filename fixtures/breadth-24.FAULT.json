@@ -1,0 +1,35 @@
+{
+  "bug_type": "variable misuse",
+  "failure_symptoms": "sortByStart orders slots from latest to earliest.",
+  "operator": "operand-swap",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": [
+      "orders slots by start time"
+    ],
+    "p2p": [
+      "measures the minutes between two times",
+      "formats minutes as hours and minutes",
+      "does not overlap when one slot ends as the other starts",
+      "treats Sunday as a weekend day"
+    ],
+    "fix": {
+      "src/order.ts": "export function isWeekend(day: number): boolean {\n  return day === 0 || day === 6;\n}\n\nexport function sortByStart(slots: number[]): number[] {\n  return [...slots].sort((a, b) => a - b);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/order.ts",
+    "delete": "return [...slots].sort((a, b) => a - b);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "An operand swap; the ascending contract is test-only."
+  }
+}

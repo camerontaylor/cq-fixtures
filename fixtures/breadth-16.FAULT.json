@@ -1,0 +1,35 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "isOverdrawn reports a zero balance as overdrawn.",
+  "operator": "equality-boundary",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:EqualityOperator",
+    "seed": 116,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": [
+      "treats a zero balance as not overdrawn"
+    ],
+    "p2p": [
+      "adds two cent amounts",
+      "formats cents as a two-decimal amount",
+      "subtracts the percentage from the amount",
+      "applies the rate on top of the amount"
+    ],
+    "fix": {
+      "src/balance.ts": "export function isOverdrawn(balance: number): boolean {\n  return balance < 0;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/balance.ts",
+    "delete": "return balance < 0;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A boundary shift; the zero-balance rule is test-only."
+  }
+}

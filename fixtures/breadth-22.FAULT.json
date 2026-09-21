@@ -1,0 +1,35 @@
+{
+  "bug_type": "value misuse",
+  "failure_symptoms": "formatDuration reports the wrong hour count.",
+  "operator": "constant-delta",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:authored",
+    "seed": 122,
+    "engine_version": "@babel/parser@8.0.6"
+  },
+  "validation": {
+    "f2p": [
+      "formats minutes as hours and minutes"
+    ],
+    "p2p": [
+      "measures the minutes between two times",
+      "does not overlap when one slot ends as the other starts",
+      "treats Sunday as a weekend day",
+      "orders slots by start time"
+    ],
+    "fix": {
+      "src/time.ts": "export function minutesBetween(start: number, end: number): number {\n  return end - start;\n}\n\nexport function formatDuration(minutes: number): string {\n  return `${Math.floor(minutes / 60)}h${minutes % 60}m`;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/time.ts",
+    "delete": "return `${Math.floor(minutes / 60)}h${minutes % 60}m`;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A literal change; trivial-prone and easy-tier only."
+  }
+}

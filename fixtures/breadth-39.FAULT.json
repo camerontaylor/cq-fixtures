@@ -1,0 +1,35 @@
+{
+  "bug_type": "variable misuse",
+  "failure_symptoms": "enqueue puts the new value at the front of the queue.",
+  "operator": "operand-swap",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "lm-injected",
+    "generator": "lane-leader-lm",
+    "seed": 0,
+    "engine_version": "lm"
+  },
+  "validation": {
+    "f2p": [
+      "appends a value to the queue"
+    ],
+    "p2p": [
+      "returns the first value",
+      "advances a queued task to running",
+      "stops retrying at the attempt limit",
+      "reports the fraction of successes"
+    ],
+    "fix": {
+      "src/queue.ts": "export function enqueue<T>(items: T[], value: T): T[] {\n  return [...items, value];\n}\n\nexport function dequeue<T>(items: T[]): T | undefined {\n  return items[0];\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/queue.ts",
+    "delete": "return [...items, value];"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "An operand swap; the FIFO contract is test-only."
+  }
+}

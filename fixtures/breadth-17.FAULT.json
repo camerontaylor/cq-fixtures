@@ -1,0 +1,35 @@
+{
+  "bug_type": "value misuse",
+  "failure_symptoms": "formatCents divides the amount by the wrong factor.",
+  "operator": "constant-delta",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:authored",
+    "seed": 117,
+    "engine_version": "@babel/parser@8.0.6"
+  },
+  "validation": {
+    "f2p": [
+      "formats cents as a two-decimal amount"
+    ],
+    "p2p": [
+      "adds two cent amounts",
+      "subtracts the percentage from the amount",
+      "applies the rate on top of the amount",
+      "treats a zero balance as not overdrawn"
+    ],
+    "fix": {
+      "src/money.ts": "export function addCents(a: number, b: number): number {\n  return a + b;\n}\n\nexport function formatCents(cents: number): string {\n  return (cents / 100).toFixed(2);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/money.ts",
+    "delete": "return (cents / 100).toFixed(2);"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A literal change; trivial-prone and easy-tier only."
+  }
+}

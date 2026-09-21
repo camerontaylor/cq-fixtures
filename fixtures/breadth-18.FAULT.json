@@ -1,0 +1,35 @@
+{
+  "bug_type": "operator misuse",
+  "failure_symptoms": "applyPercent increases the amount instead of subtracting the percentage.",
+  "operator": "arithmetic-swap",
+  "difficulty": "medium",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:ArithmeticOperator",
+    "seed": 118,
+    "engine_version": "@stryker-mutator/instrumenter@10.0.0"
+  },
+  "validation": {
+    "f2p": [
+      "subtracts the percentage from the amount"
+    ],
+    "p2p": [
+      "adds two cent amounts",
+      "formats cents as a two-decimal amount",
+      "applies the rate on top of the amount",
+      "treats a zero balance as not overdrawn"
+    ],
+    "fix": {
+      "src/discount.ts": "export function applyPercent(amount: number, percent: number): number {\n  return amount - (amount * percent) / 100;\n}\n\nexport function withTax(amount: number, rate: number): number {\n  return amount * (1 + rate);\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/discount.ts",
+    "delete": "return amount - (amount * percent) / 100;"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A sign swap; the discount contract is test-only."
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "bug_type": "value misuse",
+  "failure_symptoms": "nextState leaves a queued task queued instead of advancing it.",
+  "operator": "constant-delta",
+  "difficulty": "easy",
+  "provenance": {
+    "origin": "operator-catalog",
+    "generator": "catalog:babel:authored",
+    "seed": 137,
+    "engine_version": "@babel/parser@8.0.6"
+  },
+  "validation": {
+    "f2p": [
+      "advances a queued task to running"
+    ],
+    "p2p": [
+      "appends a value to the queue",
+      "returns the first value",
+      "stops retrying at the attempt limit",
+      "reports the fraction of successes"
+    ],
+    "fix": {
+      "src/retry.ts": "export function shouldRetry(attempt: number, max: number): boolean {\n  return attempt < max;\n}\n\nexport function nextState(state: string): string {\n  if (state === 'queued') return 'running';\n  if (state === 'running') return 'done';\n  return state;\n}\n"
+    }
+  },
+  "adequacy": {
+    "file": "src/retry.ts",
+    "delete": "if (state === 'queued') return 'running';"
+  },
+  "tell_audit": {
+    "critic": "lane-leader adversarial diff read (tests withheld)",
+    "verdict": "not-told",
+    "notes": "A literal change; trivial-prone and easy-tier only."
+  }
+}

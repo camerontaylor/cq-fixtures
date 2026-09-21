@@ -1,10 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { findDenylistMatch, loadDenylistRules } from '../runner/denylist.ts';
 import {
+  MAX_OUTPUT_BYTES,
   MAX_PATCH_BYTES,
   TRUNCATION_MARKER_PREFIX,
   isTruncated,
@@ -49,6 +50,21 @@ describe('denylist artifact scanner (F6)', () => {
     // matches under an .env path, but never under a patch path.
     expect(findDenylistMatch('anything at all', 'patches/case-1.patch', rules)).toBeUndefined();
     expect(findDenylistMatch('anything at all', 'config.env', rules)?.id).toBe('class:key-material-env');
+  });
+
+  it('fails closed when a rule id has no parsed regex (a broken policy must not shrink the denylist silently)', () => {
+    const fakeRoot = mkdtempSync(join(tmpdir(), 'cq-denylist-bad-'));
+    try {
+      const policyDir = join(fakeRoot, 'policy', 'denylist');
+      mkdirSync(policyDir, { recursive: true });
+      writeFileSync(
+        join(policyDir, 'patterns.yml'),
+        ['rules:', '  - id: class:broken', "    description: 'missing regex'", "    sample: 'x'", 'clean_probes:', "  - 'clean'"].join('\n') + '\n',
+      );
+      expect(() => loadDenylistRules(fakeRoot)).toThrow(/no parsed regex/);
+    } finally {
+      rmSync(fakeRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -97,5 +113,17 @@ describe('publishArtifacts (F6/WB-5.2a)', () => {
     expect(written).toContain(TRUNCATION_MARKER_PREFIX);
     expect(isTruncated(written)).toBe(true);
     expect(written).not.toBe(big);
+  });
+
+  it('caps multibyte content on a code-point boundary (never splits a UTF-8 sequence)', () => {
+    // Each 'é' is 2 UTF-8 bytes, so a code-unit slice at the cap would split one.
+    const big = 'é'.repeat(MAX_OUTPUT_BYTES);
+    const { published } = publishArtifacts(root, [{ case: 'case-4', kind: 'output', content: big }], repoRoot);
+    expect(published[0]!.truncated).toBe(true);
+    const written = readFileSync(join(root, 'outputs', 'case-4.json'), 'utf8');
+    const [prefixWithNewline] = written.split(TRUNCATION_MARKER_PREFIX);
+    const retained = prefixWithNewline.replace(/\n$/, '');
+    expect(Buffer.byteLength(retained, 'utf8')).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
+    expect(retained.endsWith('\uFFFD')).toBe(false);
   });
 });

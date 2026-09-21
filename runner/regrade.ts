@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import type { WorkerResult } from '@camerontaylor/cq-toolkit';
 import { aggregate, type ComparisonTable, type ResultRow } from './aggregate.ts';
 import { scoreSchemaCompliance } from './dimensions/schemaCompliance.ts';
-import { DEFAULT_CHECK_TIMEOUT_MS, scoreFixerWorker } from './score/fixerWorker.ts';
+import { DEFAULT_CHECK_TIMEOUT_MS, FIXER_PROBE_COUNT, scoreFixerWorker } from './score/fixerWorker.ts';
 import { scoreReviewClassifier } from './score/reviewClassifier.ts';
 import { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
 import { isTruncated, type RunManifestEntry } from './persist.ts';
@@ -137,7 +137,7 @@ function rejudgeFixer(
     const worker = { structuredOutput: out.found ? out.value : undefined } as WorkerResult;
     const check = scoreFixerWorker(suiteCase, worker, repoRoot, workspace, timeoutMs);
     const schema = scoreSchemaCompliance(worker);
-    return { passed: check.passed + schema.passed, total: 2 };
+    return { passed: check.passed + schema.passed, total: FIXER_PROBE_COUNT };
   } finally {
     rmSync(stem, { recursive: true, force: true });
   }

@@ -39,7 +39,7 @@ import {
 import { aggregate, type ComparisonTable, type ResultRow } from './aggregate.ts';
 import { scoreSchemaCompliance } from './dimensions/schemaCompliance.ts';
 import type { CaseArtifact } from './persist.ts';
-import { scoreFixerWorker } from './score/fixerWorker.ts';
+import { scoreFixerWorker, FIXER_PROBE_COUNT } from './score/fixerWorker.ts';
 import { scoreReviewClassifier } from './score/reviewClassifier.ts';
 import { isFixerCase, loadSuite, suiteVariant } from './suite.ts';
 
@@ -187,11 +187,8 @@ function gitPatch(workspace: string): string | undefined {
   return res.status === 0 ? res.stdout : undefined;
 }
 
-// DD-4: a fixer-worker case configures TWO scoring probes — the check-rerun
-// judge (does the workspace pass now) and the schema-compliance probe (could
-// the model hold the declared {fixed, notes} json shape). Every other role
-// configures one.
-const FIXER_PROBE_COUNT = 2;
+// DD-4: a fixer-worker case configures TWO scoring probes (FIXER_PROBE_COUNT,
+// shared with the offline regrade path). Every other role configures one.
 
 function zeroOutcome(total: number): { score: 0; passed: 0; total: number } {
   return { score: 0, passed: 0, total };

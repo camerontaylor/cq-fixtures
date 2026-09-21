@@ -539,7 +539,7 @@ jobs:
             # It must be a path-safe slug (the suite schema enforces the same
             # pattern): an unsafe value fails the cell loudly here rather than
             # escaping reports/eval.
-            variant="$(node -e 'const s=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(s.variant||"default")' "${suite_dir}/suite.json")"
+            variant="$(node -e 'const s=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(s.variant||"default")' "${suite_dir}/suite.json")" || { echo "::error::suite ${suite_dir}: could not read the suite.json variant"; hard_fail=1; continue; }
             if ! printf '%s' "${variant}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
               echo "::error::suite ${suite_dir}: invalid variant '${variant}' (path-safe slug required)"
               hard_fail=1

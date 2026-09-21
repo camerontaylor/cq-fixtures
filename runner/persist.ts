@@ -68,7 +68,18 @@ export function publishArtifacts(
     let truncated = false;
     const full = Buffer.byteLength(content, 'utf8');
     if (full > cap) {
-      content = content.slice(0, cap) + truncationMarker(full, cap);
+      // Byte cap, not UTF-16 code units: slice the UTF-8 buffer and walk back
+      // to the last complete code point, so the retained prefix never ends on
+      // a split multibyte sequence (a decoded prefix that re-encodes shorter
+      // than the slice means the slice cut a code point).
+      const buf = Buffer.from(content, 'utf8');
+      let end = cap;
+      let prefix = buf.subarray(0, end).toString('utf8');
+      while (end > 0 && Buffer.byteLength(prefix, 'utf8') !== end) {
+        end -= 1;
+        prefix = buf.subarray(0, end).toString('utf8');
+      }
+      content = prefix + truncationMarker(full, cap);
       truncated = true;
       diagnostics.push(`case ${a.case}: ${a.kind} truncated at ${cap} bytes (full ${full})`);
     }

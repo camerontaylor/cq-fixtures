@@ -103,36 +103,34 @@ function renderSnapshotTable(rows) {
 
 function renderDeltas(rows) {
   const sections = [];
-  for (let i = 0; i < rows.length; i += 1) {
-    for (let j = i + 1; j < rows.length; j += 1) {
-      const older = rows[i];
-      const newer = rows[j];
-      if (older.toolkitLock === newer.toolkitLock) continue;
-      const keys = [...new Set([...older.cells.keys(), ...newer.cells.keys()])].sort();
-      const lines = [
-        `### ${older.date} (toolkit.lock ${older.toolkitLock ?? '(none)'}) → ${newer.date} (toolkit.lock ${newer.toolkitLock ?? '(none)'})`,
-        '',
-        '| Role / suite | model | driver | variant | old score | new score | Δ | old n | new n |',
-        '|---|---|---|---|---|---|---|---|---|',
-      ];
-      for (const key of keys) {
-        const a = older.cells.get(key);
-        const b = newer.cells.get(key);
-        const label = a ?? b;
-        if (a === undefined) {
-          lines.push(`| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | (absent) | ${f4(b.score)} | (new cell) | 0 | ${b.total} |`);
-          continue;
-        }
-        if (b === undefined) {
-          lines.push(`| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | ${f4(a.score)} | (absent) | (removed cell) | ${a.total} | 0 |`);
-          continue;
-        }
-        lines.push(
-          `| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | ${f4(a.score)} | ${f4(b.score)} | ${signed(b.score - a.score)} | ${a.total} | ${b.total} |`,
-        );
+  for (let j = 1; j < rows.length; j += 1) {
+    const older = rows[j - 1];
+    const newer = rows[j];
+    if (older.toolkitLock === newer.toolkitLock) continue;
+    const keys = [...new Set([...older.cells.keys(), ...newer.cells.keys()])].sort();
+    const lines = [
+      `### ${older.date} (toolkit.lock ${older.toolkitLock ?? '(none)'}) → ${newer.date} (toolkit.lock ${newer.toolkitLock ?? '(none)'})`,
+      '',
+      '| Role / suite | model | driver | variant | old score | new score | Δ | old n | new n |',
+      '|---|---|---|---|---|---|---|---|---|',
+    ];
+    for (const key of keys) {
+      const a = older.cells.get(key);
+      const b = newer.cells.get(key);
+      const label = a ?? b;
+      if (a === undefined) {
+        lines.push(`| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | (absent) | ${f4(b.score)} | (new cell) | 0 | ${b.total} |`);
+        continue;
       }
-      sections.push(lines.join('\n'));
+      if (b === undefined) {
+        lines.push(`| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | ${f4(a.score)} | (absent) | (removed cell) | ${a.total} | 0 |`);
+        continue;
+      }
+      lines.push(
+        `| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | ${f4(a.score)} | ${f4(b.score)} | ${signed(b.score - a.score)} | ${a.total} | ${b.total} |`,
+      );
     }
+    sections.push(lines.join('\n'));
   }
   if (sections.length === 0) {
     return 'No cross-toolkit.lock deltas yet: every committed snapshot pins the same `toolkit.lock` value (or only one snapshot exists), so CQ-5 has no toolkit-vs-suite attribution to report. The next snapshot whose `toolkit.lock` differs from a predecessor appears here as a per-cell score delta table.';

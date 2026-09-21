@@ -492,6 +492,16 @@ function regradeMain(argv: readonly string[]): number {
       ...(opts.repoRoot !== undefined ? { repoRoot: opts.repoRoot } : {}),
     });
     for (const d of result.diagnostics) console.error(`  ${d}`);
+    // --rejudge re-derived the rows from the persisted predictions; persist the
+    // updated rows.jsonl (run-mode JSONL formatting) so the flipped outcome is
+    // durable and a subsequent plain regrade replays the NEW rows. A plain
+    // regrade leaves rows.jsonl untouched.
+    if (opts.rejudge) {
+      writeFileSync(
+        join(opts.from, 'rows.jsonl'),
+        result.rows.map((r) => JSON.stringify(r)).join('\n') + (result.rows.length > 0 ? '\n' : ''),
+      );
+    }
     for (const t of result.tables) {
       writeFileSync(join(opts.from, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');
     }

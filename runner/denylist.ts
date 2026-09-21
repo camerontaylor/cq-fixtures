@@ -22,14 +22,21 @@ export function loadDenylistRules(repoRoot: string): DenylistRule[] {
   const text = readFileSync(join(repoRoot, 'policy/denylist/patterns.yml'), 'utf8');
   const rules: DenylistRule[] = [];
   let cur: { id?: string; regex?: string; path?: string } | null = null;
+  // Fail closed on a malformed rule: an id whose regex never parsed must not
+  // be silently dropped from the scanner (a policy edit that breaks one rule
+  // would otherwise shrink the denylist without a signal).
+  const orphaned: string[] = [];
   const flush = () => {
-    if (cur?.id !== undefined && cur.regex !== undefined) {
-      rules.push({
-        id: cur.id,
-        regex: new RegExp(cur.regex),
-        ...(cur.path !== undefined ? { path: new RegExp(cur.path) } : {}),
-      });
+    if (cur?.id === undefined) return;
+    if (cur.regex === undefined) {
+      orphaned.push(cur.id);
+      return;
     }
+    rules.push({
+      id: cur.id,
+      regex: new RegExp(cur.regex),
+      ...(cur.path !== undefined ? { path: new RegExp(cur.path) } : {}),
+    });
   };
   for (const raw of text.split(/\r?\n/)) {
     const id = /^\s*-\s*id:\s*(\S+)\s*$/.exec(raw);
@@ -51,6 +58,9 @@ export function loadDenylistRules(repoRoot: string): DenylistRule[] {
     }
   }
   flush();
+  if (orphaned.length > 0) {
+    throw new Error(`denylist: rule(s) with no parsed regex: ${orphaned.join(', ')}`);
+  }
   if (rules.length === 0) {
     throw new Error('denylist: no rules parsed from policy/denylist/patterns.yml');
   }

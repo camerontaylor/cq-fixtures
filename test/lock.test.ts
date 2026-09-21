@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,4 +98,32 @@ describe('pack-toolkit.sh pin resolution (tag | commit SHA)', () => {
       }),
     ).toThrow();
   });
+
+  it('packs a pinned commit SHA hermetically (file:// remote, copied script root)', () => {
+    // A minimal local toolkit: package.json + lockfile so `npm ci` and
+    // `npm run build` succeed with zero deps, then the SHA path must check
+    // the commit out and pack it. The script is COPIED to a temp root so its
+    // REPO_ROOT/vendor/ never touches the real repo.
+    const remote = join(root, 'sha-remote');
+    execFileSync('git', ['init', '-q', '-b', 'main', remote]);
+    writeFileSync(join(remote, 'package.json'), JSON.stringify({ name: '@camerontaylor/cq-toolkit', version: '0.0.0', scripts: { build: 'true' } }));
+    writeFileSync(join(remote, 'package-lock.json'), JSON.stringify({ name: '@camerontaylor/cq-toolkit', version: '0.0.0', lockfileVersion: 3, requires: true, packages: { '': { name: '@camerontaylor/cq-toolkit', version: '0.0.0' } } }));
+    execFileSync('git', ['-C', remote, 'add', '-A']);
+    execFileSync('git', ['-C', remote, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
+    const sha = execFileSync('git', ['-C', remote, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+    const scriptRoot = join(root, 'script-root');
+    mkdirSync(join(scriptRoot, 'scripts'), { recursive: true });
+    const copied = join(scriptRoot, 'scripts', 'pack-toolkit.sh');
+    writeFileSync(copied, readFileSync(SCRIPT));
+    const lock = join(root, 'sha-toolkit.lock');
+    writeFileSync(lock, `${sha}\n`);
+
+    const out = execFileSync('bash', [copied], {
+      encoding: 'utf8',
+      env: { ...process.env, TOOLKIT_LOCK: lock, TOOLKIT_REPO_URL: `file://${remote}` },
+    });
+    expect(out).toContain(`(pin: ${sha})`);
+    expect(existsSync(join(scriptRoot, 'vendor', 'cq-toolkit-0.0.0.tgz'))).toBe(true);
+  }, 60_000);
 });

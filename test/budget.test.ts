@@ -24,4 +24,21 @@ describe('perSuiteTokenCap (WB-1.6)', () => {
     expect(perSuiteTokenCap(60_000, 10, 0)).toBe(600_000);
     expect(perSuiteTokenCap(60_000, 10)).toBe(600_000);
   });
+
+  it('throws on non-integer, negative, or non-finite inputs (never fails open, I9)', () => {
+    expect(() => perSuiteTokenCap(1.5, 10)).toThrow(RangeError);
+    expect(() => perSuiteTokenCap(60_000, -1)).toThrow(RangeError);
+    expect(() => perSuiteTokenCap(60_000, 1.5)).toThrow(RangeError);
+    expect(() => perSuiteTokenCap(60_000, 10, 1.5)).toThrow(RangeError);
+    expect(() => perSuiteTokenCap(Number.POSITIVE_INFINITY, 1)).toThrow(RangeError);
+    expect(() => perSuiteTokenCap(Number.NaN, 1)).toThrow(RangeError);
+  });
+
+  it('saturates an overflowing product/sum at Number.MAX_SAFE_INTEGER (fail closed, not unbounded)', () => {
+    // 1e308 would make the governor's cap Infinity and silently unbind the
+    // run; the CLI rejects unsafe integers, and this saturates as the
+    // second line of defence.
+    expect(perSuiteTokenCap(Number.MAX_SAFE_INTEGER, 2)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(perSuiteTokenCap(Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
+  });
 });

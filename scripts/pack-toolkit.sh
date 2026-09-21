@@ -82,16 +82,27 @@ git remote add origin "$REPO_URL"
 if [ "$PIN_KIND" = commit ]; then
   # A SHA is not a ref name: fetch exactly the pinned commit (GitHub serves
   # arbitrary SHAs by upload-pack) and check it out — a shallow
-  # single-commit fetch.
+  # single-commit fetch. The SHA path is the strictly immutable pin.
   git fetch -q --depth 1 origin "$TAG"
 else
   # Tag pin: fetch the explicit refs/tags/ namespace, so a BRANCH that
-  # happens to share the name can never satisfy the lock — the pin must be
-  # immutable (plan §8.6), and `git clone --branch` would happily take a
-  # branch.
+  # happens to share the name can never satisfy the lock (plan §8.6, and
+  # `git clone --branch` would happily take a branch). A tag is the
+  # conventional immutable pin; a force-moved tag is not, so a SHA pin is
+  # the stronger form.
   git fetch -q --depth 1 origin "refs/tags/$TAG"
 fi
 git checkout -q FETCH_HEAD
+if [ "$PIN_KIND" = commit ]; then
+  # Verify the checkout is exactly the pinned commit — a mis-resolved fetch
+  # must never silently build a different toolkit.
+  RESOLVED="$(git rev-parse HEAD)"
+  RESOLVED_NORM="$(printf '%s' "$RESOLVED" | tr '[:upper:]' '[:lower:]')"
+  if [ "$RESOLVED_NORM" != "$NORMALIZED_TAG" ]; then
+    echo "error: fetched commit $RESOLVED does not match the pinned SHA $TAG" >&2
+    exit 1
+  fi
+fi
 npm ci            # dist/ must be built before packing or the export map dangles
 npm run build
 

@@ -44,7 +44,7 @@ const USAGE =
   '(--driver-name is required with --driver fake — a fake run must name the lane it stands in for) ' +
   '[--max-usd <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
-  "caps: --max-tokens is per invocation; --max-tokens-per-case is multiplied by the loaded suites' case count (WB-1.6) — pass one, never both\n" +
+  "caps: --max-tokens caps ONE suite run (each runSuite owns its governor); --max-tokens-per-case is multiplied by that suite's case count (WB-1.6) — pass one, never both\n" +
   'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure';
 
 export class UsageError extends Error {}
@@ -164,6 +164,13 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--max-usd': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
+        // Token/time budgets are whole units: a fractional value would
+        // round-trip into the governor unpredictably, and an unsafe integer
+        // (1e308) overflows perSuiteTokenCap's product — fail loud at parse
+        // time instead. --max-usd stays fractional (a USD cap may be 0.5).
+        if (flag !== '--max-usd' && !Number.isSafeInteger(n)) {
+          throw new UsageError(`${flag} must be a positive safe integer`);
+        }
         if (flag === '--max-usd') maxUsd = n;
         else if (flag === '--max-tokens') maxTokens = n;
         else if (flag === '--max-tokens-per-case') maxTokensPerCase = n;

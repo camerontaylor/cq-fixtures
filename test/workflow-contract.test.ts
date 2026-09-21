@@ -259,6 +259,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // case count; the retired flat per-invocation cap must not return.
     expect(evalCell).toContain('--max-tokens-per-case 60000');
     expect(evalCell, 'the flat per-invocation cap is gone').not.toContain('--max-tokens 200000');
+    expect(evalCell, 'DD-9: no USD cap rides the cells').not.toContain('--max-usd');
     // The worklist rides stdin; the driver must never eat it.
     expect(evalCell).toContain('< /dev/null');
   });
@@ -280,6 +281,10 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // so the package's postinstall never ran and every spawn exited 1 at
     // zero usage. The install must allow exactly this package's script.
     expect(sub).toContain('npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.276');
+    // A silent postinstall failure must fail HERE, not as driver-error zeros.
+    const subVerify = stepChunk('Verify the subprocess lane CLI is installed');
+    expect(subVerify).toContain("if: matrix.cell.driver == 'subprocess'");
+    expect(subVerify).toContain('claude --version');
     const acp = stepChunk('Install the acp lane harness');
     expect(acp).toContain("if: matrix.cell.driver == 'acp'");
     // PINNED to the probed version (2026-09-19): >=0.43 moved the stdio ACP

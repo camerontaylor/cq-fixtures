@@ -167,8 +167,9 @@ jobs:
             # SERVES. The 2026-09-18 matrix requested `deepseek-chat` and the
             # deepseek wire's classifier rows observed `deepseek-flash` (per
             # row), leaving costUSD null for the observed id — the matrix now
-            # requests the served id so the observed-model seam is green and
-            # the price-map entry applies.
+            # requests the served id so the observed-model seam is green; the
+            # price-map entry arrives with the interim `toolkit.lock` pin
+            # (WB-1.5b), so costUSD stays null until that pin lands.
             model: deepseek-flash
             provider: deepseek
             driver: ai-sdk
@@ -251,6 +252,13 @@ jobs:
         # a model outcome. Allowing exactly this package's script keeps the
         # policy tight.
         run: npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.276
+      - name: Verify the subprocess lane CLI is installed
+        if: matrix.cell.driver == 'subprocess'
+        # The postinstall (install.cjs) copies the real platform binary over
+        # the 500-byte placeholder. If it silently did not run, every spawn
+        # exits 1 with no result event and the cell publishes driver-error
+        # zeros — fail HERE, loudly, instead (F0 triage Lane 3).
+        run: claude --version
       - name: Install the acp lane harness
         if: matrix.cell.driver == 'acp'
         # PINNED to the probed version (2026-09-19, 0.43.3): >=0.43 moved the

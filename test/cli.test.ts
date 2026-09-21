@@ -227,6 +227,43 @@ describe('--probe-record (review-debt #14: the pre-runner probe rides inside the
   }, 15_000);
 });
 
+describe('--max-tokens-per-case (WB-1.6: the cap scales with suite size)', () => {
+  it('is mutually exclusive with --max-tokens (two denominations) — exit 2', async () => {
+    const dir = writeSuite('cap-both', { name: 'cap-both', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain([...cliArgs(dir), '--max-tokens', '200000', '--max-tokens-per-case', '60000'])).resolves.toBe(2);
+  }, 15_000);
+
+  it('rejects a non-positive per-case budget — exit 2', async () => {
+    const dir = writeSuite('cap-zero', { name: 'cap-zero', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '0'])).resolves.toBe(2);
+  }, 15_000);
+
+  it('gates admission at perCase × caseCount (NOT a flat cap): 3 cases at 5 tokens/case trips after case 2', async () => {
+    // The mocked driver reports 15 tokens/case. cap = 5 × 3 = 15: case 1
+    // observes 15 (not > 15), case 2 pushes the fold to 30 (> 15) and trips,
+    // so case 3 is refused admission and gets NO row (I9). A flat 200000 cap
+    // would have dispatched all three.
+    const dir = writeSuite('cap-scale', {
+      name: 'cap-scale',
+      role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved'), reviewCase('rev-3', 'resolved')],
+    });
+    const outDir = join(root, 'cap-scale-out');
+    await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '5', '--out', outDir])).resolves.toBe(1);
+    const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { case?: string });
+    expect(rows.map((r) => r.case)).toEqual(['rev-1', 'rev-2']);
+  }, 15_000);
+
+  it('a per-case budget large enough dispatches every case cleanly — exit 0', async () => {
+    const dir = writeSuite('cap-roomy', {
+      name: 'cap-roomy',
+      role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved'), reviewCase('rev-3', 'resolved')],
+    });
+    await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '60000'])).resolves.toBe(0);
+  }, 15_000);
+});
+
 describe('gate checks (B2 axes, B3 servedModel, B4 same-role collision, B7 required --driver)', () => {
   it('an axis-violating pair (non-ai-sdk lane, non-GLM model) exits 2 BEFORE any run', async () => {
     const dir = writeSuite('axis-bad', { name: 'axis-bad', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });

@@ -146,10 +146,16 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
         expect(axis, 'a non-ai-sdk lane IS the driver axis').toBe('driver');
       }
     }
-    // Axis-1 spread: deepseek-chat exactly once, glm-5.3-flash on the other
+    // Axis-1 spread: deepseek-flash exactly once, glm-5.3-flash on the other
     // four cells, ai-sdk exactly twice (one per model) — and the fixed
     // served id's ai-sdk point is ONE cell, not one per axis.
-    expect(models.filter((m) => m === 'deepseek-chat')).toHaveLength(1);
+    expect(models.filter((m) => m === 'deepseek-flash')).toHaveLength(1);
+    // WB-1.5a served-id rule: the deepseek cell requests the id the wire
+    // serves, not the pre-2026-09-18 `deepseek-chat` request.
+    const deepseekCell = cells.find((c) => c.includes('provider: deepseek'));
+    expect(deepseekCell, 'the deepseek model-axis cell exists').toBeDefined();
+    expect(deepseekCell).toContain('model: deepseek-flash');
+    expect(cells.some((c) => c.includes('model: deepseek-chat'))).toBe(false);
     expect(models.filter((m) => m === 'glm-5.3-flash')).toHaveLength(4);
     expect(drivers.filter((d) => d === 'ai-sdk')).toHaveLength(2);
     expect(cells.filter((c) => c.includes('driver: ai-sdk') && c.includes('model: glm-5.3-flash'))).toHaveLength(1);
@@ -249,7 +255,10 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // identity nests <date>/<model>/<driver>/<role>/<suite>/ off this path.
     expect(evalCell).toContain('out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}"');
     // DD-9: a token cap binds alone on every cell — never a USD cap.
-    expect(evalCell).toContain('--max-tokens 200000');
+    // WB-1.6: the cap is PER CASE and the runner scales it by the suite's
+    // case count; the retired flat per-invocation cap must not return.
+    expect(evalCell).toContain('--max-tokens-per-case 60000');
+    expect(evalCell, 'the flat per-invocation cap is gone').not.toContain('--max-tokens 200000');
     // The worklist rides stdin; the driver must never eat it.
     expect(evalCell).toContain('< /dev/null');
   });
@@ -267,7 +276,10 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
   it('lane installs are conditional: subprocess claude-code pinned, acp pinned 0.43.3, claude-agent none', () => {
     const sub = stepChunk('Install the subprocess lane CLI');
     expect(sub).toContain("if: matrix.cell.driver == 'subprocess'");
-    expect(sub).toContain('npm install -g @anthropic-ai/claude-code@2.1.276');
+    // WB-1.2 (F0 triage Lane 3): npm blocks lifecycle scripts by default,
+    // so the package's postinstall never ran and every spawn exited 1 at
+    // zero usage. The install must allow exactly this package's script.
+    expect(sub).toContain('npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.276');
     const acp = stepChunk('Install the acp lane harness');
     expect(acp).toContain("if: matrix.cell.driver == 'acp'");
     // PINNED to the probed version (2026-09-19): >=0.43 moved the stdio ACP

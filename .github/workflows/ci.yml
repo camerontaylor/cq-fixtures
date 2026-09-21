@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Pack cq-toolkit at toolkit.lock tag
+      - name: Pack cq-toolkit at the toolkit.lock pin
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci

@@ -1,0 +1,30 @@
+{
+  "runs": [
+    {
+      "role": "fixer-worker",
+      "suite": "breadth-verified",
+      "suiteDir": "suites/fixer-worker/breadth-verified",
+      "model": "glm-5.3-flash",
+      "driver": "ai-sdk",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "e2734e9d-ac4d-4b6d-b353-f7799049bf05",
+      "generatedAt": "2026-09-21T07:33:34.121Z",
+      "absences": [
+        {
+          "case": "breadth-01",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Failed after 2 attempts. Last error: AI_APICallError: Rate limit reached for requests"
+        },
+        {
+          "case": "breadth-02",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Failed after 2 attempts. Last error: AI_APICallError: Rate limit reached for requests"
+        },
+        {
+          "case": "breadth-04",
+          "cause": "ai-sdk driver: [endpoint-timeout] run failed — Failed after 2 attempts. Last error: AI_APICallError: Rate limit reached for requests"
+        }
+      ]
+    }
+  ]
+}

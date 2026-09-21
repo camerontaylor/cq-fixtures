@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "review-classifier",
+      "suite": "micro",
+      "suiteDir": "suites/review-classifier/micro",
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "40e143d0-dfe8-42b3-a2f4-e4257b3bba35",
+      "generatedAt": "2026-09-21T09:27:14.382Z"
+    }
+  ]
+}

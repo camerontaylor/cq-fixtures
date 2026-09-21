@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "fixer-worker",
+      "suite": "breadth-verified",
+      "suiteDir": "suites/fixer-worker/breadth-verified",
+      "model": "glm-5.3-flash",
+      "driver": "subprocess",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "571b640a-c633-45db-adcc-9966012035e5",
+      "generatedAt": "2026-09-21T07:28:32.875Z"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "runs": [
+    {
+      "role": "fixer-worker",
+      "suite": "breadth-verified",
+      "suiteDir": "suites/fixer-worker/breadth-verified",
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "ad7d24452b47e26a5820c484025264d9ab400ab6",
+      "runId": "26933e49-60a8-4d90-b64a-cbb81e2d347c",
+      "generatedAt": "2026-09-21T08:43:55.957Z"
+    }
+  ]
+}

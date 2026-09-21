@@ -65,7 +65,10 @@ and `deepseek-flash` (115 rows). No silent remap is recorded.
 
 These cases published **no row**; the cause below is the driver's own bounded text (verbatim in
 the run journal and in `run.json`'s `absences[]`). They are endpoint transients now correctly
-classified by cq-toolkit #212 — never a fabricated zero.
+classified by cq-toolkit #212 — never a fabricated zero. Each cell's `run.json` (carrying the
+machine-readable `absences[]`) and `rows.jsonl` (the regrade input) are committed beside its
+table, so the omission is machine-validatable and the cell is regrade-able — not just narrated
+here.
 
 | Cases | Cause |
 |---|---|
@@ -154,4 +157,7 @@ moved between the F1 snapshot (lock `b06b6a3`, only two real classifier-micro ce
 ## Schema
 
 Every published table conforms to `schema/comparison-table.schema.json` (validated in the runner
-before emission; the snapshot job copies `*.table.json` verbatim).
+before emission; the snapshot job copies `*.table.json` verbatim). Each of the 24 published cells
+ships its table **plus** `run.json` (the F6 manifest: role/suite/model/driver/variant,
+`toolkit.lock`, `suiteSha`, `runId`, and the `absences[]` records) and `rows.jsonl` (the F6
+regrade input) beside it — 74 committed files, mirroring what the automatic snapshot job copies.

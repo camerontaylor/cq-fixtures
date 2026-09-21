@@ -307,14 +307,13 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     expect(leftovers).toEqual([]);
   }, 15_000);
 
-  it('a THROWING-driver fixer case keeps the full probe ceiling: { passed: 0, total: 2 } (DD-4, not a truncated total: 1)', async () => {
-    // The zero paths count the case's CONFIGURED probes (runner/index.ts
-    // zeroOutcome(probeCount)): a worker that never produced a gradeable
-    // result failed both DD-4 probes — the check-rerun AND the
-    // schema-compliance probe — so its row carries the full ceiling of 2,
-    // never a truncated total: 1. (A plain driver throw, not the
-    // missing-credential class: that one aborts the run instead — asserted
-    // above.)
+  it('a THROWING-driver fixer case publishes NO row: a driver crash is a loud absence, never a model zero (I9)', async () => {
+    // A thrown driver has no `WorkerResult` and no class token — the
+    // ultimate missing cause. It is infrastructure, not a model outcome, so
+    // it publishes NO row (the same loud-absence shape as the non-miss
+    // `stopReason: error` causes) and no prediction artifact. (A plain
+    // driver throw, not the missing-credential class: that one aborts the
+    // run instead — asserted above.)
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
     const dir = writeSuite('throwing-fixer', {
@@ -328,11 +327,20 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
         throw new Error('boom — a driver-level failure, not a credential abort');
       },
     };
-    const result = await runSuite(opts(dir, { driver: throwingDriver }));
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toMatchObject({ case: 'fix-throw', outcome: { score: 0, passed: 0, total: 2 } });
+    const journalPath = join(root, 'throwing-fixer-journal');
+    const result = await runSuite(opts(dir, { driver: throwingDriver, journalPath }));
+    expect(result.rows).toEqual([]);
+    expect(result.tables[0]?.cells).toEqual([]); // empty-but-valid table
+    expect(result.absences).toHaveLength(1);
+    expect(result.absences[0]).toMatchObject({ case: 'fix-throw', role: 'fixer-worker' });
+    expect(result.absences[0]!.cause).toMatch(/boom/);
+    expect(result.artifacts).toEqual([]); // no prediction artifact for an unpublished case
     expect(result.diagnostics[0]).toMatch(/^case fix-throw: driver threw: /);
     assertSchemaValid(result.rows, result.tables);
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result).toMatchObject({ status: 'failed', error: expect.stringMatching(/boom/) });
   }, 15_000);
 
   it('a check killed by its own signal reports failure-with-signal, never "timed out"', () => {
@@ -688,6 +696,7 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     expect(result.runId).toMatch(/^[0-9a-f-]{36}$/);
     expect(result.tables[0]?.cells).toEqual([]);
     expect(result.absences).toEqual([{ case: 'fix-timeout', role: 'fixer-worker', cause }]);
+    expect(result.artifacts).toEqual([]); // no prediction artifact for an unpublished case
     assertSchemaValid(result.rows, result.tables);
     const log = openRunLog(journalPath);
     const events = await log.read((await log.runs())[0]!);
@@ -710,6 +719,7 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     expect(result.rows).toEqual([]);
     expect(result.absences).toHaveLength(1);
     expect(result.absences[0]!.cause).toContain('driver reported no cause');
+    expect(result.artifacts).toEqual([]); // no prediction artifact for an unpublished case
     const log = openRunLog(journalPath);
     const events = await log.read((await log.runs())[0]!);
     const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
@@ -721,6 +731,10 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     // trailing diagnostic (`end of string` covered by the first case).
     expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss]')).toBe(true);
     expect(isStructuredOutputMissCause(MISS_CAUSE)).toBe(true);
+    // The separator after `]` is \s, not a literal space: a tab/newline
+    // diagnostic is still a miss (a model outcome), never an absence.
+    expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss]\tdiagnostic')).toBe(true);
+    expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss]\ndiagnostic')).toBe(true);
     // Negative: a longer token, a missing bracket, a mid-message mention, a
     // different class, a bare phrase, a different case, an empty string.
     expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss-extra] x')).toBe(false);

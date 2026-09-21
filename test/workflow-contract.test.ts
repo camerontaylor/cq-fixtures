@@ -316,6 +316,15 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(snapshotStep).toContain('.table.json');
     expect(snapshotStep).toContain('skipping empty dispatch-only table');
     expect(snapshotStep).toContain('continue');
+    // F1b r1: an unreadable/malformed sibling run.json fails loud-but-
+    // non-blocking (a ::warning:: and keep), never silent fail-open.
+    expect(snapshotStep, 'a bad manifest warns instead of failing open').toContain('manifest-error');
+    expect(snapshotStep).toContain('::warning::snapshot: could not read run.json beside');
+    // F1b r1: the untrusted endpoint cause text is HTML-escaped before it
+    // reaches the markdown step summary (the raw text stays in ::warning::).
+    expect(evalCell, 'the summary absence line is HTML-escaped').toContain('escaped="$(printf');
+    expect(evalCell).toContain('s/&/\\&amp;/g');
+    expect(evalCell).toContain('- dispatch-only absence: ${escaped}');
   });
 
   it('deprecated/ suites are excluded from matrix discovery (F2, WB-2.1)', () => {

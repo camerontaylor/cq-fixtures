@@ -245,7 +245,7 @@ const STRUCTURED_OUTPUT_MISS_TOKEN = 'structured-output-miss';
  * the phrase, or another lane's cause is false — no substring drift.
  */
 export function isStructuredOutputMissCause(cause: string): boolean {
-  const m = /^ai-sdk driver: \[([a-z-]+)\](?: |$)/.exec(cause);
+  const m = /^ai-sdk driver: \[([a-z-]+)\](?:\s|$)/.exec(cause);
   return m !== null && m[1] === STRUCTURED_OUTPUT_MISS_TOKEN;
 }
 
@@ -587,6 +587,13 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         const thrownCause = boundDriverCause(String(thrown));
         journalResult = { status: 'failed', error: thrownCause };
         diagnostics = `driver threw: ${thrownCause}`;
+        // A thrown driver produced no `WorkerResult` and no class token — the
+        // ultimate missing cause — so it is infrastructure, not a model
+        // outcome: NO row (I9), recorded as a loud absence like every other
+        // non-model cause. (The pre-dispatch missing-credential throw is
+        // handled earlier and aborts the run entirely.)
+        emitRow = false;
+        absences.push({ case: c.id, role: suite.role, cause: thrownCause });
       } else if (worker.stopReason === 'budget') {
         outcome = zeroOutcome(probeCount); // honest budget-exhausted: no fabricated credit
         journalResult = { status: 'budget-exhausted' };

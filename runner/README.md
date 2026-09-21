@@ -47,6 +47,18 @@ The cause's class token is its second component: `ai-sdk driver: [<token>]`.
   cause verbatim with status `failed`. The workflow renders that as a
   `::warning::`, a step-summary line, and a `DISPATCH-ONLY-*` marker (so the
   snapshot job never clears a same-day dir), and the CLI exits 1.
+- A driver that THROWS (`worker === undefined`) is the same infrastructure
+  class — no `WorkerResult`, no class token — so it publishes no row and is
+  recorded as an absence carrying the bounded/redacted thrown message.
+
+Governed stops are NOT absences: `stopReason: 'budget'` (the driver's own
+`stopWhen`/length stop) and `stopReason: 'aborted'` (the governor's
+cancellation signal fired) both mean the case RAN and was deliberately cut
+off, so they keep publishing honest incomplete rows (`outcome 0` over the
+probe ceiling) with their own journal statuses (`budget-exhausted` /
+`indeterminate`). Only the `error` verdict's non-model causes — and a thrown
+driver — become absences, because those are the paths where the model was
+never given a gradeable, completed chance at all.
 
 ## Served ids
 

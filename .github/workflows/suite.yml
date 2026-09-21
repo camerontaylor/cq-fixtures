@@ -644,7 +644,10 @@ jobs:
               if [ -n "${absent_lines}" ]; then
                 while IFS= read -r absent_line; do
                   echo "::warning::${absent_line} (dispatch-only absence — no row published)"
-                  echo "- dispatch-only absence: ${absent_line}" >> "${GITHUB_STEP_SUMMARY}"
+                  # The endpoint's cause text is untrusted: escape HTML before
+                  # it reaches the markdown step summary (annotation lines stay raw).
+                  escaped="$(printf '%s' "${absent_line}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+                  echo "- dispatch-only absence: ${escaped}" >> "${GITHUB_STEP_SUMMARY}"
                 done <<< "${absent_lines}"
                 touch "reports/eval/DISPATCH-ONLY-${MATRIX_MODEL}-${MATRIX_DRIVER}-${role}"
               fi
@@ -828,18 +831,21 @@ jobs:
             # as an outcome. Non-empty tables and clean (absence-free) empty
             # tables are copied unchanged.
             if [[ "${f}" == *.table.json ]]; then
+              # A missing or malformed sibling run.json must fail LOUD (the
+              # eval step already hard-fails the cell on that condition), not
+              # silently fail open: a non-zero node exit maps to an explicit
+              # manifest-error branch that warns and keeps the table.
               table_fate="$(node -e '
                 const fs = require("node:fs");
                 const path = require("node:path");
                 const table = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-                let hasAbsences = false;
-                try {
-                  const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[1]), "run.json"), "utf8"));
-                  hasAbsences = (manifest.runs || []).some((r) => (r.absences || []).length > 0);
-                } catch { hasAbsences = false; }
+                const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[1]), "run.json"), "utf8"));
+                const hasAbsences = (manifest.runs || []).some((r) => (r.absences || []).length > 0);
                 process.stdout.write((table.cells || []).length === 0 && hasAbsences ? "skip" : "keep");
-              ' "${f}")"
-              if [ "${table_fate}" = "skip" ]; then
+              ' "${f}")" || table_fate="manifest-error"
+              if [ "${table_fate}" = "manifest-error" ]; then
+                echo "::warning::snapshot: could not read run.json beside ${f#reports/eval/} — keeping the table"
+              elif [ "${table_fate}" = "skip" ]; then
                 echo "snapshot: skipping empty dispatch-only table ${f#reports/eval/} (absences recorded in run.json)"
                 continue
               fi

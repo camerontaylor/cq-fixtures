@@ -609,6 +609,52 @@ describe('fixture materialization honesty (T2)', () => {
   }, 15_000);
 });
 
+describe('driver-error cause surfacing (cq-toolkit #206/#207 -> F1)', () => {
+  it('a driver error journals the toolkit-provided cause, not a bare status', async () => {
+    const dir = reviewSuite('err-suite', 'err-suite', [reviewCase('rev-1', 'resolved')]);
+    const journalPath = join(root, 'err-journal');
+    const failing: Driver = {
+      async run(): Promise<WorkerResult> {
+        return {
+          usage: { input: 1200, output: 300, cacheRead: 0, cacheWrite: 0 },
+          denials: [],
+          stopReason: 'error',
+          error:
+            "ai-sdk driver: structured output was not produced (final step finishReason 'tool-calls', steps 8): NoOutputGeneratedError",
+        };
+      },
+    };
+    const result = await runSuite(opts(dir, { driver: failing, journalPath }));
+    // Still an honest zero row — a driver error never becomes a score (I9).
+    expect(result.rows[0]).toMatchObject({ case: 'rev-1', outcome: { passed: 0, total: 1 } });
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result).toMatchObject({
+      status: 'failed',
+      error: expect.stringContaining('structured output was not produced'),
+    });
+  }, 15_000);
+
+  it('a driver error with no cause falls back to a named placeholder (never empty)', async () => {
+    const dir = reviewSuite('err-nocause', 'err-nocause', [reviewCase('rev-1', 'resolved')]);
+    const journalPath = join(root, 'err-nocause-journal');
+    const failing: Driver = {
+      async run(): Promise<WorkerResult> {
+        return { usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'error' };
+      },
+    };
+    await runSuite(opts(dir, { driver: failing, journalPath }));
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result).toMatchObject({
+      status: 'failed',
+      error: expect.stringContaining('driver reported no cause'),
+    });
+  }, 15_000);
+});
+
 describe('budget honesty (I9)', () => {
   it('a tripped token cap gates admission: rows carry ONLY admitted cases and the journal records the honest stop', async () => {
     const dir = reviewSuite('budget-suite', 'budget-suite', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);

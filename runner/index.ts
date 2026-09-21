@@ -432,8 +432,19 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         diagnostics = 'driver stopped on budget';
       } else if (worker.stopReason === 'error') {
         outcome = zeroOutcome(probeCount);
-        journalResult = { status: 'failed', error: 'driver stopReason: error' };
-        diagnostics = 'driver stopReason: error';
+        // Post-v1.0.0 toolkit (cq-toolkit #206/#207, pinned 1.0.1) carries the
+        // driver's own cause in `WorkerResult.error` (bounded and
+        // secret-redacted by the toolkit). Surface it verbatim so a driver
+        // failure is diagnosable from the journal instead of the bare status
+        // the F0 triage could not read (its cross-cutting finding). The row
+        // stays a zero-outcome row: a driver failure is NEVER a model score
+        // (I9).
+        const cause =
+          worker.error !== undefined && worker.error.trim() !== ''
+            ? worker.error
+            : 'driver stopReason: error (driver reported no cause)';
+        journalResult = { status: 'failed', error: cause };
+        diagnostics = cause;
       } else if (worker.stopReason === 'aborted') {
         outcome = zeroOutcome(probeCount);
         journalResult = { status: 'indeterminate', detail: 'driver stopReason: aborted' };

@@ -1,0 +1,25 @@
+{
+  "case": "bv-21",
+  "suite": "breadth-verified",
+  "expected": "blocked",
+  "concern_group": "Design",
+  "fp_flag": "none",
+  "adversarial_reply": true,
+  "rule_chain_version": "1.0",
+  "annotators": [
+    {
+      "id": "executor-pass1",
+      "verdict": "blocked"
+    },
+    {
+      "id": "blind-pass2",
+      "verdict": "blocked"
+    }
+  ],
+  "adjudication": {
+    "status": "adjudicated",
+    "by": "adjudicator-f4",
+    "decision": "concern_group: Design (pass2) — shared-index schema decision owned externally is a design wait (pass2); verdict/fp_flag/adversarial_reply agreed",
+    "note": "verdict, fp_flag, adversarial_reply: pass1 and pass2 agreed; concern_group adjudicated to pass2 reading"
+  }
+}

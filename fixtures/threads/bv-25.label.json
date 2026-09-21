@@ -1,0 +1,24 @@
+{
+  "case": "bv-25",
+  "suite": "breadth-verified",
+  "expected": "skip",
+  "concern_group": "Appearance/Formatting",
+  "fp_flag": "none",
+  "adversarial_reply": false,
+  "rule_chain_version": "1.0",
+  "annotators": [
+    {
+      "id": "executor-pass1",
+      "verdict": "skip"
+    },
+    {
+      "id": "blind-pass2",
+      "verdict": "skip"
+    }
+  ],
+  "adjudication": {
+    "status": "agreed",
+    "by": "adjudicator-f4",
+    "note": "pass1 and pass2 agreed on all four fields (verdict, concern_group, fp_flag, adversarial_reply)"
+  }
+}

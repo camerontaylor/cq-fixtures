@@ -27,6 +27,7 @@ import { scoreSchemaCompliance } from '../runner/dimensions/schemaCompliance.ts'
 import { scoreFixerWorker } from '../runner/score/fixerWorker.ts';
 import { scoreReviewClassifier } from '../runner/score/reviewClassifier.ts';
 import { FakeDriver } from '../runner/fake-driver.ts';
+import { aggregate } from '../runner/aggregate.ts';
 import type { ResultRow, SuiteRole } from '../runner/aggregate.ts';
 
 // Runner tests: no network, no live keys — the FakeDriver stands in for a
@@ -858,5 +859,290 @@ describe('semantic layer (issue #4 enforcement in loadSuite)', () => {
       cases: [reviewCase('x', 'resolved')],
     });
     expect(() => loadSuite(dir)).toThrow(/failed schema validation/);
+  });
+});
+
+describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
+  function reviewCaseOn(id: string, fixture: string, expected: string): object {
+    return {
+      id,
+      fixture,
+      task: { prompt: 'Classify the review thread.' },
+      probe: { kind: 'expected-verdict', expected },
+    };
+  }
+
+  function threadPayload(n: number): object {
+    return {
+      id: n,
+      path: 'src/example.ts',
+      line: n,
+      resolved: false,
+      comments: [{ author: 'reviewer', body: `remark ${n}`, createdAt: '2026-09-16T00:00:00Z', isReply: false }],
+    };
+  }
+
+  // Observed verdicts keyed by fixture file. null = the driver emits no
+  // structuredOutput at all — a missing verdict is a miss with no predicted
+  // bucket (the aggregate's null-observed rule).
+  const OBSERVED: Record<string, string | null> = {
+    'thread-1.json': 'actionable',
+    'thread-2.json': null,
+    'thread-3.json': 'responded',
+    'thread-4.json': 'skip',
+    'thread-5.json': 'blocked',
+    'thread-6.json': 'actionable',
+  };
+
+  class FixtureVerdictDriver implements Driver {
+    async run(invocation: OpInvocation): Promise<WorkerResult> {
+      const m = /\(fixture (\S+?)\)/.exec(invocation.prompt);
+      const verdict = m !== null ? OBSERVED[m[1]!] : undefined;
+      return {
+        model: invocation.modelSpec.model,
+        ...(verdict !== undefined && verdict !== null ? { structuredOutput: { verdict } } : {}),
+        usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 },
+        denials: [],
+        stopReason: 'complete',
+      };
+    }
+  }
+
+  it('classifier rows carry probes[] with the observed verdict; the cell carries byVerdict/macroF1/fpRate', async () => {
+    for (let n = 1; n <= 6; n++) {
+      writeFileSync(join(root, `thread-${n}.json`), JSON.stringify(threadPayload(n)));
+    }
+    // Suspicious-benign subset: one wrong (c-skip-6 cries actionable on
+    // adjudicated-benign content) and one right (c-resp-3) — fpN 2, fpRate 1/2.
+    writeFileSync(join(root, 'thread-3.label.json'), JSON.stringify({ case: 'c-resp-3', fp_flag: 'suspicious-benign' }) + '\n');
+    writeFileSync(join(root, 'thread-6.label.json'), JSON.stringify({ case: 'c-skip-6', fp_flag: 'suspicious-benign' }) + '\n');
+    // A non-benign label is NOT the flag: fp_flag 'none' leaves the row unflagged.
+    writeFileSync(join(root, 'thread-1.label.json'), JSON.stringify({ case: 'c-act-1', fp_flag: 'none' }) + '\n');
+    const dir = reviewSuite('verdict-suite', 'verdict-suite', [
+      reviewCaseOn('c-act-1', 'thread-1.json', 'actionable'),
+      reviewCaseOn('c-act-2', 'thread-2.json', 'actionable'),
+      reviewCaseOn('c-resp-3', 'thread-3.json', 'responded'),
+      reviewCaseOn('c-resd-4', 'thread-4.json', 'resolved'),
+      reviewCaseOn('c-blk-5', 'thread-5.json', 'blocked'),
+      reviewCaseOn('c-skip-6', 'thread-6.json', 'skip'),
+    ]);
+    const result = await runSuite(opts(dir, { driver: new FixtureVerdictDriver() }));
+    expect(result.rows).toHaveLength(6);
+
+    // Row-level probes[]: one entry per case with expected + observed + passed.
+    expect(result.rows.map((r) => [r.case, r.probes])).toEqual([
+      ['c-act-1', [{ kind: 'expected-verdict', expected: 'actionable', observed: 'actionable', passed: true }]],
+      ['c-act-2', [{ kind: 'expected-verdict', expected: 'actionable', observed: null, passed: false }]],
+      ['c-resp-3', [{ kind: 'expected-verdict', expected: 'responded', observed: 'responded', passed: true }]],
+      ['c-resd-4', [{ kind: 'expected-verdict', expected: 'resolved', observed: 'skip', passed: false }]],
+      ['c-blk-5', [{ kind: 'expected-verdict', expected: 'blocked', observed: 'blocked', passed: true }]],
+      ['c-skip-6', [{ kind: 'expected-verdict', expected: 'skip', observed: 'actionable', passed: false }]],
+    ]);
+
+    // The flag rides only on the two sidecar-marked cases; every other row
+    // OMITS the key (absence means unflagged — never false-by-default).
+    expect(Object.fromEntries(result.rows.map((r) => [r.case, 'suspiciousBenign' in r]))).toEqual({
+      'c-act-1': false,
+      'c-act-2': false,
+      'c-resp-3': true,
+      'c-resd-4': false,
+      'c-blk-5': false,
+      'c-skip-6': true,
+    });
+
+    // Cell-level confusion: the null observed (c-act-2) is a miss with no
+    // predicted bucket; the skip-observed-on-resolved (c-resd-4) lands in
+    // resolved's predicted bucket under the skip key (and counts as a false
+    // positive for skip via the predicted totals). Per-verdict F1s:
+    // actionable 2/(2+1+1) = 0.5, responded 1, resolved 0, blocked 1, skip 0
+    // → macroF1 = 2.5/5 = 0.5.
+    const cell = result.tables[0]!.cells[0]!;
+    expect(cell).toMatchObject({ runs: 6, passed: 3, total: 6, score: 0.5, fpN: 2, fpRate: 0.5 });
+    expect(cell.byVerdict).toEqual({
+      actionable: { expected: 2, correct: 1, predicted: { actionable: 1 } },
+      responded: { expected: 1, correct: 1, predicted: { responded: 1 } },
+      resolved: { expected: 1, correct: 0, predicted: { skip: 1 } },
+      blocked: { expected: 1, correct: 1, predicted: { blocked: 1 } },
+      skip: { expected: 1, correct: 0, predicted: { actionable: 1 } },
+    });
+    expect(cell.macroF1).toBeCloseTo(0.5, 10);
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('fpRate counts only observed-actionable on benign rows (CodeRabbit cycle-1: a miss with any other observed verdict is not an FP)', () => {
+    const row = (id: string, expected: string, observed: string | null): ResultRow => ({
+      role: 'review-classifier',
+      suite: 'fp-rule',
+      case: id,
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: observed === expected ? 1 : 0, passed: observed === expected ? 1 : 0, total: 1 },
+      probes: [{ kind: 'expected-verdict', expected, observed, passed: observed === expected }],
+      suspiciousBenign: true,
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-fp-rule',
+      timestamp: '2026-09-21T00:00:00Z',
+    });
+    const [table] = aggregate([
+      row('c1', 'skip', 'actionable'), // cried wolf: the one FP
+      row('c2', 'responded', 'skip'), // miss, wrong non-actionable verdict: not an FP
+      row('c3', 'resolved', null), // miss, unparseable answer: not an FP
+    ]);
+    expect(table!.cells[0]).toMatchObject({ fpN: 3, fpRate: 1 / 3 });
+  });
+
+  it('fp counting is per flagged ROW, not per probe (CodeRabbit bot T1: a two-probe row counts once)', () => {
+    const row = (id: string, probes: ResultRow['probes']): ResultRow => ({
+      role: 'review-classifier',
+      suite: 'fp-row-once',
+      case: id,
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: 0, passed: 0, total: 1 },
+      probes,
+      suspiciousBenign: true,
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-fp-row-once',
+      timestamp: '2026-09-21T00:00:00Z',
+    });
+    const [table] = aggregate([
+      // One flagged row, two probes, one crying wolf: fpN counts the row once.
+      row('c-multi', [
+        { kind: 'expected-verdict', expected: 'skip', observed: 'actionable', passed: false },
+        { kind: 'expected-verdict', expected: 'skip', observed: 'responded', passed: false },
+      ]),
+      // One flagged row, two probes, neither actionable: a miss, not an FP.
+      row('c-multi-miss', [
+        { kind: 'expected-verdict', expected: 'resolved', observed: 'responded', passed: false },
+        { kind: 'expected-verdict', expected: 'resolved', observed: null, passed: false },
+      ]),
+    ]);
+    expect(table!.cells[0]).toMatchObject({ fpN: 2, fpRate: 1 / 2 });
+  });
+
+  it('a classifier case with a missing sidecar omits the flag LOUDLY: row shape unchanged, one case diagnostic (r1-F3)', async () => {
+    writeFileSync(join(root, 'lonely.json'), JSON.stringify(threadPayload(7)));
+    // No lonely.label.json anywhere: the flag must be omitted AND diagnosed.
+    const dir = reviewSuite('sidecar-diag', 'sidecar-diag', [
+      reviewCaseOn('c-lonely', 'lonely.json', 'resolved'),
+    ]);
+    const result = await runSuite(opts(dir));
+    expect(result.rows).toHaveLength(1);
+    expect('suspiciousBenign' in result.rows[0]!).toBe(false);
+    expect(result.rows[0]!.probes).toEqual([
+      { kind: 'expected-verdict', expected: 'resolved', observed: 'resolved', passed: true },
+    ]);
+    expect(result.diagnostics).toContain(
+      "case c-lonely: label sidecar 'lonely.label.json' absent — suspiciousBenign flag omitted",
+    );
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('a classifier case with an invalid sidecar omits the flag LOUDLY: valid JSON but unrecognized fp_flag (CodeRabbit bot T2)', async () => {
+    writeFileSync(join(root, 'hollow.json'), JSON.stringify(threadPayload(8)));
+    writeFileSync(join(root, 'hollow.label.json'), JSON.stringify({ case: 'c-hollow', expected: 'skip' }) + '\n');
+    const dir = reviewSuite('sidecar-invalid', 'sidecar-invalid', [
+      reviewCaseOn('c-hollow', 'hollow.json', 'skip'),
+    ]);
+    const result = await runSuite(opts(dir));
+    expect(result.rows).toHaveLength(1);
+    expect('suspiciousBenign' in result.rows[0]!).toBe(false);
+    expect(result.diagnostics).toContain(
+      "case c-hollow: label sidecar 'hollow.label.json' invalid content (fp_flag missing or outside none|suspicious-benign) — suspiciousBenign flag omitted",
+    );
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('mixed probed/unprobed classifier cell: score counts every row, byVerdict/macroF1 count probed rows only (r1-F4)', () => {
+    const probed: ResultRow = {
+      role: 'review-classifier',
+      suite: 'mixed-cell',
+      case: 'c-scored',
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: 1, passed: 1, total: 1 },
+      probes: [{ kind: 'expected-verdict', expected: 'actionable', observed: 'actionable', passed: true }],
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-mixed-cell',
+      timestamp: '2026-09-21T00:00:00Z',
+    };
+    // A zero-path row (driver-throw): honest outcome failure, no probes[] by I9.
+    const unprobed: ResultRow = {
+      ...probed,
+      case: 'c-thrown',
+      outcome: { score: 0, passed: 0, total: 1 },
+    };
+    delete (unprobed as { probes?: unknown }).probes;
+    const [table] = aggregate([probed, unprobed]);
+    const cell = table!.cells[0]!;
+    // Score denominator covers both rows; confusion covers the scored one.
+    expect(cell).toMatchObject({ runs: 2, passed: 1, total: 2, score: 0.5 });
+    expect(cell.byVerdict!.actionable).toEqual({ expected: 1, correct: 1, predicted: { actionable: 1 } });
+    expect(cell.macroF1).toBeCloseTo(0.2, 10);
+    expect(cell).not.toHaveProperty('fpRate');
+  });
+
+  it('an out-of-vocabulary observed verdict is a miss with no predicted bucket (r1-F5)', () => {
+    const row: ResultRow = {
+      role: 'review-classifier',
+      suite: 'oov-cell',
+      case: 'c-oov',
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: 0, passed: 0, total: 1 },
+      probes: [{ kind: 'expected-verdict', expected: 'skip', observed: 'maybe', passed: false }],
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-oov-cell',
+      timestamp: '2026-09-21T00:00:00Z',
+    };
+    const [table] = aggregate([row]);
+    const cell = table!.cells[0]!;
+    expect(cell).toMatchObject({ runs: 1, passed: 0, total: 1, score: 0 });
+    expect(cell.byVerdict!.skip).toEqual({ expected: 1, correct: 0, predicted: {} });
+    expect(cell.macroF1).toBe(0);
+  });
+
+  it('fixer rows and cells carry none of the F4 fields (pre-F4 shape preserved)', async () => {
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    const dir = writeSuite('fixer-shape', {
+      name: 'fixer-shape',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-1', fixture: 'fixture', task: { prompt: 'p' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+    const result = await runSuite(opts(dir));
+    expect(result.rows).toHaveLength(1);
+    expect('probes' in result.rows[0]!).toBe(false);
+    expect('suspiciousBenign' in result.rows[0]!).toBe(false);
+    const cell = result.tables[0]!.cells[0]!;
+    for (const k of ['byVerdict', 'macroF1', 'fpRate', 'fpN']) expect(cell).not.toHaveProperty(k);
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('scoreReviewClassifier reports the observed verdict (null when missing, the string when out-of-vocabulary)', () => {
+    const hit = scoreReviewClassifier(
+      { probe: { kind: 'expected-verdict', expected: 'resolved' } },
+      { structuredOutput: { verdict: 'resolved' } } as WorkerResult,
+    );
+    expect(hit).toMatchObject({ score: 1, passed: 1, total: 1, observed: 'resolved' });
+    const missing = scoreReviewClassifier(
+      { probe: { kind: 'expected-verdict', expected: 'resolved' } },
+      {} as WorkerResult,
+    );
+    expect(missing).toMatchObject({ score: 0, observed: null });
+    const oov = scoreReviewClassifier(
+      { probe: { kind: 'expected-verdict', expected: 'resolved' } },
+      { structuredOutput: { verdict: 'maybe' } } as WorkerResult,
+    );
+    expect(oov).toMatchObject({ score: 0, observed: 'maybe' });
   });
 });

@@ -34,3 +34,17 @@ so a modeled number is never silently reported as spend.
 Validation: `test/schema.test.ts` compiles all three with ajv draft 2020-12 (`ajv/dist/2020`) and
 runs in CI via the static check's vitest suite; the runner additionally validates every emitted
 row and table against these schemas at runtime before results leave `runSuite`.
+
+Versioned additive change F4 (2026-09-21): result rows gained OPTIONAL `probes[]`
+(per-probe `{kind, expected, observed, passed}` — the runner captures the observed classifier
+verdict per case) and `suspiciousBenign` (true when the case's fixture-side `label.json` carries
+fp_flag `suspicious-benign`); table cells gained OPTIONAL `byVerdict` (per-verdict confusion
+counts over exactly the five verdict keys), `macroF1` (mean of the five per-verdict F1s), and
+`fpRate`/`fpN` (FP rate on the suspicious-benign subset + its denominator, omitted when the
+subset is empty). Classifier zero-path rows (driver-throw, budget, error, aborted) carry no
+`probes[]` by I9 design — nothing ran, so there is no observed verdict to record — which means
+accuracy (`passed`/`total`) counts every row while `byVerdict`/`macroF1`/`fpN` count probed
+(scored) rows only: the two headline metrics intentionally cover different denominators
+(pinned by the mixed probed/unprobed test in `test/runner.test.ts`). All additions are
+optional with defaults, so every committed snapshot (`reports/snapshots/2026-09-18`) still
+validates — pinned by the F4 acceptance test in `test/schema.test.ts`.

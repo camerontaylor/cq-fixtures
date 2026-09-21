@@ -114,7 +114,67 @@
                 "minimum": 0
               }
             }
+          },
+          "byVerdict": {
+            "type": "object",
+            "description": "VERSIONED ADDITIVE change F4 (2026-09-21): per-verdict confusion counts, computed from the rows' probes[] (review-classifier cells only; absent on fixer cells and on all old tables by design). Exactly the five classifyThreads verdict keys; each value carries the expected count, the correct count (observed === expected), and the predicted buckets for in-vocabulary observed verdicts (a null or out-of-vocabulary observed is a miss with no predicted bucket).",
+            "propertyNames": {
+              "enum": ["actionable", "responded", "resolved", "blocked", "skip"]
+            },
+            "minProperties": 5,
+            "maxProperties": 5,
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["expected", "correct", "predicted"],
+              "properties": {
+                "expected": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Rows whose probe expected this verdict."
+                },
+                "correct": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Rows whose observed verdict equaled the expected verdict."
+                },
+                "predicted": {
+                  "type": "object",
+                  "description": "Counts per observed (predicted) verdict among rows expecting this verdict's key — in-vocabulary observed verdicts only.",
+                  "propertyNames": {
+                    "enum": ["actionable", "responded", "resolved", "blocked", "skip"]
+                  },
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "macroF1": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "VERSIONED ADDITIVE change F4 (2026-09-21): mean of the five per-verdict F1 scores derived from byVerdict (per-verdict F1 = 2TP/(2TP+FP+FN), 0 when the denominator is 0). Absent wherever byVerdict is absent."
+          },
+          "fpRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "VERSIONED ADDITIVE change F4 (2026-09-21): fraction of the cell's suspicious-benign rows (row suspiciousBenign === true) whose probe OBSERVED actionable — i.e. the classifier cried wolf on adjudicated-benign content. A benign row missed with any other observed verdict (or a null observed) is a miss, not a false positive. Omitted with fpN when the subset is empty."
+          },
+          "fpN": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "VERSIONED ADDITIVE change F4 (2026-09-21): denominator of fpRate — the count of suspicious-benign rows in this cell. Omitted when zero."
           }
+        },
+        "dependentRequired": {
+          "byVerdict": ["macroF1"],
+          "macroF1": ["byVerdict"],
+          "fpRate": ["fpN"],
+          "fpN": ["fpRate"]
         },
         "allOf": [
           {

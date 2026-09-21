@@ -1,0 +1,24 @@
+{
+  "case": "bv-01",
+  "suite": "breadth-verified",
+  "expected": "actionable",
+  "concern_group": "Logic & functionality",
+  "fp_flag": "none",
+  "adversarial_reply": false,
+  "rule_chain_version": "1.0",
+  "annotators": [
+    {
+      "id": "executor-pass1",
+      "verdict": "actionable"
+    },
+    {
+      "id": "blind-pass2",
+      "verdict": "actionable"
+    }
+  ],
+  "adjudication": {
+    "status": "agreed",
+    "by": "adjudicator-f4",
+    "note": "pass1 and pass2 agreed on all four fields (verdict, concern_group, fp_flag, adversarial_reply)"
+  }
+}

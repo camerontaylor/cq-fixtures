@@ -1,0 +1,1 @@
+{"id":483122,"path":"db/migrate.ts","line":208,"resolved":false,"comments":[{"author":"yusufdemir","body":"This migration needs the Sunday maintenance window — infra owns the calendar and has not scheduled it yet, so applying it now would lock the live tables mid-week. Blocked on the infra schedule.","createdAt":"2026-09-17T10:33:00Z","isReply":false}]}

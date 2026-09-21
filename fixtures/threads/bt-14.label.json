@@ -1,0 +1,24 @@
+{
+  "adjudication": {
+    "status": "agreed",
+    "by": "adjudicator-f4",
+    "note": "pass1 and pass2 agreed on all four fields (verdict, concern_group, fp_flag, adversarial_reply)"
+  },
+  "annotators": [
+    {
+      "id": "executor-tail",
+      "verdict": "resolved"
+    },
+    {
+      "id": "blind-pass2",
+      "verdict": "resolved"
+    }
+  ],
+  "case": "bt-14",
+  "concern_group": "Resource",
+  "expected": "resolved",
+  "fp_flag": "suspicious-benign",
+  "adversarial_reply": false,
+  "rule_chain_version": "1.0",
+  "suite": "breadth-tail"
+}

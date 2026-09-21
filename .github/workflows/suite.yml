@@ -52,27 +52,39 @@ jobs:
         # micro suites run under the FakeDriver — zero network, zero spend —
         # proving the whole pipeline (suite load, payload injection, judge
         # spawn, scoring, journal, aggregation) stays wired on every push and
-        # every PR. The fake claims --driver-name subprocess per the recorded
-        # J3 decision (suites/README.md): the fake stands in for a local CLI
-        # transport, so `subprocess` is the honest lane label — never
-        # `ai-sdk`, the paid eval axis. --check-timeout-ms 120000 gives the
-        # judge's internal 45s vitest ceiling generous headroom.
+        # every PR. F4 extends the loop to
+        # suites/review-classifier/breadth-verified (30 cases, ~4 min at the
+        # measured ~70 s/10-case micro pace) — breadth-tail stays
+        # dispatch/matrix-only, never smoke. The fake claims --driver-name
+        # subprocess per the recorded J3 decision (suites/README.md): the
+        # fake stands in for a local CLI transport, so `subprocess` is the
+        # honest lane label — never `ai-sdk`, the paid eval axis.
+        # --check-timeout-ms 120000 gives the judge's internal 45s vitest
+        # ceiling generous headroom.
+        #
+        # STEP-NAME STABILITY: the smoke step name is pinned by
+        # test/workflow-contract.test.ts tripwire assertions — a rename must
+        # update the test in the same commit (renamed in F3 to cover micro
+        # and breadth suites, test updated in lockstep).
         #
         # EXIT DISCIPLINE: rc 0 (no row scored zero) and rc 1 (the suite
         # SCORED ZERO somewhere) are BOTH smoke-green. rc 1 is the honest
-        # fake outcome here — and in practice BOTH suites exit 1: the fake
+        # fake outcome here — and in practice ALL suites exit 1: the fake
         # cannot fix fixtures (every fixer row scores zero across its two
         # DD-4 probes), and its hardcoded 'resolved' verdict misses the 8
-        # non-resolved-expected classifier cases. A scored-zero fake run IS
-        # the success signal; rc >= 2 (usage error, suite load/validation
-        # failure, fixture materialization failure, pre-dispatch
-        # missing-credential) is a hard failure.
+        # non-resolved-expected micro classifier cases and the 24
+        # non-resolved-expected breadth-verified cases. A scored-zero fake
+        # run IS the success signal; rc >= 2 (usage error, suite
+        # load/validation failure, fixture materialization failure,
+        # pre-dispatch missing-credential) is a hard failure.
         run: |
           set -euo pipefail
           hard_fail=0
-          for suite_dir in suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/review-classifier/micro; do
+          for suite_dir in suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/review-classifier/micro suites/review-classifier/breadth-verified; do
             role="$(basename "$(dirname "${suite_dir}")")"
             suite_name="$(basename "${suite_dir}")"
+            # Same-role suites collide on <role>.table.json, so the out dir
+            # nests per suite (F3 shape); micro keeps breadth-separated paths.
             out_dir="reports/smoke/${role}/${suite_name}"
             rc=0
             node --experimental-strip-types runner/index.ts \
@@ -480,11 +492,13 @@ jobs:
           MATRIX_PROFILE: ${{ github.event.inputs.profile || 'full' }}
         run: |
           set -euo pipefail
-          # Designed discovery (J4/F3): a SHALLOW find over FIXED suite dirs
+          # Designed discovery (J4/F3/F4): a SHALLOW find over FIXED suite dirs
           # (-maxdepth 1: only a suite.json placed DIRECTLY in a named dir
           # runs). The dispatch input `profile` selects the roots (F3,
           # WB-2.5): `verified` runs only the breadth-verified suites; `full`
           # (the default, and the weekly schedule's value) runs every suite.
+          # F4 adds the classifier breadth suites: breadth-verified rides
+          # both profiles, breadth-tail is full-only (dispatch/matrix).
           # Declaring the roots explicitly keeps widening a deliberate edit.
           #
           # deprecated/ exclusion (F2, WB-2.1): retirement moves a case to a
@@ -494,8 +508,8 @@ jobs:
           hard_fail=0
           suite_count=0
           case "${MATRIX_PROFILE}" in
-            verified) roots="suites/fixer-worker/breadth-verified" ;;
-            full) roots="suites/fixer-worker/micro suites/review-classifier/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail" ;;
+            verified) roots="suites/fixer-worker/breadth-verified suites/review-classifier/breadth-verified" ;;
+            full) roots="suites/fixer-worker/micro suites/review-classifier/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail suites/review-classifier/breadth-verified suites/review-classifier/breadth-tail" ;;
             *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full)"; exit 2 ;;
           esac
           # Review-debt #14: the acp preflight probe spent real inference
@@ -578,8 +592,8 @@ jobs:
           # full-success path clear the day's dir — so zero HARD-FAILS the
           # cell (the snapshot job still runs on a failed matrix and merges
           # surviving tables).
-          expected_count=4
-          if [ "${MATRIX_PROFILE}" = "verified" ]; then expected_count=1; fi
+          expected_count=6
+          if [ "${MATRIX_PROFILE}" = "verified" ]; then expected_count=2; fi
           if [ "${suite_count}" -eq 0 ]; then
             hard_fail=1
             echo "::error::matrix discovery found no suites for profile ${MATRIX_PROFILE} — an accidental removal or a broken root; failing the cell so the snapshot cannot publish an empty day"

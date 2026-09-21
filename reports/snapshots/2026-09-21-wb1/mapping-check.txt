@@ -1,0 +1,25 @@
+deepseek-flash/ai-sdk/fixer-worker/breadth-tail rows=28 jobs={"failed":28} misses=28 non-miss-failures=0 absences=0 problems=0
+deepseek-flash/ai-sdk/fixer-worker/breadth-verified rows=12 jobs={"failed":12} misses=12 non-miss-failures=0 absences=0 problems=0
+deepseek-flash/ai-sdk/fixer-worker/micro rows=5 jobs={"failed":5} misses=5 non-miss-failures=0 absences=0 problems=0
+deepseek-flash/ai-sdk/review-classifier/breadth-tail rows=30 jobs={"ok":30} misses=0 non-miss-failures=0 absences=0 problems=0
+deepseek-flash/ai-sdk/review-classifier/breadth-verified rows=30 jobs={"ok":30} misses=0 non-miss-failures=0 absences=0 problems=0
+deepseek-flash/ai-sdk/review-classifier/micro rows=10 jobs={"ok":10} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/ai-sdk/fixer-worker/breadth-tail rows=21 jobs={"failed":28} misses=21 non-miss-failures=7 absences=7 problems=0
+glm-5.3-flash/ai-sdk/fixer-worker/breadth-verified rows=9 jobs={"failed":12} misses=9 non-miss-failures=3 absences=3 problems=0
+glm-5.3-flash/ai-sdk/fixer-worker/micro rows=4 jobs={"failed":5} misses=4 non-miss-failures=1 absences=1 problems=0
+glm-5.3-flash/ai-sdk/review-classifier/breadth-tail rows=30 jobs={"failed":11,"ok":19} misses=11 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/ai-sdk/review-classifier/breadth-verified rows=30 jobs={"ok":21,"failed":9} misses=9 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/ai-sdk/review-classifier/micro rows=10 jobs={"ok":10} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/claude-agent/fixer-worker/breadth-tail rows=10 jobs={"ok":10} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/claude-agent/fixer-worker/breadth-verified rows=5 jobs={"ok":5} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/claude-agent/fixer-worker/micro rows=3 jobs={"ok":3} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/claude-agent/review-classifier/breadth-tail rows=30 jobs={"ok":30} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/claude-agent/review-classifier/breadth-verified rows=30 jobs={"ok":30} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/claude-agent/review-classifier/micro rows=10 jobs={"ok":10} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/subprocess/fixer-worker/breadth-tail rows=5 jobs={"ok":5} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/subprocess/fixer-worker/breadth-verified rows=2 jobs={"ok":2} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/subprocess/fixer-worker/micro rows=1 jobs={"budget-exhausted":1} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/subprocess/review-classifier/breadth-tail rows=30 jobs={"ok":30} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/subprocess/review-classifier/breadth-verified rows=30 jobs={"ok":30} misses=0 non-miss-failures=0 absences=0 problems=0
+glm-5.3-flash/subprocess/review-classifier/micro rows=10 jobs={"ok":10} misses=0 non-miss-failures=0 absences=0 problems=0
+rows 385, problems 0

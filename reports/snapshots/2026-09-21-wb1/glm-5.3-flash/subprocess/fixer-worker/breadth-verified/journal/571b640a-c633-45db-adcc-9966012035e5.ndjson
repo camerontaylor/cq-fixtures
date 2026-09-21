@@ -1,0 +1,6 @@
+{"type":"run-started","runId":"571b640a-c633-45db-adcc-9966012035e5","at":"2026-09-21T07:18:48.354Z","planId":"breadth-verified"}
+{"type":"job-started","runId":"571b640a-c633-45db-adcc-9966012035e5","at":"2026-09-21T07:18:48.357Z","jobId":"breadth-01","op":"fixer-worker","attempt":1}
+{"type":"job-finished","runId":"571b640a-c633-45db-adcc-9966012035e5","at":"2026-09-21T07:23:58.628Z","jobId":"breadth-01","opId":"fixer-worker","inputsHash":"4c1b0b5446d2d2441abaa03eda8833bec11efb7cb673bca0304faa5212cba595","result":{"status":"ok","value":{"score":0.5,"passed":1,"total":2}},"usage":{"input":30421,"output":5148,"cacheRead":318528,"cacheWrite":0}}
+{"type":"job-started","runId":"571b640a-c633-45db-adcc-9966012035e5","at":"2026-09-21T07:23:58.634Z","jobId":"breadth-02","op":"fixer-worker","attempt":1}
+{"type":"job-finished","runId":"571b640a-c633-45db-adcc-9966012035e5","at":"2026-09-21T07:28:32.867Z","jobId":"breadth-02","opId":"fixer-worker","inputsHash":"38031183385791e11abaa1bec9f50f08593465294ad61d19eef3c5ece5b957c7","result":{"status":"ok","value":{"score":0.5,"passed":1,"total":2}},"usage":{"input":44755,"output":5638,"cacheRead":466944,"cacheWrite":0}}
+{"type":"run-finished","runId":"571b640a-c633-45db-adcc-9966012035e5","at":"2026-09-21T07:28:32.871Z","stoppedEarly":true,"earlyStopReason":"budget"}

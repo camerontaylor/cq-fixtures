@@ -1,0 +1,4 @@
+{"type":"run-started","runId":"c8b1008d-7f75-4a18-b1f8-7362112aa833","at":"2026-09-21T07:28:33.452Z","planId":"micro"}
+{"type":"job-started","runId":"c8b1008d-7f75-4a18-b1f8-7362112aa833","at":"2026-09-21T07:28:33.455Z","jobId":"micro-1","op":"fixer-worker","attempt":1}
+{"type":"job-finished","runId":"c8b1008d-7f75-4a18-b1f8-7362112aa833","at":"2026-09-21T07:33:26.596Z","jobId":"micro-1","opId":"fixer-worker","inputsHash":"452df9e4b113ab0b169667841616b7f8905d2f736858f59bdde2e141dc01bd05","result":{"status":"budget-exhausted"},"usage":{"input":17963,"output":6567,"cacheRead":358336,"cacheWrite":0}}
+{"type":"run-finished","runId":"c8b1008d-7f75-4a18-b1f8-7362112aa833","at":"2026-09-21T07:33:26.602Z","stoppedEarly":true,"earlyStopReason":"budget"}

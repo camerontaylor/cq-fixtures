@@ -648,6 +648,22 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     };
   }
 
+  // A GOVERNED stop (the driver's own budget stop, or the governor's abort
+  // signal): the case RAN and was deliberately cut off, so it keeps an honest
+  // incomplete row — it is NOT the non-model error class that becomes an
+  // absence (runner/README.md).
+  function stopDriver(stopReason: 'budget' | 'aborted'): Driver {
+    return {
+      async run(): Promise<WorkerResult> {
+        return {
+          usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+          denials: [],
+          stopReason,
+        };
+      },
+    };
+  }
+
   it('a fixer structured-output-miss publishes an honest DD-4 scored-miss row (0/2), cause verbatim in the journal', async () => {
     // The model emitted unparseable structured output — a MODEL outcome, so
     // the case is a real zero in the tables (both DD-4 probes fail: the
@@ -730,6 +746,43 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     const events = await log.read((await log.runs())[0]!);
     const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
     expect(finished?.result).toMatchObject({ status: 'failed', error: expect.stringContaining('driver reported no cause') });
+  }, 15_000);
+
+  it('a GOVERNED budget stop keeps publishing an honest incomplete row (0 over the ceiling), never an absence', async () => {
+    // The driver ran and its own token budget stopped the case mid-flight.
+    // The model got no completed chance, but the case DID run, so the honest
+    // record is a scored row over the configured DD-4 probe ceiling with the
+    // budget-exhausted journal status — only non-model ERROR causes (and a
+    // thrown driver) become absences. Pinned so a future edit cannot silently
+    // flip a governed stop to an absence.
+    const dir = fixerSuite('gov-budget', 'fix-budget');
+    const journalPath = join(root, 'gov-budget-journal');
+    const result = await runSuite(opts(dir, { driver: stopDriver('budget'), journalPath }));
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ case: 'fix-budget', outcome: { score: 0, passed: 0, total: 2 } });
+    expect(result.absences).toEqual([]);
+    assertSchemaValid(result.rows, result.tables);
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result).toMatchObject({ status: 'budget-exhausted' });
+  }, 15_000);
+
+  it('a GOVERNED aborted stop keeps publishing an honest incomplete row (0 over the ceiling), never an absence', async () => {
+    // The governor's cancellation signal fired mid-run: the same honest
+    // incomplete row as the budget stop, journaled `indeterminate` with the
+    // driver's abort reason. Not an absence — the case was dispatched.
+    const dir = fixerSuite('gov-aborted', 'fix-aborted');
+    const journalPath = join(root, 'gov-aborted-journal');
+    const result = await runSuite(opts(dir, { driver: stopDriver('aborted'), journalPath }));
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ case: 'fix-aborted', outcome: { score: 0, passed: 0, total: 2 } });
+    expect(result.absences).toEqual([]);
+    assertSchemaValid(result.rows, result.tables);
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    expect(finished?.result).toMatchObject({ status: 'indeterminate', detail: 'driver stopReason: aborted' });
   }, 15_000);
 
   it('isStructuredOutputMissCause matches the exact class token only (no substring drift)', () => {

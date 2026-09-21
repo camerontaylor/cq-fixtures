@@ -633,8 +633,15 @@ jobs:
               absent_lines="$(node -e '
                 const fs = require("node:fs");
                 const doc = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                // Valid-JSON-but-wrong-shape fails closed: a `runs` that is not
+                // an array would otherwise read as absence-free and hide a real
+                // absence record (the eval step is our own writer's consumer,
+                // so a wrong shape is a bug worth failing on).
+                if (!Array.isArray(doc.runs)) {
+                  throw new Error("run.json runs is not an array");
+                }
                 const lines = [];
-                for (const run of doc.runs || []) {
+                for (const run of doc.runs) {
                   for (const a of run.absences || []) {
                     lines.push(`${run.model}@${run.driver} ${run.role} case ${a.case}: ${String(a.cause).replace(/[\r\n]+/g, " ")}`);
                   }
@@ -643,9 +650,13 @@ jobs:
               ' "${out_dir}/run.json")"
               if [ -n "${absent_lines}" ]; then
                 while IFS= read -r absent_line; do
-                  echo "::warning::${absent_line} (dispatch-only absence — no row published)"
-                  # The endpoint's cause text is untrusted: escape HTML before
-                  # it reaches the markdown step summary (annotation lines stay raw).
+                  # The endpoint's cause text is untrusted in BOTH sinks. The
+                  # ::warning:: annotation must escape workflow-command `%`
+                  # sequences (a literal %0A/%0D/%25 in the cause would
+                  # otherwise be decoded into a line break); the markdown
+                  # step-summary line escapes HTML instead.
+                  annotated="$(printf '%s' "${absent_line}" | sed 's/%/%25/g')"
+                  echo "::warning::${annotated} (dispatch-only absence — no row published)"
                   escaped="$(printf '%s' "${absent_line}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
                   echo "- dispatch-only absence: ${escaped}" >> "${GITHUB_STEP_SUMMARY}"
                 done <<< "${absent_lines}"
@@ -842,7 +853,13 @@ jobs:
                 const path = require("node:path");
                 const table = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
                 const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[1]), "run.json"), "utf8"));
-                const hasAbsences = (manifest.runs || []).some((r) => (r.absences || []).length > 0);
+                // Same fail-closed shape rule as the eval step: a `runs` that is
+                // not an array throws, and the `if ! table_fate=...` guard turns
+                // it into ::error:: + exit 1 rather than a clean-looking table.
+                if (!Array.isArray(manifest.runs)) {
+                  throw new Error("run.json runs is not an array");
+                }
+                const hasAbsences = manifest.runs.some((r) => (r.absences || []).length > 0);
                 process.stdout.write((table.cells || []).length === 0 && hasAbsences ? "skip" : "keep");
               ' "${f}")"; then
                 echo "::error::snapshot: cannot read run.json beside ${f#reports/eval/} — refusing to publish a table without its absence metadata"

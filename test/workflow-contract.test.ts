@@ -341,6 +341,14 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell, 'the summary absence line is HTML-escaped').toContain('escaped="$(printf');
     expect(evalCell).toContain('s/&/\\&amp;/g');
     expect(evalCell).toContain('- dispatch-only absence: ${escaped}');
+    // F1b r2: the ::warning:: annotation separately escapes workflow-command
+    // `%` sequences (a literal %0A/%0D/%25 in endpoint cause text must not be
+    // decoded into annotation line breaks), and BOTH node run.json helpers fail
+    // closed on a valid-JSON-but-wrong-shape manifest (`runs` not an array)
+    // instead of reading it as absence-free.
+    expect(evalCell, 'the annotation escapes workflow-command % sequences').toContain('s/%/%25/g');
+    expect(evalCell, 'the eval manifest read guards its shape').toContain('Array.isArray(doc.runs)');
+    expect(snapshotStep, 'the snapshot manifest read guards its shape').toContain('Array.isArray(manifest.runs)');
   });
 
   it('deprecated/ suites are excluded from matrix discovery (F2, WB-2.1)', () => {

@@ -106,11 +106,14 @@ one-dispatch proving PR.
 
 ## Zero driver-error zeros — the check
 
-Script over every artifact: for each suite, parse the journal's `job-finished` entries, the
-`rows.jsonl`, and `run.json`'s `absences[]`, then assert — (a) every
-`[structured-output-miss]` failure has a row, (b) every non-miss failure has NO row and is in
-`absences[]`, (c) no absence case has a row. Result across all 5 cells × 6 suites:
-**rows 385, problems 0**.
+Committed and **reproducible offline**: `node scripts/snapshot-mapping-check.mjs
+reports/snapshots/2026-09-21-wb1` re-derives the result from the snapshot's own committed
+evidence — each cell's `journal/*.ndjson` (the `job-finished` entries), `rows.jsonl`, and
+`run.json`'s `absences[]`. For every cell it asserts — (a) every `[structured-output-miss]`
+failure has a row, (b) every non-miss failure has NO row and is in `absences[]`, (c) no absence
+case has a row — and exits non-zero on any violation. Every cell's raw NDJSON journal is
+committed beside its table, and the exact command output is committed as `mapping-check.txt`.
+Result across all 4 evaluated cells × 6 suites (24 cells): **rows 385, problems 0**.
 
 ## What is proven vs what is not
 
@@ -160,4 +163,7 @@ Every published table conforms to `schema/comparison-table.schema.json` (validat
 before emission; the snapshot job copies `*.table.json` verbatim). Each of the 24 published cells
 ships its table **plus** `run.json` (the F6 manifest: role/suite/model/driver/variant,
 `toolkit.lock`, `suiteSha`, `runId`, and the `absences[]` records) and `rows.jsonl` (the F6
-regrade input) beside it — 74 committed files, mirroring what the automatic snapshot job copies.
+regrade input) plus its raw `journal/*.ndjson` beside it — 99 committed files (24 tables + 24
+`run.json` + 24 `rows.jsonl` + 24 journals + this README + `triage-addendum.md` +
+`mapping-check.txt`), a superset of what the automatic snapshot job copies (journals included so
+the mapping check is offline-reproducible).

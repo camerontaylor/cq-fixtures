@@ -993,6 +993,37 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     expect(table!.cells[0]).toMatchObject({ fpN: 3, fpRate: 1 / 3 });
   });
 
+  it('fp counting is per flagged ROW, not per probe (CodeRabbit bot T1: a two-probe row counts once)', () => {
+    const row = (id: string, probes: ResultRow['probes']): ResultRow => ({
+      role: 'review-classifier',
+      suite: 'fp-row-once',
+      case: id,
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: 0, passed: 0, total: 1 },
+      probes,
+      suspiciousBenign: true,
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-fp-row-once',
+      timestamp: '2026-09-21T00:00:00Z',
+    });
+    const [table] = aggregate([
+      // One flagged row, two probes, one crying wolf: fpN counts the row once.
+      row('c-multi', [
+        { kind: 'expected-verdict', expected: 'skip', observed: 'actionable', passed: false },
+        { kind: 'expected-verdict', expected: 'skip', observed: 'responded', passed: false },
+      ]),
+      // One flagged row, two probes, neither actionable: a miss, not an FP.
+      row('c-multi-miss', [
+        { kind: 'expected-verdict', expected: 'resolved', observed: 'responded', passed: false },
+        { kind: 'expected-verdict', expected: 'resolved', observed: null, passed: false },
+      ]),
+    ]);
+    expect(table!.cells[0]).toMatchObject({ fpN: 2, fpRate: 1 / 2 });
+  });
+
   it('a classifier case with a missing sidecar omits the flag LOUDLY: row shape unchanged, one case diagnostic (r1-F3)', async () => {
     writeFileSync(join(root, 'lonely.json'), JSON.stringify(threadPayload(7)));
     // No lonely.label.json anywhere: the flag must be omitted AND diagnosed.
@@ -1007,6 +1038,21 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     ]);
     expect(result.diagnostics).toContain(
       "case c-lonely: label sidecar 'lonely.label.json' absent — suspiciousBenign flag omitted",
+    );
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+
+  it('a classifier case with an invalid sidecar omits the flag LOUDLY: valid JSON but unrecognized fp_flag (CodeRabbit bot T2)', async () => {
+    writeFileSync(join(root, 'hollow.json'), JSON.stringify(threadPayload(8)));
+    writeFileSync(join(root, 'hollow.label.json'), JSON.stringify({ case: 'c-hollow', expected: 'skip' }) + '\n');
+    const dir = reviewSuite('sidecar-invalid', 'sidecar-invalid', [
+      reviewCaseOn('c-hollow', 'hollow.json', 'skip'),
+    ]);
+    const result = await runSuite(opts(dir));
+    expect(result.rows).toHaveLength(1);
+    expect('suspiciousBenign' in result.rows[0]!).toBe(false);
+    expect(result.diagnostics).toContain(
+      "case c-hollow: label sidecar 'hollow.label.json' invalid content (fp_flag missing or outside none|suspicious-benign) — suspiciousBenign flag omitted",
     );
     assertSchemaValid(result.rows, result.tables);
   }, 15_000);

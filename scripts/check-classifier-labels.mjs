@@ -171,6 +171,12 @@ function main() {
       }
       if (!VERDICTS.includes(l.expected)) fail(`${where}: sidecar.expected '${l.expected}' outside the verdict vocabulary`);
       if (!FP_FLAGS.includes(l.fp_flag)) fail(`${where}: sidecar.fp_flag '${l.fp_flag}' must be none|suspicious-benign`);
+      // CodeRabbit bot thread T4: the guide requires expected != actionable
+      // for this flag — an actionable case counted as benign would corrupt
+      // the FP rate with a definitional false positive.
+      if (l.fp_flag === 'suspicious-benign' && l.expected === 'actionable') {
+        fail(`${where}: suspicious-benign requires a non-actionable expected verdict (guide FP-flag definition)`);
+      }
       if (typeof l.adversarial_reply !== 'boolean') fail(`${where}: sidecar.adversarial_reply must be boolean`);
       if (typeof l.concern_group !== 'string' || l.concern_group === '') fail(`${where}: sidecar.concern_group must be a non-empty string`);
       else if (!CONCERN_GROUPS.includes(l.concern_group)) {
@@ -214,6 +220,20 @@ function main() {
       // [actionable, skip] pass as `agreed` on expected actionable.
       const by = l.adjudication?.by;
       const decision = l.adjudication?.decision;
+      // CodeRabbit bot thread T5(b): on double-coded cases the recorded
+      // expected must be one of the annotator verdicts — the adjudicated
+      // choice always comes from the passes, never from outside them.
+      // (`decision === expected` verbatim was rejected: our decision fields
+      // are prose rationale for concern-group-only adjudications where
+      // verdicts never differed — see bv-06/bv-09 — so a verdict-equality
+      // rule would fail the valid corpus. This membership rule captures the
+      // genuine invariant instead.)
+      if ((status === 'agreed' || status === 'adjudicated') && annotatorEntries.length > 0) {
+        const verdicts = new Set(annotatorEntries.map((a) => a.verdict));
+        if (!verdicts.has(l.expected)) {
+          fail(`${where}: status ${status} but expected '${l.expected}' matches no annotator verdict [${[...verdicts].join(', ')}]`);
+        }
+      }
       if (status === 'agreed') {
         const dissent = annotatorEntries.filter((a) => a.verdict !== l.expected);
         if (dissent.length > 0) {
@@ -241,6 +261,12 @@ function main() {
           }
         } else {
           tierLabels.push({ id: c.id, audit: false });
+          // CodeRabbit bot thread T5(a): a single-annotator record carries
+          // exactly one pass — zero or two-plus annotators here is a
+          // malformed record, not a leaner audit.
+          if (annotators !== 1) {
+            fail(`${where}: single-annotator tail case needs exactly 1 annotator, has ${annotators}`);
+          }
           if (status !== 'single-annotator') {
             fail(`${where}: non-audit tail adjudication.status '${status}' must be single-annotator`);
           }

@@ -173,11 +173,14 @@ function tokensOf(usage: Usage): ResultRow['tokens'] {
 // sidecar is NOT silent (r1-F3): the caller surfaces it as a case diagnostic
 // so a damaged sidecar undercounts fpN/fpRate loudly instead of invisibly —
 // micro suites carry no labels, so their runs note the omission per case.
-// This helper never throws past its caller. 'unflagged' covers every
-// present-but-not-benign sidecar (fp_flag none, or invalid — validity is the
-// drift check's job, not the runner's); the row omits suspiciousBenign for
-// every status but 'flagged'.
-type SidecarFlag = 'flagged' | 'absent' | 'unparseable' | 'unflagged';
+// This helper never throws past its caller. 'unflagged' covers only a
+// present sidecar whose fp_flag is the recognized value 'none'; 'invalid'
+// covers parsed JSON whose fp_flag is missing or unrecognized (e.g. {} or
+// a typo — CodeRabbit bot thread T2). Validity beyond the flag read stays
+// the drift check's job, but an invalid sidecar is diagnosed like absent and
+// unparseable rather than silently treated as unflagged. The row omits
+// suspiciousBenign for every status but 'flagged'.
+type SidecarFlag = 'flagged' | 'absent' | 'unparseable' | 'unflagged' | 'invalid';
 function suspiciousBenignFlag(repoRoot: string, fixture: string): SidecarFlag {
   if (!fixture.endsWith('.json')) return 'unflagged';
   let raw: string;
@@ -192,14 +195,11 @@ function suspiciousBenignFlag(repoRoot: string, fixture: string): SidecarFlag {
   } catch {
     return 'unparseable';
   }
-  if (
-    typeof parsed === 'object' &&
-    parsed !== null &&
-    (parsed as { fp_flag?: unknown }).fp_flag === 'suspicious-benign'
-  ) {
-    return 'flagged';
-  }
-  return 'unflagged';
+  if (typeof parsed !== 'object' || parsed === null) return 'invalid';
+  const flag = (parsed as { fp_flag?: unknown }).fp_flag;
+  if (flag === 'suspicious-benign') return 'flagged';
+  if (flag === 'none') return 'unflagged';
+  return 'invalid';
 }
 
 export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
@@ -512,9 +512,13 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // r1-F3: a damaged sidecar is a case diagnostic (row shape
         // unchanged) — silent omission would undercount fpN/fpRate with
         // zero signal on any run the drift gate does not cover.
-        if (sidecarFlag === 'absent' || sidecarFlag === 'unparseable') {
+        if (sidecarFlag === 'absent' || sidecarFlag === 'unparseable' || sidecarFlag === 'invalid') {
+          const why =
+            sidecarFlag === 'invalid'
+              ? 'invalid content (fp_flag missing or outside none|suspicious-benign)'
+              : sidecarFlag;
           caseDiagnostics.push(
-            `case ${c.id}: label sidecar '${c.fixture.slice(0, -'.json'.length)}.label.json' ${sidecarFlag} — suspiciousBenign flag omitted`,
+            `case ${c.id}: label sidecar '${c.fixture.slice(0, -'.json'.length)}.label.json' ${why} — suspiciousBenign flag omitted`,
           );
         }
       }

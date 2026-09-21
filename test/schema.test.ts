@@ -146,6 +146,26 @@ describe('result-row schema (plan §8 field list)', () => {
     ];
     expect(rowSchema(row)).toBe(false);
   });
+
+  it('rejects a probes[] entry with a non-vocabulary kind (CodeRabbit bot T3: typos must not silently leave the metrics)', () => {
+    const row = validRow();
+    (row as { probes?: unknown }).probes = [{ kind: 'check-rerun', expected: 'skip', observed: 'skip', passed: true }];
+    expect(rowSchema(row)).toBe(false);
+  });
+
+  it('rejects a probes[] entry with a non-vocabulary expected verdict (CodeRabbit bot T3)', () => {
+    const row = validRow();
+    (row as { probes?: unknown }).probes = [{ kind: 'expected-verdict', expected: 'maybe', observed: 'skip', passed: false }];
+    expect(rowSchema(row)).toBe(false);
+  });
+
+  it('accepts a probes[] entry with an out-of-vocabulary observed (OOV observations are intentionally preserved)', () => {
+    expect(rowSchema(validRow({
+      role: 'review-classifier',
+      outcome: { score: 0, passed: 0, total: 1 },
+      probes: [{ kind: 'expected-verdict', expected: 'skip', observed: 'maybe', passed: false }],
+    }))).toBe(true);
+  });
 });
 
 describe('comparison-table schema (ADR-0001 axes)', () => {

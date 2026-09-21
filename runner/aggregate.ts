@@ -210,21 +210,30 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
     acc.passed += row.outcome.passed;
     acc.total += row.outcome.total;
     // F4: fold classifier probes into the cell's verdict tallies. A row may
-    // carry several probes; each expected-verdict entry counts once. The fp
-    // subset counts flagged rows per probe entry (one entry per classifier
-    // row in practice — runSuite emits exactly one).
+    // carry several probes; each expected-verdict entry counts once in the
+    // confusion. The fp subset is per ROW, not per probe (CodeRabbit bot
+    // thread T1): a flagged row counts once in fpTotal however many probes
+    // it carries, and is fpWrong once iff ANY of its classifier probes
+    // observed actionable. runSuite emits exactly one entry per classifier
+    // row, so the row-once rule only binds schema-valid rows from elsewhere.
     if (row.probes !== undefined) {
+      let flaggedRowSawActionable = false;
+      let flaggedRowHasProbe = false;
       for (const p of row.probes) {
         if (p.kind !== 'expected-verdict') continue;
         acc.classifierProbes.push({ expected: p.expected, observed: p.observed ?? null, passed: p.passed });
         if (row.suspiciousBenign === true) {
-          acc.fpTotal += 1;
+          flaggedRowHasProbe = true;
           // FP-rate-on-suspicious-benign means "the model cried wolf":
           // only an observed actionable on a benign case is a false
           // positive. Any other miss (wrong non-actionable verdict, or a
           // null observed from an unparseable answer) is a miss, not an FP.
-          if (p.observed === 'actionable') acc.fpWrong += 1;
+          if (p.observed === 'actionable') flaggedRowSawActionable = true;
         }
+      }
+      if (row.suspiciousBenign === true && flaggedRowHasProbe) {
+        acc.fpTotal += 1;
+        if (flaggedRowSawActionable) acc.fpWrong += 1;
       }
     }
     acc.costs.push(row.costUSD);

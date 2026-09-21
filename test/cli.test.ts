@@ -250,6 +250,16 @@ describe('--max-tokens-per-case (WB-1.6: the cap scales with suite size)', () =>
     await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '0'])).resolves.toBe(2);
   }, 15_000);
 
+  it('rejects fractional token budgets but keeps a fractional --max-usd legal', async () => {
+    const dir = writeSuite('cap-frac', { name: 'cap-frac', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain([...cliArgs(dir), '--max-tokens', '1.5'])).resolves.toBe(2);
+    await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '1.5'])).resolves.toBe(2);
+    // --max-usd stays fractional (a USD cap may be 0.5). One case: the
+    // unpriced glm lane trips the USD cap fail-closed AFTER the only case,
+    // so no admission is refused and the run is clean (exit 0).
+    await expect(cliMain([...cliArgs(dir), '--max-usd', '0.5'])).resolves.toBe(0);
+  }, 15_000);
+
   it('gates admission at perCase × caseCount (NOT a flat cap): 3 cases at 5 tokens/case trips after case 2', async () => {
     // The mocked driver reports 15 tokens/case. cap = 5 × 3 = 15: case 1
     // observes 15 (not > 15), case 2 pushes the fold to 30 (> 15) and trips,

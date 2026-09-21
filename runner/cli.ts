@@ -212,7 +212,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   // budget was meant, or the reverse).
   if (maxTokens !== undefined && maxTokensPerCase !== undefined) {
     throw new UsageError(
-      "--max-tokens and --max-tokens-per-case are mutually exclusive: the first is an absolute per-invocation cap, the second is multiplied by the loaded suites' case count (WB-1.6) — pass one",
+      "--max-tokens and --max-tokens-per-case are mutually exclusive: the first is an absolute per-suite-run cap, the second is multiplied by that suite's case count (WB-1.6) — pass one",
     );
   }
   return { suites, driver, model, provider, maxUsd, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName };

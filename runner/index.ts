@@ -12,6 +12,7 @@
 // null (DD-9); the row's model is the OBSERVED served id when the driver
 // reports one.
 
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -37,9 +38,10 @@ import {
 } from '@camerontaylor/cq-toolkit';
 import { aggregate, type ComparisonTable, type ResultRow } from './aggregate.ts';
 import { scoreSchemaCompliance } from './dimensions/schemaCompliance.ts';
+import type { CaseArtifact } from './persist.ts';
 import { scoreFixerWorker } from './score/fixerWorker.ts';
 import { scoreReviewClassifier } from './score/reviewClassifier.ts';
-import { isFixerCase, loadSuite } from './suite.ts';
+import { isFixerCase, loadSuite, suiteVariant } from './suite.ts';
 
 // Public library surface: the suite loader rides along with the runner.
 export { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
@@ -141,9 +143,49 @@ export interface RunSuiteResult {
    * payload parse failure — each prefixed with its case id so the CLI's X2
    * block lists affected cases without re-matching prose. */
   materializationDiagnostics: string[];
+  /** F6 (WB-5.2a): the raw per-case prediction artifacts (fixer patches +
+   * structured outputs) a caller persists — bounded and denylist-scanned by
+   * `publishArtifacts` at emit time. */
+  artifacts: CaseArtifact[];
 }
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+// F6 (WB-5.2a): the persisted fixer patch is a `git diff` of the materialized
+// workspace against its pristine copy. Git is initialized in the workspace and
+// the pristine state committed BEFORE the driver runs, so a later `git diff
+// --cached HEAD` is exactly "what the worker changed". These config overrides
+// keep the baseline commit identity-free and locale-independent; the eval job
+// excises the repo's .git but the git BINARY is still present.
+const GIT_COMMON = [
+  '-c', 'user.email=cq-fixtures@localhost',
+  '-c', 'user.name=cq-fixtures',
+  '-c', 'commit.gpgsign=false',
+  '-c', 'core.autocrlf=false',
+];
+
+/** Commit the materialized workspace's pristine state so a later diff is vs pristine. */
+function gitBaseline(workspace: string): boolean {
+  const run = (args: string[]) => spawnSync('git', ['-C', workspace, ...GIT_COMMON, ...args], { encoding: 'utf8' });
+  return run(['init', '-q']).status === 0 && run(['add', '-A']).status === 0
+    && run(['commit', '-q', '-m', 'pristine']).status === 0;
+}
+
+/** `git diff`-style patch of the workspace vs its pristine baseline (undefined on failure). */
+function gitPatch(workspace: string): string | undefined {
+  const run = (args: string[]) => spawnSync('git', ['-C', workspace, ...GIT_COMMON, ...args], { encoding: 'utf8' });
+  if (run(['add', '-A']).status !== 0) return undefined;
+  // Explicit a/ b/ prefixes so the published patch is a standard git diff
+  // regardless of the operator's git config (diff.mnemonicPrefix produces
+  // c/ i/ w/ o/ prefixes). --no-ext-diff keeps an installed diff.external
+  // from hijacking the output; apply strips one path component, so a/ b/ is
+  // the format regrade re-applies cleanly.
+  const res = run([
+    'diff', '--cached', '--no-color', '--no-ext-diff',
+    '--src-prefix=a/', '--dst-prefix=b/', 'HEAD',
+  ]);
+  return res.status === 0 ? res.stdout : undefined;
+}
 
 // DD-4: a fixer-worker case configures TWO scoring probes — the check-rerun
 // judge (does the workspace pass now) and the schema-compliance probe (could
@@ -204,6 +246,7 @@ function suspiciousBenignFlag(repoRoot: string, fixture: string): SidecarFlag {
 
 export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const suite = loadSuite(opts.suiteDir);
+  const variant = suiteVariant(suite);
   const repoRoot = opts.repoRoot ?? DEFAULT_REPO_ROOT;
   const driverName = opts.driverName ?? 'ai-sdk';
   const runId = randomUUID();
@@ -289,6 +332,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   }
 
   const rows: ResultRow[] = [];
+  const artifacts: CaseArtifact[] = [];
   const caseDiagnostics: string[] = [];
   const materializationDiagnostics: string[] = [];
   let materializationFailures = 0;
@@ -346,6 +390,13 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // relative links into ABSOLUTE paths at the pristine fixture —
         // a copied workspace would silently read the untouched original.
         cpSync(join(repoRoot, c.fixture), workspace, { recursive: true, verbatimSymlinks: true });
+        // F6 (WB-5.2a): baseline the pristine copy so the persisted patch is
+        // exactly the worker's diff. A baseline failure is NOT fatal — the
+        // case still runs and scores — but the patch is then unavailable, and
+        // that is recorded rather than silently lost.
+        if (!gitBaseline(workspace)) {
+          caseDiagnostics.push(`case ${c.id}: git baseline failed — patch not persisted`);
+        }
       } catch (e) {
         if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
         await refuseCase(`fixture materialization failed for '${c.fixture}': ${e instanceof Error ? e.message : String(e)}`);
@@ -533,12 +584,39 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       });
       rows.push({
         role: suite.role, suite: suite.name, case: c.id, model, driver: driverName,
+        // F6/CQ-4: only a non-default variant rides the row, so the default
+        // posture (and every pre-F6 row) keeps its exact shape.
+        ...(variant !== 'default' ? { variant } : {}),
         outcome, costUSD: cost ?? null,
         ...(cost !== undefined ? { costBasis: 'modeled' as const } : {}),
         ...(rowProbes !== undefined ? { probes: rowProbes } : {}),
         ...(sidecarFlag === 'flagged' ? { suspiciousBenign: true } : {}),
         wallTimeMs, tokens: tokensOf(usage), runId, timestamp: now(),
       });
+      // F6 (WB-5.2a): persist the prediction. Only a DISPATCHED case has one
+      // (worker !== undefined); the raw artifact is size-bounded and
+      // denylist-scanned at emit time by publishArtifacts. A fixer's patch is
+      // the workspace-vs-pristine diff (the answer to re-judge); a
+      // classifier's output is its raw structured output. The fixer's
+      // structuredOutput is persisted too (the DD-4 schema-compliance probe's
+      // input) so `regrade --rejudge` can re-run BOTH probes offline.
+      if (worker !== undefined) {
+        if (isFixerCase(c)) {
+          if (workspace !== undefined) {
+            const patch = gitPatch(workspace);
+            if (patch !== undefined) artifacts.push({ case: c.id, kind: 'patch', content: patch });
+          }
+          if (worker.structuredOutput !== undefined) {
+            artifacts.push({ case: c.id, kind: 'output', content: JSON.stringify(worker.structuredOutput, null, 2) + '\n' });
+          }
+        } else {
+          artifacts.push({
+            case: c.id,
+            kind: 'output',
+            content: JSON.stringify(worker.structuredOutput ?? null, null, 2) + '\n',
+          });
+        }
+      }
       console.error(`  case ${c.id}: score ${outcome.score}${diagnostics !== undefined ? ` — ${diagnostics.split('\n')[0]}` : ''}`);
     } finally {
       // The materialized workspace is the driver's scratch: graded against,
@@ -581,6 +659,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     diagnostics: caseDiagnostics,
     materializationFailures,
     materializationDiagnostics,
+    artifacts,
   };
 }
 

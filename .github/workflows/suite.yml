@@ -527,11 +527,27 @@ jobs:
             # G7: out dir mirrors the suite path relative to suites/, PREFIXED
             # with the cell's served model id AND driver so same-model driver
             # cells never collide on one table; the NDJSON journal (incl. the
-            # honest-stop record) lands inside the same subtree. The snapshot
-            # job's copy loop preserves the whole relative path, so snapshots
-            # nest as <date>/<model>/<driver>/<role>/<suite>/<role>.table.json.
+            # honest-stop record) lands inside the same subtree. F6/CQ-4: a
+            # non-default suite `variant` adds a <variant>/ segment right after
+            # the driver, so two postures of one suite never overwrite each
+            # other; the default posture keeps the pre-F6 path exactly. The
+            # snapshot job's copy loop preserves the whole relative path, so
+            # snapshots nest as
+            # <date>/<model>/<driver>/<variant?>/<role>/<suite>/<role>.table.json.
             rel_dir="$(dirname "${suite_file#suites/}")"
-            out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}"
+            # The variant comes from the suite.json the runner will also load.
+            # It must be a path-safe slug (the suite schema enforces the same
+            # pattern): an unsafe value fails the cell loudly here rather than
+            # escaping reports/eval.
+            variant="$(node -e 'const s=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(s.variant||"default")' "${suite_dir}/suite.json")"
+            if ! printf '%s' "${variant}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+              echo "::error::suite ${suite_dir}: invalid variant '${variant}' (path-safe slug required)"
+              hard_fail=1
+              continue
+            fi
+            variant_prefix=""
+            if [ "${variant}" != "default" ]; then variant_prefix="${variant}/"; fi
+            out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"
             rc=0
             # < /dev/null: this loop reads its worklist from the find's stdin
             # (while-read); a stdin-reading driver transport (the subprocess
@@ -737,16 +753,20 @@ jobs:
           # Snapshot IDENTITY preserves the suite dir (the copy loop is
           # identity-agnostic — it replicates whatever sits below
           # reports/eval/): eval writes
-          # reports/eval/<model>/<driver>/<role>/<suite>/<role>.table.json,
-          # and flattening to the basename would collide the moment two suites
-          # share a role — snapshots/<date>/<model>/<driver>/<role>/<suite>/
-          # is the stable form.
-          while IFS= read -r table; do
-            rel="${table#reports/eval/}"
-            suite_name="$(dirname "${rel}")"
-            mkdir -p "${snap_dir}/${suite_name}"
-            cp "${table}" "${snap_dir}/${suite_name}/"
-          done < <(find reports/eval -name '*.table.json' 2>/dev/null | sort)
+          # reports/eval/<model>/<driver>/<variant?>/<role>/<suite>/... and
+          # flattening to the basename would collide the moment two suites
+          # share a role — snapshots/<date>/<model>/<driver>/<variant?>/<role>/
+          # <suite>/ is the stable form. F6 (WB-5.2a/5.1): the snapshot carries
+          # the run's PREDICTIONS and provenance beside the tables — rows.jsonl
+          # (the regrade input), run.json (the suite + toolkit.lock/suite-SHA
+          # manifest), and the worker's patches/ and outputs/ artifacts. The
+          # ACP-SKIPPED / ACP-PROBE.json / EMPTY markers do NOT match these
+          # predicates and stay in the artifact only.
+          while IFS= read -r f; do
+            rel="${f#reports/eval/}"
+            mkdir -p "${snap_dir}/$(dirname "${rel}")"
+            cp "${f}" "${snap_dir}/${rel}"
+          done < <(find reports/eval -type f \( -name '*.table.json' -o -name 'rows.jsonl' -o -name 'run.json' -o -path '*/patches/*' -o -path '*/outputs/*' \) 2>/dev/null | sort)
           # Add runs BEFORE any early exit, so removals publish too: on a
           # fully successful matrix the rm -rf above cleared the worktree, and
           # `git add` stages the removal of previously tracked tables as

@@ -168,6 +168,12 @@
             "type": "integer",
             "minimum": 0,
             "description": "VERSIONED ADDITIVE change F4 (2026-09-21): denominator of fpRate — the count of suspicious-benign rows in this cell. Omitted when zero."
+          },
+          "variant": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "description": "VERSIONED ADDITIVE change F6 (2026-09-21): the prompt/tool-surface bundle id that distinguishes this cell. Omitted for the default posture, so pre-F6 tables and default cells keep their shape. Cells are unique on (model, driver, variant)."
           }
         },
         "dependentRequired": {

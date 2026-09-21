@@ -6,6 +6,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   AcpDriver,
   AiSdkDriver,
@@ -18,7 +19,10 @@ import { z } from 'zod';
 import { PREFLIGHT_PROBE_RESERVE_TOKENS, runSuite, type PreflightProbe } from './index.ts';
 import { perSuiteTokenCap } from './budget.ts';
 import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
-import { loadSuite, type Suite } from './suite.ts';
+import { loadSuite, suiteVariant, type Suite } from './suite.ts';
+import { publishArtifacts, writeRunManifest, type CaseArtifact, type RunManifestEntry } from './persist.ts';
+import { regrade } from './regrade.ts';
+import { DEFAULT_CHECK_TIMEOUT_MS } from './score/fixerWorker.ts';
 import { FakeDriver } from './fake-driver.ts';
 // DD-4: the fixer-worker's structured-output shape — the classifier's
 // verdict schema is mirrored locally below, the fixer's lives on the
@@ -42,10 +46,11 @@ const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
   '--driver fake|ai-sdk|claude-agent|subprocess|acp --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
   '(--driver-name is required with --driver fake — a fake run must name the lane it stands in for) ' +
-  '[--max-usd <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>]\n' +
+  '[--max-usd <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
   "caps: --max-tokens caps ONE suite run (each runSuite owns its governor); --max-tokens-per-case is multiplied by that suite's case count (WB-1.6) — pass one, never both\n" +
-  'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure';
+  'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure\n' +
+  'subcommand: regrade --from <out> [--rejudge] [--check-timeout-ms <n>] re-aggregates a finished run (no re-dispatch)';
 
 export class UsageError extends Error {}
 
@@ -112,6 +117,15 @@ function nextValue(argv: readonly string[], i: number, flag: string): string {
   return v;
 }
 
+/** F6: the pinned toolkit.lock value, recorded in the run manifest (null when absent). */
+function readToolkitLock(repoRoot: string): string | null {
+  try {
+    return readFileSync(join(repoRoot, 'toolkit.lock'), 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
+
 interface CliOptions {
   suites: string[];
   driver: DriverKind;
@@ -125,6 +139,8 @@ interface CliOptions {
   out?: string;
   probeRecord?: string;
   driverName: string;
+  /** F6: the suite checkout's git SHA for the run manifest (falls back to $GITHUB_SHA). */
+  suiteSha?: string;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
@@ -144,6 +160,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let journal: string | undefined;
   let out: string | undefined;
   let probeRecord: string | undefined;
+  let suiteSha: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]!;
     switch (flag) {
@@ -161,6 +178,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--journal': journal = nextValue(argv, i, flag); i++; break;
       case '--out': out = nextValue(argv, i, flag); i++; break;
       case '--probe-record': probeRecord = nextValue(argv, i, flag); i++; break;
+      case '--suite-sha': suiteSha = nextValue(argv, i, flag); i++; break;
       case '--max-usd': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
@@ -215,7 +233,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
       "--max-tokens and --max-tokens-per-case are mutually exclusive: the first is an absolute per-suite-run cap, the second is multiplied by that suite's case count (WB-1.6) — pass one",
     );
   }
-  return { suites, driver, model, provider, maxUsd, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName };
+  return { suites, driver, model, provider, maxUsd, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -288,6 +306,15 @@ async function main(argv: readonly string[]): Promise<number> {
   let anyFailed = false;
   let materializationFailures = 0;
   const materializationDiagnostics: string[] = [];
+  // F6: the prediction artifacts + the run manifest published with the tables.
+  const artifactList: CaseArtifact[] = [];
+  const manifestEntries: RunManifestEntry[] = [];
+  // repoRoot mirrors runner/index.ts's default (this file lives in runner/).
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  // F6: the suite checkout's git SHA rides into the manifest (the snapshot's
+  // README header records it for CQ-5 attribution). $GITHUB_SHA is set for
+  // every CI step; --suite-sha overrides it for local runs.
+  const suiteSha = opts.suiteSha ?? process.env.GITHUB_SHA ?? null;
   // Run + score phase: a scored-zero or budget-gated result — or a failure
   // thrown here — is exit 1 (a benign eval outcome the workflow warns on).
   try {
@@ -329,6 +356,22 @@ async function main(argv: readonly string[]): Promise<number> {
       });
       rows.push(...result.rows);
       tables.push(...result.tables);
+      // F6 (WB-5.2a/5.1): carry the predictions and the run identity forward
+      // for the emit phase, where they are bounded, denylist-scanned, and
+      // written beside the tables.
+      artifactList.push(...result.artifacts);
+      manifestEntries.push({
+        role: suite.role,
+        suite: suite.name,
+        suiteDir,
+        model: opts.model,
+        driver: opts.driverName,
+        variant: suiteVariant(suite),
+        toolkitLock: readToolkitLock(repoRoot),
+        suiteSha,
+        runId: result.rows[0]?.runId ?? 'unknown',
+        generatedAt: new Date().toISOString(),
+      });
       // X2 inputs arrive STRUCTURED from the runner (round 3): the runner
       // classifies its own infrastructure refusals, so the CLI prints them
       // without re-matching diagnostics prose.
@@ -378,7 +421,13 @@ async function main(argv: readonly string[]): Promise<number> {
         writeFileSync(join(opts.out, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');
       }
       writeFileSync(join(opts.out, 'rows.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length > 0 ? '\n' : ''));
-      console.log(`wrote ${opts.out}/rows.jsonl and ${tables.length} table(s)`);
+      // F6 (WB-5.2a): persist the prediction + the run manifest. Each artifact
+      // is size-bounded and denylist-scanned before it is written; a withheld
+      // artifact is diagnosed, never silently dropped.
+      const published = publishArtifacts(opts.out, artifactList, repoRoot);
+      for (const d of published.diagnostics) console.error(`  ${d}`);
+      writeRunManifest(opts.out, manifestEntries);
+      console.log(`wrote ${opts.out}/rows.jsonl, ${tables.length} table(s), ${published.published.length} prediction artifact(s) and run.json`);
     }
   } catch (e) {
     console.error(`report/emit failure: ${e instanceof Error ? e.message : String(e)}`);
@@ -387,8 +436,79 @@ async function main(argv: readonly string[]): Promise<number> {
   return anyFailed ? 1 : 0;
 }
 
+/** F6 (WB-5.2b): `runner regrade --from <out>` usage. */
+const REGRADE_USAGE =
+  'usage: node --experimental-strip-types runner/index.ts regrade --from <out> [--rejudge] [--repo-root <dir>] [--check-timeout-ms <n>]\n' +
+  'regrade re-reads <out>/rows.jsonl and re-aggregates the tables without re-dispatch, preserving the\n' +
+  'original generatedAt so a plain regrade is byte-identical. --rejudge additionally re-runs the LOCAL\n' +
+  'judge over the persisted predictions (<out>/patches/<case>.patch, <out>/outputs/<case>.json);\n' +
+  '--repo-root (default: this repo) resolves the manifest\'s suiteDir and the cases\' fixture/check paths.\n' +
+  'exits: 0 clean; 2 usage or I/O failure';
+
+function parseRegradeArgs(argv: readonly string[]): { from: string; rejudge: boolean; checkTimeoutMs: number; repoRoot?: string } {
+  let from = '';
+  let rejudge = false;
+  let checkTimeoutMs = DEFAULT_CHECK_TIMEOUT_MS;
+  let repoRoot: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const flag = argv[i]!;
+    switch (flag) {
+      case '--from': from = nextValue(argv, i, flag); i++; break;
+      case '--rejudge': rejudge = true; break;
+      case '--repo-root': repoRoot = nextValue(argv, i, flag); i++; break;
+      case '--check-timeout-ms': {
+        const n = Number(nextValue(argv, i, flag));
+        if (!Number.isFinite(n) || n <= 0 || !Number.isSafeInteger(n)) {
+          throw new UsageError('--check-timeout-ms must be a positive safe integer');
+        }
+        checkTimeoutMs = n; i++; break;
+      }
+      default: throw new UsageError(`unknown flag '${flag}'\n${REGRADE_USAGE}`);
+    }
+  }
+  if (from === '') throw new UsageError(`--from <out> is required\n${REGRADE_USAGE}`);
+  return { from, rejudge, checkTimeoutMs, ...(repoRoot !== undefined ? { repoRoot } : {}) };
+}
+
+/**
+ * F6 (WB-5.2b): regrade entry. Re-aggregates the out dir's rows.jsonl in
+ * place (and re-judges persisted predictions with --rejudge), writing each
+ * table back as `JSON.stringify(t, null, 2) + '\n'` — the exact formatting
+ * the run-mode emit phase uses, so a plain regrade is byte-identical.
+ */
+function regradeMain(argv: readonly string[]): number {
+  let opts: { from: string; rejudge: boolean; checkTimeoutMs: number; repoRoot?: string };
+  try {
+    opts = parseRegradeArgs(argv);
+  } catch (e) {
+    if (e instanceof UsageError) { console.error(e.message); return 2; }
+    throw e;
+  }
+  try {
+    const result = regrade({
+      from: opts.from,
+      rejudge: opts.rejudge,
+      checkTimeoutMs: opts.checkTimeoutMs,
+      ...(opts.repoRoot !== undefined ? { repoRoot: opts.repoRoot } : {}),
+    });
+    for (const d of result.diagnostics) console.error(`  ${d}`);
+    for (const t of result.tables) {
+      writeFileSync(join(opts.from, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');
+    }
+    console.log(
+      `regrade ${opts.from}: ${result.rows.length} row(s), ${result.rejudged} re-judged, ` +
+      `${result.changed} changed, ${result.tables.length} table(s)`,
+    );
+    return 0;
+  } catch (e) {
+    console.error(`regrade failure: ${e instanceof Error ? e.message : String(e)}`);
+    return 2;
+  }
+}
+
 /** Process entry: returns the exit code, never throws past the CLI boundary. */
 export async function cliMain(argv: readonly string[]): Promise<number> {
+  if (argv[0] === 'regrade') return regradeMain(argv.slice(1));
   try {
     return await main(argv);
   } catch (e) {

@@ -150,6 +150,12 @@
     "suspiciousBenign": {
       "type": "boolean",
       "description": "True when the case's fixture-side label.json carries fp_flag 'suspicious-benign' (an adjudicated suspicious-but-benign negative: alarming-looking content whose expected verdict is not actionable). Absent otherwise — absence means unflagged, never false-by-default; micro suites carry no labels so their rows omit it. The FP rate on this subset is what makes classifier false-positive behavior scoreable."
+    },
+    "variant": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "VERSIONED ADDITIVE change F6 (2026-09-21): the prompt/tool-surface bundle id of the suite this row ran under. Omitted when the suite declares none (the default posture), so pre-F6 rows and default-posture rows keep their exact shape."
     }
   },
   "allOf": [

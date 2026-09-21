@@ -316,12 +316,12 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
       gates.push(gate('p2p-fixed', allBad.length === 0, allBad.length === 0 ? 'every declared title passes in the fixed state' : `not passing: ${allBad.join('; ')}`));
 
       // adequacy: delete the recorded statement from the fixed source.
-      const adequacy = record.adequacy!;
-      const fixedSource = record.validation.fix[adequacy.file]!;
-      const crippled = fixedSource.replace(adequacy.delete, '');
-      if (crippled === fixedSource) {
-        gates.push(gate('adequacy', false, 'recorded deletion statement not present in the fixed source'));
+      const adequacy = record.adequacy;
+      const fixedSource = adequacy !== undefined ? record.validation.fix[adequacy.file] : undefined;
+      if (adequacy === undefined || fixedSource === undefined || !fixedSource.includes(adequacy.delete)) {
+        gates.push(gate('adequacy', false, 'adequacy target missing or not present in the fixed source'));
       } else {
+        const crippled = fixedSource.replace(adequacy.delete, '');
         writeFileSync(join(workspace, adequacy.file), crippled);
         const { status } = runJudge(repoRoot, checkRel, workspace, timeoutMs);
         gates.push(gate('adequacy', status !== 0, status !== 0 ? 'single-statement deletion is red' : 'deletion stayed green'));

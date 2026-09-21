@@ -1,15 +1,17 @@
 # Reproduction — suites/fixer-worker/breadth-verified
 
-Plan WB-2.5: every verified fault is independently reproduced from `FAULT.json` alone by a second
-author, with the agreement recorded (tier κ ≥ 0.80 target).
+Plan WB-2.5: every verified fault is independently reproduced from `FAULT.json` by a second
+author, with the agreement recorded (tier κ ≥ 0.80 target). "From `FAULT.json` alone" means the
+author's recipe and notes are withheld; the second author necessarily also reads the fixture
+`src/` and `test/` files the record names.
 
 ## Protocol
 
 Two independent passes:
 
 1. **Second-author pass (static).** A fresh agent that did not author the cases reads, for each of
-   `breadth-01..12`, only `fixtures/breadth-NN.FAULT.json` plus the fixture `src/` and `test/`,
-   and confirms: (a) the recorded `operator`/`bug_type` match the faulted-vs-fix diff; (b) each
+   `breadth-01..12`, only `fixtures/breadth-NN.FAULT.json` plus the fixture `src/` and `test/`
+   files it names, and confirms: (a) the recorded `operator`/`bug_type` match the faulted-vs-fix diff; (b) each
    declared `f2p` title depends on the mutated behaviour and would fail on the stored faulted
    state; (c) each declared `p2p` title is unaffected; (d) the recorded `adequacy.delete` is a
    load-bearing statement in the fixed source. No tests are run in this pass.

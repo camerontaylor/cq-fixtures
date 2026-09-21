@@ -10,7 +10,7 @@
 // case is red-buggy / green-fixed.
 
 import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CASE_RECIPES, type CaseRecipe } from './recipes.ts';
 import type { FaultRecord } from './fault.ts';
@@ -138,6 +138,17 @@ export function checkCase(recipe: CaseRecipe): string[] {
   }
   if (committedFault !== undefined && committedFault !== JSON.stringify(fault, null, 2) + '\n') {
     mismatches.push(`${recipe.id}.FAULT.json: content differs from recipe`);
+  }
+  // A committed file the recipe does not produce is drift too (a stale file
+  // left behind by an earlier recipe shape would otherwise pass `--check`).
+  let committedFiles: string[] = [];
+  try {
+    committedFiles = walkFiles(fixtureDir).map((f) => relative(fixtureDir, f));
+  } catch {
+    committedFiles = [];
+  }
+  for (const rel of committedFiles) {
+    if (!files.has(rel)) mismatches.push(`${recipe.id}/${rel}: committed but not produced by the recipe`);
   }
   return mismatches;
 }

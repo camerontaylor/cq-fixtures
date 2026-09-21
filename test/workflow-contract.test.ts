@@ -266,11 +266,16 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
 
   it('the dispatch profile selects the discovery roots (F3, WB-2.5)', () => {
     // `verified` runs only the breadth-verified suites; `full` (the default,
-    // and the weekly schedule's value) runs every suite. The input must be
-    // declared, the eval step must consume it, and both roots must appear.
-    expect(text, 'profile input declared').toContain('profile:');
-    expect(text, 'profile is a choice input').toContain('verified');
-    expect(text, 'profile defaults to full').toContain('default: full');
+    // and the weekly schedule's value) runs every suite. Scope the assertions
+    // to the workflow_dispatch.inputs.profile block so unrelated text (suite
+    // paths elsewhere) cannot satisfy them.
+    const profileIdx = text.indexOf('\n      profile:\n');
+    expect(profileIdx, 'profile input declared under workflow_dispatch.inputs').toBeGreaterThan(-1);
+    const profileBlock = text.slice(profileIdx, text.indexOf('\n  schedule:', profileIdx));
+    expect(profileBlock, 'profile is a choice input').toContain('type: choice');
+    expect(profileBlock, 'profile options include full').toContain('- full');
+    expect(profileBlock, 'profile options include verified').toContain('- verified');
+    expect(profileBlock, 'profile defaults to full').toContain('default: full');
     const evalCell = stepChunk('Eval cell —');
     expect(evalCell, 'eval step reads the profile').toContain("MATRIX_PROFILE: ${{ github.event.inputs.profile || 'full' }}");
     expect(evalCell, 'verified root').toContain('suites/fixer-worker/breadth-verified');

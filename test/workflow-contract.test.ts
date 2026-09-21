@@ -272,39 +272,37 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell).toContain('< /dev/null');
   });
 
-  it('dispatch-only roles publish a loud absence, never driver-error zeros (WB-1.7)', () => {
-    // The matrix cell config names the roles a known toolkit defect must not
-    // dispatch, with the routed issue; the eval loop warns, writes the step
-    // summary, drops a marker, and skips the runner invocation (so no row is
-    // ever written for that role).
+  it('driver-cause classification: a non-model cause publishes a loud dispatch-only absence via run.json (F1b/WB-1)', () => {
+    // F1b removed the static skip_roles pre-skip (the F1 workaround): every
+    // cell dispatches and the RUNNER classifies each driver error from its
+    // class token — an unparseable structured output is a real scored-miss
+    // row, any other cause publishes no row. The eval step reads the
+    // runner's run.json absences[] and renders the loud absence (warning +
+    // step summary + marker) that the old pre-skip used to.
     const cells = matrixCells();
-    const claudeAgent = cells.find((c) => c.includes('driver: claude-agent'));
-    expect(claudeAgent).toContain('skip_roles: fixer-worker,review-classifier');
-    expect(claudeAgent).toContain('cq-toolkit#209');
-    const subprocess = cells.find((c) => c.includes('driver: subprocess'));
-    expect(subprocess).toContain('skip_roles: fixer-worker,review-classifier');
-    expect(subprocess).toContain('cq-toolkit#208');
-    const glmAiSdk = cells.find((c) => c.includes('driver: ai-sdk') && c.includes('model: glm-5.3-flash'));
-    expect(glmAiSdk).toContain('skip_roles: fixer-worker');
-    expect(glmAiSdk).toContain('cq-toolkit#210');
-    const deepseek = cells.find((c) => c.includes('provider: deepseek'));
-    expect(deepseek).toContain('skip_roles: fixer-worker');
+    for (const cell of cells) {
+      expect(cell, 'the static role skip is gone — the runner classifies').not.toContain('skip_roles:');
+      expect(cell, 'the static skip reason is gone').not.toContain('skip_reason:');
+    }
     const evalCell = stepChunk('Eval cell —');
-    expect(evalCell).toContain('SKIP_ROLES: ${{ matrix.cell.skip_roles }}');
-    expect(evalCell).toContain('SKIP_REASON: ${{ matrix.cell.skip_reason }}');
-    expect(evalCell).toContain('skipped (dispatch-only)');
+    expect(evalCell, 'the SKIP_ROLES env is gone').not.toContain('SKIP_ROLES');
+    expect(evalCell, 'the SKIP_REASON env is gone').not.toContain('SKIP_REASON');
+    expect(evalCell, 'the pre-runner role skip is gone').not.toContain('skipped (dispatch-only)');
+    // The runner invocation is unconditional now (the pre-skip `continue`
+    // before it is gone): each discovered suite dispatches.
+    const runnerAt = evalCell.indexOf('node --experimental-strip-types runner/index.ts');
+    expect(runnerAt, 'the eval cell invokes the runner').toBeGreaterThan(-1);
+    // The absence rendering reads the runner's manifest ...
+    expect(evalCell).toContain('${out_dir}/run.json');
+    expect(evalCell).toContain('absences');
+    expect(evalCell).toContain('::warning::');
+    expect(evalCell).toContain('${GITHUB_STEP_SUMMARY}');
     expect(evalCell).toContain('DISPATCH-ONLY-');
-    // The skip must precede the runner invocation, so the role never dispatches.
-    expect(evalCell.indexOf('DISPATCH-ONLY-')).toBeLessThan(evalCell.indexOf('node --experimental-strip-types runner/index.ts'));
-    // The skipped role must `continue` before the runner invocation, and the
-    // discovery count must advance exactly once per suite.
-    const markerAt = evalCell.indexOf('DISPATCH-ONLY-');
-    const continueAt = evalCell.indexOf('continue', markerAt);
-    expect(continueAt).toBeGreaterThan(markerAt);
-    expect(evalCell.indexOf('node --experimental-strip-types runner/index.ts')).toBeGreaterThan(continueAt);
+    // ... and drops the marker AFTER the runner ran (it used to precede it).
+    expect(evalCell.indexOf('DISPATCH-ONLY-')).toBeGreaterThan(runnerAt);
+    // The discovery count still advances exactly once per suite.
     expect(evalCell.match(/suite_count=\$\(\(suite_count \+ 1\)\)/g)).toHaveLength(1);
-    // The marker dir must exist before the loop (the first discovery entry is
-    // a skipped fixer-worker on every non-acp cell).
+    // The marker dir must exist before the loop.
     expect(evalCell.indexOf('mkdir -p reports/eval')).toBeGreaterThan(-1);
     expect(evalCell.indexOf('mkdir -p reports/eval')).toBeLessThan(evalCell.indexOf('DISPATCH-ONLY-'));
     // The snapshot job must not clear a same-day dir that held real data.

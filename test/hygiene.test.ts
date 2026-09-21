@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -45,6 +46,112 @@ describe('corpus evidence inventory (F7 static gate)', () => {
       ['micro-1', 'micro-2', 'micro-3', 'micro-4', 'micro-5'].map((id) => `fixtures/${id}`),
     );
     for (const c of evidence.legacy) expect(c.suiteRel, c.caseId).toBe('suites/fixer-worker/micro');
+  });
+});
+
+// Synthetic repo-root builder for the provenance-placement checks. Nothing is
+// executed: `checkCorpusEvidence` is static, so a minimal valid record-backed
+// case is enough to isolate one provenance rule at a time.
+function writeSyntheticCase(
+  root: string,
+  opts: { suiteRel: string; caseId: string; fixture: string; provenance: Record<string, unknown> },
+): void {
+  const { suiteRel, caseId, fixture, provenance } = opts;
+  mkdirSync(join(root, suiteRel), { recursive: true });
+  mkdirSync(join(root, fixture, 'src'), { recursive: true });
+  mkdirSync(join(root, fixture, 'test'), { recursive: true });
+  writeFileSync(join(root, fixture, 'src', 'a.ts'), 'export function f(x: number): number {\n  return x + 0;\n}\n');
+  writeFileSync(
+    join(root, fixture, 'test', 'a.test.ts'),
+    "import { it } from 'vitest';\nit('f is identity', () => {});\nit('f stays bounded', () => {});\n",
+  );
+  writeFileSync(join(root, fixture, 'check.mjs'), '// synthetic probe (never spawned)\n');
+  writeFileSync(
+    join(root, suiteRel, 'suite.json'),
+    JSON.stringify({
+      name: suiteRel.split('/').pop(),
+      role: 'fixer-worker',
+      provenance: { origin: 'test-local synthetic root' },
+      cases: [
+        { id: caseId, fixture, task: { prompt: 'make the suite pass' }, probe: { kind: 'check-rerun', check: `${fixture}/check.mjs` } },
+      ],
+    }),
+  );
+  writeFileSync(
+    join(root, `${fixture}.FAULT.json`),
+    JSON.stringify({
+      bug_type: 'operator misuse',
+      failure_symptoms: 'synthetic provenance probe',
+      operator: 'equality-boundary',
+      difficulty: 'medium',
+      provenance,
+      validation: {
+        f2p: ['f is identity'],
+        p2p: ['f stays bounded'],
+        fix: { 'src/a.ts': 'export function f(x: number): number {\n  return x;\n}\n' },
+      },
+      adequacy: { file: 'src/a.ts', delete: 'return x;' },
+    }),
+  );
+}
+
+function withSyntheticRoot(fn: (root: string) => void): void {
+  const root = mkdtempSync(join(tmpdir(), 'cq-hygiene-'));
+  try {
+    fn(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+describe('canary provenance placement (F7 review round 1)', () => {
+  it('a public-bug-canary record outside suites/fixer-worker/canary is an issue', () => {
+    withSyntheticRoot((root) => {
+      writeSyntheticCase(root, {
+        suiteRel: 'suites/fixer-worker/probe-suite',
+        caseId: 'probe-01',
+        fixture: 'fixtures/probe-01',
+        provenance: {
+          origin: 'public-bug-canary',
+          generator: 'canary:public-bug-class',
+          seed: 0,
+          engine_version: 'synthetic-canary',
+          reference: 'a well-known public bug class',
+          license: 'no code vendored',
+        },
+      });
+      expect(checkCorpusEvidence(root).issues).toEqual([
+        'case suites/fixer-worker/probe-suite/probe-01: public-bug-canary record must live in suites/fixer-worker/canary',
+      ]);
+    });
+  });
+
+  it('a non-canary record inside suites/fixer-worker/canary is an issue', () => {
+    withSyntheticRoot((root) => {
+      writeSyntheticCase(root, {
+        suiteRel: 'suites/fixer-worker/canary',
+        caseId: 'canary-99',
+        fixture: 'fixtures/probe-02',
+        provenance: { origin: 'operator-catalog', generator: 'catalog:x', seed: 0, engine_version: 'v' },
+      });
+      expect(checkCorpusEvidence(root).issues).toEqual([
+        'case suites/fixer-worker/canary/canary-99: canary suite case must carry provenance.origin public-bug-canary',
+      ]);
+    });
+  });
+
+  it('a public-bug-canary record must name its reference and license', () => {
+    withSyntheticRoot((root) => {
+      writeSyntheticCase(root, {
+        suiteRel: 'suites/fixer-worker/canary',
+        caseId: 'canary-98',
+        fixture: 'fixtures/probe-03',
+        provenance: { origin: 'public-bug-canary', generator: 'canary:public-bug-class', seed: 0, engine_version: 'synthetic-canary' },
+      });
+      expect(checkCorpusEvidence(root).issues).toEqual([
+        'case suites/fixer-worker/canary/canary-98: public-bug-canary record must carry provenance.reference and provenance.license',
+      ]);
+    });
   });
 });
 

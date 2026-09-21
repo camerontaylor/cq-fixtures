@@ -214,6 +214,16 @@ function outcomeOf(tests: readonly TestOutcome[], title: string): string | undef
   return tests.find((t) => t.title === title)?.status;
 }
 
+/**
+ * The fail-closed infrastructure markers a judge prints when it could not run
+ * (as opposed to an eval-red case): the first one present in `stderr`, or
+ * `undefined` when the run is a real result. Shared by the faulted, fixed, and
+ * adequacy gates so an infrastructure failure never masquerades as "red".
+ */
+export function judgeInfraMarker(stderr: string): string | undefined {
+  return ['refusing to judge', 'workspace escape', 'could not execute the vitest run'].find((marker) => stderr.includes(marker));
+}
+
 const TELL_MARKERS = /\b(stryker|mutant|FAULT|BUG|TODO|XXX|MUTATION)\b/i;
 
 /**
@@ -311,11 +321,10 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     let faultedDetail = 'stored faulted state is red';
     for (let i = 0; i < faultedRuns; i++) {
       const { status, stderr } = runJudge(repoRoot, checkRel, workspace, timeoutMs);
-      for (const marker of ['refusing to judge', 'workspace escape', 'could not execute the vitest run']) {
-        if (stderr.includes(marker)) {
-          faultedRed = false;
-          faultedDetail = `judge failed closed (infrastructure): ${marker}`;
-        }
+      const marker = judgeInfraMarker(stderr);
+      if (marker !== undefined) {
+        faultedRed = false;
+        faultedDetail = `judge failed closed (infrastructure): ${marker}`;
       }
       if (status === 0) {
         faultedRed = false;
@@ -350,11 +359,10 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     let fixedDetail = 'canonical fix is green';
     for (let i = 0; i < fixedRuns; i++) {
       const { status, stderr } = runJudge(repoRoot, checkRel, workspace, timeoutMs);
-      for (const marker of ['refusing to judge', 'workspace escape', 'could not execute the vitest run']) {
-        if (stderr.includes(marker)) {
-          fixedGreen = false;
-          fixedDetail = `judge failed closed (infrastructure): ${marker}`;
-        }
+      const marker = judgeInfraMarker(stderr);
+      if (marker !== undefined) {
+        fixedGreen = false;
+        fixedDetail = `judge failed closed (infrastructure): ${marker}`;
       }
       if (status !== 0) {
         fixedGreen = false;
@@ -378,8 +386,13 @@ export function runCasePipeline(fixtureRef: string, options: PipelineOptions = {
     } else {
       const crippled = fixedSource.replace(adequacy.delete, '');
       writeFileSync(join(workspace, adequacy.file), crippled);
-      const { status } = runJudge(repoRoot, checkRel, workspace, timeoutMs);
-      gates.push(gate('adequacy', status !== 0, status !== 0 ? 'single-statement deletion is red' : 'deletion stayed green'));
+      const { status, stderr } = runJudge(repoRoot, checkRel, workspace, timeoutMs);
+      const marker = judgeInfraMarker(stderr);
+      if (marker !== undefined) {
+        gates.push(gate('adequacy', false, `judge failed closed (infrastructure): ${marker}`));
+      } else {
+        gates.push(gate('adequacy', status !== 0, status !== 0 ? 'single-statement deletion is red' : 'deletion stayed green'));
+      }
     }
 
     if (full) {

@@ -15,6 +15,8 @@ import { isFixerCase, loadSuite } from '../runner/suite.ts';
 const EXCLUDED_SEGMENTS = new Set(['deprecated', 'quarantine']);
 /** The documented hand-seeded, record-less micro suite (phase-3 J3). */
 const GRANDFATHERED_MICRO_SUITE = 'suites/fixer-worker/micro';
+/** The separate contamination-canary suite; the only home for public-bug-canary records. */
+const CANARY_SUITE = 'suites/fixer-worker/canary';
 
 function toPosix(p: string): string {
   return sep === '/' ? p : p.split(sep).join('/');
@@ -125,6 +127,22 @@ export function checkCorpusEvidence(repoRoot: string): CorpusIssues {
       issues.push(`case ${label}: ${(e as Error).message}`);
       continue;
     }
+    // Canary provenance placement: a public-bug-canary record lives ONLY in the
+    // separate canary suite, and that suite carries ONLY public-bug-canary
+    // records — the two are each other's proof of separation. A canary record
+    // must also name its public reference and license (no code vendored).
+    if (record.provenance.origin === 'public-bug-canary' && c.suiteRel !== CANARY_SUITE) {
+      issues.push(`case ${label}: public-bug-canary record must live in ${CANARY_SUITE}`);
+    }
+    if (c.suiteRel === CANARY_SUITE && record.provenance.origin !== 'public-bug-canary') {
+      issues.push(`case ${label}: canary suite case must carry provenance.origin public-bug-canary`);
+    }
+    if (record.provenance.origin === 'public-bug-canary') {
+      const missing: string[] = [];
+      if ((record.provenance.reference ?? '').length === 0) missing.push('provenance.reference');
+      if ((record.provenance.license ?? '').length === 0) missing.push('provenance.license');
+      if (missing.length > 0) issues.push(`case ${label}: public-bug-canary record must carry ${missing.join(' and ')}`);
+    }
     if (record.validation.f2p.length < 1) issues.push(`case ${label}: validation.f2p must list at least one failing title`);
     if (record.validation.p2p.length < 1) issues.push(`case ${label}: validation.p2p must list at least one passing title`);
     if (Object.keys(record.validation.fix).length === 0) issues.push(`case ${label}: validation.fix must be non-empty`);
@@ -155,6 +173,10 @@ export function checkCorpusEvidence(repoRoot: string): CorpusIssues {
     if (missingTitles.length > 0) issues.push(`case ${label}: declared titles missing from the fixture: ${missingTitles.join('; ')}`);
     const dupes = duplicateTitles(repoRoot, c.fixture);
     if (dupes.length > 0) issues.push(`case ${label}: duplicate declared titles: ${dupes.join('; ')}`);
+    // Every declared fixture title must be classified: an unlabelled title is
+    // invisible to the per-title F2P/P2P gates, so it can never be scored.
+    const classified = new Set([...record.validation.f2p, ...record.validation.p2p]);
+    for (const t of titles) if (!classified.has(t)) issues.push(`case ${label}: fixture test title not classified as f2p/p2p: ${t}`);
   }
 
   // 4. A record-less case is a violation unless it is the grandfathered

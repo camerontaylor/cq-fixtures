@@ -11,6 +11,7 @@ import {
   changedLines,
   declaredTitles,
   duplicateTitles,
+  judgeInfraMarker,
   runCasePipeline,
   scanForFaultLeaks,
   PIPELINE_REPO_ROOT,
@@ -49,6 +50,18 @@ describe('pipeline helpers', () => {
     writeFileSync(join(fixture, 'test', 'dup.test.ts'), "import { it } from 'vitest';\nit('same', () => {});\nit('same', () => {});\n");
     expect(duplicateTitles(wsRoot, 'fixtures/dup')).toEqual(['same']);
     expect(duplicateTitles(PIPELINE_REPO_ROOT, 'fixtures/breadth-11')).toEqual([]);
+  });
+
+  it('judgeInfraMarker surfaces the first fail-closed marker and ignores a clean/red run', () => {
+    // The adequacy gate must not read a judge infrastructure failure as "red":
+    // the same marker discipline the faulted/fixed gates use is extracted here.
+    expect(judgeInfraMarker('')).toBeUndefined();
+    expect(judgeInfraMarker('1 test failed\n')).toBeUndefined();
+    expect(judgeInfraMarker('refusing to judge: probe target missing')).toBe('refusing to judge');
+    expect(judgeInfraMarker('error: workspace escape detected')).toBe('workspace escape');
+    expect(judgeInfraMarker('could not execute the vitest run: ENOENT')).toBe('could not execute the vitest run');
+    // First marker wins when several appear.
+    expect(judgeInfraMarker('workspace escape then could not execute the vitest run')).toBe('workspace escape');
   });
 
   it('the annotation gate fails closed on a missing fix target', () => {

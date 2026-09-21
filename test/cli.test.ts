@@ -313,16 +313,20 @@ describe('--max-tokens-per-case (WB-1.6: the cap scales with suite size)', () =>
   }, 30_000);
 
   it('the ACP probe reservation rides ON TOP of the per-case budget (not deducted from it)', async () => {
-    // perCase 10 × 1 case = cap 10; with the probe reservation added on top
-    // the cap is 2010, so the 2000-token reservation is admitted and the one
-    // case still dispatches. If the reservation were deducted from the case
-    // budget (cap 10), the probe would trip the governor before case 1 and
-    // yield ZERO rows.
-    const dir = writeSuite('cap-probe', { name: 'cap-probe', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
+    // perCase 5 × 2 cases = cap 10; with the probe reservation added on top
+    // the cap is 2010, so the 2000-token reservation is admitted and case 1
+    // runs (2015 > 2010 trips before case 2, which is refused — one row).
+    // If the reservation were deducted from the case budget (cap 10), the
+    // probe would trip the governor before case 1 and yield ZERO rows.
+    const dir = writeSuite('cap-probe', {
+      name: 'cap-probe',
+      role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')],
+    });
     const rec = join(root, 'cap-probe-record.json');
     writeFileSync(rec, JSON.stringify({ probe: 'acp-auth-preflight', at: '2026-09-20T00:00:00.000Z', promptChars: 30, replyChars: 120, replyPreview: 'ready' }));
     const outDir = join(root, 'cap-probe-out');
-    await expect(cliMain([...cliArgs(dir), '--probe-record', rec, '--max-tokens-per-case', '10', '--out', outDir])).resolves.toBe(1);
+    await expect(cliMain([...cliArgs(dir), '--probe-record', rec, '--max-tokens-per-case', '5', '--out', outDir])).resolves.toBe(1);
     const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { case?: string });
     expect(rows.map((r) => r.case)).toEqual(['rev-1']);
   }, 15_000);

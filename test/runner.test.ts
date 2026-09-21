@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   PREFLIGHT_PROBE_JOB_ID,
   PREFLIGHT_PROBE_RESERVE_TOKENS,
+  boundDriverCause,
   runSuite,
   type PreflightProbe,
   type RunSuiteOptions,
@@ -653,6 +654,21 @@ describe('driver-error cause surfacing (cq-toolkit #206/#207 -> F1)', () => {
       error: expect.stringContaining('driver reported no cause'),
     });
   }, 15_000);
+
+  it('boundDriverCause truncates and redacts credential shapes (defense in depth)', () => {
+    const long = `ai-sdk driver: run failed — ${'x'.repeat(600)}`;
+    const bounded = boundDriverCause(long);
+    expect(bounded.length).toBeLessThanOrEqual(500 + '…[truncated]'.length);
+    expect(bounded).toContain('[truncated]');
+
+    expect(boundDriverCause('Bearer abcdefghijklmnopqrstuvwxyz')).toContain('Bearer [redacted]');
+    expect(boundDriverCause('sk-abcdefghijklmnopqrstuvwxyz')).toContain('[redacted]');
+    expect(boundDriverCause('DEEPSEEK_API_KEY=supersecretvalue')).toContain('DEEPSEEK_API_KEY=[redacted]');
+    // Ordinary diagnostic text is preserved verbatim.
+    expect(boundDriverCause('claude-agent driver: query failed — exited with code 1')).toBe(
+      'claude-agent driver: query failed — exited with code 1',
+    );
+  });
 });
 
 describe('budget honesty (I9)', () => {

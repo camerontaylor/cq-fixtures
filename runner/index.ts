@@ -155,6 +155,25 @@ function zeroOutcome(total: number): { score: 0; passed: 0; total: number } {
   return { score: 0, passed: 0, total };
 }
 
+/**
+ * Bound + redact a driver-reported cause before it reaches the journal.
+ *
+ * Defense in depth over the toolkit's own bound/redaction (cq-toolkit
+ * error-text.ts): a redaction gap in any driver must not persist a secret
+ * into the journal artifact and onward to the snapshots branch. Truncates to
+ * 500 chars (the toolkit's bound) and masks common credential shapes.
+ */
+export function boundDriverCause(cause: string, max = 500): string {
+  const redacted = cause
+    .replace(/\b(sk|pk|ghp|gho|ghs|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{10,}/g, '[redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._-]{10,}/gi, 'Bearer [redacted]')
+    .replace(
+      /\b([A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)[A-Za-z0-9_]*)\s*[=:]\s*\S+/gi,
+      '$1=[redacted]',
+    );
+  return redacted.length <= max ? redacted : `${redacted.slice(0, max)}…[truncated]`;
+}
+
 function tokensOf(usage: Usage): ResultRow['tokens'] {
   return {
     input: usage.input,
@@ -441,7 +460,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // (I9).
         const cause =
           worker.error !== undefined && worker.error.trim() !== ''
-            ? worker.error
+            ? boundDriverCause(worker.error)
             : 'driver stopReason: error (driver reported no cause)';
         journalResult = { status: 'failed', error: cause };
         diagnostics = cause;

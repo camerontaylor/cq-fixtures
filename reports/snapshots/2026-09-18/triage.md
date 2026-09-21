@@ -322,9 +322,10 @@ causes below are the drivers' own bounded, secret-redacted messages — not infe
 Run ids: `35552908933` (first, pre-surfacing) and `35553519022` (second, causes visible).
 
 ### What is real now
-- **ai-sdk review-classifier, both models — REAL scored runs.** glm-5.3-flash 9/10 probes
-  (run 2: 8/10, one structured-output miss), deepseek-flash 8/10 (run 1: 9/10). Both priced
-  (`costBasis: modeled`); the deepseek rows carry the observed served id `deepseek-flash`.
+- **ai-sdk review-classifier, both models — REAL scored runs.** run 1 (`35552908933`): glm
+  9/10, deepseek 8/10. run 2 (`35553519022`, the published snapshot): glm 8/10 (one
+  structured-output miss), deepseek 10/10. Both priced (`costBasis: modeled`); the deepseek rows
+  carry the observed served id `deepseek-flash`.
 - **The subprocess CI-wiring fix worked**: `claude --version` → `2.1.276 (Claude Code)` on the
   runner. The lane's remaining failure is not the install.
 

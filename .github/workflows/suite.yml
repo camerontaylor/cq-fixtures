@@ -546,7 +546,7 @@ jobs:
             # zero (the honesty rule). The cell config carries the role list
             # and the routed issue; the marker keeps the snapshot job from
             # clearing a same-day dir that held real data for this role.
-            skip_list=",${SKIP_ROLES},"
+            skip_list=",${SKIP_ROLES//[[:space:]]/},"
             if [ "${skip_list#*,$role,}" != "$skip_list" ]; then
               echo "::warning::${MATRIX_MODEL}@${MATRIX_DRIVER} role ${role} skipped (dispatch-only): ${SKIP_REASON}"
               {
@@ -603,7 +603,6 @@ jobs:
               hard_fail=1
               echo "::error::suite ${rel_dir}: rc ${rc} but no ${role}.table.json emitted — run-phase failure, not a scored outcome"
             fi
-            suite_count=$((suite_count + 1))
           done < <(find suites/fixer-worker/micro suites/review-classifier/micro -maxdepth 1 -name suite.json -not -path '*/deprecated/*' 2>/dev/null | sort)
           # Discovery drift must be VISIBLE but never fail the cell (it is a
           # structuring signal, not an eval outcome): the list above names

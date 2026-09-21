@@ -241,3 +241,18 @@ describe('cost column: token-derived USD on every lane (D2)', () => {
     expect('costBasis' in mixedTables[0]!.cells[0]!).toBe(false);
   });
 });
+
+describe('F1 price-map pin (interim toolkit.lock b06b6a3)', () => {
+  it('pins the two eval-matrix ids directly (not only via the fallback chain)', () => {
+    for (const spec of [
+      { model: 'glm-5.3-flash', provider: 'zai' },
+      { model: 'deepseek-flash', provider: 'deepseek' },
+    ] as const) {
+      expect(priceOf(spec), `${spec.model}@${spec.provider} must be priced`).toBeDefined();
+      expect(
+        computeCostUSD(spec, STUB_USAGE),
+        `${spec.model}@${spec.provider} must derive a cost`,
+      ).toBeGreaterThan(0);
+    }
+  });
+});

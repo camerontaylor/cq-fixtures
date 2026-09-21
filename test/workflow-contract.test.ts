@@ -288,6 +288,13 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell).toContain('DISPATCH-ONLY-');
     // The skip must precede the runner invocation, so the role never dispatches.
     expect(evalCell.indexOf('DISPATCH-ONLY-')).toBeLessThan(evalCell.indexOf('node --experimental-strip-types runner/index.ts'));
+    // The skipped role must `continue` before the runner invocation, and the
+    // discovery count must advance exactly once per suite.
+    const markerAt = evalCell.indexOf('DISPATCH-ONLY-');
+    const continueAt = evalCell.indexOf('continue', markerAt);
+    expect(continueAt).toBeGreaterThan(markerAt);
+    expect(evalCell.indexOf('node --experimental-strip-types runner/index.ts')).toBeGreaterThan(continueAt);
+    expect(evalCell.match(/suite_count=\$\(\(suite_count \+ 1\)\)/g)).toHaveLength(1);
     // The snapshot job must not clear a same-day dir that held real data.
     expect(stepChunk('Commit report snapshots')).toContain('DISPATCH-ONLY-*');
   });

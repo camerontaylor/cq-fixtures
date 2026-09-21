@@ -24,7 +24,7 @@ Sources: `research/research-20260921-fixtures-buildout/r6-sourcing-digest.md` §
 
 Deciding factors (from the digest §"Recommendation", in order): (1) the null hypothesis already passed its live test — the 2026-09-18 five-cell matrix ran the full pipeline including the honesty paths; R7 gates ergonomics, not existence, and no ergonomics pain is on record; (2) the runner **is** the package-boundary integration test (req. 6) — wrap options either add ~zero around `runSuite` as a library or bypass the boundary test; (3) DD-4 two-probe scoring, cwd=workspace re-run, observed-model rule, no-fabricated-row budget gating, exit-code discipline (reqs. 2+7) are bespoke and already encoded — every candidate needs glue equal in size to what exists; (4) the broken lanes are lane/infrastructure defects, not runner defects; (5) cost of keep is lowest (~1.5k lines, zero extra deps, Node-only CI).
 
-**Wrap-later carve-out (recorded, not built):** if suite count × matrix cells makes serial `runSuite` too slow for the weekly window (parallelism), or authors want caching for runs or cross-run dashboards, re-evaluate a *reporter-only* wrap — a framework reads `rows.jsonl` and owns no dispatch/scoring.
+**Wrap-later carve-out (recorded, not built):** if suite count grows (R6 scale) and serial `runSuite` strains the weekly window (parallelism), or authors want progress UI, run caching, or cross-run dashboards / a trace viewer, re-evaluate a *reporter-only* wrap — a framework reads `rows.jsonl` and owns no dispatch/scoring.
 
 **Re-open triggers (verbatim from the digest):** (1) evalite or a 2026 TS-first entrant ships an agentic task + custom-schema-native + indeterminate-state story — re-run this comparison; (2) suite count × matrix cells makes serial `runSuite` too slow for the weekly window (parallelism is the trigger, not fashion); (3) the toolkit's own seam changes (new driver lane, governor semantics) in ways a framework would absorb for free; (4) any candidate gets a verified TS-native cq-toolkit-equivalent driver seam.
 
@@ -34,7 +34,7 @@ Deciding factors (from the digest §"Recommendation", in order): (1) the null hy
 
 **No framework migration PR — explicitly out of scope.**
 
-Sources: `research/research-20260921-fixtures-buildout/r7-runner-digest.md` (verdict, deciding factors, carve-out, triggers verbatim); license/pulse verification recorded in `plans/cq-fixtures-build-plan.md` §4 WB-4 and §9.
+Sources: `research/research-20260921-fixtures-buildout/r7-runner-digest.md` (verdict, deciding factors, carve-out faithful to digest; triggers verbatim); license/pulse verification recorded in `plans/cq-fixtures-build-plan.md` §4 WB-4 and §9.
 
 ## Contamination posture (in force now)
 

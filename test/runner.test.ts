@@ -669,6 +669,24 @@ describe('driver-error cause surfacing (cq-toolkit #206/#207 -> F1)', () => {
       'claude-agent driver: query failed — exited with code 1',
     );
   });
+
+  it('a THROWN driver message is bounded and redacted before journaling', async () => {
+    const dir = reviewSuite('err-throw', 'err-throw', [reviewCase('rev-1', 'resolved')]);
+    const journalPath = join(root, 'err-throw-journal');
+    const throwing: Driver = {
+      async run(): Promise<WorkerResult> {
+        throw new Error(`boom DEEPSEEK_API_KEY=${'y'.repeat(600)}`);
+      },
+    };
+    await runSuite(opts(dir, { driver: throwing, journalPath }));
+    const log = openRunLog(journalPath);
+    const events = await log.read((await log.runs())[0]!);
+    const finished = events.find((e): e is JobFinishedJournalEvent => e.type === 'job-finished');
+    const err = (finished?.result as { error?: string }).error ?? '';
+    expect(err).toContain('DEEPSEEK_API_KEY=[redacted]');
+    expect(err).not.toContain('yyyyyyyyyy');
+    expect(err.length).toBeLessThanOrEqual(500 + '…[truncated]'.length);
+  }, 15_000);
 });
 
 describe('budget honesty (I9)', () => {

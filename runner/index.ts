@@ -443,8 +443,11 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       const probeCount = isFixerCase(c) ? FIXER_PROBE_COUNT : 1;
       if (worker === undefined) {
         outcome = zeroOutcome(probeCount);
-        journalResult = { status: 'failed', error: String(thrown) };
-        diagnostics = `driver threw: ${String(thrown)}`;
+        // Same bound/redaction as the stopReason:error path — a driver that
+        // THROWS must not persist an unbounded or secret-bearing message.
+        const thrownCause = boundDriverCause(String(thrown));
+        journalResult = { status: 'failed', error: thrownCause };
+        diagnostics = `driver threw: ${thrownCause}`;
       } else if (worker.stopReason === 'budget') {
         outcome = zeroOutcome(probeCount); // honest budget-exhausted: no fabricated credit
         journalResult = { status: 'budget-exhausted' };

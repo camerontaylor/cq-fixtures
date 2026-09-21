@@ -295,6 +295,10 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(continueAt).toBeGreaterThan(markerAt);
     expect(evalCell.indexOf('node --experimental-strip-types runner/index.ts')).toBeGreaterThan(continueAt);
     expect(evalCell.match(/suite_count=\$\(\(suite_count \+ 1\)\)/g)).toHaveLength(1);
+    // The marker dir must exist before the loop (the first discovery entry is
+    // a skipped fixer-worker on every non-acp cell).
+    expect(evalCell.indexOf('mkdir -p reports/eval')).toBeGreaterThan(-1);
+    expect(evalCell.indexOf('mkdir -p reports/eval')).toBeLessThan(evalCell.indexOf('DISPATCH-ONLY-'));
     // The snapshot job must not clear a same-day dir that held real data.
     expect(stepChunk('Commit report snapshots')).toContain('DISPATCH-ONLY-*');
   });

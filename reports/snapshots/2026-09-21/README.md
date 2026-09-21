@@ -19,7 +19,8 @@ What F1 changed before the run:
 **Honesty rule this snapshot is held to: no cell's zero is a driver error.** A role that cannot
 produce a real score is a LOUD dispatch-only absence (with its routed toolkit issue), never a
 published zero. The only tables published here are the two real classifier cells; the raw
-per-cell artifacts (including the failing fixer journals) stay on the `snapshots` branch.
+per-cell artifacts (including the failing fixer journals) stay in the workflow run's uploaded
+artifacts (`eval-reports-*`), not on the `snapshots` branch.
 
 ## Per-cell verdicts
 

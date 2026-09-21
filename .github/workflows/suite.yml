@@ -527,6 +527,11 @@ jobs:
           if [ "${MATRIX_DRIVER}" = "acp" ]; then
             probe_extra=(--probe-record reports/eval/ACP-PROBE.json)
           fi
+          # The dispatch-only branch below touches a marker under reports/eval
+          # on the FIRST discovery iteration (fixer-worker sorts first and is
+          # skipped on every non-acp cell), so the dir must exist before the
+          # loop — the end-of-loop mkdir is too late under `set -e`.
+          mkdir -p reports/eval
           while IFS= read -r suite_file; do
             suite_dir="$(dirname "${suite_file}")"
             # G7: out dir mirrors the suite path relative to suites/, PREFIXED

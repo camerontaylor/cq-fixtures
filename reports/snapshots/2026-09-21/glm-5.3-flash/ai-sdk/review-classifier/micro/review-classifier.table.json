@@ -1,0 +1,24 @@
+{
+  "role": "review-classifier",
+  "suite": "micro",
+  "generatedAt": "2026-09-21T02:09:31.723Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "ai-sdk",
+      "runs": 10,
+      "passed": 9,
+      "total": 10,
+      "score": 0.9,
+      "costUSD": 0.00195,
+      "costBasis": "modeled",
+      "wallTimeMs": 61798,
+      "tokens": {
+        "input": 4530,
+        "output": 2480,
+        "cacheRead": 1024,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

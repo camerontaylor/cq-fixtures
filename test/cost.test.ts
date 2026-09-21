@@ -40,6 +40,8 @@ const PRICED_CANDIDATES: ReadonlyArray<{ model: string; provider: string }> = [
   { model: 'gpt-4o', provider: 'openai' },
   { model: 'claude-3-5-sonnet', provider: 'anthropic' },
   { model: 'deepseek-chat', provider: 'deepseek' },
+  { model: 'deepseek-flash', provider: 'deepseek' },
+  { model: 'glm-5.3-flash', provider: 'zai' },
   { model: 'claude-haiku-4-5', provider: 'anthropic' },
   { model: 'gpt-5', provider: 'openai' },
   { model: 'glm-4.6', provider: 'zai' },

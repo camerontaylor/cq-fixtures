@@ -254,9 +254,9 @@ describe('--max-tokens-per-case (WB-1.6: the cap scales with suite size)', () =>
     const dir = writeSuite('cap-frac', { name: 'cap-frac', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await expect(cliMain([...cliArgs(dir), '--max-tokens', '1.5'])).resolves.toBe(2);
     await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '1.5'])).resolves.toBe(2);
-    // --max-usd stays fractional (a USD cap may be 0.5). One case: the
-    // unpriced glm lane trips the USD cap fail-closed AFTER the only case,
-    // so no admission is refused and the run is clean (exit 0).
+    // --max-usd stays fractional (a USD cap may be 0.5). One case on the
+    // now-priced glm lane (F1 price-map pin): the derived cost is far below
+    // 0.5, so the run is clean (exit 0).
     await expect(cliMain([...cliArgs(dir), '--max-usd', '0.5'])).resolves.toBe(0);
   }, 15_000);
 

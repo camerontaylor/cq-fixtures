@@ -683,11 +683,12 @@ describe('budget honesty (I9)', () => {
   }, 15_000);
 
   it('an unpriced lane under a TOKEN-ONLY cap dispatches ALL cases (no USD fail-closed)', async () => {
-    // glm-5.3-flash on zai is unpriced: with no maxUsd configured, the
-    // governor has no USD cap to fail closed on, so the token cap binds
-    // alone and both cases dispatch (F1/DD-9).
+    // glm-5.3-flash on the anthropic handle is unpriced (the pinned price map
+    // lists it under zai only): with no maxUsd configured, the governor has
+    // no USD cap to fail closed on, so the token cap binds alone and both
+    // cases dispatch (F1/DD-9).
     const dir = reviewSuite('token-only', 'token-only', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
-    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxTokens: 10_000 }));
+    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'anthropic', maxTokens: 10_000 }));
     expect(result.gatedByBudget).toBe(false);
     expect(result.rows).toHaveLength(2);
     expect(result.rows.map((r) => r.case)).toEqual(['rev-1', 'rev-2']);
@@ -699,7 +700,7 @@ describe('budget honesty (I9)', () => {
     // Keeping the honest-stop contract honest in the other direction: a
     // configured USD cap over unpriced usage MUST trip (never run unbounded).
     const dir = reviewSuite('usd-fail-closed', 'usd-fail-closed', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
-    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxUsd: 0.000001, maxTokens: 1_000_000 }));
+    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'anthropic', maxUsd: 0.000001, maxTokens: 1_000_000 }));
     expect(result.gatedByBudget).toBe(true);
     expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
   }, 15_000);
@@ -805,7 +806,7 @@ describe('pre-runner probe accounting (review-debt #14)', () => {
     // unpriced usage — identical shape to the no-probe run.
     const dir = reviewSuite('probe-usd', 'probe-usd', [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')]);
     const result = await runSuite(
-      opts(dir, { model: 'glm-5.3-flash', provider: 'zai', maxUsd: 0.000001, maxTokens: 1_000_000, preflightProbe: probe }),
+      opts(dir, { model: 'glm-5.3-flash', provider: 'anthropic', maxUsd: 0.000001, maxTokens: 1_000_000, preflightProbe: probe }),
     );
     expect(result.gatedByBudget).toBe(true);
     expect(result.rows.map((r) => r.case)).toEqual(['rev-1']);
@@ -824,14 +825,14 @@ describe('DD-9 cost derivation', () => {
   }, 15_000);
 
   it('an unpriced model yields costUSD null with no costBasis (never invented)', async () => {
-    // Verified against the toolkit price map directly: glm-5.3-flash on the
-    // zai handle has no entry (checked anthropic too — also absent).
-    const spec = { model: 'glm-5.3-flash', provider: 'zai' };
+    // Verified against the pinned toolkit price map directly: glm-5.3-flash
+    // on the anthropic handle has no entry (it is listed under zai only).
+    const spec = { model: 'glm-5.3-flash', provider: 'anthropic' };
     expect(priceOf(spec)).toBeUndefined();
     expect(computeCostUSD(spec, { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 })).toBeUndefined();
 
     const dir = reviewSuite('cost-unpriced', 'cost-unpriced', [reviewCase('rev-1', 'resolved')]);
-    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'zai' }));
+    const result = await runSuite(opts(dir, { model: 'glm-5.3-flash', provider: 'anthropic' }));
     const row = result.rows[0]!;
     expect(row.costUSD).toBeNull();
     expect('costBasis' in row).toBe(false);

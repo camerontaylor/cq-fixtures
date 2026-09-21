@@ -511,20 +511,21 @@ describe('fake-driver smoke over the micro suites (D2 subprocess lane)', () => {
     assertSchemaValid(result.rows, result.tables);
   }, 60_000);
 
-  it('every smoke row is costUSD null with no costBasis (glm-5.3-flash/zai is unpriced at phase-2-done)', async () => {
-    // Pinned against the REAL toolkit price map (verified by probe at
-    // phase-2-done: no entry for glm-5.3-flash on the zai handle — the same
-    // fact runner.test.ts's DD-9 test asserts). If the price map ever prices
-    // this pair, these expectations must be re-pinned to the observed
-    // honest value, not nulled dishonestly.
+  it('every smoke row carries token-derived costUSD with costBasis modeled (glm-5.3-flash/zai is priced since the F1 price-map pin)', async () => {
+    // Re-pinned at the F1 interim lock (cq-toolkit main b06b6a3, v1.0.1): the
+    // price map now lists glm-5.3-flash on the zai handle, so the honest value
+    // is a modeled number — never a null (the pre-price-map expectation this
+    // test used to carry). The DD-9 null corollary is still covered in
+    // runner.test.ts against a genuinely unpriced handle.
     const spec = { model: 'glm-5.3-flash', provider: 'zai' };
-    expect(priceOf(spec)).toBeUndefined();
-    expect(computeCostUSD(spec, { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 })).toBeUndefined();
+    expect(priceOf(spec)).toBeDefined();
+    expect(computeCostUSD(spec, { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 })).toBeGreaterThan(0);
 
     const result = await runSuite({ suiteDir: CLASSIFIER_SUITE_DIR, driver: new FakeDriver(), ...SMOKE_MODEL });
     for (const row of result.rows) {
-      expect(row.costUSD).toBeNull();
-      expect('costBasis' in row).toBe(false);
+      expect(typeof row.costUSD).toBe('number');
+      expect(row.costUSD).toBeGreaterThan(0);
+      expect(row.costBasis).toBe('modeled');
     }
     assertSchemaValid(result.rows, result.tables);
   }, 60_000);

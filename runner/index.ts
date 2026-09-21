@@ -240,12 +240,15 @@ const STRUCTURED_OUTPUT_MISS_TOKEN = 'structured-output-miss';
  * `ai-sdk driver: [<token>]` and `<token>` is EXACTLY `structured-output-miss`.
  *
  * The toolkit guarantees every ai-sdk `error` verdict's `WorkerResult.error`
- * starts with that form, so the class token is consumed from position zero:
- * a longer token (`[structured-output-miss-extra]`), a mid-message mention of
- * the phrase, or another lane's cause is false — no substring drift.
+ * starts with that form, so the class token is consumed from position zero and
+ * compared with `===` — a longer token (`[structured-output-miss-extra]`), a
+ * mid-message mention of the phrase, or another lane's cause is false, so there
+ * is no substring drift. The separator AFTER the closing bracket is any
+ * non-identifier character (or end of string): the toolkit emits a space, but a
+ * comma, tab or newline must not flip a model outcome into an infra absence.
  */
 export function isStructuredOutputMissCause(cause: string): boolean {
-  const m = /^ai-sdk driver: \[([a-z-]+)\](?:\s|$)/.exec(cause);
+  const m = /^ai-sdk driver: \[([a-z-]+)\](?:[^A-Za-z0-9-]|$)/.exec(cause);
   return m !== null && m[1] === STRUCTURED_OUTPUT_MISS_TOKEN;
 }
 

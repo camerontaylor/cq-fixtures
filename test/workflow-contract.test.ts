@@ -349,6 +349,14 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell, 'the annotation escapes workflow-command % sequences').toContain('s/%/%25/g');
     expect(evalCell, 'the eval manifest read guards its shape').toContain('Array.isArray(doc.runs)');
     expect(snapshotStep, 'the snapshot manifest read guards its shape').toContain('Array.isArray(manifest.runs)');
+    // F1b r3: a malformed manifest read in the EVAL step fails the cell loudly
+    // (::error:: + hard_fail) instead of a bare `set -e` exit with no
+    // diagnostic, and the snapshot's table-shape read guards `cells` too.
+    expect(evalCell, 'the eval absence read fails loud with a diagnostic').toContain(
+      'cannot read ${out_dir}/run.json — absence records unknown',
+    );
+    expect(evalCell, 'the eval absence read sets hard_fail').toMatch(/hard_fail=1\n\s+absent_lines=""/);
+    expect(snapshotStep, 'the snapshot table read guards its shape').toContain('Array.isArray(table.cells)');
   });
 
   it('deprecated/ suites are excluded from matrix discovery (F2, WB-2.1)', () => {

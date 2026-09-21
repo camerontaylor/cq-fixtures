@@ -53,8 +53,9 @@ published; a case with a loud absence has no row and is listed under "Loud absen
 | glm-5.3-flash / subprocess | review-classifier | **REAL** | micro 9/10, 0.023728 · breadth-verified 26/30, 0.087666 · breadth-tail 27/30, 0.091102 |
 | glm-5.3-flash / acp | — | **LOUD SKIP, no data** | preflight hard-fail before eval; owner decision pending (installable CI backend vs dispatch-only) |
 
-**Total modeled cost of the published cells: USD 0.675660.** Every cell is priced (`costBasis:
-modeled`); there is no `costUSD: null` row.
+**Total modeled cost of the published cells: USD 0.675660 as the sum of the 24 committed cell
+figures (exact row-level sum USD 0.675658).** Every cell is priced (`costBasis: modeled`); there
+is no `costUSD: null` row.
 
 ## Observed served ids
 
@@ -109,11 +110,16 @@ one-dispatch proving PR.
 Committed and **reproducible offline**: `node scripts/snapshot-mapping-check.mjs
 reports/snapshots/2026-09-21-wb1` re-derives the result from the snapshot's own committed
 evidence — each cell's `journal/*.ndjson` (the `job-finished` entries), `rows.jsonl`, and
-`run.json`'s `absences[]`. For every cell it asserts — (a) every `[structured-output-miss]`
-failure has a row, (b) every non-miss failure has NO row and is in `absences[]`, (c) no absence
-case has a row — and exits non-zero on any violation. Every cell's raw NDJSON journal is
-committed beside its table, and the exact command output is committed as `mapping-check.txt`.
-Result across all 4 evaluated cells × 6 suites (24 cells): **rows 385, problems 0**.
+`run.json`'s `absences[]`. For every cell it asserts: (a) every `[structured-output-miss]`
+failure has a row whose outcome is exactly 0; (b) every non-miss `failed` failure has NO row and
+is in `absences[]`; (c) no absence case has a row; (d) every `ok` job has a row; (e) every
+governed stop (`budget-exhausted`, or `indeterminate` carrying the aborted detail) has a row and
+is NOT an absence; (f) every materialization refusal has NO row; and (g) a missing journal, a
+journal with zero `job-finished` entries, or an unparseable NDJSON line is a problem — so the
+check can never pass vacuously. It exits non-zero on any violation. Every cell's raw NDJSON
+journal is committed beside its table, and the exact command output is committed as
+`mapping-check.txt`. Result across all 4 evaluated cells × 6 suites (24 cells): **rows 385,
+problems 0**.
 
 ## What is proven vs what is not
 

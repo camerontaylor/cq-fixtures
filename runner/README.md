@@ -37,8 +37,12 @@ The cause's class token is its second component: `ai-sdk driver: [<token>]`.
   (2 for a fixer, 1 for a classifier) — so it counts in the tables as a real
   zero. The journal keeps the cause verbatim; `structuredOutput` is never
   fabricated. The match is exact (the predicate `isStructuredOutputMissCause`
-  reads the token from position zero): a longer token, a mid-message mention,
-  or another lane's cause is not a miss.
+  reads the token from position zero and compares it with `===`): a longer
+  token, a mid-message mention, or another lane's cause is not a miss. Only the
+  separator AFTER the closing bracket is a character class — any non-identifier
+  character (space, tab, comma, newline) or end-of-string; the toolkit emits a
+  space, but a different separator must never flip a model outcome into an
+  infrastructure absence.
 - Every other cause (`[endpoint-timeout]`, `[provider-error]`, no cause, an
   unknown one) is infrastructure: NO row and NO prediction artifact is
   published — a driver failure never masquerades as a model score (I9). The

@@ -790,10 +790,12 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     // trailing diagnostic (`end of string` covered by the first case).
     expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss]')).toBe(true);
     expect(isStructuredOutputMissCause(MISS_CAUSE)).toBe(true);
-    // The separator after `]` is \s, not a literal space: a tab/newline
-    // diagnostic is still a miss (a model outcome), never an absence.
+    // The separator after `]` is a character class (any non-identifier char or
+    // end of string), never a literal space: a tab/newline/comma diagnostic is
+    // still a miss (a model outcome), never an infrastructure absence.
     expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss]\tdiagnostic')).toBe(true);
     expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss]\ndiagnostic')).toBe(true);
+    expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss], detail')).toBe(true);
     // Negative: a longer token, a missing bracket, a mid-message mention, a
     // different class, a bare phrase, a different case, an empty string.
     expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss-extra] x')).toBe(false);

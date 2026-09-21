@@ -283,6 +283,14 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell, 'unknown profiles fail loud').toContain('unknown profile');
   });
 
+  it('zero suite discovery hard-fails the matrix cell (F3)', () => {
+    // An empty discovery (removed/broken root) must not let the cell succeed
+    // with no tables — the snapshot's full-success path would clear the day.
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'zero discovery is a hard error').toContain('matrix discovery found no suites for profile');
+    expect(evalCell, 'count drift stays a warning').toContain('matrix discovery found ${suite_count} suites (expected ${expected_count}');
+  });
+
   it('the smoke loop exercises breadth-verified too (F3, WB-2.5)', () => {
     const smoke = stepChunk('Fake-driver smoke over the micro and breadth suites');
     expect(smoke, 'breadth-verified is smoked').toContain('suites/fixer-worker/breadth-verified');

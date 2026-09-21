@@ -530,15 +530,19 @@ jobs:
             fi
             suite_count=$((suite_count + 1))
           done < <(find ${roots} -maxdepth 1 -name suite.json -not -path '*/deprecated/*' 2>/dev/null | sort)
-          # Discovery drift must be VISIBLE but never fail the cell (it is a
-          # structuring signal, not an eval outcome): `full` names four dirs
-          # with one directly-placed suite.json each; `verified` names one.
-          # Anything else is drift. Zero keeps the stronger wording — an
-          # accidental REMOVAL is the urgent case.
+          # Discovery drift is VISIBLE: a count other than the profile's
+          # expected count is a WARNING (a later phase adding a suite is a
+          # structuring change, not an eval failure). ZERO suites is the
+          # urgent case — an accidental removal or a broken root would
+          # otherwise let the cell succeed with no tables and the snapshot's
+          # full-success path clear the day's dir — so zero HARD-FAILS the
+          # cell (the snapshot job still runs on a failed matrix and merges
+          # surviving tables).
           expected_count=4
           if [ "${MATRIX_PROFILE}" = "verified" ]; then expected_count=1; fi
           if [ "${suite_count}" -eq 0 ]; then
-            echo "::warning::matrix discovery found no suites — if this is an accidental removal, investigate"
+            hard_fail=1
+            echo "::error::matrix discovery found no suites for profile ${MATRIX_PROFILE} — an accidental removal or a broken root; failing the cell so the snapshot cannot publish an empty day"
           elif [ "${suite_count}" -ne "${expected_count}" ]; then
             echo "::warning::matrix discovery found ${suite_count} suites (expected ${expected_count} for profile ${MATRIX_PROFILE}) — investigate if unintended"
           fi

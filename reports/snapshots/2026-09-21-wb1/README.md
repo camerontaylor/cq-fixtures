@@ -31,10 +31,13 @@ What F1b changed before the run:
   step-summary line + `DISPATCH-ONLY-*` marker, and withholds an empty dispatch-only table from
   the snapshot.
 
-**Honesty rule this snapshot is held to: no cell's zero is a driver error.** A driver-error zero
-no longer exists in either direction — a model did not produce parseable structured output
-(real scored-miss row), or infrastructure failed and published no row at all (loud absence). The
-whole-run check plus its verification script are in "Zero driver-error zeros" below.
+**Honesty rule this snapshot is held to: no cell's zero is a driver error, and historical fixer
+scores are not published as valid model verdicts.** A driver-error zero no longer exists in either
+direction — a model did not produce parseable structured output (a scored-miss row), or
+infrastructure failed and published no row at all (a loud absence). Separately, every fixer row in
+this historical run is `invalid: workspace-unbound`: its scores remain for audit but cannot support a
+fixer model comparison. The whole-run check plus its verification script are in "Zero driver-error
+zeros" below.
 
 ## Per-cell verdicts
 
@@ -43,13 +46,13 @@ published; a case with a loud absence has no row and is listed under "Loud absen
 
 | Cell (model / driver) | Role | Verdict | Evidence (suite: runs, passed/total, costUSD) |
 |---|---|---|---|
-| glm-5.3-flash / ai-sdk | fixer-worker | **REAL — 34 scored-miss zeros (model) + 11 loud absences** | micro 4, 0/8, 0.002737 · breadth-verified 9, 0/18, 0.005628 · breadth-tail 21, 0/42, 0.015692 |
+| glm-5.3-flash / ai-sdk | fixer-worker | **INVALID — workspace-unbound; 34 scored-miss zeros + 11 loud absences** | micro 4, 0/8, 0.002737 · breadth-verified 9, 0/18, 0.005628 · breadth-tail 21, 0/42, 0.015692 |
 | glm-5.3-flash / ai-sdk | review-classifier | **REAL** | micro 9/10, 0.001885 · breadth-verified 20/30, 0.008074 · breadth-tail 18/30, 0.007710 |
-| deepseek-flash / ai-sdk | fixer-worker | **REAL — 45 scored-miss zeros (model)** | micro 5, 0/10, 0.004135 · breadth-verified 12, 0/24, 0.010367 · breadth-tail 28, 0/56, 0.026659 |
+| deepseek-flash / ai-sdk | fixer-worker | **INVALID — workspace-unbound; 45 scored-miss zeros** | micro 5, 0/10, 0.004135 · breadth-verified 12, 0/24, 0.010367 · breadth-tail 28, 0/56, 0.026659 |
 | deepseek-flash / ai-sdk | review-classifier | **REAL** | micro 10/10, 0.001220 · breadth-verified 27/30, 0.002938 · breadth-tail 25/30, 0.004200 |
-| glm-5.3-flash / claude-agent | fixer-worker | **REAL scored** (budget-gated tail) | micro 3, 3/6, 0.032042 · breadth-verified 5, 5/10, 0.054711 · breadth-tail 10, 10/20, 0.117639 |
+| glm-5.3-flash / claude-agent | fixer-worker | **INVALID — workspace-unbound; budget-gated tail** | micro 3, 3/6, 0.032042 · breadth-verified 5, 5/10, 0.054711 · breadth-tail 10, 10/20, 0.117639 |
 | glm-5.3-flash / claude-agent | review-classifier | **REAL** | micro 9/10, 0.003021 · breadth-verified 27/30, 0.009560 · breadth-tail 25/30, 0.011002 |
-| glm-5.3-flash / subprocess | fixer-worker | **REAL scored** (budget-gated tail) | micro 1, 0/2, 0.016728 · breadth-verified 2, 2/4, 0.040234 · breadth-tail 5, 5/10, 0.096982 |
+| glm-5.3-flash / subprocess | fixer-worker | **INVALID — workspace-unbound; budget-gated tail** | micro 1, 0/2, 0.016728 · breadth-verified 2, 2/4, 0.040234 · breadth-tail 5, 5/10, 0.096982 |
 | glm-5.3-flash / subprocess | review-classifier | **REAL** | micro 9/10, 0.023728 · breadth-verified 26/30, 0.087666 · breadth-tail 27/30, 0.091102 |
 | glm-5.3-flash / acp | — | **LOUD SKIP, no data** | preflight hard-fail before eval; owner decision pending (installable CI backend vs dispatch-only) |
 
@@ -85,9 +88,10 @@ verdict, two honest dispositions.
 `ai-sdk driver: [structured-output-miss] run failed — No object generated: could not parse the
 response.` (deepseek, 45/45 fixer cases) and the glm counterpart (34/45). The model spent real
 tokens on the fixer tool loop and never produced a parseable structured object; the persisted
-patches are empty (no edits), so both DD-4 probes genuinely fail. This is a **model fidelity**
-result on the fixer tool loop, exactly the CQ-3 signal the schema-compliance probe exists to
-measure — not a driver error and not an infrastructure absence.
+patches are empty (no edits), so both DD-4 probes fail. This is a real **model structured-output
+miss**, not a driver error or infrastructure absence. It does not validate fixer skill: because the
+historical workspace was not bound to the graded fixture, every fixer cell is published as
+`invalid: workspace-unbound` rather than as a model verdict.
 
 ## Budget-gated tails (honest governor stops, not absences)
 
@@ -120,6 +124,43 @@ check can never pass vacuously. It exits non-zero on any violation. Every cell's
 journal is committed beside its table, and the exact command output is committed as
 `mapping-check.txt`. Result across all 4 evaluated cells × 6 suites (24 cells): **rows 385,
 problems 0**.
+
+## W0.9 regrade (existing committed evidence only)
+
+The classifier scored-miss rows now carry an `expected-verdict` probe with
+`observed: null` and `passed: false`; the `suspiciousBenign` sidecar flag is
+retained for those rows, so the by-verdict and FP metrics include every scored
+classifier row. Every historical fixer row in this snapshot (and the earlier
+2026-09-18 snapshot) is retained and marked `invalid: workspace-unbound`:
+those runs never bound the driver's workspace to the graded fixture. No model,
+driver, or live evaluation was run.
+
+Regrade/enrichment inputs are only the committed snapshot cells' `rows.jsonl`,
+`run.json`, journals, and tables, plus each run's `suite.json` and fixture-side
+`*.label.json` sidecars as recorded at that manifest's `suiteSha`. The
+deterministic replay command is:
+
+```sh
+node --experimental-strip-types scripts/regrade-snapshots.mjs --check reports/snapshots/2026-09-21-wb1
+```
+
+`--check` writes nothing and exits non-zero if the committed rows or tables are
+not the output of that replay. Omit `--check` to apply the same transformation
+in place. The script enriches only rows justified by the committed journal
+(the classifier's structured-output-miss rows receive the null verdict probe
+and sidecar flag), marks only the audited W0.9 workspace-unbound fixer run
+identities, and then calls the normal `regrade` aggregator. It constructs no
+driver, model, network request, or live check. The underlying plain runner
+regrade remains available for callers that already have enriched rows:
+
+```sh
+node --experimental-strip-types runner/index.ts regrade --from reports/snapshots/2026-09-21-wb1/<model>/<driver>/<role>/<suite>
+```
+
+All 24 committed WB1 cells were checked with the replay command; the two GLM
+ai-sdk classifier breadth tables include the previously omitted scored-miss
+rows (expected counts now sum to 30). No model, driver, or live evaluation was
+run for W0.9.
 
 ## What is proven vs what is not
 

@@ -72,6 +72,11 @@
             "maximum": 1,
             "description": "Aggregate score for the cell: passed/total."
           },
+          "invalid": {
+            "type": "string",
+            "enum": ["workspace-unbound"],
+            "description": "P5 validity marker propagated from the contributing rows. Scores are retained unchanged but must not be published as a valid model result."
+          },
           "costUSD": {
             "type": ["number", "null"],
             "minimum": 0,

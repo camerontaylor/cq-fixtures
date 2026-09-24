@@ -12,16 +12,21 @@ Every scored run aggregates its result rows into one comparison table per
 role (`schema/comparison-table.schema.json`): **one row (cell) per
 (model, driver) pair** with columns `runs`, `passed`, `total`, `score`
 (passed/total summed probes), `costUSD`, `costBasis`, `wallTimeMs`, and
-`tokens` — summed over the cell's rows.
+`tokens` — summed over the cell's rows. Historical rows marked
+`invalid: workspace-unbound` propagate that marker to the cell. Their counts
+and score are retained for the audit trail, but the published status must
+treat them as invalid rather than as a valid model result.
 
 **Where tables come from.** Local runner runs write
 `reports/eval/<model>/<role>/<suite>/<role>.table.json` via `--out`. In CI,
 `.github/workflows/suite.yml` publishes the same shape as artifacts —
 `smoke-reports` (fake-driver smoke, every push/PR) and `eval-reports-<model>`
-(real-driver cells, dispatch/weekly schedule only) — and the workflow's
-snapshot job commits the eval tables to the repo's `snapshots` branch under
+(real-driver cells) — and the workflow's snapshot job commits the eval tables
+to the repo's `snapshots` branch under
 `reports/snapshots/<date>/<model>/<role>/<suite>/` (main is hook-protected;
-the snapshots-branch bot commit is the recorded standing deviation).
+the snapshots-branch bot commit is the recorded standing deviation). The real
+matrix and snapshot publisher are dispatch-only while the weekly matrix is
+paused per D10; the planned schedule re-enable is W6.4/W6.7.
 
 **The model column is the served id.** Per the served-id decision
 (2026-09-14), cells request the id the wire actually serves, and the runner

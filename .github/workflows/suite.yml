@@ -4,13 +4,10 @@ name: suite
 # `paths-ignore`, no branch or tag filters. push and pull_request run the
 # `smoke` job unfiltered (the denylist self-test's workflow sanity scan reads
 # this block, and unfiltered push runs keep the smoke green on main);
-# `workflow_dispatch` and the WEEKLY `schedule` declare the real-driver
-# matrix's triggers (plan §9 weekly cadence, J4: the J3 daily cron was
-# reduced to a Monday-morning run now that the matrix is live; dispatch stays
-# for on-demand runs). Declaring events is not filtering: the `matrix` job
-# ADDITIONALLY self-restricts to dispatch/schedule via its job-level `if`, so
-# push/PR runs never attempt a live eval while the `on:` block itself stays
-# free of filters.
+# `workflow_dispatch` is the real-driver matrix's only trigger while the
+# weekly matrix is paused per D10. The plan re-enables the schedule in
+# W6.4/W6.7; until then push/pull_request run only the filter-free smoke
+# job, and the matrix job self-restricts to dispatch via its job-level `if`.
 
 on:
   push:
@@ -24,10 +21,6 @@ on:
           - full
           - verified
         default: full
-  schedule:
-    # Plan §9 weekly cadence: 03:17 UTC every Monday. workflow_dispatch stays
-    # the on-demand path (an eval re-run never waits for the window).
-    - cron: '17 3 * * 1'
 
 permissions:
   contents: read
@@ -127,13 +120,12 @@ jobs:
           path: reports/smoke/
           if-no-files-found: ignore
 
-  # Real drivers, dispatch/schedule ONLY: the job-level `if` is the one
-  # allowed restriction here (the `on:` block above remains unfiltered — a
-  # job-level `if` removes whole runs by event, which is queue/mechanics
-  # territory, not an I4 trigger filter).
+  # Real drivers, dispatch-only while the weekly matrix is paused per D10.
+  # The `on:` block above remains unfiltered for push/PR smoke; this job-level
+  # `if` removes non-dispatch runs from the real-driver matrix only.
   matrix:
     needs: smoke
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # Model-driven code runs here and this job pushes nothing (the snapshot
     # publisher is the dedicated `snapshot` job), so read is enough.
@@ -165,16 +157,12 @@ jobs:
         # headless `claude` CLI (installed below); the acp lane spawns the
         # zcode-acp-server harness (installed below, version-pinned).
         #
-        # Budget by TOKENS, not USD: glm-5.3-flash@zai is ABSENT from the
-        # toolkit price map and the governor FAILS CLOSED on unpriced usage
-        # under a USD cap (it would refuse admission after the first case of
-        # any multi-case suite — the exact failure DD-9 exists to prevent),
-        # and deepseek pricing must not be assumed either. A token cap binds
-        # alone on every cell, keeping them dispatch-safe; the USD cap is
-        # reserved for priced lanes that opt into one. The cap is PER CASE
-        # (--max-tokens-per-case, WB-1.6): the retired flat 200000 was per
-        # suite INVOCATION and silently gated the back half of a 40-case
-        # suite into "no row" absences.
+        # Budget by TOKENS, not USD: the served GLM id is priced in the
+        # interim toolkit pin and deepseek pricing is not assumed; a token cap
+        # binds alone on every cell, keeping the matrix dispatch-safe. The cap
+        # is PER CASE (--max-tokens-per-case, WB-1.6): the retired flat
+        # 200000 was per suite INVOCATION and silently gated the back half of
+        # a 40-case suite into "no row" absences.
         cell:
           - axis: model
             model: glm-5.3-flash
@@ -193,8 +181,8 @@ jobs:
             # deepseek wire's classifier rows observed `deepseek-flash` (per
             # row), leaving costUSD null for the observed id — the matrix now
             # requests the served id so the observed-model seam is green; the
-            # price-map entry arrives with the interim `toolkit.lock` pin
-            # (WB-1.5b), so costUSD stays null until that pin lands.
+            # served id is priced in the current interim toolkit pin (WB-1.5b),
+            # so costUSD is numeric.
             model: deepseek-flash
             provider: deepseek
             driver: ai-sdk
@@ -515,7 +503,8 @@ jobs:
           # (-maxdepth 1: only a suite.json placed DIRECTLY in a named dir
           # runs). The dispatch input `profile` selects the roots (F3,
           # WB-2.5): `verified` runs only the breadth-verified suites; `full`
-          # (the default, and the weekly schedule's value) runs every suite.
+          # (the default) runs every suite. The matrix is paused per D10 and
+          # will be re-enabled by W6.4/W6.7.
           # F4 adds the classifier breadth suites: breadth-verified rides
           # both profiles, breadth-tail is full-only (dispatch/matrix).
           # Declaring the roots explicitly keeps widening a deliberate edit.
@@ -718,17 +707,16 @@ jobs:
   # Snapshot publisher: NO model code runs here — it only downloads the
   # eval-reports artifact and commits tables. Split from `matrix` so the
   # run-tool surface of fixer cells never coexists with persisted checkout
-  # credentials, and the push is a pure data operation. Same
-  # dispatch/schedule restriction as `matrix` (plan §9 designed flow).
+  # credentials, and the push is a pure data operation. Same dispatch-only
+  # restriction as `matrix` while the weekly matrix is paused per D10.
   snapshot:
     needs: matrix
     # needs + !cancelled(): the snapshot runs after a FAILED matrix too. The
     # default post-failure behavior would SKIP this job on `needs: matrix`,
     # burying the surviving cell's tables — but every matrix cell uploads its
     # eval-reports-<model>-<driver> artifact `if: always()`, so whatever
-    # survived a partial failure still publishes. The dispatch/schedule
-    # restriction is kept INSIDE the expression (push/PR runs still never
-    # reach this job) —
+    # survived a partial failure still publishes. The dispatch-only restriction
+    # is kept INSIDE the expression (push/PR runs still never reach this job) —
     # cancelling a run explicitly must not publish half a matrix, hence
     # !cancelled() rather than always().
     #
@@ -739,11 +727,11 @@ jobs:
     # INSIDE the matrix job), while download-artifact v4 silently succeeds on
     # a zero-match pattern. The job would then publish empty/foreign data and
     # could even create the snapshots branch as a bare checkout copy.
-    if: ${{ !cancelled() && needs.matrix.result != 'skipped' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    if: ${{ !cancelled() && needs.matrix.result != 'skipped' && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    # Serialize snapshot-branch updates: two overlapping dispatch/schedule
-    # runs would race the `snapshots` tip and one push would fail
-    # non-fast-forward. Queued-not-cancelled keeps EVERY run's tables landing.
+    # Serialize snapshot-branch updates: overlapping dispatch runs would race
+    # the `snapshots` tip and one push would fail non-fast-forward.
+    # Queued-not-cancelled keeps every dispatch's tables landing.
     concurrency:
       group: snapshots
       cancel-in-progress: false

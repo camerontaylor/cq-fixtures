@@ -36,6 +36,8 @@ export interface ResultRow {
    * 'suspicious-benign'. Absent otherwise — absence means unflagged.
    */
   suspiciousBenign?: boolean;
+  /** P5: historical evidence marked invalid rather than deleted. */
+  invalid?: 'workspace-unbound';
   /**
    * F6/CQ-4: the prompt/tool-surface bundle id of the suite this row ran
    * under. Absent for the default posture (and on all pre-F6 rows).
@@ -65,6 +67,12 @@ export interface ComparisonTableCell {
   passed: number;
   total: number;
   score: number;
+  /**
+   * P5: historical evidence marker. Present when at least one contributing
+   * row is invalid; scores are retained unchanged but must not be published as
+   * a valid model result.
+   */
+  invalid?: 'workspace-unbound';
   /**
    * F4: per-verdict confusion counts, present on classifier cells only
    * (cells whose rows carry expected-verdict probes). Exactly the five
@@ -109,6 +117,8 @@ interface CellAccumulator {
   runs: number;
   passed: number;
   total: number;
+  /** P5: preserve the historical validity marker on the comparison cell. */
+  invalid?: 'workspace-unbound';
   /** Per-row costUSD; null marks a DD-9 subscription row. */
   costs: Array<number | null>;
   bases: Array<'billed' | 'modeled'>;
@@ -253,6 +263,7 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       cells.set(key, acc);
     }
     acc.runs += 1;
+    if (row.invalid !== undefined) acc.invalid = row.invalid;
     acc.passed += row.outcome.passed;
     acc.total += row.outcome.total;
     // F4: fold classifier probes into the cell's verdict tallies. A row may
@@ -332,6 +343,7 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       passed: acc.passed,
       total: acc.total,
       score: acc.passed / acc.total, // exact division; total >= runs >= 1
+      ...(acc.invalid !== undefined ? { invalid: acc.invalid } : {}),
       costUSD,
       ...(costBasis !== undefined ? { costBasis } : {}),
       ...(verdictStats !== undefined ? { byVerdict: verdictStats.byVerdict, macroF1: verdictStats.macroF1 } : {}),

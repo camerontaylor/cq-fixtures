@@ -54,10 +54,23 @@ describe('snapshot README headers (F6/WB-5.1)', () => {
 });
 
 describe('snapshot index (F6/WB-5.1)', () => {
-  it('the committed index is current (regenerate == committed)', () => {
+  it('the committed index is current and exposes historical cell validity', () => {
     expect(() =>
       execFileSync('node', ['scripts/snapshot-index.mjs', '--check'], { cwd: REPO_ROOT, encoding: 'utf8' }),
     ).not.toThrow();
+    const index = readFileSync(join(SNAPSHOTS_ROOT, 'README.md'), 'utf8');
+    expect(index).toContain('| old status | new status | old score | new score |');
+    expect(index).toContain('| workspace-unbound | (absent) |');
+    expect(index).toContain('| (absent) | workspace-unbound |');
+    expect(index).toContain('| (invalid comparison) |');
+    expect(index).toContain(
+      '| review-classifier / micro | deepseek-flash | ai-sdk | default | valid | valid | 0.9000 | 1.0000 | +0.1000 | 10 | 10 |',
+    );
+    const invalidFixerDeltas = index.split('\n').filter(
+      (line) => line.startsWith('| fixer-worker /') && line.includes('| workspace-unbound |'),
+    );
+    expect(invalidFixerDeltas.length).toBeGreaterThan(0);
+    expect(invalidFixerDeltas.every((line) => line.includes('| (invalid comparison) |'))).toBe(true);
   });
 });
 

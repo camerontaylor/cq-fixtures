@@ -78,6 +78,7 @@ function snapshotCells(snapshotDir) {
         score: cell.score,
         passed: cell.passed,
         total: cell.total,
+        invalid: cell.invalid ?? null,
         scoreCI: cell.scoreCI ?? null,
       });
     }
@@ -88,14 +89,23 @@ function snapshotCells(snapshotDir) {
 const f4 = (n) => (typeof n === 'number' ? n.toFixed(4) : 'n/a');
 const signed = (n) => `${n >= 0 ? '+' : ''}${n.toFixed(4)}`;
 
+/** Invalid cells retain their scores, but their scores cannot form a delta. */
+function renderDelta(olderCell, newerCell) {
+  if (olderCell?.invalid != null || newerCell?.invalid != null) return '(invalid comparison)';
+  if (olderCell === undefined) return '(new cell)';
+  if (newerCell === undefined) return '(removed cell)';
+  return signed(newerCell.score - olderCell.score);
+}
+
 function renderSnapshotTable(rows) {
   const lines = [
-    '| Snapshot | toolkit.lock | suite SHA | run | tables | cells |',
-    '|---|---|---|---|---|---|',
+    '| Snapshot | toolkit.lock | suite SHA | run | tables | cells | invalid cells |',
+    '|---|---|---|---|---|---|---|',
   ];
   for (const r of rows) {
+    const invalidCells = [...r.cells.values()].filter((cell) => cell.invalid !== null).length;
     lines.push(
-      `| ${r.date} | ${r.toolkitLock ?? '(none)'} | ${r.suiteSha ?? '(none)'} | ${r.runId ?? '(none)'} | ${r.tables} | ${r.cells.size} |`,
+      `| ${r.date} | ${r.toolkitLock ?? '(none)'} | ${r.suiteSha ?? '(none)'} | ${r.runId ?? '(none)'} | ${r.tables} | ${r.cells.size} | ${invalidCells} |`,
     );
   }
   return lines.join('\n');
@@ -111,23 +121,23 @@ function renderDeltas(rows) {
     const lines = [
       `### ${older.date} (toolkit.lock ${older.toolkitLock ?? '(none)'}) → ${newer.date} (toolkit.lock ${newer.toolkitLock ?? '(none)'})`,
       '',
-      '| Role / suite | model | driver | variant | old score | new score | Δ | old n | new n |',
-      '|---|---|---|---|---|---|---|---|---|',
+      '| Role / suite | model | driver | variant | old status | new status | old score | new score | Δ | old n | new n |',
+      '|---|---|---|---|---|---|---|---|---|---|---|',
     ];
     for (const key of keys) {
       const a = older.cells.get(key);
       const b = newer.cells.get(key);
       const label = a ?? b;
       if (a === undefined) {
-        lines.push(`| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | (absent) | ${f4(b.score)} | (new cell) | 0 | ${b.total} |`);
+        lines.push(`| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | (absent) | ${b.invalid ?? 'valid'} | (absent) | ${f4(b.score)} | ${renderDelta(a, b)} | 0 | ${b.total} |`);
         continue;
       }
       if (b === undefined) {
-        lines.push(`| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | ${f4(a.score)} | (absent) | (removed cell) | ${a.total} | 0 |`);
+        lines.push(`| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | ${a.invalid ?? 'valid'} | (absent) | ${f4(a.score)} | (absent) | ${renderDelta(a, b)} | ${a.total} | 0 |`);
         continue;
       }
       lines.push(
-        `| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | ${f4(a.score)} | ${f4(b.score)} | ${signed(b.score - a.score)} | ${a.total} | ${b.total} |`,
+        `| ${label.role} / ${label.suite} | ${label.model} | ${label.driver} | ${label.variant} | ${a.invalid ?? 'valid'} | ${b.invalid ?? 'valid'} | ${f4(a.score)} | ${f4(b.score)} | ${renderDelta(a, b)} | ${a.total} | ${b.total} |`,
       );
     }
     sections.push(lines.join('\n'));
@@ -163,8 +173,11 @@ function generate() {
       'README to open with a machine-read header recording the pinned `toolkit.lock` value AND the\n' +
       'suite checkout\'s git SHA (`toolkit.lock:` / `suite-sha:` lines). Without both fields a score\n' +
       'change cannot be attributed to a toolkit change vs a suite change (CQ-5), so the header check\n' +
-      'in `test/snapshot-index.test.ts` is a hard gate. Regenerate this file with\n' +
-      '`node scripts/snapshot-index.mjs`; the same command with `--check` fails when it is stale.',
+      'in `test/snapshot-index.test.ts` is a hard gate. Cells carrying\n' +
+      '`invalid: workspace-unbound` retain their historical counts but are marked invalid in the\n' +
+      'summary and delta status columns.\n' +
+      'Regenerate this file with `node scripts/snapshot-index.mjs`; the same command with `--check`\n' +
+      'fails when it is stale.',
   );
   out.push('');
   out.push('## Snapshots');

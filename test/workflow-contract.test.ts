@@ -370,13 +370,13 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
   });
 
   it('the dispatch profile selects the discovery roots (F3, WB-2.5)', () => {
-    // `verified` runs only the breadth-verified suites; `full` (the default,
-    // and the weekly schedule's value) runs every suite. Scope the assertions
+    // `verified` runs only the breadth-verified suites; `full` (the default)
+    // runs every suite. Scope the assertions
     // to the workflow_dispatch.inputs.profile block so unrelated text (suite
     // paths elsewhere) cannot satisfy them.
     const profileIdx = text.indexOf('\n      profile:\n');
     expect(profileIdx, 'profile input declared under workflow_dispatch.inputs').toBeGreaterThan(-1);
-    const profileBlock = text.slice(profileIdx, text.indexOf('\n  schedule:', profileIdx));
+    const profileBlock = text.slice(profileIdx, text.indexOf('\npermissions:', profileIdx));
     expect(profileBlock, 'profile is a choice input').toContain('type: choice');
     expect(profileBlock, 'profile options include full').toContain('- full');
     expect(profileBlock, 'profile options include verified').toContain('- verified');
@@ -443,7 +443,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
   it('I4 holds: unfiltered on:, job-level event ifs, persist-credentials discipline', () => {
     // The `on:` block stays free of filter keys (the denylist self-test's
     // workflow sanity scan reads the same shape); the matrix and snapshot
-    // jobs carry the dispatch/schedule restriction at the JOB level — the
+    // jobs carry the dispatch-only restriction at the JOB level — the
     // one allowed restriction — and model-driven code never sees persisted
     // checkout credentials (only the snapshot job, a pure data operation,
     // persists them).
@@ -460,11 +460,12 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     for (const banned of ['paths:', 'paths-ignore:', 'branches:', 'branches-ignore:', 'tags:', 'tags-ignore:']) {
       expect(onBlock, `on: block must stay filter-free (${banned})`).not.toContain(banned);
     }
-    for (const event of ['push:', 'pull_request:', 'workflow_dispatch:', 'schedule:']) {
+    for (const event of ['push:', 'pull_request:', 'workflow_dispatch:']) {
       expect(onBlock, `on: declares ${event}`).toContain(event);
     }
+    expect(onBlock, 'the paused weekly schedule is absent').not.toContain('schedule:');
     const matrixJob = text.slice(text.indexOf('\n  matrix:\n'), text.indexOf('\n  snapshot:\n'));
-    expect(matrixJob).toContain("if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'");
+    expect(matrixJob).toContain("if: github.event_name == 'workflow_dispatch'");
     expect(matrixJob).toContain('persist-credentials: false');
     const snapshotJob = text.slice(text.indexOf('\n  snapshot:\n'));
     expect(snapshotJob).toContain('persist-credentials: true');

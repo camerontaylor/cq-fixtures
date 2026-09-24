@@ -10,6 +10,7 @@
       "passed": 5,
       "total": 10,
       "score": 0.5,
+      "invalid": "workspace-unbound",
       "costUSD": 0.054711,
       "costBasis": "modeled",
       "wallTimeMs": 2100559,

@@ -243,9 +243,12 @@ const STRUCTURED_OUTPUT_MISS_TOKEN = 'structured-output-miss';
  * starts with that form, so the class token is consumed from position zero and
  * compared with `===` — a longer token (`[structured-output-miss-extra]`), a
  * mid-message mention of the phrase, or another lane's cause is false, so there
- * is no substring drift. The separator AFTER the closing bracket is any
- * non-identifier character (or end of string): the toolkit emits a space, but a
- * comma, tab or newline must not flip a model outcome into an infra absence.
+ * is no substring drift. In particular, do not infer a class from bare HTTP-
+ * like numbers in the diagnostic (for example `position 502`): only the
+ * explicit class token classifies the outcome. The separator AFTER the
+ * closing bracket is any non-identifier character (or end of string): the
+ * toolkit emits a space, but a comma, tab or newline must not flip a model
+ * outcome into an infra absence.
  */
 export function isStructuredOutputMissCause(cause: string): boolean {
   const m = /^ai-sdk driver: \[([a-z-]+)\](?:[^A-Za-z0-9-]|$)/.exec(cause);
@@ -278,6 +281,14 @@ function tokensOf(usage: Usage): ResultRow['tokens'] {
 // unparseable rather than silently treated as unflagged. The row omits
 // suspiciousBenign for every status but 'flagged'.
 type SidecarFlag = 'flagged' | 'absent' | 'unparseable' | 'unflagged' | 'invalid';
+function sidecarDiagnostic(caseId: string, fixture: string, sidecarFlag: SidecarFlag): string | undefined {
+  if (sidecarFlag !== 'absent' && sidecarFlag !== 'unparseable' && sidecarFlag !== 'invalid') return undefined;
+  const why =
+    sidecarFlag === 'invalid'
+      ? 'invalid content (fp_flag missing or outside none|suspicious-benign)'
+      : sidecarFlag;
+  return `case ${caseId}: label sidecar '${fixture.slice(0, -'.json'.length)}.label.json' ${why} — suspiciousBenign flag omitted`;
+}
 function suspiciousBenignFlag(repoRoot: string, fixture: string): SidecarFlag {
   if (!fixture.endsWith('.json')) return 'unflagged';
   let raw: string;
@@ -625,6 +636,15 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         if (!isStructuredOutputMissCause(cause)) {
           emitRow = false;
           absences.push({ case: c.id, role: suite.role, cause });
+        } else if (!isFixerCase(c)) {
+          // A scored-miss classifier row is still a scored row: retain the
+          // expected verdict and represent the unparseable observation as a
+          // null probe so confusion/FP metrics count the miss instead of
+          // silently dropping it from the denominator.
+          rowProbes = [{ kind: 'expected-verdict', expected: c.probe.expected, observed: null, passed: false }];
+          sidecarFlag = suspiciousBenignFlag(repoRoot, c.fixture);
+          const sidecarProblem = sidecarDiagnostic(c.id, c.fixture, sidecarFlag);
+          if (sidecarProblem !== undefined) caseDiagnostics.push(sidecarProblem);
         }
         // Either way the worker produced no gradeable result, so every
         // configured probe failed (passed 0 of the full ceiling).
@@ -665,15 +685,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // r1-F3: a damaged sidecar is a case diagnostic (row shape
         // unchanged) — silent omission would undercount fpN/fpRate with
         // zero signal on any run the drift gate does not cover.
-        if (sidecarFlag === 'absent' || sidecarFlag === 'unparseable' || sidecarFlag === 'invalid') {
-          const why =
-            sidecarFlag === 'invalid'
-              ? 'invalid content (fp_flag missing or outside none|suspicious-benign)'
-              : sidecarFlag;
-          caseDiagnostics.push(
-            `case ${c.id}: label sidecar '${c.fixture.slice(0, -'.json'.length)}.label.json' ${why} — suspiciousBenign flag omitted`,
-          );
-        }
+        const sidecarProblem = sidecarDiagnostic(c.id, c.fixture, sidecarFlag);
+        if (sidecarProblem !== undefined) caseDiagnostics.push(sidecarProblem);
       }
       if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);
       await append({

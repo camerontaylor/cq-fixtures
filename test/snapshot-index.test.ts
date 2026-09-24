@@ -56,10 +56,10 @@ describe('snapshot README headers (F6/WB-5.1)', () => {
 });
 
 describe('snapshot index (F6/WB-5.1)', () => {
-  it('rejects a classifier invalid marker but preserves a fixer invalid marker', () => {
+  it('only indexes the recognized fixer marker and rejects invalid markers on other cells', () => {
     const snapshotDir = mkdtempSync(join(tmpdir(), 'cq-snapshot-index-'));
     tempDirs.push(snapshotDir);
-    const cell = (invalid?: string) => ({
+    const cell = (invalid?: unknown) => ({
       model: 'glm-5.3-flash',
       driver: 'ai-sdk',
       score: 1,
@@ -78,7 +78,17 @@ describe('snapshot index (F6/WB-5.1)', () => {
     );
 
     rmSync(classifierPath);
-    writeFileSync(join(snapshotDir, 'fixer-worker.table.json'), JSON.stringify({
+    const fixerPath = join(snapshotDir, 'fixer-worker.table.json');
+    writeFileSync(fixerPath, JSON.stringify({
+      role: 'fixer-worker',
+      suite: 'micro',
+      cells: [cell('some-future-marker')],
+    }));
+    expect(() => snapshotCells(snapshotDir)).toThrow(
+      /cell glm-5\.3-flash\/ai-sdk\/default carries unrecognized invalid marker some-future-marker/,
+    );
+
+    writeFileSync(fixerPath, JSON.stringify({
       role: 'fixer-worker',
       suite: 'micro',
       cells: [cell('workspace-unbound')],

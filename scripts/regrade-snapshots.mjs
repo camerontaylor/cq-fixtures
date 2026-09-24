@@ -56,6 +56,10 @@ function journalEvidence(cell, runId) {
       if (line.trim() === '') continue;
       const event = JSON.parse(line);
       if (event.type !== 'job-finished' || event.runId !== runId) continue;
+      // A preflight auth probe is journaled with status ok but deliberately
+      // produces no scored case row. Synthetic replay fixtures may omit opId.
+      if (event.jobId === 'acp-preflight-probe'
+        || event.opId === 'acp-preflight') continue;
       if (event.result?.status === 'ok') completedJobs.set(event.jobId, event.result.value);
       if (event.result?.status === 'failed') {
         const error = String(event.result.error ?? '');
@@ -296,6 +300,14 @@ for (const cell of discoveredCells) {
   const manifest = readJson(join(cell, 'run.json'));
   const entry = manifest.runs?.[0];
   if (entry === undefined) throw new Error(`${cell}: run.json has no runs[] entry`);
+  const expectedTable = `${entry.role}.table.json`;
+  const unexpectedTables = readdirSync(cell)
+    .filter((file) => file.endsWith('.table.json') && file !== expectedTable);
+  if (unexpectedTables.length > 0) {
+    throw new Error(
+      `${cell}: unexpected table file(s) ${unexpectedTables.join(', ')}; only the manifest role table ${expectedTable} is expected`,
+    );
+  }
   const { suite, sidecarRevision } = loadSuite(entry, cell);
   for (const [field, suiteField] of [['suite', 'name'], ['role', 'role']]) {
     if (suite[suiteField] !== entry[field]) {
@@ -305,7 +317,9 @@ for (const cell of discoveredCells) {
     }
   }
   const suiteCases = new Map((suite.cases ?? []).map((c) => [c.id, c]));
-  const journal = entry.role === 'review-classifier' ? journalEvidence(cell, entry.runId) : undefined;
+  const journal = existsSync(join(cell, 'journal'))
+    ? journalEvidence(cell, entry.runId)
+    : undefined;
   const misses = journal?.structuredOutputMisses ?? new Set();
   const nonModelFailures = journal?.nonModelFailures ?? new Map();
   const completedJobs = journal?.completedJobs ?? new Map();
@@ -383,6 +397,9 @@ for (const cell of discoveredCells) {
       }
       if (governedStops.has(row.case) && !isClassifierZeroOutcome(row.outcome)) {
         throw new Error(`${cell}: case ${row.case} has classifier governed-stop evidence but does not carry the required zero outcome`);
+      }
+      if (governedStops.has(row.case) && row.probes?.length) {
+        throw new Error(`${cell}: case ${row.case} has classifier governed-stop evidence but carries probes`);
       }
       const nullObservation = row.probes?.some(
         (probe) => probe.kind === 'expected-verdict' && probe.observed === null,
@@ -494,16 +511,25 @@ for (const cell of discoveredCells) {
     }
   }
 
-  if (entry.role === 'review-classifier') {
+  if (journal !== undefined) {
     const rowCases = new Set(rows.map((row) => row.case));
-    for (const caseId of misses) {
+    for (const caseId of completedJobs.keys()) {
       if (!rowCases.has(caseId)) {
-        throw new Error(`${cell}: journal structured-output-miss case ${caseId} is absent from rows.jsonl`);
+        throw new Error(`${cell}: journal completed job case ${caseId} is absent from rows.jsonl`);
       }
     }
     for (const [caseId, stop] of governedStops) {
       if (!rowCases.has(caseId)) {
         throw new Error(`${cell}: journal classifier governed stop case ${caseId} (${String(stop)}) is absent from rows.jsonl`);
+      }
+    }
+  }
+
+  if (entry.role === 'review-classifier') {
+    const rowCases = new Set(rows.map((row) => row.case));
+    for (const caseId of misses) {
+      if (!rowCases.has(caseId)) {
+        throw new Error(`${cell}: journal structured-output-miss case ${caseId} is absent from rows.jsonl`);
       }
     }
     for (const caseId of infrastructureIndeterminate) {

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -199,6 +199,25 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 30_000);
 
+  it('rejects an extra stale table file in a snapshot cell', () => {
+    const snapshotRoot = snapshotTempRoot('extra-table-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'extra-table-test');
+    copyFileSync(
+      join(cell, 'fixer-worker.table.json'),
+      join(cell, 'stale-role.table.json'),
+    );
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'unexpected table file(s) stale-role.table.json; only the manifest role table fixer-worker.table.json is expected',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('fails discovery when the snapshot contains zero cells', () => {
     const snapshotRoot = snapshotTempRoot('zero-test');
     try {
@@ -292,11 +311,23 @@ describe('committed WB-1 regrade replay', () => {
       const accepted = runReplay(snapshotRoot, true);
       expect(accepted.status).toBe(0);
 
+      row.probes = [{ kind: 'expected-verdict', expected: 'resolved', observed: 'resolved', passed: true }];
+      writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+      const probeTable = aggregate([row])[0]!;
+      probeTable.generatedAt = '2026-01-01T00:00:00.000Z';
+      writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(probeTable, null, 2) + '\n');
+      const probeBearing = runReplay(snapshotRoot, true);
+      expect(probeBearing.status).toBe(1);
+      expect(probeBearing.stderr).toContain(
+        'case null-miss has classifier governed-stop evidence but carries probes',
+      );
+
+      delete row.probes;
       row.outcome = { score: 1, passed: 1, total: 1 };
       writeFileSync(rowsPath, JSON.stringify(row) + '\n');
-      const table = aggregate([row])[0]!;
-      table.generatedAt = '2026-01-01T00:00:00.000Z';
-      writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(table, null, 2) + '\n');
+      const nonzeroTable = aggregate([row])[0]!;
+      nonzeroTable.generatedAt = '2026-01-01T00:00:00.000Z';
+      writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(nonzeroTable, null, 2) + '\n');
       const rejected = runReplay(snapshotRoot, true);
       expect(rejected.status).toBe(1);
       expect(rejected.stderr).toContain(
@@ -330,6 +361,27 @@ describe('committed WB-1 regrade replay', () => {
       expect(noTable.stderr).toContain(
         'snapshot cell has rows.jsonl and run.json but regrade produced no table; refusing stale or missing table check',
       );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects a completed fixer journal job absent from rows.jsonl', () => {
+    const snapshotRoot = snapshotTempRoot('missing-completed-fixer-row-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'missing-completed-fixer-row-test');
+    writeFileSync(join(cell, 'rows.jsonl'), '');
+    mkdirSync(join(cell, 'journal'), { recursive: true });
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'missing-completed-fixer-row-test',
+      jobId: 'provenance',
+      result: { status: 'ok', value: { score: 1, passed: 2, total: 2 } },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('journal completed job case provenance is absent from rows.jsonl');
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
       rmSync(suiteDir, { recursive: true, force: true });

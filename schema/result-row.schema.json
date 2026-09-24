@@ -170,6 +170,16 @@
         "required": ["costUSD"]
       },
       "then": { "not": { "required": ["costBasis"] } }
+    },
+    {
+      "if": {
+        "properties": { "invalid": { "const": "workspace-unbound" } },
+        "required": ["invalid"]
+      },
+      "then": {
+        "properties": { "role": { "const": "fixer-worker" } },
+        "required": ["role"]
+      }
     }
   ]
 }

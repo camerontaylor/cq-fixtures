@@ -301,31 +301,33 @@ for (const cell of discoveredCells) {
         (probe) => probe.kind === 'expected-verdict' && probe.observed === null && probe.passed === false,
       ) === true;
       const completedOutcome = completedJobs.get(row.case);
-      const hasMatchingCompletedZero = isClassifierZeroOutcome(completedOutcome)
-        && isClassifierZeroOutcome(row.outcome);
-      const hasJournalMissEvidence = misses.has(row.case) || hasMatchingCompletedZero;
+      const hasCompletedZeroEvidence = isClassifierZeroOutcome(completedOutcome);
+      const hasJournalMissEvidence = misses.has(row.case) || hasCompletedZeroEvidence;
       const recordsRealObserved = row.probes?.some(
         (probe) => probe.kind === 'expected-verdict' && typeof probe.observed === 'string',
       ) === true;
       if (recordsNullMiss && !hasJournalMissEvidence) {
         throw new Error(`${cell}: case ${row.case} has a null/false classifier probe without journal structured-output-miss or matching completed zero-result evidence`);
       }
-      if (misses.has(row.case)) {
-        if (row.probes === undefined) {
+      if (misses.has(row.case) || (recordsNullMiss && hasCompletedZeroEvidence)) {
+        const evidence = misses.has(row.case)
+          ? 'journal structured-output-miss'
+          : 'matching completed zero-result';
+        if (misses.has(row.case) && row.probes === undefined) {
           row.probes = [{ kind: 'expected-verdict', expected: suiteCase.probe.expected, observed: null, passed: false }];
         }
-        if (recordsRealObserved) {
-          throw new Error(`${cell}: case ${row.case} has journal structured-output-miss evidence but carries real observed classifier probes`);
+        if (misses.has(row.case) && recordsRealObserved) {
+          throw new Error(`${cell}: case ${row.case} has ${evidence} evidence but carries real observed classifier probes`);
         }
         const probe = row.probes?.length === 1 ? row.probes[0] : undefined;
         if (probe?.kind !== 'expected-verdict'
           || probe.expected !== suiteCase.probe.expected
           || probe.observed !== null
           || probe.passed !== false) {
-          throw new Error(`${cell}: case ${row.case} has journal structured-output-miss evidence but does not carry the exact expected-verdict null/false probe`);
+          throw new Error(`${cell}: case ${row.case} has ${evidence} evidence but does not carry the exact expected-verdict null/false probe`);
         }
         if (!isClassifierZeroOutcome(row.outcome)) {
-          throw new Error(`${cell}: case ${row.case} has journal structured-output-miss evidence but does not carry the required zero outcome`);
+          throw new Error(`${cell}: case ${row.case} has ${evidence} evidence but does not carry the required zero outcome`);
         }
       }
     }

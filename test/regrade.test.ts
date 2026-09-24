@@ -78,6 +78,13 @@ describe('regrade --from re-aggregates byte-identically', () => {
     await expect(cliMain(['regrade', '--from', outDir])).resolves.toBe(2);
   });
 
+  it('rejects a classifier row carrying the fixer-only workspace-unbound marker', async () => {
+    const outDir = join(root, 'classifier-invalid');
+    mkdirSync(outDir, { recursive: true });
+    writeRowsJsonl(outDir, [baseRow({ invalid: 'workspace-unbound' })]);
+    await expect(cliMain(['regrade', '--from', outDir])).resolves.toBe(2);
+  });
+
   it('exits 2 on a missing --from', async () => {
     await expect(cliMain(['regrade'])).resolves.toBe(2);
   });

@@ -1402,6 +1402,26 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     assertSchemaValid([], [table]);
   });
 
+  it('rejects a classifier row carrying the fixer-only workspace-unbound marker', () => {
+    const row: ResultRow = {
+      role: 'review-classifier',
+      suite: 'invalid-classifier',
+      case: 'c1',
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: 0, passed: 0, total: 1 },
+      invalid: 'workspace-unbound',
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-invalid-classifier',
+      timestamp: '2026-09-21T00:00:00Z',
+    };
+    expect(() => aggregate([row])).toThrow(
+      "aggregate: review-classifier row run-invalid-classifier/c1 carries fixer-only invalid marker 'workspace-unbound'",
+    );
+  });
+
   it('two variants of one suite land as DISTINCT cells (F6/CQ-4)', () => {
     const row = (variant?: string): ResultRow => ({
       role: 'review-classifier',

@@ -44,6 +44,8 @@ interface RowSample {
   // suspicious-benign flag. Old rows omit both by design.
   probes?: Array<{ kind: string; expected: string; observed: string | null; passed: boolean }>;
   suspiciousBenign?: boolean;
+  // P5: historical fixer-run evidence marker; fixer-worker only.
+  invalid?: string;
   // F6 additive-optional field: the prompt/tool-surface bundle id. Old rows
   // (and default-posture rows) omit it by design.
   variant?: string;
@@ -168,6 +170,14 @@ describe('result-row schema (plan §8 field list)', () => {
       outcome: { score: 0, passed: 0, total: 1 },
       probes: [{ kind: 'expected-verdict', expected: 'skip', observed: 'maybe', passed: false }],
     }))).toBe(true);
+  });
+
+  it('accepts workspace-unbound only on a fixer-worker row', () => {
+    expect(rowSchema(validRow({ invalid: 'workspace-unbound' }))).toBe(true);
+    expect(rowSchema(validRow({
+      role: 'review-classifier',
+      invalid: 'workspace-unbound',
+    }))).toBe(false);
   });
 
   it('accepts a row carrying a non-default suite variant (F6/CQ-4)', () => {

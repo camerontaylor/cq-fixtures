@@ -216,6 +216,9 @@ function buildVerdictStats(
 export function aggregate(rows: readonly ResultRow[]): ComparisonTable[] {
   const byRole = new Map<SuiteRole, ResultRow[]>();
   for (const row of rows) {
+    if (row.role === 'review-classifier' && row.invalid !== undefined) {
+      throw new Error(`aggregate: review-classifier row ${row.runId}/${row.case ?? '(no case)'} carries fixer-only invalid marker '${row.invalid}'`);
+    }
     const bucket = byRole.get(row.role) ?? [];
     bucket.push(row);
     byRole.set(row.role, bucket);

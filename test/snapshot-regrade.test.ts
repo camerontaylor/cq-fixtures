@@ -231,6 +231,56 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
+  it.each([
+    {
+      label: 'a wrong expected verdict',
+      mutate: (row: ResultRow) => {
+        row.probes = [{ kind: 'expected-verdict', expected: 'actionable', observed: null, passed: false }];
+      },
+      message: 'does not carry the exact expected-verdict null/false probe',
+    },
+    {
+      label: 'an extra probe',
+      mutate: (row: ResultRow) => {
+        row.probes = [
+          { kind: 'expected-verdict', expected: 'resolved', observed: null, passed: false },
+          { kind: 'expected-verdict', expected: 'skip', observed: 'skip', passed: true },
+        ];
+      },
+      message: 'does not carry the exact expected-verdict null/false probe',
+    },
+    {
+      label: 'a nonzero row outcome',
+      mutate: (row: ResultRow) => {
+        row.outcome = { score: 1, passed: 1, total: 1 };
+      },
+      message: 'does not carry the required zero outcome',
+    },
+  ])('rejects completed ok zero-result evidence paired with $label', ({ mutate, message }) => {
+    const snapshotRoot = snapshotTempRoot('completed-zero-miss-shape-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);
+    const rowsPath = join(cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+    mutate(row);
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'regrade-null-miss-test',
+      jobId: 'null-miss',
+      result: { status: 'ok', value: { score: 0, passed: 0, total: 1 } },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        `case null-miss has matching completed zero-result evidence but ${message}`,
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('rejects an existing null/false classifier row backed only by a passing ok journal result', () => {
     const snapshotRoot = snapshotTempRoot('passing-ok-null-miss-test');
     const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);

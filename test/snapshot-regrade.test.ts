@@ -556,6 +556,34 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
+  it('rejects fabricated billed and modeled cost labels during replay', () => {
+    for (const [label, costBasis, expected] of [
+      ['billed', 'billed', 'case provenance has invalid billed cost accounting: costUSD must be a finite non-negative number'],
+      ['modeled', 'modeled', 'case provenance has invalid modeled cost accounting: costUSD must be a finite non-negative number'],
+    ] as const) {
+      const snapshotRoot = snapshotTempRoot(`fixer-${label}-cost-test`);
+      const { cell, suiteDir } = fixerSnapshot(snapshotRoot, `fixer-${label}-cost-test`);
+      const rowsPath = join(cell, 'rows.jsonl');
+      const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+      row.costBasis = costBasis;
+      writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+      writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+        type: 'job-finished',
+        runId: `fixer-${label}-cost-test`,
+        jobId: 'provenance',
+        result: { status: 'ok', value: { score: 1, passed: 2, total: 2 } },
+      }) + '\n');
+      try {
+        const result = runReplay(snapshotRoot, true);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(expected);
+      } finally {
+        rmSync(snapshotRoot, { recursive: true, force: true });
+        rmSync(suiteDir, { recursive: true, force: true });
+      }
+    }
+  }, 120_000);
+
   it('rejects classifier-only expected-verdict probes on a fixer row', () => {
     const snapshotRoot = snapshotTempRoot('fixer-classifier-probe-test');
     const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'fixer-classifier-probe-test');

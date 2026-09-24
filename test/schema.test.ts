@@ -91,6 +91,15 @@ describe('result-row schema (plan §8 field list)', () => {
     expect(rowSchema(validRow({ costUSD: 0.01, costBasis: 'billed' }))).toBe(true);
   });
 
+  it('rejects billed accounting without a finite non-negative numeric costUSD', () => {
+    expect(rowSchema(validRow({ costUSD: null, costBasis: 'billed' }))).toBe(false);
+    expect(rowSchema(validRow({ costUSD: -0.01, costBasis: 'billed' }))).toBe(false);
+  });
+
+  it('rejects modeled accounting paired with a null costUSD', () => {
+    expect(rowSchema(validRow({ costUSD: null, costBasis: 'modeled' }))).toBe(false);
+  });
+
   it('rejects a row whose timestamp is not a valid RFC 3339 date-time', () => {
     expect(rowSchema(validRow({ timestamp: 'not-a-date' }))).toBe(false);
   });

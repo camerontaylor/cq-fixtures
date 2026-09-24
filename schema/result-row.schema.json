@@ -173,6 +173,16 @@
     },
     {
       "if": {
+        "properties": { "costBasis": { "const": "billed" } },
+        "required": ["costBasis"]
+      },
+      "then": {
+        "properties": { "costUSD": { "type": "number", "minimum": 0 } },
+        "required": ["costUSD"]
+      }
+    },
+    {
+      "if": {
         "properties": { "invalid": { "const": "workspace-unbound" } },
         "required": ["invalid"]
       },

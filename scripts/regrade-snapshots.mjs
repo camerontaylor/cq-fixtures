@@ -413,6 +413,12 @@ for (const cell of discoveredCells) {
     }
     encounteredCaseIds.add(row.case);
 
+    if (row.costBasis !== undefined
+      && (row.costBasis !== 'billed' && row.costBasis !== 'modeled'
+        || typeof row.costUSD !== 'number' || !Number.isFinite(row.costUSD) || row.costUSD < 0)) {
+      throw new Error(`${cell}: case ${row.case} has invalid ${row.costBasis} cost accounting: costUSD must be a finite non-negative number`);
+    }
+
     const suiteCase = suiteCases.get(row.case);
     if (suiteCase === undefined) throw new Error(`${cell}: case ${row.case} is not in ${entry.suiteDir}`);
 

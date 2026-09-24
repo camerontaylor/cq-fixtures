@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -17,6 +18,11 @@ function runReplay(root: string, check: boolean) {
 
 const WB1_SUITE_SHA = 'ad7d24452b47e26a5820c484025264d9ab400ab6';
 const W0_9_FIXER_RUN_ID = '36088a47-2fd6-4323-8d14-57edfa47f3dc';
+
+// Keep synthetic snapshot cells out of repo-wide snapshot discovery.
+function snapshotTempRoot(label: string) {
+  return mkdtempSync(join(tmpdir(), `cq-regrade-${label}-`));
+}
 
 function classifierMissSnapshot(snapshotRoot: string) {
   const suiteDir = mkdtempSync(join(REPO_ROOT, 'suites/review-classifier/regrade-null-miss-test-'));
@@ -73,17 +79,26 @@ function classifierMissSnapshot(snapshotRoot: string) {
 }
 
 function fixerSnapshot(snapshotRoot: string, runId: string) {
-  const suiteDir = mkdtempSync(join(REPO_ROOT, 'suites/fixer-worker/regrade-provenance-test-'));
+  // The null suiteSha path is repo-relative, but this synthetic fixer must not enter corpus discovery.
+  const suiteDir = mkdtempSync(join(REPO_ROOT, 'suites/fixer-worker/quarantine/regrade-provenance-test-'));
   const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'fixer-worker', 'provenance');
   mkdirSync(cell, { recursive: true });
+  const check = join(suiteDir, 'check.mjs');
   const suite = {
     name: 'regrade-provenance-test',
     role: 'fixer-worker',
     servedModel: 'glm-5.3-flash',
     provenance: { origin: 'deterministic-test' },
-    cases: [{ id: 'provenance', fixture: join(suiteDir, 'provenance.json'), task: { prompt: 'fix' } }],
+    cases: [{
+      id: 'provenance',
+      fixture: relative(REPO_ROOT, join(suiteDir, 'provenance.json')),
+      task: { prompt: 'fix' },
+      probe: { kind: 'check-rerun', check: relative(REPO_ROOT, check) },
+    }],
   };
   writeFileSync(join(suiteDir, 'provenance.json'), '{}\n');
+  writeFileSync(check, '// synthetic offline replay check\n');
+  writeFileSync(join(suiteDir, 'QUARANTINE.md'), '# Synthetic regrade fixture\n\n- Date quarantined: 2026-01-01 (UTC)\n');
   writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify(suite, null, 2) + '\n');
   writeFileSync(join(cell, 'run.json'), JSON.stringify({
     runs: [{
@@ -135,7 +150,7 @@ describe('committed WB-1 regrade replay', () => {
   }, 120_000);
 
   it.each(['run.json', 'rows.jsonl'])('fails discovery for a directory containing only %s', (onlyFile) => {
-    const snapshotRoot = mkdtempSync(join(REPO_ROOT, 'reports/snapshots/regrade-partial-test-'));
+    const snapshotRoot = snapshotTempRoot('partial-test');
     const partial = join(snapshotRoot, 'partial');
     mkdirSync(partial, { recursive: true });
     writeFileSync(join(partial, onlyFile), onlyFile === 'run.json' ? '{"runs":[]}\n' : '');
@@ -149,7 +164,7 @@ describe('committed WB-1 regrade replay', () => {
   }, 30_000);
 
   it('fails discovery when the snapshot contains zero cells', () => {
-    const snapshotRoot = mkdtempSync(join(REPO_ROOT, 'reports/snapshots/regrade-zero-test-'));
+    const snapshotRoot = snapshotTempRoot('zero-test');
     try {
       const result = runReplay(snapshotRoot, true);
       expect(result.status).toBe(1);
@@ -160,7 +175,7 @@ describe('committed WB-1 regrade replay', () => {
   }, 30_000);
 
   it('validates an existing null/false classifier miss against structured-output-miss journal evidence', () => {
-    const snapshotRoot = mkdtempSync(join(REPO_ROOT, 'reports/snapshots/regrade-null-miss-test-'));
+    const snapshotRoot = snapshotTempRoot('null-miss-test');
     const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);
     const journal = join(cell, 'journal', 'events.ndjson');
     writeFileSync(journal, JSON.stringify({
@@ -189,7 +204,7 @@ describe('committed WB-1 regrade replay', () => {
   }, 120_000);
 
   it('loads the suite and sidecars from the manifest suite revision and fails loudly when unavailable', () => {
-    const snapshotRoot = mkdtempSync(join(REPO_ROOT, 'reports/snapshots/regrade-recorded-revision-test-'));
+    const snapshotRoot = snapshotTempRoot('recorded-revision-test');
     const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'review-classifier', 'micro');
     mkdirSync(join(cell, 'journal'), { recursive: true });
     const manifestPath = join(cell, 'run.json');
@@ -246,8 +261,8 @@ describe('committed WB-1 regrade replay', () => {
   }, 120_000);
 
   it('invalidates only the audited W0.9 fixer run identity, not a future fixer run', () => {
-    const historicalRoot = mkdtempSync(join(REPO_ROOT, 'reports/snapshots/regrade-w09-run-test-'));
-    const futureRoot = mkdtempSync(join(REPO_ROOT, 'reports/snapshots/regrade-future-run-test-'));
+    const historicalRoot = snapshotTempRoot('w09-run-test');
+    const futureRoot = snapshotTempRoot('future-run-test');
     const historical = fixerSnapshot(historicalRoot, W0_9_FIXER_RUN_ID);
     const future = fixerSnapshot(futureRoot, 'future-correctly-bound-run');
     try {
@@ -269,7 +284,7 @@ describe('committed WB-1 regrade replay', () => {
 
   it('preserves all five sidecar states and checks damaged states deterministically', () => {
     const suiteDir = mkdtempSync(join(REPO_ROOT, 'suites/review-classifier/regrade-sidecar-test-'));
-    const snapshotRoot = mkdtempSync(join(REPO_ROOT, 'reports/snapshots/regrade-sidecar-test-'));
+    const snapshotRoot = snapshotTempRoot('sidecar-test');
     const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'review-classifier', 'all-states');
     mkdirSync(join(cell, 'journal'), { recursive: true });
 

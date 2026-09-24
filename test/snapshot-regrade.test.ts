@@ -180,6 +180,31 @@ function fixerSnapshot(snapshotRoot: string, runId: string) {
   return { cell, suiteDir };
 }
 
+function addUndispatchedSuiteCase(snapshot: ReturnType<typeof fixerSnapshot>): void {
+  const suitePath = join(snapshot.suiteDir, 'suite.json');
+  const suite = JSON.parse(readFileSync(suitePath, 'utf8')) as {
+    cases: Array<Record<string, unknown>>;
+  };
+  suite.cases.push({
+    id: 'undispatched-case',
+    fixture: join(snapshot.suiteDir, 'undispatched.json'),
+    task: { prompt: 'fix' },
+    probe: { kind: 'check-rerun', check: join(snapshot.suiteDir, 'check.mjs') },
+  });
+  writeFileSync(suitePath, JSON.stringify(suite, null, 2) + '\n');
+}
+
+function appendRunFinished(
+  snapshot: ReturnType<typeof fixerSnapshot>,
+  event: Record<string, unknown>,
+): void {
+  const journalPath = join(snapshot.cell, 'journal', 'events.ndjson');
+  const events = readFileSync(journalPath, 'utf8').trim().split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  events.push(event);
+  writeFileSync(journalPath, events.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+}
+
 describe('committed WB-1 regrade replay', () => {
   it('is deterministic, leaves the checked-in snapshot unchanged, and succeeds check while reporting absent sidecars', () => {
     const result = spawnSync(
@@ -352,6 +377,10 @@ describe('committed WB-1 regrade replay', () => {
   it('fails when a rows/manifest cell regrades to no table instead of passing a missing table check', () => {
     const snapshotRoot = snapshotTempRoot('missing-table-test');
     const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'missing-table-test');
+    const suitePath = join(suiteDir, 'suite.json');
+    const suite = JSON.parse(readFileSync(suitePath, 'utf8')) as { cases: unknown[] };
+    suite.cases = [];
+    writeFileSync(suitePath, JSON.stringify(suite, null, 2) + '\n');
     writeFileSync(join(cell, 'rows.jsonl'), '');
     rmSync(join(cell, 'fixer-worker.table.json'));
     rmSync(join(cell, 'journal'), { recursive: true, force: true });
@@ -1301,12 +1330,20 @@ describe('committed WB-1 regrade replay', () => {
     const table = aggregate([row])[0]!;
     table.generatedAt = '2026-01-01T00:00:00.000Z';
     writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(table, null, 2) + '\n');
-    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
-      type: 'job-finished',
-      runId: 'recorded-revision-test',
-      jobId: 'thread-01',
-      result: { status: 'ok', value: { score: 1, passed: 1, total: 1 } },
-    }) + '\n');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), [
+      {
+        type: 'job-finished',
+        runId: 'recorded-revision-test',
+        jobId: 'thread-01',
+        result: { status: 'ok', value: { score: 1, passed: 1, total: 1 } },
+      },
+      {
+        type: 'run-finished',
+        runId: 'recorded-revision-test',
+        stoppedEarly: true,
+        earlyStopReason: 'budget',
+      },
+    ].map((event) => JSON.stringify(event)).join('\n') + '\n');
 
     try {
       const historicalRevisionAvailable = spawnSync(
@@ -1546,23 +1583,52 @@ describe('committed WB-1 regrade replay', () => {
   it('rejects missing case coverage when run-finished records a completed run', () => {
     const snapshotRoot = snapshotTempRoot('completed-coverage-test');
     const snapshot = fixerSnapshot(snapshotRoot, 'completed-coverage-run');
-    const suitePath = join(snapshot.suiteDir, 'suite.json');
-    const suite = JSON.parse(readFileSync(suitePath, 'utf8')) as { cases: Array<Record<string, unknown>> };
-    suite.cases.push({
-      id: 'missing-case',
-      fixture: join(snapshot.suiteDir, 'missing.json'),
-      task: { prompt: 'fix' },
-      probe: { kind: 'check-rerun', check: join(snapshot.suiteDir, 'check.mjs') },
+    addUndispatchedSuiteCase(snapshot);
+    appendRunFinished(snapshot, {
+      type: 'run-finished',
+      runId: 'completed-coverage-run',
+      stoppedEarly: false,
     });
-    writeFileSync(suitePath, JSON.stringify(suite, null, 2) + '\n');
-    const journalPath = join(snapshot.cell, 'journal', 'events.ndjson');
-    const events = readFileSync(journalPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
-    events.push({ type: 'run-finished', runId: 'completed-coverage-run', stoppedEarly: false });
-    writeFileSync(journalPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n');
     try {
       const result = runReplay(snapshotRoot, true);
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain('completed run is missing case missing-case coverage');
+      expect(result.stderr).toContain('completed run is missing case undispatched-case coverage');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects missing case coverage without a matching run-finished event', () => {
+    const snapshotRoot = snapshotTempRoot('missing-run-finished-coverage-test');
+    const snapshot = fixerSnapshot(snapshotRoot, 'missing-run-finished-run');
+    addUndispatchedSuiteCase(snapshot);
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'run without budget run-finished evidence is missing case undispatched-case coverage',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('accepts an undispatched case suffix when run-finished records a budget stop', () => {
+    const snapshotRoot = snapshotTempRoot('budget-suffix-coverage-test');
+    const snapshot = fixerSnapshot(snapshotRoot, 'budget-suffix-run');
+    addUndispatchedSuiteCase(snapshot);
+    appendRunFinished(snapshot, {
+      type: 'run-finished',
+      runId: 'budget-suffix-run',
+      stoppedEarly: true,
+      earlyStopReason: 'budget',
+    });
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
       rmSync(snapshot.suiteDir, { recursive: true, force: true });

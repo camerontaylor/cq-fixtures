@@ -376,6 +376,8 @@ for (const cell of discoveredCells) {
   const infrastructureIndeterminate = journal?.infrastructureIndeterminate ?? new Map();
   const usages = journal?.usages ?? new Map();
   const runFinished = journal?.runFinished;
+  const hasBudgetRunFinishedEvidence = runFinished?.stoppedEarly === true
+    && runFinished?.earlyStopReason === 'budget';
   const sidecarFlags = new Map();
   const encounteredCaseIds = new Set();
   if (entry.role === 'review-classifier') {
@@ -633,20 +635,8 @@ for (const cell of discoveredCells) {
     }
   }
 
+  const rowCases = new Set(rows.map((row) => row.case));
   if (journal !== undefined) {
-    const rowCases = new Set(rows.map((row) => row.case));
-    // A completed, non-budget run must account for every suite case. A
-    // budget-stopped run may omit its undispatched tail: the runner's
-    // run-finished event is the explicit evidence for that absence.
-    if (runFinished?.stoppedEarly === false) {
-      for (const caseId of suiteCases.keys()) {
-        if (!rowCases.has(caseId) && !recordedAbsences.has(caseId)) {
-          throw new Error(
-            `${cell}: completed run is missing case ${caseId} coverage`,
-          );
-        }
-      }
-    }
     for (const caseId of completedJobs.keys()) {
       if (!rowCases.has(caseId)) {
         throw new Error(`${cell}: journal completed job case ${caseId} is absent from rows.jsonl`);
@@ -673,6 +663,20 @@ for (const cell of discoveredCells) {
         const roleLabel = entry.role === 'fixer-worker' ? 'fixer' : 'classifier';
         throw new Error(
           `${cell}: journal ${roleLabel} no-row case ${caseId} (${String(cause)}) is not recorded in run.json absences`,
+        );
+      }
+    }
+  }
+
+  // A run must account for every suite case unless the runner's matching
+  // run-finished event explicitly records a budget stop. Only that evidence
+  // permits an undispatched suffix to be absent from rows.jsonl.
+  if (!hasBudgetRunFinishedEvidence) {
+    for (const caseId of suiteCases.keys()) {
+      if (!rowCases.has(caseId) && !recordedAbsences.has(caseId)) {
+        const runState = runFinished?.stoppedEarly === false ? 'completed run' : 'run without budget run-finished evidence';
+        throw new Error(
+          `${cell}: ${runState} is missing case ${caseId} coverage`,
         );
       }
     }
@@ -726,9 +730,7 @@ for (const cell of discoveredCells) {
     // table to emit, so validate this sole replay shape directly.
     const expectedTablePath = join(cell, expectedTable);
     const isEmptySuite = Array.isArray(suite.cases) && suite.cases.length === 0;
-    const isBudgetFinished = runFinished?.stoppedEarly === true
-      && runFinished?.earlyStopReason === 'budget';
-    if ((isEmptySuite || isBudgetFinished) && existsSync(expectedTablePath)) {
+    if ((isEmptySuite || hasBudgetRunFinishedEvidence) && existsSync(expectedTablePath)) {
       const table = readJson(expectedTablePath);
       if (!validateTable(table)) {
         throw new Error(
@@ -742,7 +744,7 @@ for (const cell of discoveredCells) {
       }
       if (table.cells.length !== 0) {
         throw new Error(
-          `${cell}: ${isBudgetFinished ? 'budget-stopped' : 'empty-suite'} table ${expectedTable} must have an empty cells array`,
+          `${cell}: ${hasBudgetRunFinishedEvidence ? 'budget-stopped' : 'empty-suite'} table ${expectedTable} must have an empty cells array`,
         );
       }
       continue;

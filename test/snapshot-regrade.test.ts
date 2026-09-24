@@ -251,6 +251,93 @@ describe('committed WB-1 regrade replay', () => {
     }, 120_000,
   );
 
+  it.each([
+    { status: 'budget-exhausted', detail: undefined },
+    { status: 'indeterminate', detail: 'driver stopReason: aborted' },
+  ])('retains $status classifier governed-stop evidence and requires a zero row', ({ status, detail }) => {
+    const snapshotRoot = snapshotTempRoot(`${status}-governed-test`);
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot, 'resolved');
+    const rowsPath = join(cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+    delete row.probes;
+    row.outcome = { score: 0, passed: 0, total: 1 };
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    const table = aggregate([row])[0]!;
+    table.generatedAt = '2026-01-01T00:00:00.000Z';
+    writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(table, null, 2) + '\n');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'regrade-null-miss-test',
+      jobId: 'null-miss',
+      result: detail === undefined ? { status } : { status, detail },
+    }) + '\n');
+    try {
+      const accepted = runReplay(snapshotRoot, true);
+      expect(accepted.status).toBe(0);
+
+      row.outcome = { score: 1, passed: 1, total: 1 };
+      writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+      const table = aggregate([row])[0]!;
+      table.generatedAt = '2026-01-01T00:00:00.000Z';
+      writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(table, null, 2) + '\n');
+      const rejected = runReplay(snapshotRoot, true);
+      expect(rejected.status).toBe(1);
+      expect(rejected.stderr).toContain(
+        'case null-miss has classifier governed-stop evidence but does not carry the required zero outcome',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects a classifier row for a no-row infrastructure indeterminate detail', () => {
+    const snapshotRoot = snapshotTempRoot('infrastructure-indeterminate-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot, 'resolved');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'regrade-null-miss-test',
+      jobId: 'null-miss',
+      result: { status: 'indeterminate', detail: 'fixture read failed for synthetic.json: ENOENT' },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case null-miss has infrastructure indeterminate journal detail (fixture read failed for synthetic.json: ENOENT) but a row was published',
+      );
+
+      writeFileSync(join(cell, 'rows.jsonl'), '');
+      const noRow = runReplay(snapshotRoot, true);
+      expect(noRow.status).toBe(0);
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects a classifier governed stop absent from rows.jsonl', () => {
+    const snapshotRoot = snapshotTempRoot('missing-governed-row-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);
+    writeFileSync(join(cell, 'rows.jsonl'), '');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'regrade-null-miss-test',
+      jobId: 'null-miss',
+      result: { status: 'budget-exhausted' },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'journal classifier governed stop case null-miss (budget-exhausted) is absent from rows.jsonl',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('rejects a journal-recorded structured-output-miss absent from rows.jsonl', () => {
     const snapshotRoot = snapshotTempRoot('missing-miss-row-test');
     const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);

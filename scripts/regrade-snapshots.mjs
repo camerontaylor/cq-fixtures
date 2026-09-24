@@ -48,6 +48,8 @@ function journalEvidence(cell, runId) {
   const structuredOutputMisses = new Set();
   const nonModelFailures = new Map();
   const completedJobs = new Map();
+  const governedStops = new Map();
+  const infrastructureIndeterminate = new Map();
   const journal = join(cell, 'journal');
   for (const file of readdirSync(journal).filter((f) => f.endsWith('.ndjson')).sort()) {
     for (const line of readFileSync(join(journal, file), 'utf8').split('\n')) {
@@ -64,10 +66,30 @@ function journalEvidence(cell, runId) {
           // must remain distinct from the model structured-output miss above.
           nonModelFailures.set(event.jobId, error);
         }
+      } else if (event.result?.status === 'budget-exhausted') {
+        governedStops.set(event.jobId, 'budget-exhausted');
+      } else if (event.result?.status === 'indeterminate') {
+        // A driver-level abort still produces an honest zero row. Other
+        // indeterminate details are infrastructure refusals (fixture read,
+        // payload parsing, or a pre-dispatch run abort) and must not have a
+        // row. Keep the detail in the journal so this distinction remains
+        // auditable during offline replay.
+        const detail = String(event.result.detail ?? '');
+        if (detail.startsWith('driver stopReason: aborted')) {
+          governedStops.set(event.jobId, detail);
+        } else {
+          infrastructureIndeterminate.set(event.jobId, detail);
+        }
       }
     }
   }
-  return { structuredOutputMisses, nonModelFailures, completedJobs };
+  return {
+    structuredOutputMisses,
+    nonModelFailures,
+    completedJobs,
+    governedStops,
+    infrastructureIndeterminate,
+  };
 }
 
 function isClassifierZeroOutcome(value) {
@@ -287,6 +309,8 @@ for (const cell of discoveredCells) {
   const misses = journal?.structuredOutputMisses ?? new Set();
   const nonModelFailures = journal?.nonModelFailures ?? new Map();
   const completedJobs = journal?.completedJobs ?? new Map();
+  const governedStops = journal?.governedStops ?? new Map();
+  const infrastructureIndeterminate = journal?.infrastructureIndeterminate ?? new Map();
   const sidecarFlags = new Map();
   const encounteredCaseIds = new Set();
   if (entry.role === 'review-classifier') {
@@ -342,6 +366,14 @@ for (const cell of discoveredCells) {
         throw new Error(
           `${cell}: case ${row.case} has a non-model classifier journal failure (${String(nonModelFailures.get(row.case))}) but a row was published`,
         );
+      }
+      if (infrastructureIndeterminate.has(row.case)) {
+        throw new Error(
+          `${cell}: case ${row.case} has infrastructure indeterminate journal detail (${String(infrastructureIndeterminate.get(row.case))}) but a row was published`,
+        );
+      }
+      if (governedStops.has(row.case) && !isClassifierZeroOutcome(row.outcome)) {
+        throw new Error(`${cell}: case ${row.case} has classifier governed-stop evidence but does not carry the required zero outcome`);
       }
       const nullObservation = row.probes?.some(
         (probe) => probe.kind === 'expected-verdict' && probe.observed === null,
@@ -430,6 +462,16 @@ for (const cell of discoveredCells) {
     for (const caseId of misses) {
       if (!rowCases.has(caseId)) {
         throw new Error(`${cell}: journal structured-output-miss case ${caseId} is absent from rows.jsonl`);
+      }
+    }
+    for (const [caseId, stop] of governedStops) {
+      if (!rowCases.has(caseId)) {
+        throw new Error(`${cell}: journal classifier governed stop case ${caseId} (${String(stop)}) is absent from rows.jsonl`);
+      }
+    }
+    for (const caseId of infrastructureIndeterminate) {
+      if (rowCases.has(caseId)) {
+        throw new Error(`${cell}: journal infrastructure indeterminate case ${caseId} has a row`);
       }
     }
   }

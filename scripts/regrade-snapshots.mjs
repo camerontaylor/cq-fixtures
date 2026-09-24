@@ -46,14 +46,14 @@ function cells(dir) {
 /** Return journal evidence for the manifest run, keyed by case id. */
 function journalEvidence(cell, runId) {
   const structuredOutputMisses = new Set();
-  const completedJobs = new Set();
+  const completedJobs = new Map();
   const journal = join(cell, 'journal');
   for (const file of readdirSync(journal).filter((f) => f.endsWith('.ndjson')).sort()) {
     for (const line of readFileSync(join(journal, file), 'utf8').split('\n')) {
       if (line.trim() === '') continue;
       const event = JSON.parse(line);
       if (event.type !== 'job-finished' || event.runId !== runId) continue;
-      if (event.result?.status === 'ok') completedJobs.add(event.jobId);
+      if (event.result?.status === 'ok') completedJobs.set(event.jobId, event.result.value);
       if (event.result?.status === 'failed'
         && /^ai-sdk driver: \[structured-output-miss\](?:[^A-Za-z0-9-]|$)/.test(String(event.result.error ?? ''))) {
         structuredOutputMisses.add(event.jobId);
@@ -61,6 +61,14 @@ function journalEvidence(cell, runId) {
     }
   }
   return { structuredOutputMisses, completedJobs };
+}
+
+function isClassifierZeroOutcome(value) {
+  return typeof value === 'object'
+    && value !== null
+    && value.score === 0
+    && value.passed === 0
+    && value.total === 1;
 }
 
 function readJson(path) {
@@ -257,7 +265,7 @@ for (const cell of discoveredCells) {
   const suiteCases = new Map((suite.cases ?? []).map((c) => [c.id, c]));
   const journal = entry.role === 'review-classifier' ? journalEvidence(cell, entry.runId) : undefined;
   const misses = journal?.structuredOutputMisses ?? new Set();
-  const completedJobs = journal?.completedJobs ?? new Set();
+  const completedJobs = journal?.completedJobs ?? new Map();
   const sidecarFlags = new Map();
   if (entry.role === 'review-classifier') {
     const sidecars = recordedSidecars(suiteCases, sidecarRevision);
@@ -292,18 +300,33 @@ for (const cell of discoveredCells) {
       const recordsNullMiss = row.probes?.some(
         (probe) => probe.kind === 'expected-verdict' && probe.observed === null && probe.passed === false,
       ) === true;
-      const hasJournalMissEvidence = misses.has(row.case) || completedJobs.has(row.case);
+      const completedOutcome = completedJobs.get(row.case);
+      const hasMatchingCompletedZero = isClassifierZeroOutcome(completedOutcome)
+        && isClassifierZeroOutcome(row.outcome);
+      const hasJournalMissEvidence = misses.has(row.case) || hasMatchingCompletedZero;
       const recordsRealObserved = row.probes?.some(
         (probe) => probe.kind === 'expected-verdict' && typeof probe.observed === 'string',
       ) === true;
       if (recordsNullMiss && !hasJournalMissEvidence) {
-        throw new Error(`${cell}: case ${row.case} has a null/false classifier probe without journal structured-output-miss or completed-job evidence`);
+        throw new Error(`${cell}: case ${row.case} has a null/false classifier probe without journal structured-output-miss or matching completed zero-result evidence`);
       }
-      if (misses.has(row.case) && recordsRealObserved) {
-        throw new Error(`${cell}: case ${row.case} has journal structured-output-miss evidence but carries real observed classifier probes`);
-      }
-      if (row.probes === undefined && misses.has(row.case)) {
-        row.probes = [{ kind: 'expected-verdict', expected: suiteCase.probe.expected, observed: null, passed: false }];
+      if (misses.has(row.case)) {
+        if (row.probes === undefined) {
+          row.probes = [{ kind: 'expected-verdict', expected: suiteCase.probe.expected, observed: null, passed: false }];
+        }
+        if (recordsRealObserved) {
+          throw new Error(`${cell}: case ${row.case} has journal structured-output-miss evidence but carries real observed classifier probes`);
+        }
+        const probe = row.probes?.length === 1 ? row.probes[0] : undefined;
+        if (probe?.kind !== 'expected-verdict'
+          || probe.expected !== suiteCase.probe.expected
+          || probe.observed !== null
+          || probe.passed !== false) {
+          throw new Error(`${cell}: case ${row.case} has journal structured-output-miss evidence but does not carry the exact expected-verdict null/false probe`);
+        }
+        if (!isClassifierZeroOutcome(row.outcome)) {
+          throw new Error(`${cell}: case ${row.case} has journal structured-output-miss evidence but does not carry the required zero outcome`);
+        }
       }
     }
     if (entry.role === 'review-classifier') {

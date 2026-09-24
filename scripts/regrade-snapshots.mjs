@@ -416,6 +416,34 @@ for (const cell of discoveredCells) {
         }
       }
 
+      // A completed status:ok result represents one ordinary classifier
+      // verdict unless the historical null/false miss shape above applies.
+      // Require the probe itself to be complete and internally truthful, not
+      // merely consistent with the journal's aggregate outcome.
+      if (completedJobs.has(row.case) && !recordsNullMiss) {
+        if (row.probes?.length !== 1) {
+          throw new Error(
+            `${cell}: case ${row.case} ordinary completed classifier row must carry exactly one expected-verdict probe`,
+          );
+        }
+        const probe = row.probes[0];
+        if (probe.kind !== 'expected-verdict') {
+          throw new Error(
+            `${cell}: case ${row.case} ordinary completed classifier row must carry exactly one expected-verdict probe`,
+          );
+        }
+        if (probe.expected !== suiteCase.probe.expected) {
+          throw new Error(
+            `${cell}: case ${row.case} classifier probe expected ${String(probe.expected)} does not match suite expected ${String(suiteCase.probe.expected)}`,
+          );
+        }
+        if (probe.passed !== (probe.observed === probe.expected)) {
+          throw new Error(
+            `${cell}: case ${row.case} classifier probe passed=${String(probe.passed)} contradicts observed=${String(probe.observed)} expected=${String(probe.expected)}`,
+          );
+        }
+      }
+
       // Real observed probes are independently checked against the suite and,
       // when available, the completed job result. This runs after the legacy
       // null/miss checks above so all prior diagnostics remain strict and

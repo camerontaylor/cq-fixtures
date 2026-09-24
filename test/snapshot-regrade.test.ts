@@ -493,6 +493,59 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
+  it.each([
+    {
+      label: 'no probes',
+      probes: undefined,
+      message: 'must carry exactly one expected-verdict probe',
+    },
+    {
+      label: 'an empty probes array',
+      probes: [],
+      message: 'must carry exactly one expected-verdict probe',
+    },
+    {
+      label: 'duplicate expected-verdict probes',
+      probes: [
+        { kind: 'expected-verdict', expected: 'resolved', observed: 'resolved', passed: true },
+        { kind: 'expected-verdict', expected: 'resolved', observed: 'resolved', passed: true },
+      ],
+      message: 'must carry exactly one expected-verdict probe',
+    },
+    {
+      label: 'passed:true for a mismatched observation',
+      probes: [{ kind: 'expected-verdict', expected: 'resolved', observed: 'actionable', passed: true }],
+      message: 'classifier probe passed=true contradicts observed=actionable expected=resolved',
+    },
+    {
+      label: 'passed:false for a matching observation',
+      probes: [{ kind: 'expected-verdict', expected: 'resolved', observed: 'resolved', passed: false }],
+      message: 'classifier probe passed=false contradicts observed=resolved expected=resolved',
+    },
+  ])('rejects an ordinary completed classifier row with $label', ({ probes, message }) => {
+    const snapshotRoot = snapshotTempRoot('ordinary-probe-shape-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot, 'resolved');
+    const rowsPath = join(cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+    row.outcome = { score: 0, passed: 0, total: 1 };
+    row.probes = probes;
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'regrade-null-miss-test',
+      jobId: 'null-miss',
+      result: { status: 'ok', value: { score: 0, passed: 0, total: 1 } },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(message);
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('rejects a real observed classifier probe with the wrong suite expectation', () => {
     const snapshotRoot = snapshotTempRoot('real-observed-expected-mismatch-test');
     const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot, 'resolved');
@@ -525,7 +578,7 @@ describe('committed WB-1 regrade replay', () => {
     const rowsPath = join(cell, 'rows.jsonl');
     const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
     row.outcome = { score: 1, passed: 1, total: 1 };
-    row.probes = [{ kind: 'expected-verdict', expected: 'resolved', observed: 'resolved', passed: false }];
+    row.probes = [{ kind: 'expected-verdict', expected: 'resolved', observed: 'actionable', passed: false }];
     writeFileSync(rowsPath, JSON.stringify(row) + '\n');
     writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
       type: 'job-finished',

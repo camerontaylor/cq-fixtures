@@ -143,7 +143,8 @@ describe('committed WB-1 regrade replay', () => {
     );
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('checked 24 snapshot cells (0 file(s) changed)\n');
-    expect(result.stderr).toMatch(/^snapshot regrade label sidecar diagnostics \(40\):/);
+    // A depth-one CI checkout may print provenance fallbacks before diagnostics.
+    expect(result.stderr).toContain('snapshot regrade label sidecar diagnostics (40):');
     expect(result.stderr).toContain(
       "reports/snapshots/2026-09-21-wb1/deepseek-flash/ai-sdk/review-classifier/micro: case thread-01: label sidecar 'fixtures/threads/thread-01.label.json' absent — suspiciousBenign flag omitted",
     );
@@ -203,7 +204,7 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
-  it('loads the suite and sidecars from the manifest suite revision and fails loudly when unavailable', () => {
+  it('uses an available recorded revision, but warns and falls back to committed checkout files when it is unavailable', () => {
     const snapshotRoot = snapshotTempRoot('recorded-revision-test');
     const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'review-classifier', 'micro');
     mkdirSync(join(cell, 'journal'), { recursive: true });
@@ -242,8 +243,14 @@ describe('committed WB-1 regrade replay', () => {
     writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(table, null, 2) + '\n');
 
     try {
+      const historicalRevisionAvailable = spawnSync(
+        'git',
+        ['cat-file', '-e', `${WB1_SUITE_SHA}^{commit}`],
+        { cwd: REPO_ROOT },
+      ).status === 0;
       const recorded = runReplay(snapshotRoot, true);
       expect(recorded.status).toBe(0);
+      expect(recorded.stderr.includes('recorded suite revision')).toBe(!historicalRevisionAvailable);
       expect(recorded.stderr).toContain(
         "case thread-01: label sidecar 'fixtures/threads/thread-01.label.json' absent",
       );
@@ -252,9 +259,29 @@ describe('committed WB-1 regrade replay', () => {
       manifest.runs[0].suiteSha = 'not-a-recorded-revision';
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
       const unavailable = runReplay(snapshotRoot, true);
-      expect(unavailable.status).toBe(1);
-      expect(unavailable.stderr).toContain('recorded suite: git show not-a-recorded-revision:');
-      expect(unavailable.stderr).toContain('failed');
+      expect(unavailable.status).toBe(0);
+      expect(unavailable.stderr).toContain(
+        'WARNING:',
+      );
+      expect(unavailable.stderr).toContain(
+        'recorded suite revision not-a-recorded-revision is unavailable locally; using checked-out committed suite and sidecars for offline replay',
+      );
+      expect(unavailable.stderr).toContain(
+        "case thread-01: label sidecar 'fixtures/threads/thread-01.label.json' absent",
+      );
+
+      manifest.runs[0].suiteDir = '../outside';
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+      const malformed = runReplay(snapshotRoot, true);
+      expect(malformed.status).toBe(1);
+      expect(malformed.stderr).toContain("run.json runs[0].suiteDir must be a non-empty repo-relative path without '..'");
+
+      manifest.runs[0].suiteDir = 'suites/review-classifier/does-not-exist';
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+      const missing = runReplay(snapshotRoot, true);
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain('checked-out suite fallback: git show HEAD:suites/review-classifier/does-not-exist/suite.json failed');
+      expect(missing.stderr).toContain('does not exist');
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
     }

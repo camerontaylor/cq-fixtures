@@ -90,17 +90,29 @@ function repoRelativePath(value, description) {
   return value;
 }
 
-/** Read a file from the exact suite revision recorded by the run manifest. */
-function gitShow(suiteSha, path, description) {
+/** Read a file from an exact git revision. */
+function gitShow(revision, path, description) {
   try {
-    return execFileSync('git', ['show', `${suiteSha}:${path}`], {
+    return execFileSync('git', ['show', `${revision}:${path}`], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (error) {
     const detail = error.stderr?.trim() || error.message;
-    throw new Error(`${description}: git show ${suiteSha}:${path} failed: ${detail}`, { cause: error });
+    throw new Error(`${description}: git show ${revision}:${path} failed: ${detail}`, { cause: error });
+  }
+}
+
+function localRevisionExists(revision) {
+  try {
+    execFileSync('git', ['cat-file', '-e', `${revision}^{commit}`], {
+      cwd: REPO_ROOT,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -113,15 +125,35 @@ function loadSuite(entry, cell) {
   if (suiteSha === null || suiteSha === undefined) {
     // Null is reserved for deterministic tests that create an uncommitted
     // suite. Committed run manifests must use a SHA so replay cannot drift.
-    return JSON.parse(readFileSync(join(REPO_ROOT, suitePath), 'utf8'));
+    return {
+      suite: JSON.parse(readFileSync(join(REPO_ROOT, suitePath), 'utf8')),
+      sidecarRevision: null,
+    };
   }
   if (typeof suiteSha !== 'string' || suiteSha === '') {
     throw new Error(`${cell}: run.json runs[0].suiteSha must be a non-empty git revision or null`);
   }
-  return JSON.parse(gitShow(suiteSha, suitePath, `${cell}: recorded suite`));
+  if (localRevisionExists(suiteSha)) {
+    return {
+      suite: JSON.parse(gitShow(suiteSha, suitePath, `${cell}: recorded suite`)),
+      sidecarRevision: suiteSha,
+    };
+  }
+
+  // Shallow CI checkouts retain the current commit but not necessarily the
+  // historical suite commit. Keep the replay runnable without silently
+  // changing provenance: report the fallback and read the committed checkout,
+  // not a potentially dirty working tree.
+  process.stderr.write(
+    `WARNING: ${relative(REPO_ROOT, cell)}: recorded suite revision ${suiteSha} is unavailable locally; using checked-out committed suite and sidecars for offline replay\n`,
+  );
+  return {
+    suite: JSON.parse(gitShow('HEAD', suitePath, `${cell}: checked-out suite fallback`)),
+    sidecarRevision: 'HEAD',
+  };
 }
 
-/** Read all label sidecars for a suite from one recorded git revision. */
+/** Read all label sidecars for a suite from the selected git revision. */
 function recordedSidecars(suiteCases, suiteSha) {
   const result = new Map();
   const paths = [...new Set([...suiteCases.values()].map(({ fixture }) => {
@@ -215,12 +247,12 @@ for (const cell of discoveredCells) {
   const manifest = readJson(join(cell, 'run.json'));
   const entry = manifest.runs?.[0];
   if (entry === undefined) throw new Error(`${cell}: run.json has no runs[] entry`);
-  const suite = loadSuite(entry, cell);
+  const { suite, sidecarRevision } = loadSuite(entry, cell);
   const suiteCases = new Map((suite.cases ?? []).map((c) => [c.id, c]));
   const misses = entry.role === 'review-classifier' ? journalMisses(cell) : new Set();
   const sidecarFlags = new Map();
   if (entry.role === 'review-classifier') {
-    const sidecars = recordedSidecars(suiteCases, entry.suiteSha);
+    const sidecars = recordedSidecars(suiteCases, sidecarRevision);
     for (const [caseId, suiteCase] of suiteCases) {
       const flag = sidecarFlag(suiteCase.fixture, sidecars);
       sidecarFlags.set(caseId, flag);

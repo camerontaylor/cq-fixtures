@@ -61,13 +61,18 @@ function tableFiles(snapshotDir) {
 }
 
 /** Cells of one snapshot, keyed by the full cell identity (variant included, F6). */
-function snapshotCells(snapshotDir) {
+export function snapshotCells(snapshotDir) {
   const cells = new Map();
   let tables = 0;
   for (const file of tableFiles(snapshotDir)) {
     tables += 1;
     const doc = JSON.parse(readFileSync(file, 'utf8'));
     for (const cell of doc.cells ?? []) {
+      if (doc.role === 'review-classifier' && cell.invalid !== undefined) {
+        throw new Error(
+          `${relative(REPO_ROOT, file)}: review-classifier cell ${cell.model}/${cell.driver}/${cell.variant ?? 'default'} carries fixer-only invalid marker ${String(cell.invalid)}`,
+        );
+      }
       const key = [doc.role, doc.suite, cell.model, cell.driver, cell.variant ?? 'default'].join(' | ');
       cells.set(key, {
         role: doc.role,
@@ -214,4 +219,6 @@ function main(argv) {
   return 0;
 }
 
-process.exit(main(process.argv.slice(2)));
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  process.exit(main(process.argv.slice(2)));
+}

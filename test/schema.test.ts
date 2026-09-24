@@ -242,6 +242,17 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
     expect(tableSchema(validTable())).toBe(true);
   });
 
+  it('accepts workspace-unbound on a fixer cell but rejects it on a classifier cell', () => {
+    const fixer = validTable();
+    (fixer.cells[0] as Record<string, unknown>)['invalid'] = 'workspace-unbound';
+    expect(tableSchema(fixer)).toBe(true);
+
+    const classifier = validTable();
+    classifier.role = 'review-classifier';
+    (classifier.cells[0] as Record<string, unknown>)['invalid'] = 'workspace-unbound';
+    expect(tableSchema(classifier)).toBe(false);
+  });
+
   it('rejects a cell whose aggregate score exceeds 1', () => {
     const table = validTable();
     table.cells[0]!.score = 1.25;

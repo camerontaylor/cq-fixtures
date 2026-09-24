@@ -563,6 +563,28 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
+  it('rejects a mismatched row runId before the W0.9 invalid-marker allowlist', () => {
+    const snapshotRoot = snapshotTempRoot('mismatched-run-id-test');
+    const snapshot = fixerSnapshot(snapshotRoot, W0_9_FIXER_RUN_ID);
+    try {
+      expect(runReplay(snapshotRoot, false).status).toBe(0);
+
+      const rowsPath = join(snapshot.cell, 'rows.jsonl');
+      const row = JSON.parse(readFileSync(rowsPath, 'utf8'));
+      row.runId = 'different-run';
+      writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case provenance row runId different-run does not match manifest entry runId 36088a47-2fd6-4323-8d14-57edfa47f3dc',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('rejects an unaudited fixer row pre-marked workspace-unbound', () => {
     const snapshotRoot = snapshotTempRoot('unaudited-invalid-test');
     const snapshot = fixerSnapshot(snapshotRoot, 'unaudited-run');

@@ -280,6 +280,12 @@ for (const cell of discoveredCells) {
   }
 
   for (const row of rows) {
+    if (row.runId !== entry.runId) {
+      throw new Error(
+        `${cell}: case ${String(row.case)} row runId ${String(row.runId)} does not match manifest entry runId ${String(entry.runId)}`,
+      );
+    }
+
     const suiteCase = suiteCases.get(row.case);
     if (suiteCase === undefined) throw new Error(`${cell}: case ${row.case} is not in ${entry.suiteDir}`);
 

@@ -46,6 +46,7 @@ function cells(dir) {
 /** Return journal evidence for the manifest run, keyed by case id. */
 function journalEvidence(cell, runId) {
   const structuredOutputMisses = new Set();
+  const nonModelFailures = new Map();
   const completedJobs = new Map();
   const journal = join(cell, 'journal');
   for (const file of readdirSync(journal).filter((f) => f.endsWith('.ndjson')).sort()) {
@@ -54,13 +55,19 @@ function journalEvidence(cell, runId) {
       const event = JSON.parse(line);
       if (event.type !== 'job-finished' || event.runId !== runId) continue;
       if (event.result?.status === 'ok') completedJobs.set(event.jobId, event.result.value);
-      if (event.result?.status === 'failed'
-        && /^ai-sdk driver: \[structured-output-miss\](?:[^A-Za-z0-9-]|$)/.test(String(event.result.error ?? ''))) {
-        structuredOutputMisses.add(event.jobId);
+      if (event.result?.status === 'failed') {
+        const error = String(event.result.error ?? '');
+        if (/^ai-sdk driver: \[structured-output-miss\](?:[^A-Za-z0-9-]|$)/.test(error)) {
+          structuredOutputMisses.add(event.jobId);
+        } else {
+          // Endpoint/provider/driver failures are infrastructure outcomes and
+          // must remain distinct from the model structured-output miss above.
+          nonModelFailures.set(event.jobId, error);
+        }
       }
     }
   }
-  return { structuredOutputMisses, completedJobs };
+  return { structuredOutputMisses, nonModelFailures, completedJobs };
 }
 
 function isClassifierZeroOutcome(value) {
@@ -268,9 +275,17 @@ for (const cell of discoveredCells) {
   const entry = manifest.runs?.[0];
   if (entry === undefined) throw new Error(`${cell}: run.json has no runs[] entry`);
   const { suite, sidecarRevision } = loadSuite(entry, cell);
+  for (const [field, suiteField] of [['suite', 'name'], ['role', 'role']]) {
+    if (suite[suiteField] !== entry[field]) {
+      throw new Error(
+        `${cell}: run.json runs[0].${field} ${String(entry[field])} does not match recorded suite ${field} ${String(suite[suiteField])}`,
+      );
+    }
+  }
   const suiteCases = new Map((suite.cases ?? []).map((c) => [c.id, c]));
   const journal = entry.role === 'review-classifier' ? journalEvidence(cell, entry.runId) : undefined;
   const misses = journal?.structuredOutputMisses ?? new Set();
+  const nonModelFailures = journal?.nonModelFailures ?? new Map();
   const completedJobs = journal?.completedJobs ?? new Map();
   const sidecarFlags = new Map();
   if (entry.role === 'review-classifier') {
@@ -317,6 +332,11 @@ for (const cell of discoveredCells) {
     // An already-recorded null/false miss is equally historical evidence and
     // must agree with that journal rather than pass validation unexamined.
     if (entry.role === 'review-classifier') {
+      if (nonModelFailures.has(row.case)) {
+        throw new Error(
+          `${cell}: case ${row.case} has a non-model classifier journal failure (${String(nonModelFailures.get(row.case))}) but a row was published`,
+        );
+      }
       const nullObservation = row.probes?.some(
         (probe) => probe.kind === 'expected-verdict' && probe.observed === null,
       ) === true;
@@ -367,6 +387,15 @@ for (const cell of discoveredCells) {
     // Keep their scores, but never invalidate a future/unrelated fixer run.
     if (entry.role === 'fixer-worker' && W0_9_WORKSPACE_UNBOUND_RUN_IDS.has(entry.runId)) {
       row.invalid = 'workspace-unbound';
+    }
+  }
+
+  if (entry.role === 'review-classifier') {
+    const rowCases = new Set(rows.map((row) => row.case));
+    for (const caseId of misses) {
+      if (!rowCases.has(caseId)) {
+        throw new Error(`${cell}: journal structured-output-miss case ${caseId} is absent from rows.jsonl`);
+      }
     }
   }
 

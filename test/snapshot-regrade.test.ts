@@ -223,6 +223,57 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
+  it.each(['endpoint-timeout', 'provider-error'])(
+    'rejects a classifier row backed by a non-model [%s] journal failure',
+    (failure) => {
+      const snapshotRoot = snapshotTempRoot(`${failure}-row-test`);
+      const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot, 'resolved');
+      writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+        type: 'job-finished',
+        runId: 'regrade-null-miss-test',
+        jobId: 'null-miss',
+        result: {
+          status: 'failed',
+          error: `ai-sdk driver: [${failure}] run failed — synthetic infrastructure failure`,
+        },
+      }) + '\n');
+      try {
+        const result = runReplay(snapshotRoot, true);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          `case null-miss has a non-model classifier journal failure (ai-sdk driver: [${failure}] run failed — synthetic infrastructure failure) but a row was published`,
+        );
+        expect(result.stderr).not.toContain('journal structured-output-miss case');
+      } finally {
+        rmSync(snapshotRoot, { recursive: true, force: true });
+        rmSync(suiteDir, { recursive: true, force: true });
+      }
+    }, 120_000,
+  );
+
+  it('rejects a journal-recorded structured-output-miss absent from rows.jsonl', () => {
+    const snapshotRoot = snapshotTempRoot('missing-miss-row-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);
+    writeFileSync(join(cell, 'rows.jsonl'), '');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'regrade-null-miss-test',
+      jobId: 'null-miss',
+      result: {
+        status: 'failed',
+        error: 'ai-sdk driver: [structured-output-miss] run failed — No object generated',
+      },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('journal structured-output-miss case null-miss is absent from rows.jsonl');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('accepts a future-honest null/false classifier row with an ok job result', () => {
     const snapshotRoot = snapshotTempRoot('future-honest-test');
     const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);
@@ -653,6 +704,28 @@ describe('committed WB-1 regrade replay', () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
         'case provenance row runId different-run does not match manifest entry runId 36088a47-2fd6-4323-8d14-57edfa47f3dc',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it.each([
+    { field: 'suite', suiteField: 'name', value: 'different-loaded-suite' },
+    { field: 'role', suiteField: 'role', value: 'review-classifier' },
+  ])('rejects loaded suite $field that does not match the manifest entry', ({ field, suiteField, value }) => {
+    const snapshotRoot = snapshotTempRoot(`loaded-${field}-identity-test`);
+    const snapshot = fixerSnapshot(snapshotRoot, 'future-correctly-bound-run');
+    const suitePath = join(snapshot.suiteDir, 'suite.json');
+    const suite = JSON.parse(readFileSync(suitePath, 'utf8')) as Record<string, unknown>;
+    suite[suiteField] = value;
+    writeFileSync(suitePath, JSON.stringify(suite, null, 2) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        `run.json runs[0].${field} ${field === 'suite' ? 'regrade-provenance-test' : 'fixer-worker'} does not match recorded suite ${field} ${value}`,
       );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });

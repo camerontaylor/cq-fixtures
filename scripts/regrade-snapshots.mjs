@@ -12,7 +12,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, normalize, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { regrade } from '../runner/regrade.ts';
@@ -94,8 +94,14 @@ const W0_9_WORKSPACE_UNBOUND_RUN_IDS = new Set([
   'c8b1008d-7f75-4a18-b1f8-7362112aa833',
 ]);
 
-function repoRelativePath(value, description) {
-  if (typeof value !== 'string' || value === '' || normalize(value).startsWith('..') || value.startsWith('/')) {
+function replayPath(value, description) {
+  if (typeof value === 'string' && isAbsolute(value)) {
+    if (process.env.CQ_REGRADE_ALLOW_TEST_ABSOLUTE_SUITE === '1') return value;
+    throw new Error(
+      `${description} must be a non-empty repo-relative path without '..'; absolute paths are allowed only for deterministic tests with CQ_REGRADE_ALLOW_TEST_ABSOLUTE_SUITE=1: ${String(value)}`,
+    );
+  }
+  if (typeof value !== 'string' || value === '' || normalize(value).startsWith('..')) {
     throw new Error(`${description} must be a non-empty repo-relative path without '..': ${String(value)}`);
   }
   return value;
@@ -128,8 +134,8 @@ function localRevisionExists(revision) {
 }
 
 function loadSuite(entry, cell) {
-  const suitePath = repoRelativePath(
-    join(entry.suiteDir, 'suite.json'),
+  const suitePath = replayPath(
+    isAbsolute(entry.suiteDir) ? resolve(entry.suiteDir, 'suite.json') : join(entry.suiteDir, 'suite.json'),
     `${cell}: run.json runs[0].suiteDir`,
   );
   const suiteSha = entry.suiteSha;
@@ -140,7 +146,7 @@ function loadSuite(entry, cell) {
       );
     }
     return {
-      suite: JSON.parse(readFileSync(join(REPO_ROOT, suitePath), 'utf8')),
+      suite: JSON.parse(readFileSync(isAbsolute(suitePath) ? suitePath : join(REPO_ROOT, suitePath), 'utf8')),
       sidecarRevision: null,
     };
   }
@@ -172,7 +178,7 @@ function recordedSidecars(suiteCases, suiteSha) {
   const result = new Map();
   const paths = [...new Set([...suiteCases.values()].map(({ fixture }) => {
     if (!fixture.endsWith('.json')) return undefined;
-    return repoRelativePath(
+    return replayPath(
       fixture.slice(0, -'.json'.length) + '.label.json',
       'suite case fixture label sidecar',
     );
@@ -180,7 +186,7 @@ function recordedSidecars(suiteCases, suiteSha) {
   if (suiteSha === null || suiteSha === undefined) {
     for (const path of paths) {
       try {
-        result.set(path, readFileSync(join(REPO_ROOT, path), 'utf8'));
+        result.set(path, readFileSync(isAbsolute(path) ? path : join(REPO_ROOT, path), 'utf8'));
       } catch {
         result.set(path, undefined);
       }
@@ -220,7 +226,7 @@ function recordedSidecars(suiteCases, suiteSha) {
 /** Mirror the runner's five-state sidecar classification, including damaged states. */
 function sidecarFlag(fixture, sidecars) {
   if (!fixture.endsWith('.json')) return 'unflagged';
-  const path = repoRelativePath(
+  const path = replayPath(
     fixture.slice(0, -'.json'.length) + '.label.json',
     'suite case fixture label sidecar',
   );

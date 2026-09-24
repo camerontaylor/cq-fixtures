@@ -8,16 +8,25 @@ import { aggregate, type ResultRow } from '../runner/aggregate.ts';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
-function runReplay(root: string, check: boolean, allowNullSuiteSha = true) {
+function runReplay(
+  root: string,
+  check: boolean,
+  {
+    allowNullSuiteSha = true,
+    allowAbsoluteSuite = true,
+  }: { allowNullSuiteSha?: boolean; allowAbsoluteSuite?: boolean } = {},
+) {
   return spawnSync(
     process.execPath,
     ['--experimental-strip-types', 'scripts/regrade-snapshots.mjs', ...(check ? ['--check'] : []), relative(REPO_ROOT, root)],
     {
       cwd: REPO_ROOT,
       encoding: 'utf8',
-      env: allowNullSuiteSha
-        ? { ...process.env, CQ_REGRADE_ALLOW_NULL_SUITE_SHA: '1' }
-        : process.env,
+      env: {
+        ...process.env,
+        CQ_REGRADE_ALLOW_NULL_SUITE_SHA: allowNullSuiteSha ? '1' : '0',
+        CQ_REGRADE_ALLOW_TEST_ABSOLUTE_SUITE: allowAbsoluteSuite ? '1' : '0',
+      },
     },
   );
 }
@@ -25,13 +34,17 @@ function runReplay(root: string, check: boolean, allowNullSuiteSha = true) {
 const WB1_SUITE_SHA = 'ad7d24452b47e26a5820c484025264d9ab400ab6';
 const W0_9_FIXER_RUN_ID = '36088a47-2fd6-4323-8d14-57edfa47f3dc';
 
-// Keep synthetic snapshot cells out of repo-wide snapshot discovery.
+// Keep synthetic snapshots and suites out of repo-wide discovery.
 function snapshotTempRoot(label: string) {
   return mkdtempSync(join(tmpdir(), `cq-regrade-${label}-`));
 }
 
+function suiteTempRoot(label: string) {
+  return mkdtempSync(join(tmpdir(), `cq-regrade-suite-${label}-`));
+}
+
 function classifierMissSnapshot(snapshotRoot: string, observed: string | null = null) {
-  const suiteDir = mkdtempSync(join(REPO_ROOT, 'suites/review-classifier/regrade-null-miss-test-'));
+  const suiteDir = suiteTempRoot('classifier');
   const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'review-classifier', 'null-miss');
   mkdirSync(join(cell, 'journal'), { recursive: true });
   const fixture = join(suiteDir, 'thread.json');
@@ -43,7 +56,7 @@ function classifierMissSnapshot(snapshotRoot: string, observed: string | null = 
     provenance: { origin: 'deterministic-test' },
     cases: [{
       id: 'null-miss',
-      fixture: relative(REPO_ROOT, fixture),
+      fixture,
       task: { prompt: 'classify' },
       probe: { kind: 'expected-verdict', expected: 'resolved' },
     }],
@@ -53,7 +66,7 @@ function classifierMissSnapshot(snapshotRoot: string, observed: string | null = 
     runs: [{
       role: 'review-classifier',
       suite: suite.name,
-      suiteDir: relative(REPO_ROOT, suiteDir),
+      suiteDir,
       model: 'glm-5.3-flash',
       driver: 'ai-sdk',
       variant: 'default',
@@ -85,8 +98,7 @@ function classifierMissSnapshot(snapshotRoot: string, observed: string | null = 
 }
 
 function fixerSnapshot(snapshotRoot: string, runId: string) {
-  // The null suiteSha path is repo-relative, but this synthetic fixer must not enter corpus discovery.
-  const suiteDir = mkdtempSync(join(REPO_ROOT, 'suites/fixer-worker/quarantine/regrade-provenance-test-'));
+  const suiteDir = suiteTempRoot('fixer');
   const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'fixer-worker', 'provenance');
   mkdirSync(cell, { recursive: true });
   const check = join(suiteDir, 'check.mjs');
@@ -97,9 +109,9 @@ function fixerSnapshot(snapshotRoot: string, runId: string) {
     provenance: { origin: 'deterministic-test' },
     cases: [{
       id: 'provenance',
-      fixture: relative(REPO_ROOT, join(suiteDir, 'provenance.json')),
+      fixture: join(suiteDir, 'provenance.json'),
       task: { prompt: 'fix' },
-      probe: { kind: 'check-rerun', check: relative(REPO_ROOT, check) },
+      probe: { kind: 'check-rerun', check },
     }],
   };
   writeFileSync(join(suiteDir, 'provenance.json'), '{}\n');
@@ -110,7 +122,7 @@ function fixerSnapshot(snapshotRoot: string, runId: string) {
     runs: [{
       role: 'fixer-worker',
       suite: suite.name,
-      suiteDir: relative(REPO_ROOT, suiteDir),
+      suiteDir,
       model: 'glm-5.3-flash',
       driver: 'ai-sdk',
       variant: 'default',
@@ -443,7 +455,7 @@ describe('committed WB-1 regrade replay', () => {
     const snapshotRoot = snapshotTempRoot('null-suite-sha-test');
     const { suiteDir } = fixerSnapshot(snapshotRoot, 'future-correctly-bound-run');
     try {
-      const result = runReplay(snapshotRoot, true, false);
+      const result = runReplay(snapshotRoot, true, { allowNullSuiteSha: false });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
         'run.json runs[0].suiteSha must be a non-empty git revision; null is allowed only for deterministic tests with CQ_REGRADE_ALLOW_NULL_SUITE_SHA=1',
@@ -518,6 +530,14 @@ describe('committed WB-1 regrade replay', () => {
       );
       expect(unavailable.stderr).toContain(
         "case thread-01: label sidecar 'fixtures/threads/thread-01.label.json' absent",
+      );
+
+      manifest.runs[0].suiteDir = join(REPO_ROOT, 'suites/review-classifier/micro');
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+      const absolute = runReplay(snapshotRoot, true, { allowAbsoluteSuite: false });
+      expect(absolute.status).toBe(1);
+      expect(absolute.stderr).toContain(
+        "run.json runs[0].suiteDir must be a non-empty repo-relative path without '..'; absolute paths are allowed only for deterministic tests with CQ_REGRADE_ALLOW_TEST_ABSOLUTE_SUITE=1",
       );
 
       manifest.runs[0].suiteDir = '../outside';
@@ -605,7 +625,7 @@ describe('committed WB-1 regrade replay', () => {
   }, 120_000);
 
   it('preserves all five sidecar states and checks damaged states deterministically', () => {
-    const suiteDir = mkdtempSync(join(REPO_ROOT, 'suites/review-classifier/regrade-sidecar-test-'));
+    const suiteDir = suiteTempRoot('sidecar');
     const snapshotRoot = snapshotTempRoot('sidecar-test');
     const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'review-classifier', 'all-states');
     mkdirSync(join(cell, 'journal'), { recursive: true });
@@ -623,7 +643,7 @@ describe('committed WB-1 regrade replay', () => {
       if (label !== undefined) writeFileSync(join(suiteDir, `${id}.label.json`), label);
       return {
         id,
-        fixture: relative(REPO_ROOT, fixture),
+        fixture,
         task: { prompt: 'classify' },
         probe: { kind: 'expected-verdict', expected: index % 2 === 0 ? 'actionable' : 'resolved' },
       };
@@ -644,7 +664,7 @@ describe('committed WB-1 regrade replay', () => {
         runs: [{
           role: 'review-classifier',
           suite: 'regrade-sidecar-test',
-          suiteDir: relative(REPO_ROOT, suiteDir),
+          suiteDir,
           model: 'glm-5.3-flash',
           driver: 'ai-sdk',
           variant: 'default',

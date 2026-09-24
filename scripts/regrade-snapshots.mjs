@@ -15,9 +15,15 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
+import { Ajv2020 } from 'ajv/dist/2020.js';
+import ajvFormats from 'ajv-formats';
 import { regrade } from '../runner/regrade.ts';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const ajv = ajvFormats(new Ajv2020({ allErrors: true, strict: false }));
+const validateTable = ajv.compile(
+  JSON.parse(readFileSync(new URL('../schema/comparison-table.schema.json', import.meta.url), 'utf8')),
+);
 const CHECK = process.argv.includes('--check');
 const rootArg = process.argv.slice(2).find((arg) => !arg.startsWith('--'));
 if (rootArg === undefined) {
@@ -309,8 +315,8 @@ for (const cell of discoveredCells) {
   const entry = manifest.runs?.[0];
   if (entry === undefined) throw new Error(`${cell}: run.json has no runs[] entry`);
   const expectedTable = `${entry.role}.table.json`;
-  const unexpectedTables = readdirSync(cell)
-    .filter((file) => file.endsWith('.table.json') && file !== expectedTable);
+  const tableFiles = readdirSync(cell).filter((file) => file.endsWith('.table.json'));
+  const unexpectedTables = tableFiles.filter((file) => file !== expectedTable);
   if (unexpectedTables.length > 0) {
     throw new Error(
       `${cell}: unexpected table file(s) ${unexpectedTables.join(', ')}; only the manifest role table ${expectedTable} is expected`,
@@ -649,10 +655,45 @@ for (const cell of discoveredCells) {
     if (!CHECK) writeFileSync(rowsPath, nextRows);
   }
 
-  // A run whose every case is a recorded infrastructure absence intentionally
-  // has no rows and no comparison table. Its run.json plus journal are the
-  // complete evidence; do not require a synthetic empty table or a row.
-  if (rows.length === 0 && recordedAbsences.size > 0) continue;
+  if (rows.length === 0) {
+    // A run whose every case is a recorded infrastructure absence intentionally
+    // has no rows and no comparison table. Its run.json plus journal are the
+    // complete evidence. Do not let this exception bless a leftover table.
+    if (recordedAbsences.size > 0) {
+      if (tableFiles.length > 0) {
+        throw new Error(
+          `${cell}: absence-only cell must not contain comparison table file(s) ${tableFiles.join(', ')}`,
+        );
+      }
+      continue;
+    }
+
+    // The runner's empty-suite form is distinct from absence-only evidence:
+    // the recorded suite has no cases and its manifest-backed table is present,
+    // schema-valid, and identifies the same role and suite. aggregate([]) has no
+    // table to emit, so validate this sole replay shape directly.
+    const expectedTablePath = join(cell, expectedTable);
+    const isEmptySuite = Array.isArray(suite.cases) && suite.cases.length === 0;
+    if (isEmptySuite && existsSync(expectedTablePath)) {
+      const table = readJson(expectedTablePath);
+      if (!validateTable(table)) {
+        throw new Error(
+          `${cell}: empty-suite table ${expectedTable} failed schema validation: ${ajv.errorsText(validateTable.errors)}`,
+        );
+      }
+      if (table.role !== entry.role || table.suite !== entry.suite) {
+        throw new Error(
+          `${cell}: empty-suite table identity ${String(table.role)}/${String(table.suite)} does not match manifest role/suite ${entry.role}/${entry.suite}`,
+        );
+      }
+      if (table.cells.length !== 0) {
+        throw new Error(
+          `${cell}: empty-suite table ${expectedTable} must have an empty cells array`,
+        );
+      }
+      continue;
+    }
+  }
 
   // Reuse the runner's exact aggregate semantics. It reads the just-written
   // rows, validates them, and preserves each table's original generatedAt.

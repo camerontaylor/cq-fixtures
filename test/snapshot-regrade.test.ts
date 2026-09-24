@@ -252,6 +252,32 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
+  it('rejects a stale table in an absence-only cell before accepting the no-row evidence', () => {
+    const snapshotRoot = snapshotTempRoot('absence-only-stale-table-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'absence-only-stale-table-test');
+    const cause = 'ai-sdk driver: [endpoint-timeout] run failed — synthetic infrastructure failure';
+    writeFileSync(join(cell, 'rows.jsonl'), '');
+    // Keep the now-stale populated table in place. The absence-only exception
+    // applies only to cells whose table artifact is genuinely absent.
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'absence-only-stale-table-test',
+      jobId: 'provenance',
+      result: { status: 'failed', error: cause },
+    }) + '\n');
+    setRecordedAbsences(cell, [{ case: 'provenance', cause }]);
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'absence-only cell must not contain comparison table file(s) fixer-worker.table.json',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('rejects an empty no-row cell when its failed journal job is not recorded in run.json absences', () => {
     const snapshotRoot = snapshotTempRoot('missing-absence-record-test');
     const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'missing-absence-record-test');
@@ -270,6 +296,53 @@ describe('committed WB-1 regrade replay', () => {
       expect(result.stderr).toContain(
         `journal fixer no-row case provenance (${cause}) is not recorded in run.json absences`,
       );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('preserves a manifest-backed schema/identity-valid empty-suite table with empty rows', () => {
+    const snapshotRoot = snapshotTempRoot('empty-suite-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'empty-suite-test');
+    const suitePath = join(suiteDir, 'suite.json');
+    const suite = JSON.parse(readFileSync(suitePath, 'utf8')) as {
+      name: string;
+      role: string;
+      cases: unknown[];
+    };
+    suite.cases = [];
+    writeFileSync(suitePath, JSON.stringify(suite, null, 2) + '\n');
+    writeFileSync(join(cell, 'rows.jsonl'), '');
+    rmSync(join(cell, 'journal'), { recursive: true, force: true });
+    const tablePath = join(cell, 'fixer-worker.table.json');
+    const emptyTable = {
+      role: suite.role,
+      suite: suite.name,
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      cells: [],
+    };
+    writeFileSync(tablePath, JSON.stringify(emptyTable, null, 2) + '\n');
+    try {
+      const valid = runReplay(snapshotRoot, true);
+      expect(valid.status).toBe(0);
+      expect(valid.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
+
+      const mismatched = { ...emptyTable, role: 'review-classifier' };
+      writeFileSync(tablePath, JSON.stringify(mismatched, null, 2) + '\n');
+      const identityFailure = runReplay(snapshotRoot, true);
+      expect(identityFailure.status).toBe(1);
+      expect(identityFailure.stderr).toContain(
+        'empty-suite table identity review-classifier/regrade-provenance-test does not match manifest role/suite fixer-worker/regrade-provenance-test',
+      );
+
+      writeFileSync(
+        tablePath,
+        JSON.stringify({ ...emptyTable, unexpected: true }, null, 2) + '\n',
+      );
+      const schemaFailure = runReplay(snapshotRoot, true);
+      expect(schemaFailure.status).toBe(1);
+      expect(schemaFailure.stderr).toContain('empty-suite table fixer-worker.table.json failed schema validation');
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
       rmSync(suiteDir, { recursive: true, force: true });

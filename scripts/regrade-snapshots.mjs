@@ -108,6 +108,10 @@ function isClassifierZeroOutcome(value) {
     && value.total === 1;
 }
 
+function isFixerZeroOutcome(value) {
+  return isDeepStrictEqual(value, { score: 0, passed: 0, total: 2 });
+}
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
@@ -383,14 +387,33 @@ for (const cell of discoveredCells) {
           `${cell}: case ${row.case} has a no-row infrastructure fixer journal detail (${String(infrastructureIndeterminate.get(row.case))}) but a row was published`,
         );
       }
-      // W0.9's workspace-unbound fixer rows are historical model
-      // structured-output misses rather than completed or governed jobs. Keep
-      // that explicitly audited legacy evidence; all other fixer rows must be
-      // backed by a job event for this exact manifest run.
+      // W0.9's workspace-unbound fixer rows retain their explicitly audited
+      // legacy exception when no job evidence survived. When matching journal
+      // evidence does exist, however, it must support the published outcome
+      // just as it does for every correctly-bound fixer run.
       const legacyWorkspaceUnbound = W0_9_WORKSPACE_UNBOUND_RUN_IDS.has(entry.runId);
-      if (!legacyWorkspaceUnbound && !completedJobs.has(row.case) && !governedStops.has(row.case)) {
+      const completedOutcome = completedJobs.get(row.case);
+      const hasCompleted = completedJobs.has(row.case);
+      const hasGovernedStop = governedStops.has(row.case);
+      const hasStructuredOutputMiss = misses.has(row.case);
+      if (!legacyWorkspaceUnbound && !hasCompleted && !hasGovernedStop && !hasStructuredOutputMiss) {
         throw new Error(
-          `${cell}: case ${row.case} has no matching completed/ok or governed journal event for manifest run ${String(entry.runId)}`,
+          `${cell}: case ${row.case} has no matching completed/ok, governed, or structured-output-miss journal event for manifest run ${String(entry.runId)}`,
+        );
+      }
+      if (hasCompleted && !isDeepStrictEqual(row.outcome, completedOutcome)) {
+        throw new Error(
+          `${cell}: case ${row.case} outcome ${JSON.stringify(row.outcome)} contradicts completed journal outcome ${JSON.stringify(completedOutcome)}`,
+        );
+      }
+      if (hasGovernedStop && !isFixerZeroOutcome(row.outcome)) {
+        throw new Error(
+          `${cell}: case ${row.case} has fixer governed-stop evidence but does not carry the required zero outcome`,
+        );
+      }
+      if (hasStructuredOutputMiss && !isFixerZeroOutcome(row.outcome)) {
+        throw new Error(
+          `${cell}: case ${row.case} has journal structured-output-miss evidence but does not carry the required zero outcome`,
         );
       }
     }
@@ -545,18 +568,19 @@ for (const cell of discoveredCells) {
     }
     for (const [caseId, stop] of governedStops) {
       if (!rowCases.has(caseId)) {
-        throw new Error(`${cell}: journal classifier governed stop case ${caseId} (${String(stop)}) is absent from rows.jsonl`);
+        const roleLabel = entry.role === 'fixer-worker' ? 'fixer' : 'classifier';
+        throw new Error(`${cell}: journal ${roleLabel} governed stop case ${caseId} (${String(stop)}) is absent from rows.jsonl`);
+      }
+    }
+    for (const caseId of misses) {
+      if (!rowCases.has(caseId)) {
+        throw new Error(`${cell}: journal structured-output-miss case ${caseId} is absent from rows.jsonl`);
       }
     }
   }
 
   if (entry.role === 'review-classifier') {
     const rowCases = new Set(rows.map((row) => row.case));
-    for (const caseId of misses) {
-      if (!rowCases.has(caseId)) {
-        throw new Error(`${cell}: journal structured-output-miss case ${caseId} is absent from rows.jsonl`);
-      }
-    }
     for (const caseId of infrastructureIndeterminate) {
       if (rowCases.has(caseId)) {
         throw new Error(`${cell}: journal infrastructure indeterminate case ${caseId} has a row`);

@@ -60,17 +60,27 @@ function journalEvidence(cell, runId) {
   const completedJobs = new Map();
   const governedStops = new Map();
   const infrastructureIndeterminate = new Map();
+  const usages = new Map();
+  let runFinished;
   const journal = join(cell, 'journal');
   for (const file of readdirSync(journal).filter((f) => f.endsWith('.ndjson')).sort()) {
     for (const line of readFileSync(join(journal, file), 'utf8').split('\n')) {
       if (line.trim() === '') continue;
       const event = JSON.parse(line);
-      if (event.type !== 'job-finished' || event.runId !== runId) continue;
+      if (event.runId !== runId) continue;
+      if (event.type === 'run-finished') {
+        runFinished = event;
+        continue;
+      }
+      if (event.type !== 'job-finished') continue;
       // A preflight auth probe is journaled with status ok but deliberately
       // produces no scored case row. Synthetic replay fixtures may omit opId.
       if (event.jobId === 'acp-preflight-probe'
         || event.opId === 'acp-preflight') continue;
-      if (event.result?.status === 'ok') completedJobs.set(event.jobId, event.result.value);
+      if (event.usage !== undefined && event.usage !== null) usages.set(event.jobId, event.usage);
+      if (event.result?.status === 'ok') {
+        completedJobs.set(event.jobId, event.result.value);
+      }
       if (event.result?.status === 'failed') {
         const error = String(event.result.error ?? '');
         if (/^ai-sdk driver: \[structured-output-miss\](?:[^A-Za-z0-9-]|$)/.test(error)) {
@@ -103,6 +113,8 @@ function journalEvidence(cell, runId) {
     completedJobs,
     governedStops,
     infrastructureIndeterminate,
+    usages,
+    runFinished,
   };
 }
 
@@ -362,6 +374,8 @@ for (const cell of discoveredCells) {
   const completedJobs = journal?.completedJobs ?? new Map();
   const governedStops = journal?.governedStops ?? new Map();
   const infrastructureIndeterminate = journal?.infrastructureIndeterminate ?? new Map();
+  const usages = journal?.usages ?? new Map();
+  const runFinished = journal?.runFinished;
   const sidecarFlags = new Map();
   const encounteredCaseIds = new Set();
   if (entry.role === 'review-classifier') {
@@ -382,7 +396,10 @@ for (const cell of discoveredCells) {
         `${cell}: case ${String(row.case)} row runId ${String(row.runId)} does not match manifest entry runId ${String(entry.runId)}`,
       );
     }
-    for (const field of ['role', 'suite', 'model', 'driver', 'variant']) {
+    // row.model is the observed served id. It may legitimately differ from
+    // the manifest's requested model (for example, a provider alias or a
+    // routing decision), so only the invocation identity is bound here.
+    for (const field of ['role', 'suite', 'driver', 'variant']) {
       const actual = field === 'variant' && row.variant === undefined ? 'default' : row[field];
       if (actual !== entry[field]) {
         throw new Error(
@@ -398,6 +415,23 @@ for (const cell of discoveredCells) {
 
     const suiteCase = suiteCases.get(row.case);
     if (suiteCase === undefined) throw new Error(`${cell}: case ${row.case} is not in ${entry.suiteDir}`);
+
+    // A journal usage object is authoritative for replayed accounting. Keep
+    // the comparison field-for-field (including optional cache/reasoning
+    // counters) rather than comparing only input+output totals.
+    const usage = usages.get(row.case);
+    if (usage !== undefined) {
+      const expectedTokens = {};
+      for (const field of ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning']) {
+        if (Object.hasOwn(usage, field)) expectedTokens[field] = usage[field];
+      }
+      if (!Object.hasOwn(expectedTokens, 'input') || !Object.hasOwn(expectedTokens, 'output')
+        || !isDeepStrictEqual(row.tokens, expectedTokens)) {
+        throw new Error(
+          `${cell}: case ${row.case} tokens ${JSON.stringify(row.tokens)} do not match journal usage ${JSON.stringify(usage)}`,
+        );
+      }
+    }
 
     if (entry.role === 'fixer-worker') {
       if (row.probes?.some((probe) => probe.kind === 'expected-verdict') === true) {
@@ -595,6 +629,18 @@ for (const cell of discoveredCells) {
 
   if (journal !== undefined) {
     const rowCases = new Set(rows.map((row) => row.case));
+    // A completed, non-budget run must account for every suite case. A
+    // budget-stopped run may omit its undispatched tail: the runner's
+    // run-finished event is the explicit evidence for that absence.
+    if (runFinished?.stoppedEarly === false) {
+      for (const caseId of suiteCases.keys()) {
+        if (!rowCases.has(caseId) && !recordedAbsences.has(caseId)) {
+          throw new Error(
+            `${cell}: completed run is missing case ${caseId} coverage`,
+          );
+        }
+      }
+    }
     for (const caseId of completedJobs.keys()) {
       if (!rowCases.has(caseId)) {
         throw new Error(`${cell}: journal completed job case ${caseId} is absent from rows.jsonl`);
@@ -674,7 +720,9 @@ for (const cell of discoveredCells) {
     // table to emit, so validate this sole replay shape directly.
     const expectedTablePath = join(cell, expectedTable);
     const isEmptySuite = Array.isArray(suite.cases) && suite.cases.length === 0;
-    if (isEmptySuite && existsSync(expectedTablePath)) {
+    const isBudgetFinished = runFinished?.stoppedEarly === true
+      && runFinished?.earlyStopReason === 'budget';
+    if ((isEmptySuite || isBudgetFinished) && existsSync(expectedTablePath)) {
       const table = readJson(expectedTablePath);
       if (!validateTable(table)) {
         throw new Error(
@@ -688,7 +736,7 @@ for (const cell of discoveredCells) {
       }
       if (table.cells.length !== 0) {
         throw new Error(
-          `${cell}: empty-suite table ${expectedTable} must have an empty cells array`,
+          `${cell}: ${isBudgetFinished ? 'budget-stopped' : 'empty-suite'} table ${expectedTable} must have an empty cells array`,
         );
       }
       continue;

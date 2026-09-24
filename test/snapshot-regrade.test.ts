@@ -1421,7 +1421,6 @@ describe('committed WB-1 regrade replay', () => {
   it.each([
     { field: 'role', value: 'review-classifier' },
     { field: 'suite', value: 'different-suite' },
-    { field: 'model', value: 'different-model' },
     { field: 'driver', value: 'different-driver' },
     { field: 'variant', value: 'different-variant' },
   ])('rejects a row whose $field does not match the manifest entry', ({ field, value }) => {
@@ -1435,8 +1434,107 @@ describe('committed WB-1 regrade replay', () => {
       const result = runReplay(snapshotRoot, true);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
-        `case provenance row ${field} ${value} does not match manifest entry ${field} ${field === 'role' ? 'fixer-worker' : field === 'suite' ? 'regrade-provenance-test' : field === 'model' ? 'glm-5.3-flash' : field === 'driver' ? 'ai-sdk' : 'default'}`,
+        `case provenance row ${field} ${value} does not match manifest entry ${field} ${field === 'role' ? 'fixer-worker' : field === 'suite' ? 'regrade-provenance-test' : field === 'driver' ? 'ai-sdk' : 'default'}`,
       );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('accepts an observed row model that differs from the manifest requested model', () => {
+    const snapshotRoot = snapshotTempRoot('observed-model-test');
+    const snapshot = fixerSnapshot(snapshotRoot, 'observed-model-run');
+    const rowsPath = join(snapshot.cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+    row.model = 'provider-observed-model';
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    try {
+      expect(runReplay(snapshotRoot, false).status).toBe(0);
+      expect(runReplay(snapshotRoot, true).status).toBe(0);
+      const table = JSON.parse(readFileSync(join(snapshot.cell, 'fixer-worker.table.json'), 'utf8')) as { cells: Array<{ model: string }> };
+      expect(table.cells[0]?.model).toBe('provider-observed-model');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects replayed token counters that differ from journal usage', () => {
+    const snapshotRoot = snapshotTempRoot('usage-mismatch-test');
+    const snapshot = fixerSnapshot(snapshotRoot, 'usage-mismatch-run');
+    const rowsPath = join(snapshot.cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+    row.tokens = { input: 10, output: 5, cacheRead: 3, cacheWrite: 0 };
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    writeFileSync(join(snapshot.cell, 'journal', 'events.ndjson'), [
+      {
+        type: 'job-finished',
+        runId: 'usage-mismatch-run',
+        jobId: row.case,
+        result: { status: 'ok', value: row.outcome },
+        usage: { input: 11, output: 5, cacheRead: 3, cacheWrite: 0 },
+      },
+      { type: 'run-finished', runId: 'usage-mismatch-run', stoppedEarly: false },
+    ].map((event) => JSON.stringify(event)).join('\n') + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case provenance tokens {"input":10,"output":5,"cacheRead":3,"cacheWrite":0} do not match journal usage {"input":11,"output":5,"cacheRead":3,"cacheWrite":0}',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('accepts a fully budget-stopped run with no rows when run-finished records the stop', () => {
+    const snapshotRoot = snapshotTempRoot('fully-budget-stopped-test');
+    const snapshot = fixerSnapshot(snapshotRoot, 'fully-budget-stopped-run');
+    writeFileSync(join(snapshot.cell, 'rows.jsonl'), '');
+    writeFileSync(join(snapshot.cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'run-finished',
+      runId: 'fully-budget-stopped-run',
+      stoppedEarly: true,
+      earlyStopReason: 'budget',
+    }) + '\n');
+    writeFileSync(join(snapshot.cell, 'fixer-worker.table.json'), JSON.stringify({
+      role: 'fixer-worker',
+      suite: 'regrade-provenance-test',
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      cells: [],
+    }, null, 2) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects missing case coverage when run-finished records a completed run', () => {
+    const snapshotRoot = snapshotTempRoot('completed-coverage-test');
+    const snapshot = fixerSnapshot(snapshotRoot, 'completed-coverage-run');
+    const suitePath = join(snapshot.suiteDir, 'suite.json');
+    const suite = JSON.parse(readFileSync(suitePath, 'utf8')) as { cases: Array<Record<string, unknown>> };
+    suite.cases.push({
+      id: 'missing-case',
+      fixture: join(snapshot.suiteDir, 'missing.json'),
+      task: { prompt: 'fix' },
+      probe: { kind: 'check-rerun', check: join(snapshot.suiteDir, 'check.mjs') },
+    });
+    writeFileSync(suitePath, JSON.stringify(suite, null, 2) + '\n');
+    const journalPath = join(snapshot.cell, 'journal', 'events.ndjson');
+    const events = readFileSync(journalPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    events.push({ type: 'run-finished', runId: 'completed-coverage-run', stoppedEarly: false });
+    writeFileSync(journalPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('completed run is missing case missing-case coverage');
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
       rmSync(snapshot.suiteDir, { recursive: true, force: true });

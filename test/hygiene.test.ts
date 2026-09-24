@@ -173,6 +173,11 @@ describe('CI static job runs the corpus gate (F7)', () => {
     // The step lands AFTER `Unit tests` (F4 owns the region above it).
     expect(staticBlock.indexOf('Fixture gate —')).toBeGreaterThan(staticBlock.indexOf('- name: Unit tests'));
   });
+
+  it('checks out full history for suiteSha-pinned snapshot replay', () => {
+    const checkout = ci.slice(ci.indexOf('      - name: Check out the repo'));
+    expect(checkout.slice(0, checkout.indexOf('      - name: Set up Node'))).toContain('fetch-depth: 0');
+  });
 });
 
 describe('canary separation (F7 Slice B; tolerated until the suite lands)', () => {

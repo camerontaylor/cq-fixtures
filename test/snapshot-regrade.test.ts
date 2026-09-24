@@ -613,6 +613,30 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
+  it('rejects replayed numeric costs without modeled basis', () => {
+    for (const [label, costBasis] of [
+      ['missing', undefined],
+      ['billed', 'billed'],
+    ] as const) {
+      const snapshotRoot = snapshotTempRoot(`fixer-${label}-numeric-cost-test`);
+      const { cell, suiteDir } = fixerSnapshot(snapshotRoot, `fixer-${label}-numeric-cost-test`);
+      const rowsPath = join(cell, 'rows.jsonl');
+      const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+      row.costUSD = 0.01;
+      if (costBasis === undefined) delete row.costBasis;
+      else row.costBasis = costBasis;
+      writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+      try {
+        const result = runReplay(snapshotRoot, true);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('case provenance has numeric costUSD without modeled costBasis');
+      } finally {
+        rmSync(snapshotRoot, { recursive: true, force: true });
+        rmSync(suiteDir, { recursive: true, force: true });
+      }
+    }
+  }, 120_000);
+
   it('rejects classifier-only expected-verdict probes on a fixer row', () => {
     const snapshotRoot = snapshotTempRoot('fixer-classifier-probe-test');
     const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'fixer-classifier-probe-test');
@@ -1293,7 +1317,7 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
-  it('uses an available recorded revision, but warns and falls back to committed checkout files when it is unavailable', () => {
+  it('replays an available recorded revision and fails when it is unavailable', () => {
     const snapshotRoot = snapshotTempRoot('recorded-revision-test');
     const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'review-classifier', 'micro');
     mkdirSync(join(cell, 'journal'), { recursive: true });
@@ -1346,14 +1370,8 @@ describe('committed WB-1 regrade replay', () => {
     ].map((event) => JSON.stringify(event)).join('\n') + '\n');
 
     try {
-      const historicalRevisionAvailable = spawnSync(
-        'git',
-        ['cat-file', '-e', `${WB1_SUITE_SHA}^{commit}`],
-        { cwd: REPO_ROOT },
-      ).status === 0;
       const recorded = runReplay(snapshotRoot, true);
       expect(recorded.status).toBe(0);
-      expect(recorded.stderr.includes('recorded suite revision')).toBe(!historicalRevisionAvailable);
       expect(recorded.stderr).toContain(
         "case thread-01: label sidecar 'fixtures/threads/thread-01.label.json' absent",
       );
@@ -1362,15 +1380,9 @@ describe('committed WB-1 regrade replay', () => {
       manifest.runs[0].suiteSha = 'not-a-recorded-revision';
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
       const unavailable = runReplay(snapshotRoot, true);
-      expect(unavailable.status).toBe(0);
+      expect(unavailable.status).toBe(1);
       expect(unavailable.stderr).toContain(
-        'WARNING:',
-      );
-      expect(unavailable.stderr).toContain(
-        'recorded suite revision not-a-recorded-revision is unavailable locally; using checked-out committed suite and sidecars for offline replay',
-      );
-      expect(unavailable.stderr).toContain(
-        "case thread-01: label sidecar 'fixtures/threads/thread-01.label.json' absent",
+        'recorded suite revision not-a-recorded-revision is unavailable locally; fetch the full git history before replay',
       );
 
       manifest.runs[0].suiteDir = join(REPO_ROOT, 'suites/review-classifier/micro');
@@ -1389,9 +1401,11 @@ describe('committed WB-1 regrade replay', () => {
 
       manifest.runs[0].suiteDir = 'suites/review-classifier/does-not-exist';
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+      manifest.runs[0].suiteSha = WB1_SUITE_SHA;
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
       const missing = runReplay(snapshotRoot, true);
       expect(missing.status).toBe(1);
-      expect(missing.stderr).toContain('checked-out suite fallback: git show HEAD:suites/review-classifier/does-not-exist/suite.json failed');
+      expect(missing.stderr).toContain('recorded suite: git show ad7d24452b47e26a5820c484025264d9ab400ab6:suites/review-classifier/does-not-exist/suite.json failed');
       expect(missing.stderr).toContain('does not exist');
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
@@ -1629,6 +1643,44 @@ describe('committed WB-1 regrade replay', () => {
       const result = runReplay(snapshotRoot, true);
       expect(result.status).toBe(0);
       expect(result.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects a hole in the dispatched prefix of a budget-stopped run', () => {
+    const snapshotRoot = snapshotTempRoot('budget-prefix-hole-test');
+    const snapshot = fixerSnapshot(snapshotRoot, 'budget-prefix-hole-run');
+    const suitePath = join(snapshot.suiteDir, 'suite.json');
+    const suite = JSON.parse(readFileSync(suitePath, 'utf8')) as {
+      cases: Array<Record<string, unknown>>;
+    };
+    suite.cases.unshift({
+      id: 'missing-dispatched-case',
+      fixture: join(snapshot.suiteDir, 'missing-dispatched.json'),
+      task: { prompt: 'fix' },
+      probe: { kind: 'check-rerun', check: join(snapshot.suiteDir, 'check.mjs') },
+    });
+    suite.cases.push({
+      id: 'undispatched-case',
+      fixture: join(snapshot.suiteDir, 'undispatched.json'),
+      task: { prompt: 'fix' },
+      probe: { kind: 'check-rerun', check: join(snapshot.suiteDir, 'check.mjs') },
+    });
+    writeFileSync(suitePath, JSON.stringify(suite, null, 2) + '\n');
+    appendRunFinished(snapshot, {
+      type: 'run-finished',
+      runId: 'budget-prefix-hole-run',
+      stoppedEarly: true,
+      earlyStopReason: 'budget',
+    });
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'budget-stopped run has dispatched case provenance after missing case missing-dispatched-case in the dispatched prefix',
+      );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
       rmSync(snapshot.suiteDir, { recursive: true, force: true });

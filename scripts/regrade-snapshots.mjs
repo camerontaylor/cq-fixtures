@@ -212,23 +212,14 @@ function loadSuite(entry, cell) {
   if (typeof suiteSha !== 'string' || suiteSha === '') {
     throw new Error(`${cell}: run.json runs[0].suiteSha must be a non-empty git revision`);
   }
-  if (localRevisionExists(suiteSha)) {
-    return {
-      suite: JSON.parse(gitShow(suiteSha, suitePath, `${cell}: recorded suite`)),
-      sidecarRevision: suiteSha,
-    };
+  if (!localRevisionExists(suiteSha)) {
+    throw new Error(
+      `${cell}: recorded suite revision ${suiteSha} is unavailable locally; fetch the full git history before replay`,
+    );
   }
-
-  // Shallow CI checkouts retain the current commit but not necessarily the
-  // historical suite commit. Keep the replay runnable without silently
-  // changing provenance: report the fallback and read the committed checkout,
-  // not a potentially dirty working tree.
-  process.stderr.write(
-    `WARNING: ${relative(REPO_ROOT, cell)}: recorded suite revision ${suiteSha} is unavailable locally; using checked-out committed suite and sidecars for offline replay\n`,
-  );
   return {
-    suite: JSON.parse(gitShow('HEAD', suitePath, `${cell}: checked-out suite fallback`)),
-    sidecarRevision: 'HEAD',
+    suite: JSON.parse(gitShow(suiteSha, suitePath, `${cell}: recorded suite`)),
+    sidecarRevision: suiteSha,
   };
 }
 
@@ -415,9 +406,14 @@ for (const cell of discoveredCells) {
     }
     encounteredCaseIds.add(row.case);
 
-    if (row.costBasis !== undefined
-      && (row.costBasis !== 'billed' && row.costBasis !== 'modeled'
-        || typeof row.costUSD !== 'number' || !Number.isFinite(row.costUSD) || row.costUSD < 0)) {
+    if (typeof row.costUSD === 'number') {
+      if (row.costBasis !== 'modeled') {
+        throw new Error(`${cell}: case ${row.case} has numeric costUSD without modeled costBasis`);
+      }
+      if (!Number.isFinite(row.costUSD) || row.costUSD < 0) {
+        throw new Error(`${cell}: case ${row.case} has invalid modeled cost accounting: costUSD must be a finite non-negative number`);
+      }
+    } else if (row.costBasis !== undefined) {
       throw new Error(`${cell}: case ${row.case} has invalid ${row.costBasis} cost accounting: costUSD must be a finite non-negative number`);
     }
 
@@ -670,8 +666,24 @@ for (const cell of discoveredCells) {
 
   // A run must account for every suite case unless the runner's matching
   // run-finished event explicitly records a budget stop. Only that evidence
-  // permits an undispatched suffix to be absent from rows.jsonl.
-  if (!hasBudgetRunFinishedEvidence) {
+  // permits an undispatched suffix to be absent from rows.jsonl. Coverage must
+  // be a contiguous suite-order prefix: a later row or recorded absence proves
+  // dispatch resumed after a purported stop and makes the earlier hole invalid.
+  if (hasBudgetRunFinishedEvidence) {
+    const orderedCases = [...suiteCases.keys()];
+    const firstUndispatched = orderedCases.findIndex(
+      (caseId) => !rowCases.has(caseId) && !recordedAbsences.has(caseId),
+    );
+    if (firstUndispatched !== -1) {
+      for (const caseId of orderedCases.slice(firstUndispatched + 1)) {
+        if (rowCases.has(caseId) || recordedAbsences.has(caseId)) {
+          throw new Error(
+            `${cell}: budget-stopped run has dispatched case ${caseId} after missing case ${orderedCases[firstUndispatched]} in the dispatched prefix`,
+          );
+        }
+      }
+    }
+  } else {
     for (const caseId of suiteCases.keys()) {
       if (!rowCases.has(caseId) && !recordedAbsences.has(caseId)) {
         const runState = runFinished?.stoppedEarly === false ? 'completed run' : 'run without budget run-finished evidence';

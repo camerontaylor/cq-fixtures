@@ -100,7 +100,7 @@ function classifierMissSnapshot(snapshotRoot: string, observed: string | null = 
 function fixerSnapshot(snapshotRoot: string, runId: string) {
   const suiteDir = suiteTempRoot('fixer');
   const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'fixer-worker', 'provenance');
-  mkdirSync(cell, { recursive: true });
+  mkdirSync(join(cell, 'journal'), { recursive: true });
   const check = join(suiteDir, 'check.mjs');
   const suite = {
     name: 'regrade-provenance-test',
@@ -146,6 +146,12 @@ function fixerSnapshot(snapshotRoot: string, runId: string) {
     timestamp: '2026-01-01T00:00:00.000Z',
   };
   writeFileSync(join(cell, 'rows.jsonl'), JSON.stringify(row) + '\n');
+  writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+    type: 'job-finished',
+    runId,
+    jobId: row.case,
+    result: { status: 'ok', value: row.outcome },
+  }) + '\n');
   const table = aggregate([row])[0]!;
   table.generatedAt = '2026-01-01T00:00:00.000Z';
   writeFileSync(join(cell, 'fixer-worker.table.json'), JSON.stringify(table, null, 2) + '\n');
@@ -182,11 +188,31 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 30_000);
 
+  it('rejects a table-only directory instead of silently recursing into a nested cell', () => {
+    const snapshotRoot = snapshotTempRoot('table-only-test');
+    const tableOnly = join(snapshotRoot, 'table-only');
+    mkdirSync(tableOnly, { recursive: true });
+    writeFileSync(join(tableOnly, 'fixer-worker.table.json'), '{}\n');
+    const { cell, suiteDir } = fixerSnapshot(tableOnly, 'table-only-test');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        `incomplete snapshot cell — table file(s) present but missing run.json and rows.jsonl`,
+      );
+      expect(result.stderr).not.toContain(cell);
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('fails when a rows/manifest cell regrades to no table instead of passing a missing table check', () => {
     const snapshotRoot = snapshotTempRoot('missing-table-test');
     const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'missing-table-test');
     writeFileSync(join(cell, 'rows.jsonl'), '');
     rmSync(join(cell, 'fixer-worker.table.json'));
+    rmSync(join(cell, 'journal'), { recursive: true, force: true });
     try {
       const result = runReplay(snapshotRoot, true);
       expect(result.status).toBe(1);
@@ -382,6 +408,117 @@ describe('committed WB-1 regrade replay', () => {
       const result = runReplay(snapshotRoot, true);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('journal completed job case provenance is absent from rows.jsonl');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects a fixer row without matching journal evidence for the manifest run', () => {
+    const snapshotRoot = snapshotTempRoot('fixer-missing-journal-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'fixer-missing-journal-test');
+    rmSync(join(cell, 'journal'), { recursive: true, force: true });
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case provenance has no matching completed/ok or governed journal event for manifest run fixer-missing-journal-test',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects a non-legacy fixer row backed only by a structured-output-miss event', () => {
+    const snapshotRoot = snapshotTempRoot('fixer-structured-miss-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'fixer-structured-miss-test');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'fixer-structured-miss-test',
+      jobId: 'provenance',
+      result: {
+        status: 'failed',
+        error: 'ai-sdk driver: [structured-output-miss] run failed — No object generated',
+      },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case provenance has no matching completed/ok or governed journal event for manifest run fixer-structured-miss-test',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects a fixer row whose only journal event belongs to a different manifest run', () => {
+    const snapshotRoot = snapshotTempRoot('fixer-other-run-journal-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'fixer-other-run-journal-test');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'different-run',
+      jobId: 'provenance',
+      result: { status: 'ok', value: { score: 1, passed: 1, total: 1 } },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case provenance has no matching completed/ok or governed journal event for manifest run fixer-other-run-journal-test',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('accepts a fixer row backed by a governed journal event', () => {
+    const snapshotRoot = snapshotTempRoot('fixer-governed-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'fixer-governed-test');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'fixer-governed-test',
+      jobId: 'provenance',
+      result: { status: 'budget-exhausted' },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it.each([
+    {
+      label: 'failed',
+      result: { status: 'failed', error: 'ai-sdk driver: [endpoint-timeout] run failed — synthetic infrastructure failure' },
+      evidence: 'journal failure',
+    },
+    {
+      label: 'indeterminate',
+      result: { status: 'indeterminate', detail: 'fixture read failed for provenance.json: ENOENT' },
+      evidence: 'journal detail',
+    },
+  ])('rejects a fixer row backed by a no-row infrastructure $label event', ({ result, evidence }) => {
+    const snapshotRoot = snapshotTempRoot(`fixer-infrastructure-${result.status}-test`);
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, `fixer-infrastructure-${result.status}-test`);
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: `fixer-infrastructure-${result.status}-test`,
+      jobId: 'provenance',
+      result,
+    }) + '\n');
+    try {
+      const replay = runReplay(snapshotRoot, true);
+      expect(replay.status).toBe(1);
+      expect(replay.stderr).toContain(`has a no-row infrastructure fixer ${evidence}`);
+      expect(replay.stderr).toContain('but a row was published');
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
       rmSync(suiteDir, { recursive: true, force: true });

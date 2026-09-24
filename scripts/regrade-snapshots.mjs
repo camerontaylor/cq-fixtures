@@ -38,6 +38,10 @@ function cells(dir) {
     else if (hasRun || hasRows) {
       const missing = hasRun ? 'rows.jsonl' : 'run.json';
       throw new Error(`${path}: incomplete snapshot cell — missing ${missing}`);
+    } else if (readdirSync(path).some((file) => file.endsWith('.table.json'))) {
+      throw new Error(
+        `${path}: incomplete snapshot cell — table file(s) present but missing run.json and rows.jsonl`,
+      );
     } else found.push(...cells(path));
   }
   return found.sort();
@@ -362,12 +366,33 @@ for (const cell of discoveredCells) {
     const suiteCase = suiteCases.get(row.case);
     if (suiteCase === undefined) throw new Error(`${cell}: case ${row.case} is not in ${entry.suiteDir}`);
 
-    if (entry.role === 'fixer-worker'
-      && row.invalid === 'workspace-unbound'
-      && !W0_9_WORKSPACE_UNBOUND_RUN_IDS.has(entry.runId)) {
-      throw new Error(
-        `${cell}: case ${row.case} is pre-marked workspace-unbound, but manifest runId ${String(entry.runId)} is not in the audited W0.9 allowlist`,
-      );
+    if (entry.role === 'fixer-worker') {
+      if (row.invalid === 'workspace-unbound'
+        && !W0_9_WORKSPACE_UNBOUND_RUN_IDS.has(entry.runId)) {
+        throw new Error(
+          `${cell}: case ${row.case} is pre-marked workspace-unbound, but manifest runId ${String(entry.runId)} is not in the audited W0.9 allowlist`,
+        );
+      }
+      if (nonModelFailures.has(row.case)) {
+        throw new Error(
+          `${cell}: case ${row.case} has a no-row infrastructure fixer journal failure (${String(nonModelFailures.get(row.case))}) but a row was published`,
+        );
+      }
+      if (infrastructureIndeterminate.has(row.case)) {
+        throw new Error(
+          `${cell}: case ${row.case} has a no-row infrastructure fixer journal detail (${String(infrastructureIndeterminate.get(row.case))}) but a row was published`,
+        );
+      }
+      // W0.9's workspace-unbound fixer rows are historical model
+      // structured-output misses rather than completed or governed jobs. Keep
+      // that explicitly audited legacy evidence; all other fixer rows must be
+      // backed by a job event for this exact manifest run.
+      const legacyWorkspaceUnbound = W0_9_WORKSPACE_UNBOUND_RUN_IDS.has(entry.runId);
+      if (!legacyWorkspaceUnbound && !completedJobs.has(row.case) && !governedStops.has(row.case)) {
+        throw new Error(
+          `${cell}: case ${row.case} has no matching completed/ok or governed journal event for manifest run ${String(entry.runId)}`,
+        );
+      }
     }
 
     // The old snapshot omitted a probe only for model structured-output

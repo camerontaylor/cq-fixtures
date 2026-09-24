@@ -24,7 +24,7 @@ function snapshotTempRoot(label: string) {
   return mkdtempSync(join(tmpdir(), `cq-regrade-${label}-`));
 }
 
-function classifierMissSnapshot(snapshotRoot: string) {
+function classifierMissSnapshot(snapshotRoot: string, observed: string | null = null) {
   const suiteDir = mkdtempSync(join(REPO_ROOT, 'suites/review-classifier/regrade-null-miss-test-'));
   const cell = join(snapshotRoot, 'glm-5.3-flash', 'ai-sdk', 'review-classifier', 'null-miss');
   mkdirSync(join(cell, 'journal'), { recursive: true });
@@ -64,7 +64,7 @@ function classifierMissSnapshot(snapshotRoot: string) {
     model: 'glm-5.3-flash',
     driver: 'ai-sdk',
     outcome: { score: 0, passed: 0, total: 1 },
-    probes: [{ kind: 'expected-verdict', expected: 'resolved', observed: null, passed: false }],
+    probes: [{ kind: 'expected-verdict', expected: 'resolved', observed, passed: false }],
     costUSD: null,
     wallTimeMs: 1,
     tokens: { input: 1, output: 1 },
@@ -196,7 +196,50 @@ describe('committed WB-1 regrade replay', () => {
       const unsupported = runReplay(snapshotRoot, true);
       expect(unsupported.status).toBe(1);
       expect(unsupported.stderr).toContain(
-        'case null-miss has a null/false classifier probe without journal structured-output-miss evidence',
+        'case null-miss has a null/false classifier probe without journal structured-output-miss or completed-job evidence',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('accepts a future-honest null/false classifier row with an ok job result', () => {
+    const snapshotRoot = snapshotTempRoot('future-honest-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);
+    const journal = join(cell, 'journal', 'events.ndjson');
+    writeFileSync(journal, JSON.stringify({
+      type: 'job-finished',
+      jobId: 'null-miss',
+      result: { status: 'ok', value: { score: 0, passed: 0, total: 1 } },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects a structured-output-miss journal paired with real observed probes', () => {
+    const snapshotRoot = snapshotTempRoot('real-observed-miss-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot, 'resolved');
+    const journal = join(cell, 'journal', 'events.ndjson');
+    writeFileSync(journal, JSON.stringify({
+      type: 'job-finished',
+      jobId: 'null-miss',
+      result: {
+        status: 'failed',
+        error: 'ai-sdk driver: [structured-output-miss] run failed — No object generated',
+      },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case null-miss has journal structured-output-miss evidence but carries real observed classifier probes',
       );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });

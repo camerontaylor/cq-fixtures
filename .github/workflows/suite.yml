@@ -823,9 +823,10 @@ jobs:
           # <suite>/ is the stable form. F6 (WB-5.2a/5.1): the snapshot carries
           # the run's PREDICTIONS and provenance beside the tables — rows.jsonl
           # (the regrade input), run.json (the suite + toolkit.lock/suite-SHA
-          # manifest), and the worker's patches/ and outputs/ artifacts. The
-          # ACP-SKIPPED / ACP-PROBE.json / EMPTY markers do NOT match these
-          # predicates and stay in the artifact only. F1b (WB-1): an
+          # manifest), the journal/ evidence, and the worker's patches/ and
+          # outputs/ artifacts. The ACP-SKIPPED / ACP-PROBE.json / EMPTY
+          # markers do NOT match these predicates and stay in the artifact
+          # only. F1b (WB-1): an
           # empty-but-valid table whose run.json records dispatch-only
           # absences is withheld below (the absence lives in run.json, never
           # as a zero-cell data table).
@@ -874,7 +875,7 @@ jobs:
             rel="${f#reports/eval/}"
             mkdir -p "${snap_dir}/$(dirname "${rel}")"
             cp "${f}" "${snap_dir}/${rel}"
-          done < <(find reports/eval -type f \( -name '*.table.json' -o -name 'rows.jsonl' -o -name 'run.json' -o -path '*/patches/*' -o -path '*/outputs/*' \) 2>/dev/null | sort)
+          done < <(find reports/eval -type f \( -name '*.table.json' -o -name 'rows.jsonl' -o -name 'run.json' -o -path '*/journal/*' -o -path '*/patches/*' -o -path '*/outputs/*' \) 2>/dev/null | sort)
           # Add runs BEFORE any early exit, so removals publish too: on a
           # fully successful matrix the rm -rf above cleared the worktree, and
           # `git add` stages the removal of previously tracked tables as

@@ -8,11 +8,17 @@ import { aggregate, type ResultRow } from '../runner/aggregate.ts';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
-function runReplay(root: string, check: boolean) {
+function runReplay(root: string, check: boolean, allowNullSuiteSha = true) {
   return spawnSync(
     process.execPath,
     ['--experimental-strip-types', 'scripts/regrade-snapshots.mjs', ...(check ? ['--check'] : []), relative(REPO_ROOT, root)],
-    { cwd: REPO_ROOT, encoding: 'utf8' },
+    {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      env: allowNullSuiteSha
+        ? { ...process.env, CQ_REGRADE_ALLOW_NULL_SUITE_SHA: '1' }
+        : process.env,
+    },
   );
 }
 
@@ -181,6 +187,7 @@ describe('committed WB-1 regrade replay', () => {
     const journal = join(cell, 'journal', 'events.ndjson');
     writeFileSync(journal, JSON.stringify({
       type: 'job-finished',
+      runId: 'regrade-null-miss-test',
       jobId: 'null-miss',
       result: {
         status: 'failed',
@@ -210,6 +217,7 @@ describe('committed WB-1 regrade replay', () => {
     const journal = join(cell, 'journal', 'events.ndjson');
     writeFileSync(journal, JSON.stringify({
       type: 'job-finished',
+      runId: 'regrade-null-miss-test',
       jobId: 'null-miss',
       result: { status: 'ok', value: { score: 0, passed: 0, total: 1 } },
     }) + '\n');
@@ -229,6 +237,7 @@ describe('committed WB-1 regrade replay', () => {
     const journal = join(cell, 'journal', 'events.ndjson');
     writeFileSync(journal, JSON.stringify({
       type: 'job-finished',
+      runId: 'regrade-null-miss-test',
       jobId: 'null-miss',
       result: {
         status: 'failed',
@@ -240,6 +249,51 @@ describe('committed WB-1 regrade replay', () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
         'case null-miss has journal structured-output-miss evidence but carries real observed classifier probes',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('ignores structured-output evidence from a different journal run', () => {
+    const snapshotRoot = snapshotTempRoot('mixed-run-journal-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot, 'resolved');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), [
+      {
+        type: 'job-finished',
+        runId: 'different-run',
+        jobId: 'null-miss',
+        result: {
+          status: 'failed',
+          error: 'ai-sdk driver: [structured-output-miss] run failed — No object generated',
+        },
+      },
+      {
+        type: 'job-finished',
+        runId: 'regrade-null-miss-test',
+        jobId: 'unrelated-case',
+        result: { status: 'failed', error: 'unrelated failure' },
+      },
+    ].map((event) => JSON.stringify(event)).join('\n') + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('fails a null suiteSha replay without the explicit test-only switch', () => {
+    const snapshotRoot = snapshotTempRoot('null-suite-sha-test');
+    const { suiteDir } = fixerSnapshot(snapshotRoot, 'future-correctly-bound-run');
+    try {
+      const result = runReplay(snapshotRoot, true, false);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'run.json runs[0].suiteSha must be a non-empty git revision; null is allowed only for deterministic tests with CQ_REGRADE_ALLOW_NULL_SUITE_SHA=1',
       );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
@@ -335,6 +389,10 @@ describe('committed WB-1 regrade replay', () => {
     const futureRoot = snapshotTempRoot('future-run-test');
     const historical = fixerSnapshot(historicalRoot, W0_9_FIXER_RUN_ID);
     const future = fixerSnapshot(futureRoot, 'future-correctly-bound-run');
+    const historicalRowsPath = join(historical.cell, 'rows.jsonl');
+    const historicalRow = JSON.parse(readFileSync(historicalRowsPath, 'utf8'));
+    historicalRow.invalid = 'workspace-unbound';
+    writeFileSync(historicalRowsPath, JSON.stringify(historicalRow) + '\n');
     try {
       expect(runReplay(historicalRoot, false).status).toBe(0);
       expect(runReplay(futureRoot, false).status).toBe(0);
@@ -349,6 +407,25 @@ describe('committed WB-1 regrade replay', () => {
       rmSync(futureRoot, { recursive: true, force: true });
       rmSync(historical.suiteDir, { recursive: true, force: true });
       rmSync(future.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects an unaudited fixer row pre-marked workspace-unbound', () => {
+    const snapshotRoot = snapshotTempRoot('unaudited-invalid-test');
+    const snapshot = fixerSnapshot(snapshotRoot, 'unaudited-run');
+    const rowsPath = join(snapshot.cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8'));
+    row.invalid = 'workspace-unbound';
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case provenance is pre-marked workspace-unbound, but manifest runId unaudited-run is not in the audited W0.9 allowlist',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
     }
   }, 120_000);
 

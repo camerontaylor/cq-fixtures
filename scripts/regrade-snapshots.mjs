@@ -43,8 +43,8 @@ function cells(dir) {
   return found.sort();
 }
 
-/** Return journal evidence for classifier misses, keyed by case id. */
-function journalEvidence(cell) {
+/** Return journal evidence for the manifest run, keyed by case id. */
+function journalEvidence(cell, runId) {
   const structuredOutputMisses = new Set();
   const completedJobs = new Set();
   const journal = join(cell, 'journal');
@@ -52,7 +52,7 @@ function journalEvidence(cell) {
     for (const line of readFileSync(join(journal, file), 'utf8').split('\n')) {
       if (line.trim() === '') continue;
       const event = JSON.parse(line);
-      if (event.type !== 'job-finished') continue;
+      if (event.type !== 'job-finished' || event.runId !== runId) continue;
       if (event.result?.status === 'ok') completedJobs.add(event.jobId);
       if (event.result?.status === 'failed'
         && /^ai-sdk driver: \[structured-output-miss\](?:[^A-Za-z0-9-]|$)/.test(String(event.result.error ?? ''))) {
@@ -126,15 +126,18 @@ function loadSuite(entry, cell) {
   );
   const suiteSha = entry.suiteSha;
   if (suiteSha === null || suiteSha === undefined) {
-    // Null is reserved for deterministic tests that create an uncommitted
-    // suite. Committed run manifests must use a SHA so replay cannot drift.
+    if (process.env.CQ_REGRADE_ALLOW_NULL_SUITE_SHA !== '1') {
+      throw new Error(
+        `${cell}: run.json runs[0].suiteSha must be a non-empty git revision; null is allowed only for deterministic tests with CQ_REGRADE_ALLOW_NULL_SUITE_SHA=1`,
+      );
+    }
     return {
       suite: JSON.parse(readFileSync(join(REPO_ROOT, suitePath), 'utf8')),
       sidecarRevision: null,
     };
   }
   if (typeof suiteSha !== 'string' || suiteSha === '') {
-    throw new Error(`${cell}: run.json runs[0].suiteSha must be a non-empty git revision or null`);
+    throw new Error(`${cell}: run.json runs[0].suiteSha must be a non-empty git revision`);
   }
   if (localRevisionExists(suiteSha)) {
     return {
@@ -252,7 +255,7 @@ for (const cell of discoveredCells) {
   if (entry === undefined) throw new Error(`${cell}: run.json has no runs[] entry`);
   const { suite, sidecarRevision } = loadSuite(entry, cell);
   const suiteCases = new Map((suite.cases ?? []).map((c) => [c.id, c]));
-  const journal = entry.role === 'review-classifier' ? journalEvidence(cell) : undefined;
+  const journal = entry.role === 'review-classifier' ? journalEvidence(cell, entry.runId) : undefined;
   const misses = journal?.structuredOutputMisses ?? new Set();
   const completedJobs = journal?.completedJobs ?? new Set();
   const sidecarFlags = new Map();
@@ -271,6 +274,14 @@ for (const cell of discoveredCells) {
   for (const row of rows) {
     const suiteCase = suiteCases.get(row.case);
     if (suiteCase === undefined) throw new Error(`${cell}: case ${row.case} is not in ${entry.suiteDir}`);
+
+    if (entry.role === 'fixer-worker'
+      && row.invalid === 'workspace-unbound'
+      && !W0_9_WORKSPACE_UNBOUND_RUN_IDS.has(entry.runId)) {
+      throw new Error(
+        `${cell}: case ${row.case} is pre-marked workspace-unbound, but manifest runId ${String(entry.runId)} is not in the audited W0.9 allowlist`,
+      );
+    }
 
     // The old snapshot omitted a probe only for model structured-output
     // misses. The committed journal is the source that distinguishes those

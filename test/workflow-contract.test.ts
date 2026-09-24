@@ -246,6 +246,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(stepChunk('Commit report snapshots'), 'F6: the snapshot publishes the predictions + manifest beside the tables').toContain("-name '*.table.json'");
     expect(stepChunk('Commit report snapshots'), 'F6: rows.jsonl (regrade input) is published').toContain("-name 'rows.jsonl'");
     expect(stepChunk('Commit report snapshots'), 'F6: run.json (toolkit.lock/suite-SHA manifest) is published').toContain("-name 'run.json'");
+    expect(stepChunk('Commit report snapshots'), 'F6: journal evidence is published for replay').toContain("-path '*/journal/*'");
     expect(stepChunk('Commit report snapshots'), 'F6: worker patches are published').toContain("-path '*/patches/*'");
     expect(stepChunk('Commit report snapshots'), 'F6: classifier outputs are published').toContain("-path '*/outputs/*'");
   });

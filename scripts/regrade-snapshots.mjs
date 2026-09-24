@@ -291,6 +291,14 @@ for (const cell of discoveredCells) {
         `${cell}: case ${String(row.case)} row runId ${String(row.runId)} does not match manifest entry runId ${String(entry.runId)}`,
       );
     }
+    for (const field of ['role', 'suite', 'model', 'driver', 'variant']) {
+      const actual = field === 'variant' && row.variant === undefined ? 'default' : row[field];
+      if (actual !== entry[field]) {
+        throw new Error(
+          `${cell}: case ${String(row.case)} row ${field} ${String(actual)} does not match manifest entry ${field} ${String(entry[field])}`,
+        );
+      }
+    }
 
     const suiteCase = suiteCases.get(row.case);
     if (suiteCase === undefined) throw new Error(`${cell}: case ${row.case} is not in ${entry.suiteDir}`);
@@ -309,6 +317,14 @@ for (const cell of discoveredCells) {
     // An already-recorded null/false miss is equally historical evidence and
     // must agree with that journal rather than pass validation unexamined.
     if (entry.role === 'review-classifier') {
+      const nullObservation = row.probes?.some(
+        (probe) => probe.kind === 'expected-verdict' && probe.observed === null,
+      ) === true;
+      if (nullObservation && row.probes?.some(
+        (probe) => probe.kind === 'expected-verdict' && probe.observed === null && probe.passed !== false,
+      ) === true) {
+        throw new Error(`${cell}: case ${row.case} has a contradictory null/passed:true classifier probe`);
+      }
       const recordsNullMiss = row.probes?.some(
         (probe) => probe.kind === 'expected-verdict' && probe.observed === null && probe.passed === false,
       ) === true;

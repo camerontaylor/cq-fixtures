@@ -293,6 +293,68 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
+  it.each([
+    {
+      label: 'structured-output-miss',
+      journalEvent: {
+        status: 'failed',
+        error: 'ai-sdk driver: [structured-output-miss] run failed — No object generated',
+      },
+    },
+    {
+      label: 'completed zero-result',
+      journalEvent: { status: 'ok', value: { score: 0, passed: 0, total: 1 } },
+    },
+  ])('rejects a contradictory null/passed:true probe with $label evidence', ({ journalEvent }) => {
+    const snapshotRoot = snapshotTempRoot('null-passed-true-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);
+    const rowsPath = join(cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+    row.probes = [{ kind: 'expected-verdict', expected: 'resolved', observed: null, passed: true }];
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'regrade-null-miss-test',
+      jobId: 'null-miss',
+      result: journalEvent,
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('case null-miss has a contradictory null/passed:true classifier probe');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('accepts a normal real observed classifier probe with passing ok journal evidence', () => {
+    const snapshotRoot = snapshotTempRoot('real-observed-ok-test');
+    const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot, 'resolved');
+    const rowsPath = join(cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+    row.outcome = { score: 1, passed: 1, total: 1 };
+    row.probes = [{ kind: 'expected-verdict', expected: 'resolved', observed: 'resolved', passed: true }];
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    const table = aggregate([row])[0]!;
+    table.generatedAt = '2026-01-01T00:00:00.000Z';
+    writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(table, null, 2) + '\n');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'regrade-null-miss-test',
+      jobId: 'null-miss',
+      result: { status: 'ok', value: { score: 1, passed: 1, total: 1 } },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('rejects an existing null/false classifier row backed only by a passing ok journal result', () => {
     const snapshotRoot = snapshotTempRoot('passing-ok-null-miss-test');
     const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot);
@@ -355,13 +417,6 @@ describe('committed WB-1 regrade replay', () => {
       label: 'a wrong expected verdict',
       mutate: (row: ResultRow) => {
         row.probes = [{ kind: 'expected-verdict', expected: 'actionable', observed: null, passed: false }];
-      },
-      message: 'does not carry the exact expected-verdict null/false probe',
-    },
-    {
-      label: 'a wrong null/false probe shape',
-      mutate: (row: ResultRow) => {
-        row.probes = [{ kind: 'expected-verdict', expected: 'resolved', observed: null, passed: true }];
       },
       message: 'does not carry the exact expected-verdict null/false probe',
     },
@@ -598,6 +653,31 @@ describe('committed WB-1 regrade replay', () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
         'case provenance row runId different-run does not match manifest entry runId 36088a47-2fd6-4323-8d14-57edfa47f3dc',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(snapshot.suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it.each([
+    { field: 'role', value: 'review-classifier' },
+    { field: 'suite', value: 'different-suite' },
+    { field: 'model', value: 'different-model' },
+    { field: 'driver', value: 'different-driver' },
+    { field: 'variant', value: 'different-variant' },
+  ])('rejects a row whose $field does not match the manifest entry', ({ field, value }) => {
+    const snapshotRoot = snapshotTempRoot(`mismatched-${field}-test`);
+    const snapshot = fixerSnapshot(snapshotRoot, 'future-correctly-bound-run');
+    const rowsPath = join(snapshot.cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as Record<string, unknown>;
+    row[field] = value;
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        `case provenance row ${field} ${value} does not match manifest entry ${field} ${field === 'role' ? 'fixer-worker' : field === 'suite' ? 'regrade-provenance-test' : field === 'model' ? 'glm-5.3-flash' : field === 'driver' ? 'ai-sdk' : 'default'}`,
       );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });

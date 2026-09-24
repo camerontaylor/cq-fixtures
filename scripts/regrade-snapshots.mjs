@@ -288,6 +288,7 @@ for (const cell of discoveredCells) {
   const nonModelFailures = journal?.nonModelFailures ?? new Map();
   const completedJobs = journal?.completedJobs ?? new Map();
   const sidecarFlags = new Map();
+  const encounteredCaseIds = new Set();
   if (entry.role === 'review-classifier') {
     const sidecars = recordedSidecars(suiteCases, sidecarRevision);
     for (const [caseId, suiteCase] of suiteCases) {
@@ -314,6 +315,11 @@ for (const cell of discoveredCells) {
         );
       }
     }
+
+    if (encounteredCaseIds.has(row.case)) {
+      throw new Error(`${cell}: duplicate case ${String(row.case)} row`);
+    }
+    encounteredCaseIds.add(row.case);
 
     const suiteCase = suiteCases.get(row.case);
     if (suiteCase === undefined) throw new Error(`${cell}: case ${row.case} is not in ${entry.suiteDir}`);
@@ -345,12 +351,11 @@ for (const cell of discoveredCells) {
       ) === true) {
         throw new Error(`${cell}: case ${row.case} has a contradictory null/passed:true classifier probe`);
       }
+      const hasCompletedZeroEvidence = isClassifierZeroOutcome(completedJobs.get(row.case));
+      const hasJournalMissEvidence = misses.has(row.case) || hasCompletedZeroEvidence;
       const recordsNullMiss = row.probes?.some(
         (probe) => probe.kind === 'expected-verdict' && probe.observed === null && probe.passed === false,
       ) === true;
-      const completedOutcome = completedJobs.get(row.case);
-      const hasCompletedZeroEvidence = isClassifierZeroOutcome(completedOutcome);
-      const hasJournalMissEvidence = misses.has(row.case) || hasCompletedZeroEvidence;
       const recordsRealObserved = row.probes?.some(
         (probe) => probe.kind === 'expected-verdict' && typeof probe.observed === 'string',
       ) === true;
@@ -376,6 +381,36 @@ for (const cell of discoveredCells) {
         }
         if (!isClassifierZeroOutcome(row.outcome)) {
           throw new Error(`${cell}: case ${row.case} has ${evidence} evidence but does not carry the required zero outcome`);
+        }
+      }
+
+      // Real observed probes are independently checked against the suite and,
+      // when available, the completed job result. This runs after the legacy
+      // null/miss checks above so all prior diagnostics remain strict and
+      // unchanged.
+      const stringObservedProbes = row.probes?.filter(
+        (probe) => probe.kind === 'expected-verdict' && typeof probe.observed === 'string',
+      ) ?? [];
+      for (const probe of stringObservedProbes) {
+        if (probe.expected !== suiteCase.probe.expected) {
+          throw new Error(
+            `${cell}: case ${row.case} classifier probe expected ${String(probe.expected)} does not match suite expected ${String(suiteCase.probe.expected)}`,
+          );
+        }
+      }
+      const completedOutcome = completedJobs.get(row.case);
+      if (completedJobs.has(row.case)) {
+        for (const probe of stringObservedProbes) {
+          if (probe.passed !== (completedOutcome.passed === completedOutcome.total)) {
+            throw new Error(
+              `${cell}: case ${row.case} classifier probe passed=${String(probe.passed)} contradicts completed journal passed=${String(completedOutcome?.passed)}`,
+            );
+          }
+        }
+        if (!isDeepStrictEqual(row.outcome, completedOutcome)) {
+          throw new Error(
+            `${cell}: case ${row.case} outcome ${JSON.stringify(row.outcome)} contradicts completed journal outcome ${JSON.stringify(completedOutcome)}`,
+          );
         }
       }
     }

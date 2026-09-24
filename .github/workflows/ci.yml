@@ -16,6 +16,10 @@ jobs:
     steps:
       - name: Check out the repo
         uses: actions/checkout@v5
+        with:
+          # Snapshot replay is pinned to each manifest suiteSha; never fall
+          # back to checkout files when that recorded revision is unavailable.
+          fetch-depth: 0
       - name: Set up Node
         uses: actions/setup-node@v4
         with:

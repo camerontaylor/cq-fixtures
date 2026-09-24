@@ -44,6 +44,8 @@ interface RowSample {
   // suspicious-benign flag. Old rows omit both by design.
   probes?: Array<{ kind: string; expected: string; observed: string | null; passed: boolean }>;
   suspiciousBenign?: boolean;
+  // P5: historical fixer-run evidence marker; fixer-worker only.
+  invalid?: string;
   // F6 additive-optional field: the prompt/tool-surface bundle id. Old rows
   // (and default-posture rows) omit it by design.
   variant?: string;
@@ -87,6 +89,15 @@ describe('result-row schema (plan §8 field list)', () => {
 
   it('accepts a row pairing a numeric costUSD with its costBasis', () => {
     expect(rowSchema(validRow({ costUSD: 0.01, costBasis: 'billed' }))).toBe(true);
+  });
+
+  it('rejects billed accounting without a finite non-negative numeric costUSD', () => {
+    expect(rowSchema(validRow({ costUSD: null, costBasis: 'billed' }))).toBe(false);
+    expect(rowSchema(validRow({ costUSD: -0.01, costBasis: 'billed' }))).toBe(false);
+  });
+
+  it('rejects modeled accounting paired with a null costUSD', () => {
+    expect(rowSchema(validRow({ costUSD: null, costBasis: 'modeled' }))).toBe(false);
   });
 
   it('rejects a row whose timestamp is not a valid RFC 3339 date-time', () => {
@@ -170,6 +181,14 @@ describe('result-row schema (plan §8 field list)', () => {
     }))).toBe(true);
   });
 
+  it('accepts workspace-unbound only on a fixer-worker row', () => {
+    expect(rowSchema(validRow({ invalid: 'workspace-unbound' }))).toBe(true);
+    expect(rowSchema(validRow({
+      role: 'review-classifier',
+      invalid: 'workspace-unbound',
+    }))).toBe(false);
+  });
+
   it('accepts a row carrying a non-default suite variant (F6/CQ-4)', () => {
     expect(rowSchema(validRow({ variant: 'minimal-tools' }))).toBe(true);
   });
@@ -230,6 +249,17 @@ describe('comparison-table schema (ADR-0001 axes)', () => {
 
   it('accepts a table with one cell per axis (ai-sdk cell + fixed-GLM driver cell)', () => {
     expect(tableSchema(validTable())).toBe(true);
+  });
+
+  it('accepts workspace-unbound on a fixer cell but rejects it on a classifier cell', () => {
+    const fixer = validTable();
+    (fixer.cells[0] as Record<string, unknown>)['invalid'] = 'workspace-unbound';
+    expect(tableSchema(fixer)).toBe(true);
+
+    const classifier = validTable();
+    classifier.role = 'review-classifier';
+    (classifier.cells[0] as Record<string, unknown>)['invalid'] = 'workspace-unbound';
+    expect(tableSchema(classifier)).toBe(false);
   });
 
   it('rejects a cell whose aggregate score exceeds 1', () => {

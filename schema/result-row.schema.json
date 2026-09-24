@@ -151,6 +151,11 @@
       "type": "boolean",
       "description": "True when the case's fixture-side label.json carries fp_flag 'suspicious-benign' (an adjudicated suspicious-but-benign negative: alarming-looking content whose expected verdict is not actionable). Absent otherwise — absence means unflagged, never false-by-default; micro suites carry no labels so their rows omit it. The FP rate on this subset is what makes classifier false-positive behavior scoreable."
     },
+    "invalid": {
+      "type": "string",
+      "enum": ["workspace-unbound"],
+      "description": "P5 evidence marker: the row is retained but invalid because the historical fixer run did not bind the driver's workspace to the graded fixture. Marked rows are never deleted."
+    },
     "variant": {
       "type": "string",
       "minLength": 1,
@@ -165,6 +170,26 @@
         "required": ["costUSD"]
       },
       "then": { "not": { "required": ["costBasis"] } }
+    },
+    {
+      "if": {
+        "properties": { "costBasis": { "const": "billed" } },
+        "required": ["costBasis"]
+      },
+      "then": {
+        "properties": { "costUSD": { "type": "number", "minimum": 0 } },
+        "required": ["costUSD"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "invalid": { "const": "workspace-unbound" } },
+        "required": ["invalid"]
+      },
+      "then": {
+        "properties": { "role": { "const": "fixer-worker" } },
+        "required": ["role"]
+      }
     }
   ]
 }

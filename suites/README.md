@@ -78,15 +78,16 @@ channel is the fixture-side `fixtures/<name>.FAULT.json` record
 (`schema/fault.schema.json`), NOT a suite field — the closed case shape above is unchanged. The
 record is a SIBLING FILE outside the materialized fixture directory, because it carries the
 canonical fix; `test/breadth.test.ts` proves a worker workspace cannot reach it. `deprecated/`
-suites are excluded from the weekly matrix discovery (`.github/workflows/suite.yml`), so a retired
+suites are excluded from real-driver matrix discovery (`.github/workflows/suite.yml`), so a retired
 case never spends tokens.
 
 The F3 corpus promotes that seed into two suites (ids unchanged, `breadth-01..40`):
 `suites/fixer-worker/breadth-verified/` (12 human-reviewed cases, full filter chain in CI) and
 `suites/fixer-worker/breadth-tail/` (28 generated cases, both-states CI). The 30 new cases are
 generated deterministically from `catalog/substrates/` by `catalog/generate-cases.ts`; the
-runnable filter chain is `catalog/pipeline.ts`. The real-driver matrix takes a
-`workflow_dispatch` input `profile: verified|full` — `verified` runs only the breadth-verified
-suites, `full` (the default, and the weekly schedule's value) runs every suite. PR CI stays
-fake-driver: the smoke loop runs the micro suites plus `breadth-verified`. The verified tier's
-≤ 20 min serial per cell is a **projection** (digest ~90 s/case), re-baselined by F1.
+runnable filter chain is `catalog/pipeline.ts`. The real-driver matrix is dispatch-only while its
+weekly schedule is paused per D10; the planned re-enable is W6.4/W6.7. Its
+`workflow_dispatch` input `profile: verified|full` selects breadth-verified suites for `verified`
+and every suite for the default `full`. PR CI stays fake-driver: the smoke loop runs the micro
+suites plus `breadth-verified`. The verified tier's ≤ 20 min serial per cell is a **projection**
+(digest ~90 s/case), re-baselined by F1.

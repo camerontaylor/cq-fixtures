@@ -691,15 +691,23 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     });
   }, 15_000);
 
-  it('a classifier structured-output-miss publishes a scored-miss row (0/1) with no fabricated probes[]', async () => {
+  it('a classifier structured-output-miss publishes a scored-miss row (0/1) with a null verdict probe', async () => {
     const dir = reviewSuite('err-miss-clf', 'err-miss-clf', [reviewCase('rev-1', 'resolved')]);
     const result = await runSuite(opts(dir, { driver: errorDriver(MISS_CAUSE) }));
     expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toMatchObject({ case: 'rev-1', outcome: { score: 0, passed: 0, total: 1 } });
+    expect(result.rows[0]).toMatchObject({
+      case: 'rev-1',
+      outcome: { score: 0, passed: 0, total: 1 },
+      probes: [{ kind: 'expected-verdict', expected: 'resolved', observed: null, passed: false }],
+    });
     expect(result.absences).toEqual([]);
-    // No parseable verdict existed, so the row carries no probes[] — the same
-    // shape as the other zero paths (byVerdict counts probed rows only).
-    expect('probes' in result.rows[0]!).toBe(false);
+    // A scored-miss follows the same sidecar diagnostic path as ordinary
+    // classifier scoring: thread.json has no adjacent label sidecar.
+    expect(result.diagnostics).toContain(
+      "case rev-1: label sidecar 'thread.label.json' absent — suspiciousBenign flag omitted",
+    );
+    // The null observation is still a scored miss and remains in byVerdict.
+    expect(result.tables[0]?.cells[0]?.byVerdict?.resolved).toMatchObject({ expected: 1, correct: 0 });
     assertSchemaValid(result.rows, result.tables);
   }, 15_000);
 
@@ -803,6 +811,13 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     expect(isStructuredOutputMissCause('prefix: ai-sdk driver: [structured-output-miss] x')).toBe(false);
     expect(isStructuredOutputMissCause('ai-sdk driver: [endpoint-timeout] x')).toBe(false);
     expect(isStructuredOutputMissCause('ai-sdk driver: [provider-error] x')).toBe(false);
+    // A transient diagnostic containing a three-digit number is not a
+    // structured-output miss: it stays on the infrastructure/absence path
+    // (and may be retried by the driver), while a real endpoint absence still
+    // has its explicit class token.
+    expect(isStructuredOutputMissCause('ai-sdk driver: [endpoint-timeout] transient at position 502')).toBe(false);
+    expect(isStructuredOutputMissCause('ai-sdk driver: [provider-error] position 502')).toBe(false);
+    expect(isStructuredOutputMissCause('ai-sdk driver: [structured-output-miss] position 502')).toBe(true);
     expect(isStructuredOutputMissCause('structured-output-miss')).toBe(false);
     expect(isStructuredOutputMissCause('AI-SDK DRIVER: [structured-output-miss] x')).toBe(false);
     expect(isStructuredOutputMissCause('')).toBe(false);
@@ -1360,6 +1375,52 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     for (const k of ['byVerdict', 'macroF1', 'fpRate', 'fpN', 'variant', 'scoreCI']) expect(cell).not.toHaveProperty(k);
     assertSchemaValid(result.rows, result.tables);
   }, 15_000);
+
+  it('propagates historical invalid markers to fixer cells without changing their score counts', () => {
+    const row = (id: string, passed: number): ResultRow => ({
+      role: 'fixer-worker',
+      suite: 'historical-fixer',
+      case: id,
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: passed / 2, passed, total: 2 },
+      invalid: 'workspace-unbound',
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-historical-fixer',
+      timestamp: '2026-09-21T00:00:00Z',
+    });
+    const [table] = aggregate([row('c1', 0), row('c2', 1)]);
+    expect(table!.cells[0]).toMatchObject({
+      invalid: 'workspace-unbound',
+      runs: 2,
+      passed: 1,
+      total: 4,
+      score: 0.25,
+    });
+    assertSchemaValid([], [table]);
+  });
+
+  it('rejects a classifier row carrying the fixer-only workspace-unbound marker', () => {
+    const row: ResultRow = {
+      role: 'review-classifier',
+      suite: 'invalid-classifier',
+      case: 'c1',
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      outcome: { score: 0, passed: 0, total: 1 },
+      invalid: 'workspace-unbound',
+      costUSD: null,
+      wallTimeMs: 10,
+      tokens: { input: 1, output: 1 },
+      runId: 'run-invalid-classifier',
+      timestamp: '2026-09-21T00:00:00Z',
+    };
+    expect(() => aggregate([row])).toThrow(
+      "aggregate: review-classifier row run-invalid-classifier/c1 carries fixer-only invalid marker 'workspace-unbound'",
+    );
+  });
 
   it('two variants of one suite land as DISTINCT cells (F6/CQ-4)', () => {
     const row = (variant?: string): ResultRow => ({

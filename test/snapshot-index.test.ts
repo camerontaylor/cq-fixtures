@@ -6,12 +6,14 @@
 //    BYTE-IDENTICALLY from that snapshot's rows.jsonl (the F6 acceptance).
 
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { cliMain } from '../runner/cli.ts';
+// @ts-expect-error The snapshot-index generator is plain JavaScript without a declaration file.
+import { snapshotCells } from '../scripts/snapshot-index.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SNAPSHOTS_ROOT = join(REPO_ROOT, 'reports', 'snapshots');
@@ -54,10 +56,63 @@ describe('snapshot README headers (F6/WB-5.1)', () => {
 });
 
 describe('snapshot index (F6/WB-5.1)', () => {
-  it('the committed index is current (regenerate == committed)', () => {
+  it('only indexes the recognized fixer marker and rejects invalid markers on other cells', () => {
+    const snapshotDir = mkdtempSync(join(tmpdir(), 'cq-snapshot-index-'));
+    tempDirs.push(snapshotDir);
+    const cell = (invalid?: unknown) => ({
+      model: 'glm-5.3-flash',
+      driver: 'ai-sdk',
+      score: 1,
+      passed: 1,
+      total: 1,
+      ...(invalid === undefined ? {} : { invalid }),
+    });
+    const classifierPath = join(snapshotDir, 'review-classifier.table.json');
+    writeFileSync(classifierPath, JSON.stringify({
+      role: 'review-classifier',
+      suite: 'micro',
+      cells: [cell('workspace-unbound')],
+    }));
+    expect(() => snapshotCells(snapshotDir)).toThrow(
+      /review-classifier cell glm-5\.3-flash\/ai-sdk\/default carries fixer-only invalid marker workspace-unbound/,
+    );
+
+    rmSync(classifierPath);
+    const fixerPath = join(snapshotDir, 'fixer-worker.table.json');
+    writeFileSync(fixerPath, JSON.stringify({
+      role: 'fixer-worker',
+      suite: 'micro',
+      cells: [cell('some-future-marker')],
+    }));
+    expect(() => snapshotCells(snapshotDir)).toThrow(
+      /cell glm-5\.3-flash\/ai-sdk\/default carries unrecognized invalid marker some-future-marker/,
+    );
+
+    writeFileSync(fixerPath, JSON.stringify({
+      role: 'fixer-worker',
+      suite: 'micro',
+      cells: [cell('workspace-unbound')],
+    }));
+    expect([...snapshotCells(snapshotDir).cells.values()][0]?.invalid).toBe('workspace-unbound');
+  });
+
+  it('the committed index is current and exposes historical cell validity', () => {
     expect(() =>
       execFileSync('node', ['scripts/snapshot-index.mjs', '--check'], { cwd: REPO_ROOT, encoding: 'utf8' }),
     ).not.toThrow();
+    const index = readFileSync(join(SNAPSHOTS_ROOT, 'README.md'), 'utf8');
+    expect(index).toContain('| old status | new status | old score | new score |');
+    expect(index).toContain('| workspace-unbound | (absent) |');
+    expect(index).toContain('| (absent) | workspace-unbound |');
+    expect(index).toContain('| (invalid comparison) |');
+    expect(index).toContain(
+      '| review-classifier / micro | deepseek-flash | ai-sdk | default | valid | valid | 0.9000 | 1.0000 | +0.1000 | 10 | 10 |',
+    );
+    const invalidFixerDeltas = index.split('\n').filter(
+      (line) => line.startsWith('| fixer-worker /') && line.includes('| workspace-unbound |'),
+    );
+    expect(invalidFixerDeltas.length).toBeGreaterThan(0);
+    expect(invalidFixerDeltas.every((line) => line.includes('| (invalid comparison) |'))).toBe(true);
   });
 });
 

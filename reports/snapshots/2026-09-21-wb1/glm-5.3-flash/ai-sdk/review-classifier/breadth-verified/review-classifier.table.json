@@ -14,7 +14,7 @@
       "costBasis": "modeled",
       "byVerdict": {
         "actionable": {
-          "expected": 5,
+          "expected": 6,
           "correct": 4,
           "predicted": {
             "actionable": 4,
@@ -22,7 +22,7 @@
           }
         },
         "responded": {
-          "expected": 4,
+          "expected": 6,
           "correct": 4,
           "predicted": {
             "responded": 4
@@ -36,23 +36,23 @@
           }
         },
         "blocked": {
-          "expected": 4,
+          "expected": 6,
           "correct": 4,
           "predicted": {
             "blocked": 4
           }
         },
         "skip": {
-          "expected": 2,
+          "expected": 6,
           "correct": 2,
           "predicted": {
             "skip": 2
           }
         }
       },
-      "macroF1": 0.9555555555555555,
+      "macroF1": 0.7654545454545454,
       "fpRate": 0,
-      "fpN": 8,
+      "fpN": 10,
       "scoreCI": {
         "lower": 0.4878005164454384,
         "upper": 0.8076950191632386,

@@ -182,6 +182,23 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 30_000);
 
+  it('fails when a rows/manifest cell regrades to no table instead of passing a missing table check', () => {
+    const snapshotRoot = snapshotTempRoot('missing-table-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'missing-table-test');
+    writeFileSync(join(cell, 'rows.jsonl'), '');
+    rmSync(join(cell, 'fixer-worker.table.json'));
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'snapshot cell has rows.jsonl and run.json but regrade produced no table; refusing stale or missing table check',
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('fails discovery when the snapshot contains zero cells', () => {
     const snapshotRoot = snapshotTempRoot('zero-test');
     try {
@@ -215,7 +232,7 @@ describe('committed WB-1 regrade replay', () => {
       const unsupported = runReplay(snapshotRoot, true);
       expect(unsupported.status).toBe(1);
       expect(unsupported.stderr).toContain(
-        'case null-miss has a null/false classifier probe without journal structured-output-miss or matching completed zero-result evidence',
+        'case null-miss has no matching completed, failed, or governed journal event for manifest run regrade-null-miss-test',
       );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
@@ -308,8 +325,11 @@ describe('committed WB-1 regrade replay', () => {
       );
 
       writeFileSync(join(cell, 'rows.jsonl'), '');
-      const noRow = runReplay(snapshotRoot, true);
-      expect(noRow.status).toBe(0);
+      const noTable = runReplay(snapshotRoot, true);
+      expect(noTable.status).toBe(1);
+      expect(noTable.stderr).toContain(
+        'snapshot cell has rows.jsonl and run.json but regrade produced no table; refusing stale or missing table check',
+      );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
       rmSync(suiteDir, { recursive: true, force: true });
@@ -745,7 +765,7 @@ describe('committed WB-1 regrade replay', () => {
     }
   }, 120_000);
 
-  it('ignores structured-output evidence from a different journal run', () => {
+  it('rejects a classifier row without matching journal evidence for the manifest run', () => {
     const snapshotRoot = snapshotTempRoot('mixed-run-journal-test');
     const { cell, suiteDir } = classifierMissSnapshot(snapshotRoot, 'resolved');
     writeFileSync(join(cell, 'journal', 'events.ndjson'), [
@@ -767,8 +787,10 @@ describe('committed WB-1 regrade replay', () => {
     ].map((event) => JSON.stringify(event)).join('\n') + '\n');
     try {
       const result = runReplay(snapshotRoot, true);
-      expect(result.status).toBe(0);
-      expect(result.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case null-miss has no matching completed, failed, or governed journal event for manifest run regrade-null-miss-test',
+      );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
       rmSync(suiteDir, { recursive: true, force: true });
@@ -827,6 +849,12 @@ describe('committed WB-1 regrade replay', () => {
     const table = aggregate([row])[0]!;
     table.generatedAt = '2026-01-01T00:00:00.000Z';
     writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(table, null, 2) + '\n');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'recorded-revision-test',
+      jobId: 'thread-01',
+      result: { status: 'ok', value: { score: 1, passed: 1, total: 1 } },
+    }) + '\n');
 
     try {
       const historicalRevisionAvailable = spawnSync(
@@ -1080,6 +1108,12 @@ describe('committed WB-1 regrade replay', () => {
     const table = aggregate(rows)[0]!;
     table.generatedAt = '2026-01-01T00:00:00.000Z';
     writeFileSync(join(cell, 'review-classifier.table.json'), JSON.stringify(table, null, 2) + '\n');
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), rows.map((row) => JSON.stringify({
+      type: 'job-finished',
+      runId: 'regrade-sidecar-test',
+      jobId: row.case,
+      result: { status: 'ok', value: row.outcome },
+    })).join('\n') + '\n');
 
     try {
       const applied = runReplay(snapshotRoot, false);

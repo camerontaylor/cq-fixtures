@@ -372,6 +372,15 @@ for (const cell of discoveredCells) {
           `${cell}: case ${row.case} has infrastructure indeterminate journal detail (${String(infrastructureIndeterminate.get(row.case))}) but a row was published`,
         );
       }
+      const hasJournalEvidence = completedJobs.has(row.case)
+        || nonModelFailures.has(row.case)
+        || misses.has(row.case)
+        || governedStops.has(row.case);
+      if (!hasJournalEvidence) {
+        throw new Error(
+          `${cell}: case ${row.case} has no matching completed, failed, or governed journal event for manifest run ${String(entry.runId)}`,
+        );
+      }
       if (governedStops.has(row.case) && !isClassifierZeroOutcome(row.outcome)) {
         throw new Error(`${cell}: case ${row.case} has classifier governed-stop evidence but does not carry the required zero outcome`);
       }
@@ -517,6 +526,11 @@ for (const cell of discoveredCells) {
   // Reuse the runner's exact aggregate semantics. It reads the just-written
   // rows, validates them, and preserves each table's original generatedAt.
   const result = regrade({ from: cell, repoRoot: REPO_ROOT });
+  if (result.tables.length === 0) {
+    throw new Error(
+      `${cell}: snapshot cell has rows.jsonl and run.json but regrade produced no table; refusing stale or missing table check`,
+    );
+  }
   for (const table of result.tables) {
     const tablePath = join(cell, `${table.role}.table.json`);
     const nextTable = JSON.stringify(table, null, 2) + '\n';

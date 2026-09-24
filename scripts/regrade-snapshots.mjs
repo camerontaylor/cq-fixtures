@@ -325,6 +325,29 @@ for (const cell of discoveredCells) {
     }
   }
   const suiteCases = new Map((suite.cases ?? []).map((c) => [c.id, c]));
+  if (entry.absences !== undefined && !Array.isArray(entry.absences)) {
+    throw new Error(`${cell}: run.json runs[0].absences must be an array when present`);
+  }
+  const recordedAbsences = new Map();
+  for (const absence of entry.absences ?? []) {
+    if (typeof absence?.case !== 'string' || absence.case === ''
+      || typeof absence.cause !== 'string' || absence.cause === '') {
+      throw new Error(`${cell}: every run.json runs[0].absences entry must record a non-empty case and cause`);
+    }
+    if (recordedAbsences.has(absence.case)) {
+      throw new Error(`${cell}: duplicate absence for case ${absence.case} in run.json runs[0].absences`);
+    }
+    if (!suiteCases.has(absence.case)) {
+      throw new Error(`${cell}: recorded absence case ${absence.case} is not in ${entry.suiteDir}`);
+    }
+    recordedAbsences.set(absence.case, absence.cause);
+  }
+  const originalRowCases = new Set(originalRows.map((row) => row.case));
+  for (const caseId of recordedAbsences.keys()) {
+    if (originalRowCases.has(caseId)) {
+      throw new Error(`${cell}: case ${caseId} is recorded both as an absence and as a published row`);
+    }
+  }
   const journal = existsSync(join(cell, 'journal'))
     ? journalEvidence(cell, entry.runId)
     : undefined;
@@ -371,6 +394,11 @@ for (const cell of discoveredCells) {
     if (suiteCase === undefined) throw new Error(`${cell}: case ${row.case} is not in ${entry.suiteDir}`);
 
     if (entry.role === 'fixer-worker') {
+      if (row.probes?.some((probe) => probe.kind === 'expected-verdict') === true) {
+        throw new Error(
+          `${cell}: case ${row.case} fixer row carries classifier-only expected-verdict probes`,
+        );
+      }
       if (row.invalid === 'workspace-unbound'
         && !W0_9_WORKSPACE_UNBOUND_RUN_IDS.has(entry.runId)) {
         throw new Error(
@@ -577,6 +605,29 @@ for (const cell of discoveredCells) {
         throw new Error(`${cell}: journal structured-output-miss case ${caseId} is absent from rows.jsonl`);
       }
     }
+
+    const noRowJournalEvidence = new Map(nonModelFailures);
+    for (const [caseId, detail] of infrastructureIndeterminate) {
+      noRowJournalEvidence.set(caseId, detail);
+    }
+    for (const [caseId, cause] of noRowJournalEvidence) {
+      if (!recordedAbsences.has(caseId)) {
+        const roleLabel = entry.role === 'fixer-worker' ? 'fixer' : 'classifier';
+        throw new Error(
+          `${cell}: journal ${roleLabel} no-row case ${caseId} (${String(cause)}) is not recorded in run.json absences`,
+        );
+      }
+    }
+  }
+  for (const [caseId, cause] of recordedAbsences) {
+    const journalCause = journal === undefined
+      ? undefined
+      : journal.nonModelFailures.get(caseId) ?? journal.infrastructureIndeterminate.get(caseId);
+    if (journalCause !== cause) {
+      throw new Error(
+        `${cell}: recorded absence case ${caseId} does not match a no-row journal failure/indeterminate for manifest run ${String(entry.runId)}`,
+      );
+    }
   }
 
   if (entry.role === 'review-classifier') {
@@ -597,6 +648,11 @@ for (const cell of discoveredCells) {
     changedFiles.push(relative(REPO_ROOT, rowsPath));
     if (!CHECK) writeFileSync(rowsPath, nextRows);
   }
+
+  // A run whose every case is a recorded infrastructure absence intentionally
+  // has no rows and no comparison table. Its run.json plus journal are the
+  // complete evidence; do not require a synthetic empty table or a row.
+  if (rows.length === 0 && recordedAbsences.size > 0) continue;
 
   // Reuse the runner's exact aggregate semantics. It reads the just-written
   // rows, validates them, and preserves each table's original generatedAt.

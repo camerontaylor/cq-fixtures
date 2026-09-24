@@ -97,6 +97,18 @@ function classifierMissSnapshot(snapshotRoot: string, observed: string | null = 
   return { cell, suiteDir };
 }
 
+function setRecordedAbsences(
+  cell: string,
+  absences: Array<{ case: string; cause: string }>,
+): void {
+  const runPath = join(cell, 'run.json');
+  const manifest = JSON.parse(readFileSync(runPath, 'utf8')) as {
+    runs: Array<{ absences?: Array<{ case: string; cause: string }> }>;
+  };
+  manifest.runs[0]!.absences = absences;
+  writeFileSync(runPath, JSON.stringify(manifest, null, 2) + '\n');
+}
+
 function setFixerOutcome(cell: string, outcome: ResultRow['outcome']): void {
   const rowsPath = join(cell, 'rows.jsonl');
   const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
@@ -216,6 +228,53 @@ describe('committed WB-1 regrade replay', () => {
       rmSync(suiteDir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('accepts an absence-only cell when run.json and the journal account for every no-row job', () => {
+    const snapshotRoot = snapshotTempRoot('absence-only-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'absence-only-test');
+    const cause = 'ai-sdk driver: [endpoint-timeout] run failed — synthetic infrastructure failure';
+    writeFileSync(join(cell, 'rows.jsonl'), '');
+    rmSync(join(cell, 'fixer-worker.table.json'));
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'absence-only-test',
+      jobId: 'provenance',
+      result: { status: 'failed', error: cause },
+    }) + '\n');
+    setRecordedAbsences(cell, [{ case: 'provenance', cause }]);
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('checked 1 snapshot cells (0 file(s) changed)\n');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects an empty no-row cell when its failed journal job is not recorded in run.json absences', () => {
+    const snapshotRoot = snapshotTempRoot('missing-absence-record-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'missing-absence-record-test');
+    const cause = 'ai-sdk driver: [endpoint-timeout] run failed — synthetic infrastructure failure';
+    writeFileSync(join(cell, 'rows.jsonl'), '');
+    rmSync(join(cell, 'fixer-worker.table.json'));
+    writeFileSync(join(cell, 'journal', 'events.ndjson'), JSON.stringify({
+      type: 'job-finished',
+      runId: 'missing-absence-record-test',
+      jobId: 'provenance',
+      result: { status: 'failed', error: cause },
+    }) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        `journal fixer no-row case provenance (${cause}) is not recorded in run.json absences`,
+      );
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it('fails when a rows/manifest cell regrades to no table instead of passing a missing table check', () => {
     const snapshotRoot = snapshotTempRoot('missing-table-test');
@@ -395,7 +454,7 @@ describe('committed WB-1 regrade replay', () => {
       const noTable = runReplay(snapshotRoot, true);
       expect(noTable.status).toBe(1);
       expect(noTable.stderr).toContain(
-        'snapshot cell has rows.jsonl and run.json but regrade produced no table; refusing stale or missing table check',
+        'journal classifier no-row case null-miss (fixture read failed for synthetic.json: ENOENT) is not recorded in run.json absences',
       );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
@@ -418,6 +477,25 @@ describe('committed WB-1 regrade replay', () => {
       const result = runReplay(snapshotRoot, true);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('journal completed job case provenance is absent from rows.jsonl');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmSync(suiteDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects classifier-only expected-verdict probes on a fixer row', () => {
+    const snapshotRoot = snapshotTempRoot('fixer-classifier-probe-test');
+    const { cell, suiteDir } = fixerSnapshot(snapshotRoot, 'fixer-classifier-probe-test');
+    const rowsPath = join(cell, 'rows.jsonl');
+    const row = JSON.parse(readFileSync(rowsPath, 'utf8')) as ResultRow;
+    row.probes = [{ kind: 'expected-verdict', expected: 'resolved', observed: 'resolved', passed: true }];
+    writeFileSync(rowsPath, JSON.stringify(row) + '\n');
+    try {
+      const result = runReplay(snapshotRoot, true);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'case provenance fixer row carries classifier-only expected-verdict probes',
+      );
     } finally {
       rmSync(snapshotRoot, { recursive: true, force: true });
       rmSync(suiteDir, { recursive: true, force: true });

@@ -176,9 +176,14 @@ describe('budget-gated undispatched cases are explicit absences (never silent no
 
     expect(result.gatedByBudget).toBe(true);
     expect(result.rows.map((r) => r.case)).toEqual(['g-1']);
-    expect(result.absences).toHaveLength(2);
-    expect(result.absences.map((a) => a.case)).toEqual(['g-2', 'g-3']);
-    for (const a of result.absences) {
+    // W6.4: the one case that DID dispatch overran its own quarter-cost
+    // ceiling, so it is recorded as a per-case budget absence too (its row
+    // keeps the cause column); the two never-dispatched cases carry the
+    // gate's budget-stop cause.
+    expect(result.absences).toHaveLength(3);
+    expect(result.absences.map((a) => a.case)).toEqual(['g-1', 'g-2', 'g-3']);
+    expect(result.absences[0]?.cause).toMatch(/per-case budget exceeded/);
+    for (const a of result.absences.slice(1)) {
       expect(a.role).toBe('review-classifier');
       expect(a.cause).toMatch(/^budget-stop: /);
     }
@@ -189,11 +194,12 @@ describe('budget-gated undispatched cases are explicit absences (never silent no
       expect.objectContaining({
         runs: 1,
         expectedCases: 3,
-        coveredCases: 1,
-        coverage: 1 / 3,
+        coveredCases: 0,
+        coverage: 0,
+        budgetStops: 1,
       }),
     ]);
-    expect(result.tables[0]?.cells[0]?.budgetStops).toBeUndefined();
+    expect(result.rows[0]?.stopCause).toBe('budget');
     assertSchemaValid(result.rows, result.tables);
   }, 15_000);
 });
@@ -263,6 +269,41 @@ describe('a dispatched case stopped on its per-case budget keeps an honest row w
     expect(result.tables[0]?.cells).toEqual([
       expect.objectContaining({ runs: 2, expectedCases: 2, coveredCases: 1, coverage: 0.5, budgetStops: 1 }),
     ]);
+    assertSchemaValid(result.rows, result.tables);
+  }, 15_000);
+});
+
+describe('W6.4: a case that blows its per-case ceiling is recorded, never silently covered', () => {
+  it('marks the row with the budget-stop cause, records the absence, and excludes it from coverage', async () => {
+    // The ai-sdk/acp drivers ignore Budget.maxUsd, so only the run
+    // governor's cumulative cap binds them; this driver stands in for that
+    // lane by reporting a COMPLETE result whose derived cost exceeds the
+    // per-case ceiling.
+    const dir = reviewSuite('overrun-suite', 'overrun-suite', [
+      reviewCase('o-1', 'resolved'),
+      reviewCase('o-2', 'resolved'),
+    ]);
+    let first = true;
+    const driver: Driver = {
+      async run(): Promise<WorkerResult> {
+        const overrun = first;
+        first = false;
+        return overrun
+          // priced at $1000 of GLM input tokens against a $0.05 ceiling
+          ? { model: 'glm-5.3-flash', structuredOutput: { verdict: 'resolved' }, usage: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete' }
+          : { model: 'glm-5.3-flash', structuredOutput: { verdict: 'resolved' }, usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete' };
+      },
+    };
+    // The run cap is the sum of the per-case bounds, so a $1000 case would
+    // trip the governor and gate the tail — the point is that THIS case is
+    // recorded as a per-case overrun, not covered.
+    const result = await runSuite(opts(dir, { driver, maxUsdPerCase: 0.05 }));
+    const overrunRow = result.rows.find((r) => r.case === 'o-1');
+    expect(overrunRow?.stopCause, 'the over-budget case carries the cause column').toBe('budget');
+    expect(overrunRow?.outcome, 'its measured outcome is still real evidence').toEqual({ score: 1, passed: 1, total: 1 });
+    const absence = result.absences.find((a) => a.case === 'o-1');
+    expect(absence?.cause).toMatch(/per-case budget exceeded/);
+    expect(result.diagnostics.join('\n')).toMatch(/o-1: per-case budget exceeded/);
     assertSchemaValid(result.rows, result.tables);
   }, 15_000);
 });

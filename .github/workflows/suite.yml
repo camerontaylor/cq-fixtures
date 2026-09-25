@@ -93,6 +93,11 @@ jobs:
           set -euo pipefail
           EVAL_ROOT="${RUNNER_TEMP}/cq-eval-root"
           EVAL_KEY="${RUNNER_TEMP}/cq-eval-key/answer-key.json"
+          # W6.4: the key path rides the environment, not argv — a host-reach
+          # driver can read this process's argv, so a flag would hand it the
+          # path to the verdicts outright (the sentinel still catches a
+          # worker that reaches the key itself).
+          export CQ_ANSWER_KEY="${EVAL_KEY}"
           hard_fail=0
           for suite_dir in suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/review-classifier/micro suites/review-classifier/breadth-verified; do
             role="$(basename "$(dirname "${suite_dir}")")"
@@ -108,7 +113,6 @@ jobs:
               --model glm-5.3-flash \
               --provider zai \
               --check-timeout-ms 120000 \
-              --answer-key "${EVAL_KEY}" \
               --journal "${out_dir}/journal" \
               --out "${out_dir}" || rc=$?
             if [ "${rc}" -ge 2 ]; then
@@ -631,6 +635,8 @@ jobs:
           # from inside the root.
           EVAL_ROOT="${RUNNER_TEMP}/cq-eval-root"
           EVAL_KEY="${RUNNER_TEMP}/cq-eval-key/answer-key.json"
+          # W6.4: key path via the environment, never argv (see the smoke job).
+          export CQ_ANSWER_KEY="${EVAL_KEY}"
           hard_fail=0
           suite_count=0
           case "${MATRIX_PROFILE}" in
@@ -712,7 +718,6 @@ jobs:
               --provider "${MATRIX_PROVIDER}" \
               --max-tokens-per-case 60000 \
               --max-usd-per-case "${MATRIX_USD_PER_CASE}" \
-              --answer-key "${EVAL_KEY}" \
               --journal "${out_dir}/journal" \
               "${probe_extra[@]}" \
               --out "${out_dir}" < /dev/null || rc=$?
@@ -977,10 +982,16 @@ jobs:
           # ACP-FAILED into the artifact — a failure also means MERGE, never
           # clear.
           dispatch_only_marker="$(find reports/eval -maxdepth 1 -name 'DISPATCH-ONLY-*' -print -quit 2>/dev/null)"
-          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ]; then
+          # W6.4: clearing deletes the dated dir first, so it must be gated on
+          # evidence that the run's reports actually LANDED — at least one
+          # published table. A download that silently yielded nothing would
+          # otherwise clear an earlier complete run's tables and republish
+          # nothing. No tables => merge-only, never clear.
+          landed_tables="$(find reports/eval -name '*.table.json' -print -quit 2>/dev/null)"
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
             rm -rf "${snap_dir}"
           else
-            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}) — merging into ${snap_dir} without clearing"
+            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}, landed tables: ${landed_tables:-none}) — merging into ${snap_dir} without clearing"
           fi
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir (the copy loop is

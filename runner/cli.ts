@@ -49,7 +49,7 @@ const USAGE =
   '(--driver-name is required with --driver fake — a fake run must name the lane it stands in for) ' +
   '[--max-usd <n>] [--max-usd-per-case <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>] [--answer-key <path>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
-  'eval root (W6.3): a runner inside a built eval root requires --answer-key <key outside the root>; a sentinel hit exits 2\n' +
+  'eval root (W6.3): a runner inside a built eval root requires an answer key outside the root — --answer-key <path> or CQ_ANSWER_KEY (the env form keeps the key path out of the process argv a host-reach lane can read); a sentinel hit exits 2\n' +
   "caps: --max-tokens caps ONE suite run (each runSuite owns its governor); --max-tokens-per-case is multiplied by that suite's case count (WB-1.6) — pass one, never both\n" +
   'usd (W6.2): every run carries a PER-CASE USD budget — the accepted D9 envelope cap for the cell by default, --max-usd-per-case to override; a cell the D9 table does not map fails closed (exit 2) instead of running uncapped; --max-usd (a legacy run-level cap) and --max-usd-per-case are mutually exclusive\n' +
   '      an UNATTENDED real-lane run (GITHUB_ACTIONS) without a per-case ceiling — a bare --max-usd — is refused (W6.4)\n' +
@@ -296,6 +296,16 @@ function parseArgs(argv: readonly string[]): CliOptions {
         `pass --max-usd-per-case <n> (the accepted D9 envelope caps the cell ${driverName}/${model} at ` +
         `${d9 !== undefined ? `$${d9} per case` : 'no cap — an explicit value is required'})`,
     );
+  }
+  if (answerKey === undefined && process.env.CQ_ANSWER_KEY !== undefined && process.env.CQ_ANSWER_KEY !== '') {
+    // W6.4: the env form is the PREFERRED way to name the key. A driver that
+    // can read the host process table (subprocess/acp lanes) sees the
+    // runner's argv, so a --answer-key flag hands a host-reach worker the
+    // path to the verdicts outright; the runner process's own environment is
+    // not handed to the worker. The key still lives outside the eval root
+    // and still plants its sentinel, so a worker that does reach it trips
+    // the dynamic check — this only removes the free pointer.
+    answerKey = process.env.CQ_ANSWER_KEY;
   }
   return { suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey };
 }

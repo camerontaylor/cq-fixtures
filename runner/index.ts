@@ -732,6 +732,19 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // driver's own costUSD is not used: the runner owns derivation.
       const cost = computeCostUSD({ model, provider: opts.provider }, usage);
       governor.observeResult(c.id, { usage, costUSD: cost });
+      // W6.4: the per-case USD ceiling binds at the case grain ONLY on lanes
+      // whose driver honours Budget.maxUsd (claude-agent, subprocess). The
+      // ai-sdk and acp drivers ignore that field, so the run governor's
+      // CUMULATIVE cap is the only bound they enforce — a single case could
+      // therefore exceed its own D9 share while the run stayed under the
+      // total. Detect that case-grain overrun here and RECORD it: the case's
+      // evidence is incomplete for a comparison (its cost is outside the
+      // envelope), so it joins the budget-stop cause column and the absence
+      // list rather than passing silently as a covered case. The run is not
+      // aborted — the tail keeps running under the cumulative cap, exactly
+      // as a governor budget stop behaves.
+      const perCaseOverrun =
+        opts.maxUsdPerCase !== undefined && cost !== undefined && cost > opts.maxUsdPerCase;
 
       // F6 (WB-5.2a): capture the worker's diff BEFORE the check probe runs —
       // the judge mutates the workspace (restores pristine tests, scrubs
@@ -893,6 +906,14 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // zero signal on any run the drift gate does not cover.
         const sidecarProblem = sidecarDiagnostic(c.id, c.fixture, sidecarFlag);
         if (sidecarProblem !== undefined) caseDiagnostics.push(sidecarProblem);
+      }
+      if (perCaseOverrun && stopCause === undefined) {
+        stopCause = 'budget';
+        const cause =
+          `per-case budget exceeded: case ${c.id} spent $${cost!.toFixed(6)} against its ` +
+          `$${opts.maxUsdPerCase} per-case ceiling — evidence recorded, coverage excluded (W6.4)`;
+        diagnostics = diagnostics === undefined ? cause : `${diagnostics}\n${cause}`;
+        absences.push({ case: c.id, role: suite.role, cause });
       }
       if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);
       await append({

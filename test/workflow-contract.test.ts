@@ -201,9 +201,12 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
       const run = stepChunk(dispatch);
       expect(run).toContain('EVAL_ROOT="${RUNNER_TEMP}/cq-eval-root"');
       expect(run).toContain(`EVAL_KEY=${KEY}`);
+      // W6.4: the key path is exported, never passed as a flag — argv is
+      // readable by a host-reach driver lane.
+      expect(run).toContain('export CQ_ANSWER_KEY="${EVAL_KEY}"');
+      expect(run).not.toContain('--answer-key "${EVAL_KEY}"');
       expect(run).toContain('node --experimental-strip-types "${EVAL_ROOT}/runner/index.ts"');
       expect(run).toContain('--suite "${EVAL_ROOT}/${suite_dir}"');
-      expect(run).toContain('--answer-key "${EVAL_KEY}"');
     }
     expect(text, 'no step runs the checkout runner any more').not.toContain('node --experimental-strip-types runner/index.ts');
     const evalCell = stepChunk('Eval cell —');
@@ -398,6 +401,11 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     const snapshotStep = stepChunk('Commit report snapshots');
     expect(snapshotStep).toContain('[ ! -e reports/eval/ACP-FAILED ]');
     expect(snapshotStep).toContain('acp failure marker');
+    // W6.4: clearing the dated dir also requires PROOF that this run's
+    // reports landed — a download that yielded no table merges instead of
+    // deleting an earlier complete run's tables and republishing nothing.
+    expect(snapshotStep).toContain("landed_tables=\"$(find reports/eval -name '*.table.json' -print -quit");
+    expect(snapshotStep, 'the clear guard requires a landed table').toMatch(/if \[ "\$\{\{ needs\.matrix\.result \}\}" = "success" \].*\[ -n "\$\{landed_tables\}" \]; then/s);
   });
 
   it('driver-cause classification: a non-model cause publishes a loud dispatch-only absence via run.json (F1b/WB-1)', () => {

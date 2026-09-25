@@ -345,8 +345,14 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       }
       acc.expectedCases = row.expectedCases;
     }
-    if (row.stopCause === 'budget') acc.budgetStops += 1;
-    else if (row.case !== undefined) acc.covered.add(row.case);
+    // W6.2/W6.4: coverage counts only COMPLETE evidence. ANY stopped case
+    // (a budget stop today; a per-case budget overrun also carries
+    // stopCause 'budget') is excluded from coveredCases — a partially
+    // evidenced case must never count toward coverage parity, whatever
+    // cause stopped it.
+    if (row.stopCause !== undefined) {
+      if (row.stopCause === 'budget') acc.budgetStops += 1;
+    } else if (row.case !== undefined) acc.covered.add(row.case);
     // F4: fold classifier probes into the cell's verdict tallies. A row may
     // carry several probes; each expected-verdict entry counts once in the
     // confusion. The fp subset is per ROW, not per probe (CodeRabbit bot

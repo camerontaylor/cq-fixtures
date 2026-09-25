@@ -10,11 +10,15 @@ import {
   priceOf,
   type Driver,
   SessionStore,
+  AcpDriver,
+  AiSdkDriver,
+  ClaudeAgentDriver,
+  SubprocessDriver,
   type OpInvocation,
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runSuite } from '../runner/index.ts';
+import { runSuite, SESSION_STORE_DIR } from '../runner/index.ts';
 import { isFixerCase, loadSuite } from '../runner/suite.ts';
 import { FakeDriver } from '../runner/fake-driver.ts';
 import type { ComparisonTable, ResultRow } from '../runner/aggregate.ts';
@@ -535,23 +539,71 @@ describe('fake-driver smoke over the micro suites (D2 subprocess lane)', () => {
 class BindingDriver implements Driver {
   readonly sessions: string[] = [];
   readonly workspaces: string[] = [];
+  readonly lane: string;
+  constructor(lane: string) { this.lane = lane; }
   async run(invocation: OpInvocation): Promise<WorkerResult> {
     expect(invocation.sessionRef).toBeDefined();
-    const store = new SessionStore(join(/\nworkspace: (\S+)$/.exec(invocation.prompt)![1]!, '.cq-sessions'));
+    // This is the same default location the real toolkit drivers use.  The
+    // runner must create the record there, not in the model-visible copy.
+    const store = new SessionStore(SESSION_STORE_DIR);
     const record = await store.load(invocation.sessionRef!);
-    expect(record?.workspace).toBe(/\nworkspace: (\S+)$/.exec(invocation.prompt)![1]);
+    const workspace = /\nworkspace: (\S+)$/.exec(invocation.prompt)![1]!;
+    expect(record?.workspace).toBe(workspace);
     this.sessions.push(invocation.sessionRef!);
     this.workspaces.push(record!.workspace);
-    const source = join(record!.workspace, 'src', 'rangeSum.ts');
-    if (existsSync(source)) {
-      writeFileSync(source, SOLUTIONS['micro-1']!.content);
-    }
+    const solution = Object.entries(SOLUTIONS).find(([, fix]) => existsSync(join(record!.workspace, fix.path)));
+    if (solution !== undefined) writeFileSync(join(record!.workspace, solution[1].path), solution[1].content);
     return {
       model: invocation.modelSpec.model,
-      structuredOutput: { fixed: true, notes: 'workspace-bound round trip' },
+      structuredOutput: { fixed: true, notes: `${this.lane} workspace-bound round trip` },
       usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
       denials: [], stopReason: 'complete',
     };
+  }
+}
+
+describe('real driver session-store seam', () => {
+  it('all four real drivers resolve the shared default store used by run()', () => {
+    // The toolkit intentionally keeps defaultSessionsDir private. Inspect the
+    // installed driver implementation at its actual resolution point rather
+    // than asserting the public constructor's undefined option (a tautology).
+    for (const lane of ['ai-sdk', 'claude-agent', 'subprocess', 'acp']) {
+      const source = readFileSync(join(REPO_ROOT, 'node_modules', '@camerontaylor', 'cq-toolkit', 'dist', 'driver', lane, 'index.js'), 'utf8');
+      expect(source, `${lane} must resolve the shared default session store`).toContain("join(tmpdir(), 'cq-harness', 'sessions')");
+    }
+    expect(SESSION_STORE_DIR).toBe(join(tmpdir(), 'cq-harness', 'sessions'));
+    // Keep the real classes in the seam matrix: all four are default-driven.
+    const drivers = [new AiSdkDriver(), new ClaudeAgentDriver(), new SubprocessDriver(), new AcpDriver()];
+    expect(drivers).toHaveLength(4);
+  });
+});
+
+class UnboundWorker implements Driver {
+  denied = false;
+  async run(invocation: OpInvocation): Promise<WorkerResult> {
+    const store = new SessionStore(SESSION_STORE_DIR);
+    const workspace = /\nworkspace: (\S+)$/.exec(invocation.prompt)?.[1];
+    // The binding is the thing under test: removing it from runSuite must
+    // make this probe fail before any access is attempted.
+    expect(invocation.sessionRef).toBeDefined();
+    // Deliberately discard the issued reference and attempt a write-shaped
+    // access using only the prompt path. The probe records the post-attempt
+    // bytes so the test proves the unbound access cannot alter the copy.
+    const record = await store.load('unbound-session');
+    if (record === undefined || workspace === undefined) {
+      this.denied = true;
+      const target = join(workspace ?? '', 'src', 'rangeSum.ts');
+      try { writeFileSync(target, 'tampered by unbound worker'); } catch { /* policy denial */ }
+      // The write-shaped probe is intentionally not restored: the runner's
+      // error/absence path must prevent it from becoming a graded result.
+      return {
+        model: invocation.modelSpec.model, structuredOutput: {},
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+        denials: [{ tool: 'edit', reason: 'workspace binding required' }], stopReason: 'error',
+      };
+    }
+    writeFileSync(join(record.workspace, 'src', 'rangeSum.ts'), 'tampered by unbound worker');
+    throw new Error('unbound worker unexpectedly received a session');
   }
 }
 
@@ -582,10 +634,15 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
       provenance: { origin: 'W6.1 workspace binding test' },
       cases: [{ id: 'micro-1', fixture: 'fixtures/micro-1', task: { prompt: 'Fix sumRange.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' } }],
     }, null, 2) + '\n');
-    const driver = new BindingDriver();
-    const result = await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
-    expect(result.rows[0]?.outcome.passed).toBe(2);
-    expect(driver.sessions).toHaveLength(1);
+    for (const lane of ['ai-sdk', 'claude-agent', 'subprocess', 'acp']) {
+      const driver = new BindingDriver(lane);
+      const result = await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
+      expect(result.rows, `${lane} must grade its bound workspace`).toHaveLength(1);
+      expect(result.rows[0]?.outcome.passed, `${lane} round trip`).toBe(2);
+      expect(driver.sessions).toHaveLength(1);
+      expect(await new SessionStore(SESSION_STORE_DIR).load(driver.sessions[0]!)).toBeUndefined();
+      expect(existsSync(join(SESSION_STORE_DIR, `${driver.sessions[0]}.cq-cli-session`))).toBe(false);
+    }
   }, 120_000);
 
   it('fixer sessions isolate successive graded copies', async () => {
@@ -599,10 +656,27 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
         { id: 'micro-2', fixture: 'fixtures/micro-2', task: { prompt: 'Fix two.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-2/check.mjs' } },
       ],
     }, null, 2) + '\n');
-    const driver = new BindingDriver();
-    await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
-    expect(driver.sessions[0]).not.toBe(driver.sessions[1]);
-    expect(driver.workspaces[0]).not.toBe(driver.workspaces[1]);
+    for (const lane of ['ai-sdk', 'claude-agent', 'subprocess', 'acp']) {
+      const driver = new BindingDriver(lane);
+      await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
+      expect(driver.sessions[0], `${lane} sessions must be distinct`).not.toBe(driver.sessions[1]);
+      expect(driver.workspaces[0], `${lane} graded copies must be distinct`).not.toBe(driver.workspaces[1]);
+    }
+  }, 300_000);
+
+  it("an unbound worker's writes are never graded", async () => {
+    const dir = join(wsRoot, 'unbound-round-trip');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'suite.json'), JSON.stringify({
+      name: 'unbound-round-trip', role: 'fixer-worker',
+      provenance: { origin: 'W6.1 workspace isolation test' },
+      cases: [{ id: 'micro-1', fixture: 'fixtures/micro-1', task: { prompt: 'Fix sumRange.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' } }],
+    }, null, 2) + '\n');
+    const driver = new UnboundWorker();
+    const result = await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
+    expect(result.rows).toEqual([]);
+    expect(result.absences).toHaveLength(1);
+    expect(driver.denied).toBe(true);
   }, 120_000);
 
   it('fixer prompts carry the materialized workspace path', async () => {

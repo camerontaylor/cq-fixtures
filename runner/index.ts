@@ -14,7 +14,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -51,6 +51,36 @@ export { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
 // fixer-worker dispatches with this allowlist in workspace-write mode, since
 // a worker that cannot edit files or run a check cannot fix anything.
 const FIXER_TOOL_NAMES: readonly ToolkitToolName[] = ['read', 'edit', 'run'];
+
+/**
+ * The drivers' default SessionStore location.  A driver receives only a
+ * sessionRef from the runner, so its own default store must be the same
+ * store the runner writes; putting records in the materialized workspace
+ * silently makes every real driver fail with an unknown-session error.
+ * Keep this beside the harness scratch root, never inside a model-visible
+ * workspace (the store is the authoritative binding record).
+ */
+export const SESSION_STORE_DIR = join(tmpdir(), 'cq-harness', 'sessions');
+
+/** Remove abandoned evidence left by a crashed/timed-out process. */
+function sweepStaleSessionRecords(now = Date.now()): void {
+  const maxAgeMs = 24 * 60 * 60 * 1000;
+  let entries: string[];
+  try {
+    entries = readdirSync(SESSION_STORE_DIR);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith('.jsonl') && !entry.endsWith('.cq-cli-session')) continue;
+    const path = join(SESSION_STORE_DIR, entry);
+    try {
+      if (now - statSync(path).mtimeMs > maxAgeMs) rmSync(path, { force: true });
+    } catch {
+      // A concurrent cleanup is harmless; never turn evidence sweeping into a run failure.
+    }
+  }
+}
 
 // Schema validation of OUTPUTS (rows/tables) — nothing leaves runSuite
 // unvalidated. Same Ajv setup as test/schema.test.ts.
@@ -473,7 +503,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // otherwise create their own temp cwd and the check grades an
         // untouched copy. SessionStore is the toolkit's explicit workspace
         // binding seam (I6), not a second source of truth.
-        const sessionStore = new SessionStore(join(workspace, '.cq-sessions'));
+        sweepStaleSessionRecords();
+        const sessionStore = new SessionStore(SESSION_STORE_DIR);
         const session = await sessionStore.create(workspace);
         sessionRef = session.sessionId;
       } catch (e) {
@@ -758,9 +789,16 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // then removed — even when the case aborts mid-flight. The pristine
       // fixture under repoRoot is never touched.
       if (workspace !== undefined) {
-        // The session store lives inside the scratch workspace, so this
-        // removes both the graded copy and its private session evidence.
+        // The session store lives beside the scratch workspaces, so remove
+        // the graded copy and the completed run's private transcript/sidecars
+        // after grading. A shared store must not accumulate worker history.
         rmSync(workspace, { recursive: true, force: true });
+        if (sessionRef !== undefined) {
+          rmSync(join(SESSION_STORE_DIR, `${sessionRef}.jsonl`), { force: true });
+          // claude-agent and subprocess write store-side sidecars; ACP's is
+          // workspace-local and is removed with the workspace above.
+          rmSync(join(SESSION_STORE_DIR, `${sessionRef}.cq-cli-session`), { force: true });
+        }
       }
     }
   }

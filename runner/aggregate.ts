@@ -43,6 +43,22 @@ export interface ResultRow {
    * under. Absent for the default posture (and on all pre-F6 rows).
    */
   variant?: string;
+  /**
+   * W6.2: the declared case count of the suite this row ran, carried by
+   * EVERY row so coverage parity is computable from rows.jsonl alone — the
+   * budget-gated undispatched cases have no rows by design (I9), so the
+   * coverage denominator must ride the rows that did run. Absent on all
+   * pre-W6.2 rows (old snapshots re-aggregate to their original tables).
+   */
+  expectedCases?: number;
+  /**
+   * W6.2: why this row is incomplete evidence — 'budget' when the driver
+   * stopped the case on its budget. The case RAN (the row is an honest
+   * incomplete outcome, never fabricated), but it does not count as covered:
+   * a budget stop breaks coverage parity (RS-9 §1.3). Absent = the row is
+   * the case's complete evidence.
+   */
+  stopCause?: 'budget';
   costUSD: number | null;
   costBasis?: 'modeled' | 'billed';
   wallTimeMs: number;
@@ -82,6 +98,28 @@ export interface ComparisonTableCell {
   byVerdict?: Record<Verdict, { expected: number; correct: number; predicted: Partial<Record<Verdict, number>> }>;
   /** F4: mean of the five per-verdict F1 scores; absent wherever byVerdict is absent. */
   macroF1?: number;
+  /**
+   * W6.2: coverage columns, emitted together whenever the cell's rows carry
+   * `expectedCases` (absent on all pre-W6.2 tables, so old tables keep their
+   * exact shape). `expectedCases` is the suite's declared case count — the
+   * denominator includes cases the run budget gated before dispatch, which
+   * have no rows. `coveredCases` counts the DISTINCT case ids whose row is
+   * complete evidence (a `stopCause: 'budget'` row does not count — RS-9
+   * §1.3: a budget stop breaks coverage parity). `coverage` is the fraction
+   * coveredCases/expectedCases; a comparison between cells is at coverage
+   * parity only when BOTH sides sit at 1 (see isAtCoverageParity).
+   */
+  expectedCases?: number;
+  /** W6.2: distinct cases with complete-evidence rows; emitted with expectedCases/coverage. */
+  coveredCases?: number;
+  /** W6.2: coveredCases/expectedCases; emitted with the other two columns. */
+  coverage?: number;
+  /**
+   * W6.2: contributing rows stopped on the case budget (`stopCause:
+   * 'budget'`) — the cause column's cell-grain tally. Omitted when zero, so
+   * clean cells keep their shape.
+   */
+  budgetStops?: number;
   /**
    * F4: fraction of the cell's suspicious-benign rows scored wrong.
    * Omitted with fpN when the subset is empty.
@@ -132,6 +170,12 @@ interface CellAccumulator {
   /** F4: suspicious-benign subset tallies (rows flagged AND carrying a classifier probe). */
   fpTotal: number;
   fpWrong: number;
+  /** W6.2: the suite's declared case count from the rows (conflicting values = malformed rows). */
+  expectedCases?: number;
+  /** W6.2: distinct case ids whose rows are complete evidence (budget stops excluded). */
+  covered: Set<string>;
+  /** W6.2: contributing rows stopped on the case budget. */
+  budgetStops: number;
 }
 
 /** Cost sums are rounded to 6 decimals — finer precision is price-map noise. */
@@ -208,6 +252,20 @@ function buildVerdictStats(
 }
 
 /**
+ * W6.2 (RS-9 §1.3): the mechanical coverage-parity check a comparison must
+ * pass before it may be labelled anything stronger than *descriptive* —
+ * both cells sit at coverage 1, i.e. every expected case published complete
+ * evidence on BOTH sides. A cell without the coverage columns (a pre-W6.2
+ * table) cannot claim parity: unknown coverage is reported as below parity,
+ * never assumed equal. Case-SET identity (two cells each covering n but
+ * DIFFERENT cases) is checked by pairing rows.jsonl case ids — the table's
+ * counts stay losslessly recoverable from the rows.
+ */
+export function isAtCoverageParity(a: ComparisonTableCell, b: ComparisonTableCell): boolean {
+  return a.coverage !== undefined && b.coverage !== undefined && a.coverage === 1 && b.coverage === 1;
+}
+
+/**
  * Aggregate rows into one table per role present in the rows. A role with no
  * rows yields no table; runSuite synthesizes an empty-but-valid table
  * (cells: [], schema-legal) for a requested suite role that produced zero
@@ -262,6 +320,8 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         classifierProbes: [],
         fpTotal: 0,
         fpWrong: 0,
+        covered: new Set<string>(),
+        budgetStops: 0,
       };
       cells.set(key, acc);
     }
@@ -269,6 +329,30 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
     if (row.invalid !== undefined) acc.invalid = row.invalid;
     acc.passed += row.outcome.passed;
     acc.total += row.outcome.total;
+    // W6.2: fold the coverage inputs. Every row of a suite carries the same
+    // expectedCases (it is the suite's declared case count), so a conflict
+    // means the rows themselves are malformed — throw rather than emit a
+    // table with an arbitrary denominator. A budget-stopped row is real
+    // evidence of a partial run but NOT coverage: the case's evidence is
+    // incomplete (RS-9 §1.3 puts budget stops on the parity-breaking list
+    // beside absences and timeouts).
+    if (row.expectedCases !== undefined) {
+      if (acc.expectedCases !== undefined && acc.expectedCases !== row.expectedCases) {
+        throw new Error(
+          `aggregate: rows for role '${role}' carry conflicting expectedCases ` +
+            `${acc.expectedCases} and ${row.expectedCases} — coverage needs one suite-wide denominator`,
+        );
+      }
+      acc.expectedCases = row.expectedCases;
+    }
+    // W6.2/W6.4: coverage counts only COMPLETE evidence. ANY stopped case
+    // (a budget stop today; a per-case budget overrun also carries
+    // stopCause 'budget') is excluded from coveredCases — a partially
+    // evidenced case must never count toward coverage parity, whatever
+    // cause stopped it.
+    if (row.stopCause !== undefined) {
+      if (row.stopCause === 'budget') acc.budgetStops += 1;
+    } else if (row.case !== undefined) acc.covered.add(row.case);
     // F4: fold classifier probes into the cell's verdict tallies. A row may
     // carry several probes; each expected-verdict entry counts once in the
     // confusion. The fp subset is per ROW, not per probe (CodeRabbit bot
@@ -350,6 +434,17 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       costUSD,
       ...(costBasis !== undefined ? { costBasis } : {}),
       ...(verdictStats !== undefined ? { byVerdict: verdictStats.byVerdict, macroF1: verdictStats.macroF1 } : {}),
+      // W6.2: the coverage triple rides together whenever the rows declare
+      // expectedCases; pre-W6.2 rows (old snapshots) yield neither, so a
+      // regrade of committed evidence reproduces its tables byte-identically.
+      ...(acc.expectedCases !== undefined
+        ? {
+            expectedCases: acc.expectedCases,
+            coveredCases: acc.covered.size,
+            coverage: acc.covered.size / acc.expectedCases,
+          }
+        : {}),
+      ...(acc.budgetStops > 0 ? { budgetStops: acc.budgetStops } : {}),
       ...(acc.fpTotal > 0 ? { fpRate: acc.fpWrong / acc.fpTotal, fpN: acc.fpTotal } : {}),
       ...(acc.total >= WILSON_MIN_N
         ? { scoreCI: { ...wilsonInterval(acc.passed, acc.total), confidence: 0.95 } }

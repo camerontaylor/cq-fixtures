@@ -174,6 +174,14 @@ describe('CI static job runs the corpus gate (F7)', () => {
     expect(staticBlock.indexOf('Fixture gate —')).toBeGreaterThan(staticBlock.indexOf('- name: Unit tests'));
   });
 
+  it('the static job builds and scans the allowlist eval root before the unit tests (W6.3)', () => {
+    const staticBlock = ci.slice(ci.indexOf('\n  static:'));
+    expect(staticBlock).toContain('- name: Eval-root leakage scan (W6.3)');
+    expect(staticBlock).toContain('node scripts/eval-root.mjs build --out "${RUNNER_TEMP}/cq-eval-root"');
+    expect(staticBlock).toContain('node scripts/eval-root.mjs scan --root "${RUNNER_TEMP}/cq-eval-root"');
+    expect(staticBlock.indexOf('Eval-root leakage scan')).toBeLessThan(staticBlock.indexOf('- name: Unit tests'));
+  });
+
   it('checks out full history for suiteSha-pinned snapshot replay', () => {
     const checkout = ci.slice(ci.indexOf('      - name: Check out the repo'));
     expect(checkout.slice(0, checkout.indexOf('      - name: Set up Node'))).toContain('fetch-depth: 0');

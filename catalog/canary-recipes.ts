@@ -81,7 +81,7 @@ export const CANARY_RECIPES: readonly CaseRecipe[] = [
     origin: 'public-bug-canary',
     operator: 'radix-coercion-drop',
     bugType: 'value misuse',
-    failureSymptoms: 'parseAmount parses a hex-looking string as base sixteen instead of base ten.',
+    failureSymptoms: "parseAmount('0x10') returns 16.",
     mutations: [{ file: 'src/number.ts', find: 'parseInt(text, 10)', replace: 'parseInt(text)' }],
     f2p: ['parses a decimal string as base ten'],
     p2p: ['rejects an address without a dotted domain', 'keeps a value inside the range', 'lists the missing fields'],

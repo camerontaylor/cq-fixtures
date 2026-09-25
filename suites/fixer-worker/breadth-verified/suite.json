@@ -9,7 +9,7 @@
       "id": "breadth-01",
       "fixture": "fixtures/breadth-01",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. rectangleArea returns the wrong value for non-square rectangles; it must return width times height.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. rectangleArea(3, 4, 'm') returns 7.",
         "notes": "easy · arithmetic-swap · operator misuse · canonical fix in fixtures/breadth-01.FAULT.json"
       },
       "probe": {
@@ -21,7 +21,7 @@
       "id": "breadth-02",
       "fixture": "fixtures/breadth-02",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. isLastPage never reports the final page index as the last page; the last page index must be treated as final.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. For a three-page document, isLastPage says page index 2 is not the last page.",
         "notes": "easy · equality-boundary · operator misuse · canonical fix in fixtures/breadth-02.FAULT.json"
       },
       "probe": {
@@ -33,7 +33,7 @@
       "id": "breadth-03",
       "fixture": "fixtures/breadth-03",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. discountRate gives members the full rate and non-members the discount; members must get ten percent off and non-members nothing.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. Members are charged the full price while non-members receive a discount.",
         "notes": "easy · ternary-swap · operator misuse · canonical fix in fixtures/breadth-03.FAULT.json"
       },
       "probe": {
@@ -45,7 +45,7 @@
       "id": "breadth-04",
       "fixture": "fixtures/breadth-04",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. backoffDelay grows too fast; each attempt must double the previous delay.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. backoffDelay(100, 3) returns 2700.",
         "notes": "easy · constant-delta (trivial-prone, easy-only) · value misuse · canonical fix in fixtures/breadth-04.FAULT.json"
       },
       "probe": {
@@ -57,7 +57,7 @@
       "id": "breadth-05",
       "fixture": "fixtures/breadth-05",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. allInStock reports true whenever any item is in stock; it must be true only when every item is in stock.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. allInStock reports true for a catalog that still has an out-of-stock item.",
         "notes": "medium · method-swap · function misuse · canonical fix in fixtures/breadth-05.FAULT.json"
       },
       "probe": {
@@ -69,7 +69,7 @@
       "id": "breadth-06",
       "fixture": "fixtures/breadth-06",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. memoizedSquare recomputes the expensive function on every call; a repeated argument must reuse the cached result.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. Two calls to memoizedSquare with the same argument run the expensive function twice.",
         "notes": "medium · remove-assignment · missing logic · canonical fix in fixtures/breadth-06.FAULT.json"
       },
       "probe": {
@@ -81,7 +81,7 @@
       "id": "breadth-07",
       "fixture": "fixtures/breadth-07",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. withDefaults leaves retries undefined when the caller omits it; it must default to three.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. withDefaults leaves retries undefined when the caller omits it.",
         "notes": "medium · default-param-removal · value misuse · canonical fix in fixtures/breadth-07.FAULT.json"
       },
       "probe": {
@@ -93,7 +93,7 @@
       "id": "breadth-08",
       "fixture": "fixtures/breadth-08",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. cityOf throws when the profile is missing; it must report 'unknown' instead.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. cityOf throws a TypeError when the profile is missing.",
         "notes": "medium · non-null-overreach · function misuse · canonical fix in fixtures/breadth-08.FAULT.json"
       },
       "probe": {
@@ -105,7 +105,7 @@
       "id": "breadth-09",
       "fixture": "fixtures/breadth-09",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. Callers report that mutating the array returned by snapshot changes what later snapshots contain, and that an order which is only paid or only shipped already reads as complete; snapshots must be independent of their callers and completion must require both paid and shipped.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. Pushing onto the array returned by snapshot changes what later snapshots contain, and an order that is paid but not yet shipped already reads as complete.",
         "notes": "hard · shared-reference-return+logical-swap · variable misuse · canonical fix in fixtures/breadth-09.FAULT.json"
       },
       "probe": {
@@ -117,7 +117,7 @@
       "id": "breadth-10",
       "fixture": "fixtures/breadth-10",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseAmount misreads strings such as '0x10', and rangeLabel prints a range's bounds in the wrong order; parsing must be base ten and labels must read from-to.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseAmount('0x10') returns 16, and rangeLabel(3, 7) prints 'range 7-3'.",
         "notes": "hard · radix-coercion-drop+argument-swap · value misuse · canonical fix in fixtures/breadth-10.FAULT.json"
       },
       "probe": {

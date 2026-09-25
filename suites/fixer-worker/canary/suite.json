@@ -34,7 +34,7 @@
       "id": "canary-03",
       "fixture": "fixtures/canary-03",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseAmount parses a hex-looking string as base sixteen instead of base ten.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseAmount('0x10') returns 16.",
         "notes": "medium · radix-coercion-drop · value misuse · canonical fix in fixtures/canary-03.FAULT.json"
       },
       "probe": {

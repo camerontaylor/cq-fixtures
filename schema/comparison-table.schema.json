@@ -206,13 +206,37 @@
               "upper": { "type": "number", "minimum": 0, "maximum": 1 },
               "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
             }
+          },
+          "expectedCases": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "VERSIONED ADDITIVE change W6.2 (2026-09-25): the declared case count of the suite this cell aggregated — the coverage denominator. It includes cases the run budget gated before dispatch (which have no rows), so coverage is measurable wherever the cases went. Emitted together with coveredCases and coverage whenever the cell's rows carry expectedCases; absent on all pre-W6.2 tables, so old tables keep their exact shape. The arithmetic invariants (coveredCases <= expectedCases, coverage = coveredCases/expectedCases) are enforced by the aggregator, not this schema."
+          },
+          "coveredCases": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "VERSIONED ADDITIVE change W6.2 (2026-09-25): the count of DISTINCT cases whose row in this cell is complete evidence. A row stopped on the case budget (stopCause 'budget') is real evidence of a partial run but does not count as covered — a budget stop breaks coverage parity (RS-9 §1.3). Emitted together with expectedCases and coverage."
+          },
+          "coverage": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "VERSIONED ADDITIVE change W6.2 (2026-09-25): coveredCases/expectedCases — the fraction of the suite's cases this cell holds complete evidence for. A comparison between two cells may be labelled anything stronger than descriptive only when BOTH cells sit at coverage 1 (RS-9 §1.3); below parity, tables must say 'descriptive — coverage a/n vs b/n'. Emitted together with expectedCases and coveredCases."
+          },
+          "budgetStops": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "VERSIONED ADDITIVE change W6.2 (2026-09-25): contributing rows stopped on the case budget (row stopCause 'budget') — the cell-grain tally of the row-level stopCause column. These rows count in runs and total (the case ran and its probes were configured) but not in coveredCases. Omitted when zero, so clean cells keep their shape."
           }
         },
         "dependentRequired": {
           "byVerdict": ["macroF1"],
           "macroF1": ["byVerdict"],
           "fpRate": ["fpN"],
-          "fpN": ["fpRate"]
+          "fpN": ["fpRate"],
+          "expectedCases": ["coveredCases", "coverage"],
+          "coveredCases": ["expectedCases", "coverage"],
+          "coverage": ["expectedCases", "coveredCases"]
         },
         "allOf": [
           {

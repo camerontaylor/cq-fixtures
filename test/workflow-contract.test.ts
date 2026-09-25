@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+// W6.4: the workflow's per-cell `usd_per_case` literals are cross-checked
+// against the runner's accepted D9 envelope table — the two must not drift.
+import { d9PerCaseUsd } from '../runner/budget.ts';
 
 // Workflow-contract tripwire (J4 round-1 review): `.github/workflows/suite.yml`
 // carries load-bearing honesty mechanics that no unit test executes — the
@@ -180,6 +183,44 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(stepLine('Excise the unit-test tree')).toBeLessThan(stepLine('Eval cell —'));
   });
 
+  it('W6.3: smoke and matrix dispatch only from the scanned allowlist eval root, with its answer key', () => {
+    // RS-9 §4.3 D: the eval root is BUILT from an allowlist and statically
+    // scanned before anything dispatches; every runner invocation runs the
+    // root's own runner over the root's stripped suites and hands it the key
+    // (which arms the dynamic sentinel). The checkout runner is never used.
+    const KEY = '"${RUNNER_TEMP}/cq-eval-key/answer-key.json"';
+    for (const [build, dispatch] of [
+      ['Build and scan the smoke eval root (W6.3)', 'Fake-driver smoke over the micro and breadth suites'],
+      ['Build and scan the matrix eval root (W6.3)', 'Eval cell —'],
+    ] as const) {
+      const chunk = stepChunk(build);
+      expect(chunk).toContain(`node scripts/eval-root.mjs build --out "\${RUNNER_TEMP}/cq-eval-root" --key ${KEY} --node-modules move`);
+      expect(chunk).toContain(`node scripts/eval-root.mjs scan --root "\${RUNNER_TEMP}/cq-eval-root" --key ${KEY}`);
+      expect(chunk, `${build} runs unconditionally`).not.toContain('if:');
+      expect(stepLine(build)).toBeLessThan(stepLine(dispatch));
+      const run = stepChunk(dispatch);
+      expect(run).toContain('EVAL_ROOT="${RUNNER_TEMP}/cq-eval-root"');
+      expect(run).toContain(`EVAL_KEY=${KEY}`);
+      // W6.4: the key path is exported, never passed as a flag — argv is
+      // readable by a host-reach driver lane.
+      expect(run).toContain('export CQ_ANSWER_KEY="${EVAL_KEY}"');
+      expect(run).not.toContain('--answer-key "${EVAL_KEY}"');
+      expect(run).toContain('node --experimental-strip-types "${EVAL_ROOT}/runner/index.ts"');
+      expect(run).toContain('--suite "${EVAL_ROOT}/${suite_dir}"');
+    }
+    expect(text, 'no step runs the checkout runner any more').not.toContain('node --experimental-strip-types runner/index.ts');
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'discovery runs inside the root').toContain('(cd "${EVAL_ROOT}" && find ${roots}');
+    expect(evalCell, 'the variant rides the root suite.json').toContain('"${EVAL_ROOT}/${suite_dir}/suite.json"');
+    // The matrix plants a second sentinel in the checkout, then prunes the
+    // checkout to that tripwire alone before any model-facing step.
+    expect(stepChunk('Build and scan the matrix eval root (W6.3)')).toContain('--plant-dir "${GITHUB_WORKSPACE}"');
+    const excision = stepChunk('Excise the unit-test tree');
+    expect(excision).toContain("find . -mindepth 1 -maxdepth 1 ! -name 'cq-sentinel-*' -exec rm -rf {} +");
+    expect(stepLine('Build and scan the matrix eval root (W6.3)')).toBeLessThan(stepLine('Excise the unit-test tree'));
+    expect(stepLine('Excise the unit-test tree')).toBeLessThan(stepLine('ACP headless auth preflight'));
+  });
+
   it('the acp lane is gated by the auth preflight and skips LOUDLY but green', () => {
     // Credential asymmetry: the other four cells' keys are repo secrets
     // (absence = misconfiguration = runner hard-fail pre-dispatch); the acp
@@ -259,18 +300,136 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // Same-model driver cells must never collide on one table; the snapshot
     // identity nests <date>/<model>/<driver>/<variant?>/<role>/<suite>/ off
     // this path (F6/CQ-4 adds the <variant?>/ segment only when non-default).
-    expect(evalCell).toContain('out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"');
+    // W6.3 (RS-9 A.6): that path is off-checkout for the whole leg — the
+    // always() upload step copies it into reports/ afterwards.
+    expect(evalCell).toContain('out_dir="${EVAL_OUT}/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"');
     expect(evalCell, 'F6: the variant segment is empty for the default posture').toContain('if [ "${variant}" != "default" ]; then variant_prefix="${variant}/"; fi');
     expect(evalCell, 'F6: an unsafe variant fails the cell loudly').toContain('invalid variant');
     expect(evalCell, 'F6: the variant rides the suite.json the runner loads').toContain('${suite_dir}/suite.json');
-    // DD-9: a token cap binds alone on every cell — never a USD cap.
-    // WB-1.6: the cap is PER CASE and the runner scales it by the suite's
-    // case count; the retired flat per-invocation cap must not return.
+    // WB-1.6: the token cap is PER CASE and the runner scales it by the
+    // suite's case count; the retired flat per-invocation cap must not
+    // return. W6.4 adds the per-case USD ceiling beside it (below) — the
+    // DD-9 "token cap binds alone" era ended when the D9 envelope was
+    // accepted (owner, v11 board), and the W6.4 ceiling is the envelope's
+    // enforcement on the real matrix.
     expect(evalCell).toContain('--max-tokens-per-case 60000');
     expect(evalCell, 'the flat per-invocation cap is gone').not.toContain('--max-tokens 200000');
-    expect(evalCell, 'DD-9: no USD cap rides the cells').not.toContain('--max-usd');
     // The worklist rides stdin; the driver must never eat it.
     expect(evalCell).toContain('< /dev/null');
+  });
+
+  it('W6.4: every real matrix cell carries its D9 per-case USD ceiling and the eval step passes it', () => {
+    // W6.4 (D9/D10): the real matrix's USD ceiling. Each cell declares
+    // `usd_per_case` — the accepted D9 envelope's cap for its exact (driver,
+    // model) cell — and the eval step passes it as --max-usd-per-case, so
+    // every real invocation is ceiling-bound twice: explicitly by the
+    // workflow, and fail-closed by the runner's D9 resolution/unattended
+    // guard (runner/cli.ts). The values here are LITERALLY cross-checked
+    // against the runner's table — a workflow cap that drifts from the
+    // envelope, or a cell added without one, fails this gate.
+    const cells = matrixCells();
+    expect(cells).toHaveLength(5);
+    for (const cell of cells) {
+      const driver = cell.match(/driver: (\S+)/)?.[1];
+      const model = cell.match(/model: (\S+)/)?.[1];
+      const usd = cell.match(/usd_per_case: (\S+)/)?.[1];
+      expect(usd, `cell ${driver}@${model} declares usd_per_case`).toBeDefined();
+      expect(Number(usd), `cell ${driver}@${model} usd_per_case must be positive`).toBeGreaterThan(0);
+      const d9 = d9PerCaseUsd(driver as string, model as string);
+      expect(d9, `cell ${driver}@${model} must be a D9-mapped cell`).toBeDefined();
+      expect(
+        Number(usd),
+        `cell ${driver}@${model} usd_per_case (${usd}) must equal the runner's D9 cap (${d9})`,
+      ).toBe(d9);
+    }
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'the ceiling rides the step env from the cell').toContain(
+      'MATRIX_USD_PER_CASE: ${{ matrix.cell.usd_per_case }}',
+    );
+    expect(evalCell, 'every real invocation passes the per-case ceiling').toContain(
+      '--max-usd-per-case "${MATRIX_USD_PER_CASE}"',
+    );
+    // The ceiling rides the RUNNER invocation (inside the discovery loop),
+    // not some outer step: it must follow the runner argv, not precede it.
+    const runnerAt = evalCell.indexOf('node --experimental-strip-types "${EVAL_ROOT}/runner/index.ts"');
+    expect(evalCell.indexOf('--max-usd-per-case')).toBeGreaterThan(runnerAt);
+  });
+
+  it('W6.4 (D7): the acp leg is non-fatal and every failure is recorded, never silent', () => {
+    // The job-level continue-on-error is scoped BY EXPRESSION to the acp leg
+    // alone: a preflight/install/auth/runner failure there marks the leg
+    // failed (loud) without failing the run, and the four provisioned legs
+    // keep full fatality. A bare `continue-on-error: true` would make every
+    // leg survivable and is forbidden.
+    const matrixJob = text.slice(text.indexOf('\n  matrix:\n'), text.indexOf('\n  snapshot:\n'));
+    expect(matrixJob).toContain("continue-on-error: ${{ matrix.cell.driver == 'acp' }}");
+    expect(matrixJob, 'no blanket survivable matrix').not.toMatch(/continue-on-error: true/);
+    // The always() recorder guarantees the artifact carries ACP-FAILED for
+    // ANY acp-leg failure — including steps with no acp-specific handler
+    // (a checkout or npm-ci flake landing on this leg alone). It runs on the
+    // acp leg only and keys on job.status, so a clean or skipped pass never
+    // records a failure.
+    const recorder = stepChunk('Record the acp lane status (W6.4, D7)');
+    expect(recorder).toContain("if: always() && matrix.cell.driver == 'acp'");
+    expect(recorder, 'the recorder keys on the job status').toContain('${{ job.status }}');
+    expect(recorder, 'the record lands in the eval artifact').toContain('reports/eval/ACP-FAILED');
+    expect(recorder, 'the record is loud beyond the artifact').toContain('::warning::acp leg failed');
+    expect(recorder, 'the step summary carries the diagnosis').toContain('GITHUB_STEP_SUMMARY');
+    // The recorder runs after the eval step and before the upload, so the
+    // marker is inside the artifact on every failure path.
+    expect(stepLine('Eval cell —')).toBeLessThan(stepLine('Record the acp lane status (W6.4, D7)'));
+    expect(stepLine('Record the acp lane status (W6.4, D7)')).toBeLessThan(stepLine('Upload eval reports'));
+    // Each acp-specific failure path records its own cause before its (still
+    // loud, still red) exit 1: install, preflight infrastructure, auth-OK
+    // without a probe record, and a hard-failed eval cell.
+    const install = stepChunk('Install the acp lane harness');
+    expect(install, 'an install failure is recorded').toContain('reports/eval/ACP-FAILED');
+    const preflight = stepChunk('ACP headless auth preflight');
+    expect(preflight.match(/reports\/eval\/ACP-FAILED/g)?.length).toBeGreaterThanOrEqual(2);
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell, 'a hard-failed eval cell is recorded').toContain(
+      'if [ "${hard_fail}" -ne 0 ] && [ "${MATRIX_DRIVER}" = "acp" ]; then',
+    );
+    expect(evalCell.indexOf('ACP-FAILED')).toBeLessThan(evalCell.indexOf('exit "${hard_fail}"'));
+    // Loudness is unchanged: the preflight's infrastructure failure still
+    // exits 1 (the leg stays red — continue-on-error is what keeps the run
+    // green), and the skip classes are exactly where they were.
+    expect(preflight).toContain('::error::acp preflight failed');
+    expect(preflight).toContain('exit 1');
+    // The snapshot must treat a FAILED acp leg as degraded (merge, never
+    // clear): its continue-on-error keeps needs.matrix.result at 'success',
+    // so the ACP-FAILED marker is the only proof a same-day clear would be
+    // destroying an acp run's context.
+    const snapshotStep = stepChunk('Commit report snapshots');
+    expect(snapshotStep).toContain('[ ! -e reports/eval/ACP-FAILED ]');
+    expect(snapshotStep).toContain('acp failure marker');
+    // W6.4: clearing the dated dir also requires PROOF that this run's
+    // reports landed — a download that yielded no table merges instead of
+    // deleting an earlier complete run's tables and republishing nothing.
+    expect(snapshotStep).toContain("landed_tables=\"$(find reports/eval -name '*.table.json' -print -quit");
+    expect(snapshotStep, 'the clear guard requires a landed table').toMatch(/if \[ "\$\{\{ needs\.matrix\.result \}\}" = "success" \].*\[ -n "\$\{landed_tables\}" \]; then/s);
+  });
+
+  it('W6.3/RS-9 A.6: the run out-dir lives OUTSIDE the checkout and is copied in only after the eval cell', () => {
+    // rows.jsonl carries expected verdicts plus persisted patches and raw
+    // outputs; a later suite of the SAME leg must not be able to read an
+    // earlier suite's answers out of the (pruned but readable) checkout.
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell).toContain('EVAL_OUT="${RUNNER_TEMP}/cq-eval-out"');
+    expect(evalCell, 'no --out or --journal under reports/').not.toMatch(/--out "?reports/);
+    expect(evalCell, 'no --journal under reports/').not.toMatch(/--journal "?reports/);
+    expect(evalCell).toContain('out_dir="${EVAL_OUT}/${MATRIX_MODEL}/${MATRIX_DRIVER}/');
+    // The copy happens in an always() step AFTER the eval cell, when no
+    // model-driven code is running.
+    const copy = stepChunk('Upload eval reports');
+    expect(copy).toContain('mkdir -p reports/eval');
+    expect(copy).toContain('cp -R "${RUNNER_TEMP}/cq-eval-out/." reports/eval/');
+    expect(copy).toContain('if: always()');
+    expect(stepLine('Eval cell —')).toBeLessThan(stepLine('Upload eval reports'));
+    // W6.4: an absence is not automatically dispatch-only — the per-case
+    // overrun class DID publish a row and must be labelled as such.
+    expect(evalCell).toContain("grep -q 'per-case budget exceeded'");
+    expect(evalCell).toContain("row published with stopCause 'budget', excluded from coverage");
   });
 
   it('driver-cause classification: a non-model cause publishes a loud dispatch-only absence via run.json (F1b/WB-1)', () => {
@@ -290,8 +449,9 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell, 'the SKIP_REASON env is gone').not.toContain('SKIP_REASON');
     expect(evalCell, 'the pre-runner role skip is gone').not.toContain('skipped (dispatch-only)');
     // The runner invocation is unconditional now (the pre-skip `continue`
-    // before it is gone): each discovered suite dispatches.
-    const runnerAt = evalCell.indexOf('node --experimental-strip-types runner/index.ts');
+    // before it is gone): each discovered suite dispatches. W6.3: the
+    // invocation runs the EVAL ROOT's runner, never the checkout's.
+    const runnerAt = evalCell.indexOf('node --experimental-strip-types "${EVAL_ROOT}/runner/index.ts"');
     expect(runnerAt, 'the eval cell invokes the runner').toBeGreaterThan(-1);
     // The absence rendering reads the runner's manifest ...
     expect(evalCell).toContain('${out_dir}/run.json');

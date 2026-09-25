@@ -616,10 +616,12 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
     expect(driver.invocations).toHaveLength(10);
     for (const [i, c] of suite.cases.entries()) {
       const prompt = driver.invocations[i]!.prompt;
-      // The injection marker names the fixture the payload came from...
-      expect(prompt, `case ${c.id} prompt must carry the injection marker`).toContain(
-        `Thread payload (fixture ${c.fixture}):`,
-      );
+      // The injection marker introduces the payload WITHOUT naming its
+      // fixture (W6.3, RS-9 §4.3 C.12: thread ids are ordinal and
+      // label-blocked, and the path named the label sidecar beside it)...
+      expect(prompt, `case ${c.id} prompt must carry the injection marker`).toContain('\n\nThread payload:\n');
+      expect(prompt, `case ${c.id} prompt must not name its fixture path`).not.toContain(c.fixture);
+      expect(prompt, `case ${c.id} prompt must not name any fixture path`).not.toContain('fixtures/');
       // ...and the payload CONTENT itself (first comment body, verbatim).
       const payload = JSON.parse(readFileSync(join(REPO_ROOT, c.fixture), 'utf8')) as ThreadPayload;
       expect(prompt, `case ${c.id} prompt must carry the payload body`).toContain(payload.comments[0]!.body);

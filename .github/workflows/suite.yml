@@ -40,6 +40,21 @@ jobs:
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci
+      - name: Build and scan the smoke eval root (W6.3)
+        # W6.3 (RS-9 §4.3 D): runs dispatch from an eval root built from an
+        # ALLOWLIST (scripts/eval-root.mjs) — runner code, the judge, each
+        # suite's fixtures, and every suite.json stripped to its dispatch
+        # fields — never from the checkout. The classifier answers and the
+        # sentinel token go to a runner-only key OUTSIDE the root. node_modules
+        # MOVES in (cheap, same filesystem), so from here on the runner only
+        # runs from the root. The static scan re-derives the allowlist from
+        # the checkout and fails the job on any extra, altered or
+        # answer-bearing file, any symlink leaving the root, and any prompt
+        # carrying an answer marker or a 6-token span of its fix diff.
+        run: |
+          set -euo pipefail
+          node scripts/eval-root.mjs build --out "${RUNNER_TEMP}/cq-eval-root" --key "${RUNNER_TEMP}/cq-eval-key/answer-key.json" --node-modules move
+          node scripts/eval-root.mjs scan --root "${RUNNER_TEMP}/cq-eval-root" --key "${RUNNER_TEMP}/cq-eval-key/answer-key.json"
       - name: Fake-driver smoke over the micro and breadth suites
         # Goal J4 replaced the J3 hard-fail seam with the REAL smoke: both
         # micro suites run under the FakeDriver — zero network, zero spend —
@@ -69,9 +84,20 @@ jobs:
         # non-resolved-expected breadth-verified cases. A scored-zero fake
         # run IS the success signal; rc >= 2 (usage error, suite
         # load/validation failure, fixture materialization failure,
-        # pre-dispatch missing-credential) is a hard failure.
+        # pre-dispatch missing-credential, W6.3 sentinel hit) is a hard
+        # failure. W6.3: the runner runs from the eval root built above, with
+        # its answer key (the smoke proves the allowlist is complete and the
+        # sentinel stays silent over every real fixture); out dirs stay in the
+        # checkout, outside the root.
         run: |
           set -euo pipefail
+          EVAL_ROOT="${RUNNER_TEMP}/cq-eval-root"
+          EVAL_KEY="${RUNNER_TEMP}/cq-eval-key/answer-key.json"
+          # W6.4: the key path rides the environment, not argv — a host-reach
+          # driver can read this process's argv, so a flag would hand it the
+          # path to the verdicts outright (the sentinel still catches a
+          # worker that reaches the key itself).
+          export CQ_ANSWER_KEY="${EVAL_KEY}"
           hard_fail=0
           for suite_dir in suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/review-classifier/micro suites/review-classifier/breadth-verified; do
             role="$(basename "$(dirname "${suite_dir}")")"
@@ -80,8 +106,8 @@ jobs:
             # nests per suite (F3 shape); micro keeps breadth-separated paths.
             out_dir="reports/smoke/${role}/${suite_name}"
             rc=0
-            node --experimental-strip-types runner/index.ts \
-              --suite "${suite_dir}" \
+            node --experimental-strip-types "${EVAL_ROOT}/runner/index.ts" \
+              --suite "${EVAL_ROOT}/${suite_dir}" \
               --driver fake \
               --driver-name subprocess \
               --model glm-5.3-flash \
@@ -127,6 +153,18 @@ jobs:
     needs: smoke
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # W6.4 (D7): the acp lane is NOT provisioned on this repo's CI (its
+    # credentials are agent-side — see the preflight step below), so its leg
+    # is NON-FATAL: the expression scopes this continue-on-error to the acp
+    # leg ALONE. Any acp failure — install, preflight infrastructure, auth,
+    # or the eval cell's runner — marks that leg failed (recorded, never a
+    # silent success: the leg stays red, the "Record the acp lane status"
+    # step drops ACP-FAILED into the eval artifact, and the step summary
+    # carries the diagnosis) while the workflow run stays green and
+    # needs.matrix.result reads 'success', so the snapshot still publishes
+    # the surviving cells' evidence. The four provisioned legs keep full
+    # fatality: their failures still fail the run.
+    continue-on-error: ${{ matrix.cell.driver == 'acp' }}
     # Model-driven code runs here and this job pushes nothing (the snapshot
     # publisher is the dedicated `snapshot` job), so read is enough.
     permissions:
@@ -163,11 +201,26 @@ jobs:
         # is PER CASE (--max-tokens-per-case, WB-1.6): the retired flat
         # 200000 was per suite INVOCATION and silently gated the back half of
         # a 40-case suite into "no row" absences.
+        #
+        # W6.4 USD CEILING: every real matrix invocation also carries an
+        # explicit PER-CASE USD ceiling — `usd_per_case`, the accepted D9
+        # envelope's cap for that exact (driver, served model) cell
+        # (runner/budget.ts D9_PER_CASE_USD: $0.05 ai-sdk flash cells, $0.10
+        # claude-agent/subprocess/acp GLM lanes). The eval step passes it as
+        # --max-usd-per-case; the runner binds it at the invocation grain AND
+        # as the run governor's cumulative cap, so budget stops become
+        # explicit budget-stop absences (W6.2), never silent truncation. The
+        # values here are cross-checked against the runner's D9 table by
+        # test/workflow-contract.test.ts — a cell added without a cap, or
+        # with a cap that drifts from the envelope, fails the unit gate; and
+        # the runner itself refuses (exit 2, pre-dispatch) an unattended real
+        # run that carries no per-case ceiling at all.
         cell:
           - axis: model
             model: glm-5.3-flash
             provider: zai
             driver: ai-sdk
+            usd_per_case: 0.05
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
             # F1b/WB-1: the ai-sdk fixer dispatches again on the post-#212 pin.
@@ -186,6 +239,7 @@ jobs:
             model: deepseek-flash
             provider: deepseek
             driver: ai-sdk
+            usd_per_case: 0.05 # D9 envelope: the ai-sdk flash cells
             env_key: DEEPSEEK_API_KEY
             secret_name: DEEPSEEK_API_KEY
             # F1b/WB-1: the deepseek fixer dispatches; #212 classifies its
@@ -196,6 +250,7 @@ jobs:
             model: glm-5.3-flash
             provider: zai
             driver: claude-agent
+            usd_per_case: 0.10 # D9 envelope: the driver-axis GLM lanes
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
             # F1b/WB-1: #211 strips the draft-2020-12 meta-schema URI, so the
@@ -206,6 +261,7 @@ jobs:
             model: glm-5.3-flash
             provider: zai
             driver: subprocess
+            usd_per_case: 0.10 # D9 envelope: the driver-axis GLM lanes
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
             # F1b/WB-1: #213 populates WorkerResult.error on the subprocess
@@ -215,11 +271,15 @@ jobs:
             model: glm-5.3-flash
             provider: zai
             driver: acp
+            usd_per_case: 0.10 # D9 envelope: the driver-axis GLM lanes
             env_key: ZAI_API_KEY
             secret_name: Z_AI_API_KEY
-            # The acp cell is gated by its own preflight (owner decision
-            # pending); every cell's driver failures are classified by the
-            # runner, so no cell carries a role list.
+            # The acp cell is gated by its own preflight, and the WHOLE leg is
+            # non-fatal (D7, the job-level continue-on-error above): a
+            # preflight/install/auth/runner failure is recorded (ACP-FAILED)
+            # and the matrix continues without the lane. Every cell's driver
+            # failures are classified by the runner, so no cell carries a
+            # role list.
     steps:
       - name: Check out the repo
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -238,7 +298,25 @@ jobs:
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci
-      - name: Excise the unit-test tree and git objects (review-debt 11)
+      - name: Build and scan the matrix eval root (W6.3)
+        # W6.3 (RS-9 §4.3 D): runs dispatch from an eval root built from an
+        # ALLOWLIST (scripts/eval-root.mjs) — runner code, the judge, each
+        # suite's fixtures, and every suite.json stripped to its dispatch
+        # fields — never from the checkout. The classifier answers and the
+        # sentinel token go to a runner-only key OUTSIDE the root. node_modules
+        # MOVES in (cheap, same filesystem), so from here on the runner only
+        # runs from the root. The static scan re-derives the allowlist from
+        # the checkout and fails the job on any extra, altered or
+        # answer-bearing file, any symlink leaving the root, and any prompt
+        # carrying an answer marker or a 6-token span of its fix diff.
+        # --plant-dir drops a second sentinel into the checkout, which the
+        # next step prunes to nothing else: a worker that wanders back into
+        # the checkout meets only the tripwire.
+        run: |
+          set -euo pipefail
+          node scripts/eval-root.mjs build --out "${RUNNER_TEMP}/cq-eval-root" --key "${RUNNER_TEMP}/cq-eval-key/answer-key.json" --node-modules move --plant-dir "${GITHUB_WORKSPACE}"
+          node scripts/eval-root.mjs scan --root "${RUNNER_TEMP}/cq-eval-root" --key "${RUNNER_TEMP}/cq-eval-key/answer-key.json"
+      - name: Excise the unit-test tree, git objects and the rest of the checkout (review-debt 11, W6.3)
         # The matrix job never runs vitest, but test/micro.test.ts carries the
         # micro suites' REFERENCE FIXES: a model-driven worker with
         # host-privileged tools must not be able to read them out of the
@@ -252,10 +330,19 @@ jobs:
         # is self-contained under runner/ (test/cli.test.ts imports nothing
         # the runner needs), the eval step uses no git, and pack-toolkit.sh
         # clones fresh from the remote into its own temp dir.
+        #
+        # W6.3 (RS-9 §4.3 A): the eval root now holds everything the eval
+        # needs, so the REST of the checkout goes as well — FAULT records,
+        # label sidecars, catalog/, docs and READMEs, and reports/ (the
+        # committed snapshot rows carry probes[].expected). Only the planted
+        # sentinel stays. Later steps write reports/eval afresh.
         run: |
           set -euo pipefail
           echo "excising test/ and .git — the micro suites' reference fixes (test/micro.test.ts) must not be readable by model-driven workers from the worktree OR the object store (review-debt #11)"
           rm -rf test/ .git
+          echo "excising the rest of the checkout — runs dispatch from the eval root; only the planted sentinel remains (W6.3)"
+          find . -mindepth 1 -maxdepth 1 ! -name 'cq-sentinel-*' -exec rm -rf {} +
+          ls -A
       # LANE INSTALLS (conditional): each lane brings only its own harness.
       # The claude-agent lane deliberately has NO install step here — its
       # optional peer @anthropic-ai/claude-agent-sdk ships as a devDependency
@@ -294,7 +381,19 @@ jobs:
         # explicit argv ['zcode-acp-server', 'server'] (runner/cli.ts
         # ACP_COMMAND) — so the installed harness must be the
         # subcommand-capable line.
-        run: npm install -g zcode-acp-server@0.43.3
+        #
+        # W6.4 (D7): an install failure (registry outage, yanked pin) is an
+        # acp PROVISIONING failure — recorded explicitly (ACP-FAILED, with
+        # the leg's ::error:: and red X as the loud part) and NON-FATAL via
+        # the leg's continue-on-error: the harness never runs ungoverned, the
+        # lane is honestly absent from the run, and the other cells keep
+        # publishing. Never a bare `set -e` crash with no record.
+        run: |
+          npm install -g zcode-acp-server@0.43.3 || {
+            mkdir -p reports/eval
+            printf 'acp harness install failed: the lane is absent from this run, recorded and non-fatal (D7)\n' > reports/eval/ACP-FAILED
+            exit 1
+          }
       - name: ACP headless auth preflight
         id: acp_preflight
         if: matrix.cell.driver == 'acp'
@@ -450,15 +549,24 @@ jobs:
           elif [ "${rc}" -ne 0 ]; then
             # Spawn failures (4), script crashes, any unexpected status: a
             # broken preflight must never silently omit the acp lane — fail.
+            # W6.4 (D7): the failure is also RECORDED (ACP-FAILED) so the
+            # leg's continue-on-error keeps it non-fatal for the run — loud
+            # on the leg, recorded in the artifact, never a crashed matrix.
             echo "::error::acp preflight failed (rc ${rc}) — infrastructure, not a credential skip"
+            mkdir -p reports/eval
+            printf 'acp preflight failed (rc %s): infrastructure, not a credential skip — the lane is absent from this run, recorded and non-fatal (D7)\n' "${rc}" > reports/eval/ACP-FAILED
             exit 1
           fi
           # Review-debt #14: an auth-OK probe (rc 0) MUST leave its record
           # behind — the eval step accounts the probe against the cell token
           # cap from it, and the runner fails loud without it. A missing
           # record here is infrastructure, never a silent skip.
+          # W6.4 (D7): recorded (ACP-FAILED) and non-fatal like every other
+          # acp provisioning failure.
           if [ "${rc}" -eq 0 ] && [ ! -f reports/eval/ACP-PROBE.json ]; then
             echo "::error::acp preflight authed but wrote no probe record — the eval cell cannot account the probe"
+            mkdir -p reports/eval
+            printf 'acp preflight authed but wrote no probe record — the lane is absent from this run, recorded and non-fatal (D7)\n' > reports/eval/ACP-FAILED
             exit 1
           fi
       # CREDENTIAL PREREQUISITE (the J3 BLOCKED note, carried forward): both
@@ -496,6 +604,11 @@ jobs:
           MATRIX_MODEL: ${{ matrix.cell.model }}
           MATRIX_PROVIDER: ${{ matrix.cell.provider }}
           MATRIX_DRIVER: ${{ matrix.cell.driver }}
+          # W6.4: the cell's explicit per-case USD ceiling (the accepted D9
+          # envelope's cap, workflow-contract-cross-checked against the
+          # runner's D9 table). Every real matrix invocation carries one; the
+          # runner additionally refuses an unattended real run that has none.
+          MATRIX_USD_PER_CASE: ${{ matrix.cell.usd_per_case }}
           MATRIX_PROFILE: ${{ github.event.inputs.profile || 'full' }}
         run: |
           set -euo pipefail
@@ -513,6 +626,24 @@ jobs:
           # sibling deprecated/ suite (deprecate-don't-renumber), and a retired
           # case must NEVER spend weekly tokens. -not -path drops any suite
           # whose path carries a deprecated/ segment.
+          #
+          # W6.3: discovery, the variant read and the runner all work inside
+          # the eval root built above (the checkout was pruned); the runner
+          # carries the root's answer key, so a sentinel hit exits 2 and fails
+          # the cell below. Out dirs stay under reports/eval in the checkout,
+          # outside the root — later cases cannot read earlier outputs there
+          # from inside the root.
+          EVAL_ROOT="${RUNNER_TEMP}/cq-eval-root"
+          EVAL_KEY="${RUNNER_TEMP}/cq-eval-key/answer-key.json"
+          # W6.4: key path via the environment, never argv (see the smoke job).
+          export CQ_ANSWER_KEY="${EVAL_KEY}"
+          # W6.3 (RS-9 A.6): the runner writes its out/journal trees HERE,
+          # outside the checkout, so no suite of this leg can read an earlier
+          # suite's rows.jsonl (expected verdicts), patches or raw outputs. The
+          # always() upload step copies them into reports/ afterwards, when no
+          # worker is running.
+          EVAL_OUT="${RUNNER_TEMP}/cq-eval-out"
+          mkdir -p "${EVAL_OUT}"
           hard_fail=0
           suite_count=0
           case "${MATRIX_PROFILE}" in
@@ -552,7 +683,7 @@ jobs:
             # It must be a path-safe slug (the suite schema enforces the same
             # pattern): an unsafe value fails the cell loudly here rather than
             # escaping reports/eval.
-            variant="$(node -e 'const s=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(s.variant||"default")' "${suite_dir}/suite.json")" || { echo "::error::suite ${suite_dir}: could not read the suite.json variant"; hard_fail=1; continue; }
+            variant="$(node -e 'const s=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(s.variant||"default")' "${EVAL_ROOT}/${suite_dir}/suite.json")" || { echo "::error::suite ${suite_dir}: could not read the suite.json variant"; hard_fail=1; continue; }
             if ! printf '%s' "${variant}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
               echo "::error::suite ${suite_dir}: invalid variant '${variant}' (path-safe slug required)"
               hard_fail=1
@@ -560,7 +691,14 @@ jobs:
             fi
             variant_prefix=""
             if [ "${variant}" != "default" ]; then variant_prefix="${variant}/"; fi
-            out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"
+            # W6.3/RS-9 A.6: the runner's outputs stay OUTSIDE the checkout for
+            # the whole duration of the leg. rows.jsonl carries
+            # probes[].expected plus persisted patches and raw outputs, so
+            # writing them under reports/eval inside the pruned checkout would
+            # let a later suite of the SAME leg read earlier suites' answers
+            # on a host-reach lane. The always() upload step copies them into
+            # reports/ only after the last worker has stopped.
+            out_dir="${EVAL_OUT}/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"
             # rel_dir is <role>/<suite>; the role is its first segment.
             role="${rel_dir%%/*}"
             # Discovery drift counts SUITES FOUND, before any skip decision.
@@ -581,18 +719,27 @@ jobs:
             # the healthy glm classifier cell spent 776 tokens/case (7756/10)
             # — ~77x under this budget. Micro: fixer 5x60000=300000,
             # classifier 10x60000=600000, both above the retired flat 200000.
-            node --experimental-strip-types runner/index.ts \
-              --suite "${suite_dir}" \
+            # W6.4 USD ceiling: the cell's explicit D9 per-case cap rides
+            # EVERY invocation — the runner binds it at the invocation grain
+            # and as the cumulative run cap (W6.2), so an overspend is a
+            # loud budget-stop absence, and its unattended guard refuses the
+            # run outright should the ceiling ever go missing (exit 2).
+            node --experimental-strip-types "${EVAL_ROOT}/runner/index.ts" \
+              --suite "${EVAL_ROOT}/${suite_dir}" \
               --driver "${MATRIX_DRIVER}" \
               --driver-name "${MATRIX_DRIVER}" \
               --model "${MATRIX_MODEL}" \
               --provider "${MATRIX_PROVIDER}" \
               --max-tokens-per-case 60000 \
+              --max-usd-per-case "${MATRIX_USD_PER_CASE}" \
               --journal "${out_dir}/journal" \
               "${probe_extra[@]}" \
               --out "${out_dir}" < /dev/null || rc=$?
             if [ "${rc}" -ge 2 ]; then
-              echo "::error::suite ${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}: runner usage/validation failure (exit ${rc})"
+              # rc 2 also covers a W6.3 sentinel hit: the runner names the
+              # contaminated cases on stderr and records each as a
+              # sentinel-contamination absence in run.json (warned below).
+              echo "::error::suite ${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir}: runner usage/validation failure or sentinel contamination (exit ${rc})"
               hard_fail=1
             elif [ "${rc}" -eq 1 ]; then
               echo "::warning::suite ${MATRIX_MODEL}/${MATRIX_DRIVER}/${rel_dir} scored zero or was budget-gated"
@@ -653,9 +800,21 @@ jobs:
                   # otherwise be decoded into a line break); the markdown
                   # step-summary line escapes HTML instead.
                   annotated="$(printf '%s' "${absent_line}" | sed 's/%/%25/g')"
-                  echo "::warning::${annotated} (dispatch-only absence — no row published)"
-                  escaped="$(printf '%s' "${absent_line}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
-                  echo "- dispatch-only absence: ${escaped}" >> "${GITHUB_STEP_SUMMARY}"
+                  # W6.4: NOT every absence is a dispatch-only one. A
+                  # per-case USD overrun DID publish a row (carrying
+                  # stopCause 'budget', excluded from coverage), so the
+                  # dispatch-only wording would be false for it. The cause
+                  # text selects the honest label; the marker is written on
+                  # both classes, because either degrades the publish.
+                  if printf '%s' "${absent_line}" | grep -q 'per-case budget exceeded'; then
+                    echo "::warning::${annotated} (per-case budget overrun — row published with stopCause 'budget', excluded from coverage)"
+                    escaped="$(printf '%s' "${absent_line}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+                    echo "- per-case budget overrun (row published, coverage excluded): ${escaped}" >> "${GITHUB_STEP_SUMMARY}"
+                  else
+                    echo "::warning::${annotated} (dispatch-only absence — no row published)"
+                    escaped="$(printf '%s' "${absent_line}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+                    echo "- dispatch-only absence: ${escaped}" >> "${GITHUB_STEP_SUMMARY}"
+                  fi
                 done <<< "${absent_lines}"
                 touch "reports/eval/DISPATCH-ONLY-${MATRIX_MODEL}-${MATRIX_DRIVER}-${role}"
               fi
@@ -663,7 +822,7 @@ jobs:
           # shellcheck disable=SC2086 — ${roots} is intentionally word-split
           # into the profile's suite dirs; quoting it would make find look for
           # one path named "a b c".
-          done < <(find ${roots} -maxdepth 1 -name suite.json -not -path '*/deprecated/*' 2>/dev/null | sort)
+          done < <(cd "${EVAL_ROOT}" && find ${roots} -maxdepth 1 -name suite.json -not -path '*/deprecated/*' 2>/dev/null | sort)
           # Discovery drift is VISIBLE: a count other than the profile's
           # expected count is a WARNING (a later phase adding a suite is a
           # structuring change, not an eval failure). ZERO suites is the
@@ -680,6 +839,16 @@ jobs:
           elif [ "${suite_count}" -ne "${expected_count}" ]; then
             echo "::warning::matrix discovery found ${suite_count} suites (expected ${expected_count} for profile ${MATRIX_PROFILE}) — investigate if unintended"
           fi
+          # W6.4 (D7): a hard-failed acp eval cell (runner rc>=2 — usage,
+          # validation, sentinel contamination — or zero discovery) is
+          # RECORDED, never silent: the marker below rides the always() eval
+          # artifact and flips the snapshot to merge-not-clear, while the
+          # leg's continue-on-error keeps the matrix running for the other
+          # cells. The step still exits 1 — loud on the leg, recorded in the
+          # artifact.
+          if [ "${hard_fail}" -ne 0 ] && [ "${MATRIX_DRIVER}" = "acp" ]; then
+            printf 'acp eval cell hard-failed (runner failure or zero discovery): the lane is absent from this run, recorded and non-fatal (D7)\n' > reports/eval/ACP-FAILED
+          fi
           # The eval-reports artifact must ALWAYS exist — even when the find
           # above came up empty (which can now only happen if the micro
           # suites vanish, warned above) or every run hard-failed pre-output
@@ -689,7 +858,48 @@ jobs:
           mkdir -p reports/eval
           touch reports/eval/EMPTY
           exit "${hard_fail}"
+      - name: Record the acp lane status (W6.4, D7)
+        # The backstop that makes the acp leg's continue-on-error HONEST: any
+        # failure the leg can hit — the install, the preflight, the eval
+        # cell, or a step before them (a checkout or npm-ci flake landing on
+        # this leg alone) — ends with this always() step guaranteeing the
+        # eval artifact carries an explicit ACP-FAILED record. The step that
+        # owns the failure annotates its specific cause (::error::); this
+        # record is the artifact-level proof the snapshot's merge-not-clear
+        # logic keys on (job-level outputs are not usable here — matrix-leg
+        # outputs merge last-writer-wins, the same reason the skip rides the
+        # ACP-SKIPPED marker file). A succeeded or skipped leg records
+        # nothing here: a skip has its own honest marker, and a clean pass
+        # must not read as a failure.
+        if: always() && matrix.cell.driver == 'acp'
+        run: |
+          set -euo pipefail
+          if [ "${{ job.status }}" = "failure" ]; then
+            mkdir -p reports/eval
+            [ -e reports/eval/ACP-FAILED ] || printf 'acp leg failed: the lane is absent from this run, recorded and non-fatal (D7) — see the failed step in this leg log for the specific cause\n' > reports/eval/ACP-FAILED
+            echo "::warning::acp leg failed — recorded in reports/eval/ACP-FAILED; the matrix continues and publishes the surviving cells (D7 non-fatal)"
+            echo "acp leg failed: recorded in the eval artifact (ACP-FAILED); the matrix continued without it (D7 non-fatal)" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "acp leg status ${{ job.status }} — nothing to record"
+          fi
       - name: Upload eval reports
+        if: always()
+        # W6.3 (RS-9 A.6): fold the off-checkout run output into reports/ now
+        # that the eval cell has finished — no model-driven code runs after
+        # this step, so copying here cannot expose anything to a worker. A
+        # leg that never reached the eval step has no output to copy and the
+        # artifact still carries its marker.
+        run: |
+          set -euo pipefail
+          if [ -d "${RUNNER_TEMP}/cq-eval-out" ]; then
+            # mkdir the FULL destination: `cp -R src/. dest` requires dest to
+            # exist, and a leg that failed before its eval step never created
+            # reports/eval.
+            mkdir -p reports/eval
+            cp -R "${RUNNER_TEMP}/cq-eval-out/." reports/eval/
+          fi
+        shell: bash
+      - name: Upload eval reports (artifact)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -748,12 +958,15 @@ jobs:
         # No continue-on-error: every cell that REACHED its eval step touches
         # reports/eval/EMPTY on every path, so an eval-reports-<model>-<driver>
         # artifact exists for each such cell and this download cannot fail on
-        # a missing artifact. The one exception is an acp cell whose
-        # preflight skipped (or hard-failed) BEFORE the eval step — that cell
-        # legitimately contributes no artifact, and the pattern +
-        # merge-multiple download tolerates its absence (the surviving
-        # cells' artifacts still merge). A real download failure must fail
-        # this job loudly. (J4: the cells upload
+        # a missing artifact. W6.4 (D7): an acp leg that failed BEFORE its
+        # eval step still uploads an artifact — its always() "Record the acp
+        # lane status" step writes reports/eval/ACP-FAILED, which this job's
+        # clear-on-success guard below reads. The one remaining artifact-less
+        # case is an acp leg that failed before any repo-local step could run
+        # (e.g. its checkout itself); the pattern + merge-multiple download
+        # tolerates that absence (the surviving cells' artifacts still
+        # merge). A real download failure must fail this job loudly.
+        # (J4: the cells upload
         # per-cell artifacts — upload-artifact v4 requires unique names; J5
         # widened the name to model+driver, which the eval-reports-* glob
         # still matches — so the pattern + merge-multiple download re-joins
@@ -806,12 +1019,22 @@ jobs:
           # eval artifact (job outputs would be last-writer-wins across the
           # matrix legs — see the preflight comment), and a skip means
           # MERGE, never clear — an earlier same-day authenticated acp run's
-          # tables stay.
+          # tables stay. W6.4 (D7) extends the same rule to a FAILED acp
+          # leg: its continue-on-error keeps needs.matrix.result at
+          # 'success', and its always() recorder drops reports/eval/
+          # ACP-FAILED into the artifact — a failure also means MERGE, never
+          # clear.
           dispatch_only_marker="$(find reports/eval -maxdepth 1 -name 'DISPATCH-ONLY-*' -print -quit 2>/dev/null)"
-          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ -z "${dispatch_only_marker}" ]; then
+          # W6.4: clearing deletes the dated dir first, so it must be gated on
+          # evidence that the run's reports actually LANDED — at least one
+          # published table. A download that silently yielded nothing would
+          # otherwise clear an earlier complete run's tables and republish
+          # nothing. No tables => merge-only, never clear.
+          landed_tables="$(find reports/eval -name '*.table.json' -print -quit 2>/dev/null)"
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
             rm -rf "${snap_dir}"
           else
-            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}) — merging into ${snap_dir} without clearing"
+            echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}, landed tables: ${landed_tables:-none}) — merging into ${snap_dir} without clearing"
           fi
           mkdir -p "${snap_dir}"
           # Snapshot IDENTITY preserves the suite dir (the copy loop is

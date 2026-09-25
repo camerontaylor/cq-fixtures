@@ -161,6 +161,16 @@
       "minLength": 1,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
       "description": "VERSIONED ADDITIVE change F6 (2026-09-21): the prompt/tool-surface bundle id of the suite this row ran under. Omitted when the suite declares none (the default posture), so pre-F6 rows and default-posture rows keep their exact shape."
+    },
+    "expectedCases": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "VERSIONED ADDITIVE change W6.2 (2026-09-25): the declared case count of the suite this row ran (suite.schema.json cases[] length). Carried by EVERY row so coverage parity is computable from rows.jsonl alone: the cases a run budget gated before dispatch have no rows by design (a fabricated zero would claim a verdict that never ran), so the coverage denominator must ride the rows that did run. comparison-table.schema.json aggregates it into each cell's expectedCases/coveredCases/coverage columns. Absent on all pre-W6.2 rows by design — every committed snapshot still validates, and a regrade of old rows reproduces its original tables."
+    },
+    "stopCause": {
+      "type": "string",
+      "enum": ["budget"],
+      "description": "VERSIONED ADDITIVE change W6.2 (2026-09-25): the cause a dispatched case's row is incomplete evidence. 'budget' = the driver stopped the case on its budget (per-case USD/token cap): the row stays an honest incomplete outcome (score 0 over the configured probe ceiling, journal status budget-exhausted) — never a fabricated completion, never a silent absence — but it does not count toward a cell's coveredCases, because a budget stop breaks coverage parity (RS-9 §1.3). Absent = the row is the case's complete evidence. The vocabulary is closed so a future cause (e.g. a bounded-retry timeout class) must extend it deliberately."
     }
   },
   "allOf": [

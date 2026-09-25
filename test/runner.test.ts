@@ -1144,8 +1144,11 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
 
   class FixtureVerdictDriver implements Driver {
     async run(invocation: OpInvocation): Promise<WorkerResult> {
-      const m = /\(fixture (\S+?)\)/.exec(invocation.prompt);
-      const verdict = m !== null ? OBSERVED[m[1]!] : undefined;
+      // W6.3: the prompt no longer names the fixture (RS-9 §4.3 C.12), so the
+      // stand-in keys the verdict off the injected payload's thread id — the
+      // same content a real worker sees.
+      const m = /"id"\s*:\s*(\d+)/.exec(invocation.prompt);
+      const verdict = m !== null ? OBSERVED[`thread-${m[1]!}.json`] : undefined;
       return {
         model: invocation.modelSpec.model,
         ...(verdict !== undefined && verdict !== null ? { structuredOutput: { verdict } } : {}),

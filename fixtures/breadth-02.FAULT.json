@@ -13,7 +13,7 @@
     "f2p": ["treats the final page index as the last page"],
     "p2p": ["does not treat an earlier page as the last page", "rounds a partial page up", "renders a one-based page label"],
     "fix": {
-      "src/paging.ts": "import { PAGE_SIZE } from './pageSize.ts';\n\nexport function pageCount(total: number): number {\n  return Math.ceil(total / PAGE_SIZE);\n}\n\n// True when `page` is the zero-based index of the final page.\nexport function isLastPage(page: number, totalPages: number): boolean {\n  return page >= totalPages - 1;\n}\n"
+      "src/paging.ts": "import { PAGE_SIZE } from './pageSize.ts';\n\nexport function pageCount(total: number): number {\n  return Math.ceil(total / PAGE_SIZE);\n}\n\n// Last-page check for the pager controls.\nexport function isLastPage(page: number, totalPages: number): boolean {\n  return page >= totalPages - 1;\n}\n"
     }
   },
   "adequacy": {

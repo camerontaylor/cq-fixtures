@@ -135,10 +135,30 @@ export interface RunManifestEntry {
   suiteSha: string | null;
   runId: string;
   generatedAt: string;
+  /**
+   * W6.2: the suite's declared case count — the coverage denominator,
+   * recorded even when the run published zero rows (a fully gated suite
+   * must still say how many cases it was expected to cover; the rows' own
+   * expectedCases cannot, there being no rows).
+   */
+  expectedCases: number;
+  /**
+   * W6.2: the per-case USD budget that bound this run's cases, with its
+   * basis — 'd9-default' when the accepted D9 envelope's cap for the cell
+   * (driver × served model) applied, 'explicit' when --max-usd-per-case was
+   * passed. Both-or-neither; absent on runs governed only by a legacy
+   * run-level --max-usd (whose invocation-grain cap is the run cap, not a
+   * per-case budget) or by tokens alone.
+   */
+  maxUsdPerCase?: number;
+  maxUsdPerCaseBasis?: 'd9-default' | 'explicit';
   /** F1b (WB-1): non-model driver causes classified as dispatch-only
    * absences — those cases published NO row. SURFACED BY `run.json` so the
    * workflow can render a warning + step summary + DISPATCH-ONLY marker
-   * instead of publishing a driver-error zero. */
+   * instead of publishing a driver-error zero. W6.2 adds the `budget-stop:`
+   * cause class: cases the run budget gate refused before dispatch (never a
+   * silent no-row; the rows' expectedCases makes the same gap visible as
+   * coverage < 1 in the tables). */
   absences?: Array<{ case: string; cause: string }>;
 }
 

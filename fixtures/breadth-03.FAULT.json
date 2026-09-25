@@ -1,6 +1,6 @@
 {
   "bug_type": "operator misuse",
-  "failure_symptoms": "Members are charged the full price and non-members get the ten-percent discount; the membership branch is inverted.",
+  "failure_symptoms": "Members are charged the full price and non-members get the ten-percent discount.",
   "operator": "ternary-swap",
   "difficulty": "easy",
   "provenance": {
@@ -13,7 +13,7 @@
     "f2p": ["gives members the discounted rate", "charges non-members the full rate"],
     "p2p": ["rounds to cents"],
     "fix": {
-      "src/discount.ts": "// The membership discount rate: members get ten percent off.\nexport function discountRate(isMember: boolean): number {\n  return isMember ? 0.1 : 0;\n}\n"
+      "src/discount.ts": "// The membership discount rate.\nexport function discountRate(isMember: boolean): number {\n  return isMember ? 0.1 : 0;\n}\n"
     }
   },
   "adequacy": {

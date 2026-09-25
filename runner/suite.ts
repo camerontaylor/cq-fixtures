@@ -8,6 +8,7 @@ import { isAbsolute, join } from 'node:path';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import ajvFormats from 'ajv-formats';
 import type { SuiteRole } from './aggregate.ts';
+import { applyAnswerKey, type AnswerKey } from './answerKey.ts';
 
 export interface SuiteTask {
   prompt: string;
@@ -78,14 +79,20 @@ function assertRepoRelative(p: string, label: string, suiteName: string): void {
   }
 }
 
-/** Read, schema-validate, and semantically enforce one suite directory. */
-export function loadSuite(dir: string): Suite {
+/**
+ * Read, schema-validate, and semantically enforce one suite directory. W6.3:
+ * a stripped eval-root suite carries no expected verdicts; `answerKey` fills
+ * them in before validation (runner/answerKey.ts), so the schema's
+ * expected-verdict requirement holds either way.
+ */
+export function loadSuite(dir: string, answerKey?: AnswerKey): Suite {
   let doc: unknown;
   try {
     doc = JSON.parse(readFileSync(join(dir, 'suite.json'), 'utf8'));
   } catch (e) {
     throw new Error(`cannot read suite at ${dir}: ${(e as Error).message}`);
   }
+  if (answerKey !== undefined) doc = applyAnswerKey(doc, answerKey, dir);
   if (!validateSuiteDoc(doc)) {
     throw new Error(`suite at ${dir} failed schema validation: ${ajv.errorsText(validateSuiteDoc.errors)}`);
   }

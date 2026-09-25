@@ -544,8 +544,7 @@ class BindingDriver implements Driver {
     this.workspaces.push(record!.workspace);
     const source = join(record!.workspace, 'src', 'rangeSum.ts');
     if (existsSync(source)) {
-      writeFileSync(source,
-        'export function sumRange(a: number, b: number): number { let total = 0; for (let i = a; i <= b; i++) total += i; return total; }\\n');
+      writeFileSync(source, SOLUTIONS['micro-1']!.content);
     }
     return {
       model: invocation.modelSpec.model,

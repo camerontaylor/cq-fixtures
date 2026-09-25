@@ -52,6 +52,16 @@ export { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
 // a worker that cannot edit files or run a check cannot fix anything.
 const FIXER_TOOL_NAMES: readonly ToolkitToolName[] = ['read', 'edit', 'run'];
 
+/**
+ * The drivers' default SessionStore location.  A driver receives only a
+ * sessionRef from the runner, so its own default store must be the same
+ * store the runner writes; putting records in the materialized workspace
+ * silently makes every real driver fail with an unknown-session error.
+ * Keep this beside the harness scratch root, never inside a model-visible
+ * workspace (the store is the authoritative binding record).
+ */
+export const SESSION_STORE_DIR = join(tmpdir(), 'cq-harness', 'sessions');
+
 // Schema validation of OUTPUTS (rows/tables) — nothing leaves runSuite
 // unvalidated. Same Ajv setup as test/schema.test.ts.
 const ajv = ajvFormats(new Ajv2020({ allErrors: true }));
@@ -473,7 +483,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // otherwise create their own temp cwd and the check grades an
         // untouched copy. SessionStore is the toolkit's explicit workspace
         // binding seam (I6), not a second source of truth.
-        const sessionStore = new SessionStore(join(workspace, '.cq-sessions'));
+        const sessionStore = new SessionStore(SESSION_STORE_DIR);
         const session = await sessionStore.create(workspace);
         sessionRef = session.sessionId;
       } catch (e) {
@@ -758,8 +768,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // then removed — even when the case aborts mid-flight. The pristine
       // fixture under repoRoot is never touched.
       if (workspace !== undefined) {
-        // The session store lives inside the scratch workspace, so this
-        // removes both the graded copy and its private session evidence.
+        // The session store lives beside the scratch workspaces, so this
+        // removes the graded copy while the private session evidence remains
+        // available to the real driver's default SessionStore lookup.
         rmSync(workspace, { recursive: true, force: true });
       }
     }

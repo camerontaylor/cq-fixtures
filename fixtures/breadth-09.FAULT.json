@@ -1,6 +1,6 @@
 {
   "bug_type": "variable misuse",
-  "failure_symptoms": "Two independent faults: snapshot() hands out the live internal stock array (a caller's push leaks back in), and an order that is paid but not shipped already reads as complete.",
+  "failure_symptoms": "Two independent faults: pushing onto the array returned by snapshot() changes what later snapshots contain, and an order that is paid but not shipped already reads as complete.",
   "operator": "shared-reference-return+logical-swap",
   "difficulty": "hard",
   "provenance": {

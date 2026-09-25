@@ -250,14 +250,22 @@ describe('--max-tokens-per-case (WB-1.6: the cap scales with suite size)', () =>
     await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '0'])).resolves.toBe(2);
   }, 15_000);
 
-  it('rejects fractional token budgets but keeps a fractional --max-usd legal', async () => {
+  it('rejects fractional token budgets; fractional --max-usd stays legal attended and is refused unattended (W6.4)', async () => {
     const dir = writeSuite('cap-frac', { name: 'cap-frac', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await expect(cliMain([...cliArgs(dir), '--max-tokens', '1.5'])).resolves.toBe(2);
     await expect(cliMain([...cliArgs(dir), '--max-tokens-per-case', '1.5'])).resolves.toBe(2);
     // --max-usd stays fractional (a USD cap may be 0.5). One case on the
     // now-priced glm lane (F1 price-map pin): the derived cost is far below
-    // 0.5, so the run is clean (exit 0).
+    // 0.5, so the run is clean (exit 0). W6.4 splits the posture by
+    // attendance: ATTENDED (no GITHUB_ACTIONS) the legacy run-level cap
+    // keeps its pre-W6.2 semantics verbatim; UNATTENDED (CI) the same
+    // command is refused — a real run there must carry a per-case ceiling
+    // (the refusal message contract lives in test/w64-usd-ceiling.test.ts).
+    vi.stubEnv('GITHUB_ACTIONS', '');
     await expect(cliMain([...cliArgs(dir), '--max-usd', '0.5'])).resolves.toBe(0);
+    vi.stubEnv('GITHUB_ACTIONS', 'true');
+    await expect(cliMain([...cliArgs(dir), '--max-usd', '0.5'])).resolves.toBe(2);
+    vi.unstubAllEnvs();
   }, 15_000);
 
   it('gates admission at perCase × caseCount (NOT a flat cap): 3 cases at 5 tokens/case trips after case 2', async () => {
@@ -350,15 +358,20 @@ describe('gate checks (B2 axes, B3 servedModel, B4 same-role collision, B7 requi
   }, 15_000);
 
   it('axis-legal pairs run: ai-sdk+deepseek and subprocess+glm-5.3-flash', async () => {
-    const deepseek = writeSuite('axis-deepseek', { name: 'axis-deepseek', role: 'review-classifier', servedModel: 'deepseek-chat', cases: [reviewCase('rev-1', 'resolved')] });
-    await expect(cliMain(['--suite', deepseek, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'deepseek-chat', '--provider', 'deepseek'])).resolves.toBe(0);
+    // W6.2: deepseek-flash (the served id since 2026-09-18, not the retired
+    // deepseek-chat request) — the run needs a D9 per-case USD budget, and
+    // only mapped cells run without an explicit --max-usd-per-case.
+    const deepseek = writeSuite('axis-deepseek', { name: 'axis-deepseek', role: 'review-classifier', servedModel: 'deepseek-flash', cases: [reviewCase('rev-1', 'resolved')] });
+    await expect(cliMain(['--suite', deepseek, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'deepseek-flash', '--provider', 'deepseek'])).resolves.toBe(0);
     const glm = writeSuite('axis-glm', { name: 'axis-glm', role: 'review-classifier', servedModel: 'glm-5.3-flash', cases: [reviewCase('rev-1', 'resolved')] });
     await expect(cliMain(['--suite', glm, '--driver', 'fake', '--driver-name', 'subprocess', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(0);
   }, 15_000);
 
   it('a servedModel mismatch exits 2 before dispatch; a matching model runs', async () => {
     const pinned = writeSuite('pinned-suite', { name: 'pinned-suite', role: 'review-classifier', servedModel: 'glm-5.3-flash', cases: [reviewCase('rev-1', 'resolved')] });
-    await expect(cliMain(['--suite', pinned, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'deepseek-chat', '--provider', 'deepseek'])).resolves.toBe(2);
+    // deepseek-flash (a D9-mapped id) so the refusal here is the B3 mismatch
+    // itself, not the W6.2 fail-closed gate an unmapped id would trip first.
+    await expect(cliMain(['--suite', pinned, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'deepseek-flash', '--provider', 'deepseek'])).resolves.toBe(2);
     await expect(cliMain(['--suite', pinned, '--driver', 'fake', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'])).resolves.toBe(0);
   }, 15_000);
 

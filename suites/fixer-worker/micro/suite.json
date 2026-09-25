@@ -9,7 +9,7 @@
       "id": "micro-1",
       "fixture": "fixtures/micro-1",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. sumRange(a, b) currently returns the sum excluding b; it must include b.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. sumRange(1, 5) returns 10, and sumRange(3, 3) returns 0.",
         "notes": "seeded fault: hand-written mutation, synthetic"
       },
       "probe": { "kind": "check-rerun", "check": "fixtures/micro-1/check.mjs" }
@@ -18,7 +18,7 @@
       "id": "micro-2",
       "fixture": "fixtures/micro-2",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. slugify currently preserves the input's letter case; every slug it produces must be entirely lowercase.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. slugify('Hello World') returns 'Hello-World'.",
         "notes": "seeded fault: hand-written mutation, synthetic"
       },
       "probe": { "kind": "check-rerun", "check": "fixtures/micro-2/check.mjs" }
@@ -27,7 +27,7 @@
       "id": "micro-3",
       "fixture": "fixtures/micro-3",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. the memoizer currently recomputes the underlying function on every call; a repeated call with the same argument must reuse the first result.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. Calling the memoized function twice with the same argument runs the underlying function twice.",
         "notes": "seeded fault: hand-written mutation, synthetic"
       },
       "probe": { "kind": "check-rerun", "check": "fixtures/micro-3/check.mjs" }
@@ -36,7 +36,7 @@
       "id": "micro-4",
       "fixture": "fixtures/micro-4",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseConfig currently swallows malformed input by returning an empty object; it must throw an Error whose message mentions 'invalid config' instead.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. parseConfig('not json') returns an empty object and raises no error.",
         "notes": "seeded fault: hand-written mutation, synthetic"
       },
       "probe": { "kind": "check-rerun", "check": "fixtures/micro-4/check.mjs" }
@@ -45,7 +45,7 @@
       "id": "micro-5",
       "fixture": "fixtures/micro-5",
       "task": {
-        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. sortTasks currently orders tasks by priority ascending; it must order by priority descending.",
+        "prompt": "The workspace at the path below contains a TypeScript package whose vitest suite fails. Fix the source so the vitest suite passes (the scoring harness runs the suite for you; you do not need to install anything). Do not modify the tests. sortTasks lists the lowest-priority task first.",
         "notes": "seeded fault: hand-written mutation, synthetic"
       },
       "probe": { "kind": "check-rerun", "check": "fixtures/micro-5/check.mjs" }

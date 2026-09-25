@@ -1,6 +1,6 @@
 {
   "bug_type": "value misuse",
-  "failure_symptoms": "parseAmount parses a hex-looking string as base sixteen instead of base ten.",
+  "failure_symptoms": "parseAmount('0x10') returns 16.",
   "operator": "radix-coercion-drop",
   "difficulty": "medium",
   "provenance": {

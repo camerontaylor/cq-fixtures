@@ -4,8 +4,8 @@
 // error or suite load/validation failure (the suite.yml workflow hard-fails
 // its rc>=2 branch). Invoked via runner/index.ts.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   AcpDriver,
@@ -17,9 +17,10 @@ import {
 } from '@camerontaylor/cq-toolkit';
 import { z } from 'zod';
 import { PREFLIGHT_PROBE_RESERVE_TOKENS, runSuite, type PreflightProbe } from './index.ts';
-import { perSuiteTokenCap } from './budget.ts';
+import { d9PerCaseUsd, D9_PER_CASE_USD, perSuiteTokenCap } from './budget.ts';
 import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
 import { loadSuite, suiteVariant, type Suite } from './suite.ts';
+import { EVAL_ROOT_MARKER, loadAnswerKey, sentinelNeedles, type AnswerKey } from './answerKey.ts';
 import { publishArtifacts, writeRunManifest, type CaseArtifact, type RunManifestEntry } from './persist.ts';
 import { regrade } from './regrade.ts';
 import { DEFAULT_CHECK_TIMEOUT_MS } from './score/fixerWorker.ts';
@@ -46,9 +47,12 @@ const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
   '--driver fake|ai-sdk|claude-agent|subprocess|acp --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
   '(--driver-name is required with --driver fake — a fake run must name the lane it stands in for) ' +
-  '[--max-usd <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>]\n' +
+  '[--max-usd <n>] [--max-usd-per-case <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>] [--answer-key <path>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
+  'eval root (W6.3): a runner inside a built eval root requires --answer-key <key outside the root>; a sentinel hit exits 2\n' +
   "caps: --max-tokens caps ONE suite run (each runSuite owns its governor); --max-tokens-per-case is multiplied by that suite's case count (WB-1.6) — pass one, never both\n" +
+  'usd (W6.2): every run carries a PER-CASE USD budget — the accepted D9 envelope cap for the cell by default, --max-usd-per-case to override; a cell the D9 table does not map fails closed (exit 2) instead of running uncapped; --max-usd (a legacy run-level cap) and --max-usd-per-case are mutually exclusive\n' +
+  '      an UNATTENDED real-lane run (GITHUB_ACTIONS) without a per-case ceiling — a bare --max-usd — is refused (W6.4)\n' +
   'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure\n' +
   'subcommand: regrade --from <out> [--rejudge] [--check-timeout-ms <n>] re-aggregates a finished run (no re-dispatch)';
 
@@ -132,6 +136,12 @@ interface CliOptions {
   model: string;
   provider: string;
   maxUsd?: number;
+  /** W6.2: the resolved per-case USD budget and where it came from — an
+   * explicit --max-usd-per-case, or the accepted D9 envelope's cap for the
+   * (driver, model) cell. Resolution is fail-closed: a cell the D9 table
+   * does not map, with no explicit flag, is a usage error BEFORE any spend. */
+  maxUsdPerCase?: number;
+  maxUsdPerCaseBasis?: 'd9-default' | 'explicit';
   maxTokens?: number;
   maxTokensPerCase?: number;
   checkTimeoutMs: number;
@@ -141,6 +151,8 @@ interface CliOptions {
   driverName: string;
   /** F6: the suite checkout's git SHA for the run manifest (falls back to $GITHUB_SHA). */
   suiteSha?: string;
+  /** W6.3: the eval root's runner-only answer key (expected verdicts + sentinel). */
+  answerKey?: string;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
@@ -154,6 +166,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let provider = '';
   let driverName = '';
   let maxUsd: number | undefined;
+  let maxUsdPerCase: number | undefined;
   let maxTokens: number | undefined;
   let maxTokensPerCase: number | undefined;
   let checkTimeoutMs = 60_000;
@@ -161,6 +174,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let out: string | undefined;
   let probeRecord: string | undefined;
   let suiteSha: string | undefined;
+  let answerKey: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]!;
     switch (flag) {
@@ -179,17 +193,20 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--out': out = nextValue(argv, i, flag); i++; break;
       case '--probe-record': probeRecord = nextValue(argv, i, flag); i++; break;
       case '--suite-sha': suiteSha = nextValue(argv, i, flag); i++; break;
-      case '--max-usd': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': {
+      case '--answer-key': answerKey = nextValue(argv, i, flag); i++; break;
+      case '--max-usd': case '--max-usd-per-case': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
         // Token/time budgets are whole units: a fractional value would
         // round-trip into the governor unpredictably, and an unsafe integer
         // (1e308) overflows perSuiteTokenCap's product — fail loud at parse
-        // time instead. --max-usd stays fractional (a USD cap may be 0.5).
-        if (flag !== '--max-usd' && !Number.isSafeInteger(n)) {
+        // time instead. --max-usd/--max-usd-per-case stay fractional (a USD
+        // cap may be 0.5 — the D9 per-case caps are).
+        if (flag !== '--max-usd' && flag !== '--max-usd-per-case' && !Number.isSafeInteger(n)) {
           throw new UsageError(`${flag} must be a positive safe integer`);
         }
         if (flag === '--max-usd') maxUsd = n;
+        else if (flag === '--max-usd-per-case') maxUsdPerCase = n;
         else if (flag === '--max-tokens') maxTokens = n;
         else if (flag === '--max-tokens-per-case') maxTokensPerCase = n;
         else checkTimeoutMs = n;
@@ -227,13 +244,60 @@ function parseArgs(argv: readonly string[]): CliOptions {
   }
   // WB-1.6: the two caps are different denominations — silently preferring
   // one would hide an operator error (an absolute cap where a per-case
-  // budget was meant, or the reverse).
+  // budget was meant, or the reverse). The USD pair is the same dimension at
+  // two grains, so the same rule binds it (W6.2).
   if (maxTokens !== undefined && maxTokensPerCase !== undefined) {
     throw new UsageError(
       "--max-tokens and --max-tokens-per-case are mutually exclusive: the first is an absolute per-suite-run cap, the second is multiplied by that suite's case count (WB-1.6) — pass one",
     );
   }
-  return { suites, driver, model, provider, maxUsd, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha };
+  if (maxUsd !== undefined && maxUsdPerCase !== undefined) {
+    throw new UsageError(
+      '--max-usd and --max-usd-per-case are mutually exclusive: the first is a legacy absolute run-level cap, the second bounds each case (W6.2) — pass one',
+    );
+  }
+  // W6.2: resolve the per-case USD budget — fail closed when missing. An
+  // explicit --max-usd-per-case wins; otherwise the accepted D9 envelope's
+  // cap for this exact cell applies; a cell the envelope does not map (and
+  // no legacy --max-usd, whose semantics are preserved verbatim) refuses the
+  // run HERE, before any suite dispatch burns spend. Fake runs resolve like
+  // real ones on purpose: the smoke cells then prove the D9 table covers
+  // every cell the matrix can dispatch. Placement is deliberate — after the
+  // ADR-0001 axis guard, so the older error for a mis-axed run is unchanged.
+  let maxUsdPerCaseBasis: 'd9-default' | 'explicit' | undefined;
+  if (maxUsdPerCase !== undefined) {
+    maxUsdPerCaseBasis = 'explicit';
+  } else if (maxUsd === undefined) {
+    const d9 = d9PerCaseUsd(driverName, model);
+    if (d9 === undefined) {
+      throw new UsageError(
+        `no D9 per-case USD budget maps the cell ${driverName}/${model} and no --max-usd-per-case was passed — refusing to run uncapped (fail closed, W6.2). ` +
+          `The accepted envelope maps: ${Object.keys(D9_PER_CASE_USD).join(', ')} — pass --max-usd-per-case <n> to run an unmapped cell explicitly`,
+      );
+    }
+    maxUsdPerCase = d9;
+    maxUsdPerCaseBasis = 'd9-default';
+  }
+  // W6.4: an UNATTENDED real run with no per-case ceiling is refused. Reaching
+  // this line with maxUsdPerCase undefined means the legacy run-level
+  // --max-usd was passed alone (every other path above resolves a per-case
+  // budget or threw) — that cap bounds the run's total but not any single
+  // case, and an unattended run has nobody to watch a case blow through its
+  // envelope share. CI is the unattended signal (GITHUB_ACTIONS is set on
+  // every Actions runner), so the matrix can never silently regress to
+  // run-level-only capping; attended local runs keep the legacy semantics
+  // verbatim (the recorded W6.2 decision). Fake runs are exempt: the smoke
+  // spends nothing and its D9 resolution already proves the table covers
+  // every dispatchable cell.
+  if (process.env.GITHUB_ACTIONS === 'true' && driver !== 'fake' && maxUsdPerCase === undefined) {
+    const d9 = d9PerCaseUsd(driverName, model);
+    throw new UsageError(
+      `unattended real-lane run without a per-case USD ceiling (W6.4): the legacy run-level --max-usd does not bound individual cases — ` +
+        `pass --max-usd-per-case <n> (the accepted D9 envelope caps the cell ${driverName}/${model} at ` +
+        `${d9 !== undefined ? `$${d9} per case` : 'no cap — an explicit value is required'})`,
+    );
+  }
+  return { suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -244,13 +308,25 @@ async function main(argv: readonly string[]): Promise<number> {
     if (e instanceof UsageError) { console.error(e.message); return 2; }
     throw e;
   }
+  // repoRoot mirrors runner/index.ts's default (this file lives in runner/).
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  // W6.3: resolve the answer key before any suite loads — a stripped
+  // eval-root suite cannot even validate without it. Every defect is exit 2.
+  let answerKey: AnswerKey | undefined;
+  let needles: string[] = [];
+  try {
+    ({ answerKey, needles } = resolveAnswerKey(repoRoot, opts.answerKey));
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : e);
+    return 2;
+  }
   // Suites load BEFORE driver construction: load/validation failures map to
   // exit 2 (hard-fail in the workflow), and the loaded roles decide which
   // output schema the ai-sdk lane requests (classifier → verdict vocabulary,
   // fixer → the DD-4 fixer verdict shape).
   let suites: Suite[];
   try {
-    suites = opts.suites.map((d) => loadSuite(d));
+    suites = opts.suites.map((d) => loadSuite(d, answerKey));
   } catch (e) {
     console.error(e instanceof Error ? e.message : e);
     return 2;
@@ -309,8 +385,8 @@ async function main(argv: readonly string[]): Promise<number> {
   // F6: the prediction artifacts + the run manifest published with the tables.
   const artifactList: CaseArtifact[] = [];
   const manifestEntries: RunManifestEntry[] = [];
-  // repoRoot mirrors runner/index.ts's default (this file lives in runner/).
-  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  // W6.3: sentinel hits across every suite run of this invocation.
+  const contaminations: string[] = [];
   // F6: the suite checkout's git SHA rides into the manifest (the snapshot's
   // README header records it for CQ-5 attribution). $GITHUB_SHA is set for
   // every CI step; --suite-sha overrides it for local runs.
@@ -335,6 +411,12 @@ async function main(argv: readonly string[]): Promise<number> {
         suiteDir, driver,
         model: opts.model, provider: opts.provider,
         maxUsd: opts.maxUsd,
+        // W6.2: the resolved per-case USD budget (explicit or D9 default) —
+        // the runner binds it at the invocation grain and as the run
+        // governor's summed cap; see runner/index.ts.
+        ...(opts.maxUsdPerCase !== undefined
+          ? { maxUsdPerCase: opts.maxUsdPerCase, maxUsdPerCaseBasis: opts.maxUsdPerCaseBasis }
+          : {}),
         // WB-1.6: allocate each suite its OWN cap (perCase × that suite's
         // case count), so a multi-suite invocation's allowance is
         // non-overlapping instead of each runSuite resetting to the
@@ -353,7 +435,11 @@ async function main(argv: readonly string[]): Promise<number> {
         checkTimeoutMs: opts.checkTimeoutMs,
         journalPath: opts.journal, driverName: opts.driverName,
         preflightProbe,
+        ...(answerKey !== undefined ? { answerKey, sentinelNeedles: needles } : {}),
       });
+      for (const hit of result.contaminations) {
+        contaminations.push(`${suite.role}/${suite.name} case ${hit.case}: ${hit.where}`);
+      }
       rows.push(...result.rows);
       tables.push(...result.tables);
       // F6 (WB-5.2a/5.1): carry the predictions and the run identity forward
@@ -377,6 +463,13 @@ async function main(argv: readonly string[]): Promise<number> {
         // still records its real runId instead of an 'unknown' placeholder.
         runId: result.runId,
         generatedAt: new Date().toISOString(),
+        // W6.2: the coverage denominator (recorded even for a fully gated
+        // suite, which publishes no rows to carry it) and the per-case USD
+        // budget + its basis, so a snapshot states the cap that bound it.
+        expectedCases: suite.cases.length,
+        ...(opts.maxUsdPerCase !== undefined
+          ? { maxUsdPerCase: opts.maxUsdPerCase, maxUsdPerCaseBasis: opts.maxUsdPerCaseBasis }
+          : {}),
         // F1b (WB-1): a non-model driver cause publishes NO row — record the
         // absence in the manifest so the workflow can warn loudly and drop a
         // dispatch-only marker instead of a fabricated zero. Only on a
@@ -455,7 +548,49 @@ async function main(argv: readonly string[]): Promise<number> {
     console.error(`report/emit failure: ${e instanceof Error ? e.message : String(e)}`);
     return 2;
   }
+  // W6.3: a sentinel hit means a worker reached outside its workspace — the
+  // run's numbers are not evidence. The outputs above are written (the hit is
+  // recorded as an absence in run.json for triage), then the run hard-fails.
+  if (contaminations.length > 0) {
+    console.error(`${contaminations.length} case(s) carried an eval-root sentinel — the worker reached outside its workspace; the run is contaminated:`);
+    for (const c of contaminations) console.error(`  ${c}`);
+    return 2;
+  }
   return anyFailed ? 1 : 0;
+}
+
+/** True when `child` is `parent` or lies beneath it (both absolute, realpath'd). */
+function isInside(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
+/**
+ * W6.3: the key/root pairing rules. A runner inside a built eval root (its
+ * EVAL-ROOT.json marker is present) MUST run with --answer-key — otherwise
+ * the sentinel is never armed. The key must live OUTSIDE the root (the root is
+ * what a worker can reach) and must have been built for THIS root.
+ */
+function resolveAnswerKey(repoRoot: string, keyPath: string | undefined): { answerKey?: AnswerKey; needles: string[] } {
+  const inEvalRoot = existsSync(join(repoRoot, EVAL_ROOT_MARKER));
+  if (keyPath === undefined) {
+    if (inEvalRoot) {
+      throw new UsageError(`this runner lives in a built eval root (${EVAL_ROOT_MARKER}): --answer-key <path> is required so the sentinel is armed (W6.3)`);
+    }
+    return { needles: [] };
+  }
+  if (!inEvalRoot) {
+    throw new UsageError(`--answer-key is only valid for a runner inside a built eval root (no ${EVAL_ROOT_MARKER} at ${repoRoot})`);
+  }
+  const answerKey = loadAnswerKey(keyPath);
+  const root = realpathSync(repoRoot);
+  const key = realpathSync(keyPath);
+  if (isInside(key, root)) {
+    throw new UsageError(`--answer-key '${keyPath}' lies inside the eval root — the key must live outside everything a worker can reach`);
+  }
+  if (answerKey.evalRoot !== root) {
+    throw new UsageError(`--answer-key '${keyPath}' was built for eval root '${answerKey.evalRoot}', not '${root}'`);
+  }
+  return { answerKey, needles: sentinelNeedles(answerKey, key) };
 }
 
 /** F6 (WB-5.2b): `runner regrade --from <out>` usage. */

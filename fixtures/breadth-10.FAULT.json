@@ -1,6 +1,6 @@
 {
   "bug_type": "value misuse",
-  "failure_symptoms": "Two independent faults: amounts are parsed without a radix (so '0x10' becomes 16), and range labels print the bounds reversed ('range 7-3' for rangeLabel(3, 7)).",
+  "failure_symptoms": "Two independent faults: parseAmount('0x10') returns 16, and rangeLabel(3, 7) prints 'range 7-3'.",
   "operator": "radix-coercion-drop+argument-swap",
   "difficulty": "hard",
   "provenance": {

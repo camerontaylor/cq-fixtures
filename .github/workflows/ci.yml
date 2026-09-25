@@ -29,6 +29,19 @@ jobs:
         run: ./scripts/pack-toolkit.sh
       - name: Install dependencies
         run: npm ci
+      - name: Eval-root leakage scan (W6.3)
+        # RS-9 §4.3 D, static half: build the allowlist eval root every run
+        # dispatches from (node_modules skipped — the scan never reads
+        # third-party code) and scan it: an extra, altered or answer-bearing
+        # file, a symlink leaving the root, a prompt carrying an answer marker
+        # or a 6-token span of its fix diff, or a key that does not pair with
+        # the root fails the required check. The dynamic half — the sentinel
+        # — is armed on every suite.yml smoke and matrix run and unit-tested
+        # in test/eval-root.test.ts. Pure node, zero deps.
+        run: |
+          set -euo pipefail
+          node scripts/eval-root.mjs build --out "${RUNNER_TEMP}/cq-eval-root" --key "${RUNNER_TEMP}/cq-eval-key/answer-key.json" --node-modules skip
+          node scripts/eval-root.mjs scan --root "${RUNNER_TEMP}/cq-eval-root" --key "${RUNNER_TEMP}/cq-eval-key/answer-key.json"
       - name: Build runner dist
         # boundary.test.ts scans the BUILT dist/ output: the package-surface
         # discipline must hold through compilation, so the build precedes tests.

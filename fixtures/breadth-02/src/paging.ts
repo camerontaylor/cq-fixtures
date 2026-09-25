@@ -4,7 +4,7 @@ export function pageCount(total: number): number {
   return Math.ceil(total / PAGE_SIZE);
 }
 
-// True when `page` is the zero-based index of the final page.
+// Last-page check for the pager controls.
 export function isLastPage(page: number, totalPages: number): boolean {
   return page > totalPages - 1;
 }

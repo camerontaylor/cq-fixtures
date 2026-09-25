@@ -6,15 +6,17 @@
 //
 // Honesty rules enforced here (I9): every DISPATCHED case yields exactly one
 // row; a case the governor refuses (budget) yields NO row — refusing to
-// fabricate a zero for work that never ran — and shows up only in the
-// journal's run-finished stoppedEarly/earlyStopReason and the result's
-// gatedByBudget flag. costUSD comes only from the toolkit price map or is
-// null (DD-9); the row's model is the OBSERVED served id when the driver
-// reports one.
+// fabricate a zero for work that never ran — and since W6.2 it is also
+// recorded as an EXPLICIT budget-stop absence (never a silent no-row): the
+// result's absences[] carries it, the manifest lists it, and coverage columns
+// expose the gap. A DISPATCHED case the driver stops on its (per-case)
+// budget keeps its honest incomplete row, marked with stopCause 'budget'.
+// costUSD comes only from the toolkit price map or is null (DD-9); the row's
+// model is the OBSERVED served id when the driver reports one.
 
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, lstatSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -38,6 +40,8 @@ import {
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
 import { aggregate, type ComparisonTable, type ResultRow } from './aggregate.ts';
+import { perSuiteUsdCap } from './budget.ts';
+import { answerKeyCase, findSentinel, type AnswerKey, type SentinelSource } from './answerKey.ts';
 import { scoreSchemaCompliance } from './dimensions/schemaCompliance.ts';
 import type { CaseArtifact } from './persist.ts';
 import { scoreFixerWorker, FIXER_PROBE_COUNT } from './score/fixerWorker.ts';
@@ -139,6 +143,19 @@ export interface RunSuiteOptions {
    * unpriced usage under a USD cap, so a token-only cap must be able to bind
    * alone (DD-9). Absent flag = absent cap — no default injection. */
   maxUsd?: number;
+  /**
+   * W6.2: per-case USD budget (D9 default or explicit --max-usd-per-case,
+   * resolved by the CLI). Binds at BOTH grains: each invocation's
+   * `budget.maxUsd` (driver-enforced stop on the lanes that honor
+   * Budget.maxUsd — claude-agent, subprocess) and the run governor's
+   * cumulative cap, perSuiteUsdCap(this × that suite's case count) — the
+   * enforcement that also covers the lanes whose driver ignores maxUsd
+   * (ai-sdk, acp). When the cumulative cap trips, further cases are refused
+   * admission: NO row each, but an explicit `budget-stop` absence (never a
+   * silent no-row). Mutually exclusive with maxUsd at the CLI; at the
+   * library grain maxUsdPerCase wins the invocation budget and BOTH cap the
+   * governor. */
+  maxUsdPerCase?: number;
   maxTokens?: number;
   /** Ceiling for one check-probe execution (default: scorer's 60_000). */
   checkTimeoutMs?: number;
@@ -156,6 +173,20 @@ export interface RunSuiteOptions {
   repoRoot?: string;
   /** Row driver label — must be a toolkit lane (row schema enum). */
   driverName?: string;
+  /**
+   * W6.3: the eval root's runner-only answer key. Supplies the stripped
+   * suite's expected verdicts and label-sidecar flags (runner/answerKey.ts);
+   * absent = the suite carries its own answers (repo-local runs and tests).
+   */
+  answerKey?: AnswerKey;
+  /**
+   * W6.3 dynamic sentinel (RS-9 §4.3 D): strings whose appearance in a
+   * case's worker output, error, tool denials, session transcript, patch or
+   * workspace proves the worker reached outside its workspace. Such a case
+   * publishes no row (a `sentinel-contamination` absence) and is listed in
+   * `contaminations`. Empty/absent = the check is off.
+   */
+  sentinelNeedles?: readonly string[];
 }
 
 /** F1b (WB-1): a driver failure caused by something other than the model's
@@ -192,6 +223,8 @@ export interface RunSuiteResult {
    * fabricated zero). The scored-miss class (`structured-output-miss`) is a
    * MODEL outcome and rides `rows` as a real zero instead. */
   absences: DriverAbsence[];
+  /** W6.3: cases whose worker surfaces carried an eval-root sentinel (also in `absences`). */
+  contaminations: Array<{ case: string; where: string }>;
   /** The run identity generated for this invocation. Set even when `rows` is
    * empty: a suite whose every case is a dispatch-only absence still ran and
    * must record its identity (the journal's `runId` and the manifest entry's
@@ -217,8 +250,67 @@ const GIT_COMMON = [
 /** Commit the materialized workspace's pristine state so a later diff is vs pristine. */
 function gitBaseline(workspace: string): boolean {
   const run = (args: string[]) => spawnSync('git', ['-C', workspace, ...GIT_COMMON, ...args], { encoding: 'utf8' });
-  return run(['init', '-q']).status === 0 && run(['add', '-A']).status === 0
-    && run(['commit', '-q', '-m', 'pristine']).status === 0;
+  if (run(['init', '-q']).status !== 0) return false;
+  // W6.3 (RS-9 §4.3 B.10): vitest/vite caches a worker's own test run leaves
+  // under node_modules/ are not the worker's fix — keep them out of the
+  // persisted patch.
+  try {
+    writeFileSync(join(workspace, '.git', 'info', 'exclude'), 'node_modules/\n');
+  } catch {
+    return false;
+  }
+  return run(['add', '-A']).status === 0 && run(['commit', '-q', '-m', 'pristine']).status === 0;
+}
+
+/** Bound on one workspace file read by the sentinel scan (a huge file is skipped, not read). */
+const SENTINEL_SCAN_MAX_BYTES = 5 * 1024 * 1024;
+
+/** W6.3: every regular file a worker could have written into its workspace, as sentinel sources. */
+function* workspaceSources(dir: string, workspace: string): Generator<SentinelSource> {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry);
+    if (dir === workspace && entry === '.git') continue;
+    let st;
+    try {
+      st = lstatSync(path);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) yield* workspaceSources(path, workspace);
+    else if (st.isFile() && st.size <= SENTINEL_SCAN_MAX_BYTES) {
+      let text: string | undefined;
+      try {
+        text = readFileSync(path, 'utf8');
+      } catch {
+        text = undefined;
+      }
+      yield { where: `workspace file ${path.slice(workspace.length + 1)}`, text };
+    } else if (st.isSymbolicLink()) {
+      // A planted link is a reach attempt in itself: its target text is scanned.
+      let target: string | undefined;
+      try {
+        target = readlinkSync(path);
+      } catch {
+        target = undefined;
+      }
+      yield { where: `workspace symlink ${path.slice(workspace.length + 1)}`, text: target };
+    }
+  }
+}
+
+/** Read a store-side session file for the sentinel scan (undefined when absent). */
+function readIfPresent(path: string): string | undefined {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
 }
 
 /** `git diff`-style patch of the workspace vs its pristine baseline (undefined on failure). */
@@ -320,7 +412,8 @@ function sidecarDiagnostic(caseId: string, fixture: string, sidecarFlag: Sidecar
       : sidecarFlag;
   return `case ${caseId}: label sidecar '${fixture.slice(0, -'.json'.length)}.label.json' ${why} — suspiciousBenign flag omitted`;
 }
-function suspiciousBenignFlag(repoRoot: string, fixture: string): SidecarFlag {
+/** Exported for the eval-root builder's parity test (scripts/eval-root.mjs resolves the same status). */
+export function suspiciousBenignFlag(repoRoot: string, fixture: string): SidecarFlag {
   if (!fixture.endsWith('.json')) return 'unflagged';
   let raw: string;
   try {
@@ -342,7 +435,15 @@ function suspiciousBenignFlag(repoRoot: string, fixture: string): SidecarFlag {
 }
 
 export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
-  const suite = loadSuite(opts.suiteDir);
+  const suite = loadSuite(opts.suiteDir, opts.answerKey);
+  const needles = opts.sentinelNeedles ?? [];
+  // W6.3: an eval-root run resolves each classifier case's label sidecar
+  // from the answer key (the sidecars are excised from the root, and the key
+  // recorded the full repo's status at build time); a repo-local run reads it.
+  const sidecarOf = (caseId: string, fixture: string): SidecarFlag =>
+    opts.answerKey !== undefined
+      ? (answerKeyCase(opts.answerKey, suite.role, suite.name, caseId)?.sidecar ?? 'absent')
+      : suspiciousBenignFlag(repoRoot, fixture);
   const variant = suiteVariant(suite);
   const repoRoot = opts.repoRoot ?? DEFAULT_REPO_ROOT;
   const driverName = opts.driverName ?? 'ai-sdk';
@@ -359,6 +460,16 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const budget: Budget = {};
   if (opts.maxUsd !== undefined) budget.maxUsd = opts.maxUsd;
   if (opts.maxTokens !== undefined) budget.maxTokens = opts.maxTokens;
+  // W6.2: the per-case USD budget REPLACES the invocation grain's maxUsd —
+  // a case is bounded by ITS OWN budget, never by the run's total. The
+  // run-level cap becomes the sum of the per-case bounds (the USD mirror of
+  // WB-1.6), so a multi-case run cannot spend beyond its cases' combined
+  // allowance and a case that overspends its share gates only the tail —
+  // visibly, as budget-stop absences.
+  const invocationBudget: Budget =
+    opts.maxUsdPerCase !== undefined ? { ...budget, maxUsd: opts.maxUsdPerCase } : budget;
+  const runUsdCap =
+    opts.maxUsdPerCase !== undefined ? perSuiteUsdCap(opts.maxUsdPerCase, suite.cases.length) : opts.maxUsd;
 
   // The toolkit governor owns the run's caps: the admission gate runs per
   // case, then usage/cost observation — which trips the cap fail-loud (an
@@ -370,7 +481,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       {
         concurrency: 1,
         stopOnError: false,
-        ...(opts.maxUsd !== undefined ? { maxUsd: opts.maxUsd } : {}),
+        ...(runUsdCap !== undefined ? { maxUsd: runUsdCap } : {}),
         ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
       },
       {},
@@ -431,6 +542,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const rows: ResultRow[] = [];
   const artifacts: CaseArtifact[] = [];
   const absences: DriverAbsence[] = [];
+  const contaminations: Array<{ case: string; where: string }> = [];
   const caseDiagnostics: string[] = [];
   const materializationDiagnostics: string[] = [];
   let materializationFailures = 0;
@@ -441,11 +553,17 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // Never dispatched: NO row (rows exist only for work actually
       // dispatched — a fabricated zero would claim a verdict that never ran)
       // and NO journal events (the toolkit's convention: missing job ids ARE
-      // the not-dispatched list). The honest stop is recorded on the
-      // run-finished event and the gatedByBudget result flag; a fully
-      // refused suite yields an empty-but-valid table.
+      // the not-dispatched list). W6.2: the stop is nevertheless an EXPLICIT
+      // record, never a silent no-row — the case joins absences[] with a
+      // `budget-stop:` cause (surfaced by the CLI and run.json beside the
+      // other dispatch-only absences), and the honest stop stays on the
+      // run-finished event and the gatedByBudget result flag. Coverage makes
+      // the gap mechanical: the row-level expectedCases denominator counts
+      // this case, so every cell of the run reports coverage < 1.
       gatedByBudget = true;
-      console.error(`  case ${c.id}: not dispatched — run budget exhausted (${admission.reason})`);
+      const cause = `budget-stop: the run budget gate refused dispatch (${admission.reason})`;
+      absences.push({ case: c.id, role: suite.role, cause });
+      console.error(`  case ${c.id}: not dispatched — ${cause}`);
       continue;
     }
     await append({ type: 'job-started', runId, at: now(), jobId: c.id, op: suite.role, attempt: admission.attempt });
@@ -554,7 +672,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             modelSpec: { model: opts.model, provider: opts.provider },
             toolPolicy: { allow: [...FIXER_TOOL_NAMES], mode: 'allowlist' },
             sandboxPolicy: { level: 'workspace-write' },
-            budget,
+            budget: invocationBudget,
             ...(sessionRef !== undefined ? { sessionRef } : {}),
           };
         } else {
@@ -565,13 +683,15 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           // infrastructure step above — a failed read never reaches dispatch
           // (cycle-2 CLI review) — so `payload` is always the file's content
           // here. Fixer prompts stay unchanged: the workspace path already
-          // rides in them above.
+          // rides in them above. W6.3 (RS-9 §4.3 C.12): the marker names no
+          // fixture path — thread ids are ordinal and label-blocked, and the
+          // path named the label sidecar beside it.
           invocation = {
-            prompt: `${c.task.prompt}\n\nThread payload (fixture ${c.fixture}):\n${payload}`,
+            prompt: `${c.task.prompt}\n\nThread payload:\n${payload}`,
             modelSpec: { model: opts.model, provider: opts.provider },
             toolPolicy: { allow: [], mode: 'none' },
             sandboxPolicy: { level: 'read-only' },
-            budget,
+            budget: invocationBudget,
           };
         }
         worker = await opts.driver.run(invocation);
@@ -620,9 +740,36 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       const fixerPatch =
         isFixerCase(c) && workspace !== undefined && worker !== undefined ? gitPatch(workspace) : undefined;
 
+      // W6.3 dynamic sentinel (RS-9 §4.3 D): before anything is scored, scan
+      // every surface the worker produced — structured output, error, tool
+      // denials, a driver throw, the patch, the store-side session transcript
+      // and CLI sidecar, and every workspace file — for the eval root's
+      // sentinel strings. This catches reach the static scan cannot model.
+      const caseSources = function* (): Generator<SentinelSource> {
+        if (worker !== undefined) {
+          yield {
+            where: 'structured output',
+            text: worker.structuredOutput === undefined ? undefined : JSON.stringify(worker.structuredOutput),
+          };
+          yield { where: 'driver error', text: worker.error };
+          yield { where: 'tool denials', text: JSON.stringify(worker.denials) };
+        }
+        if (thrown !== undefined) yield { where: 'driver throw', text: String(thrown) };
+        yield { where: 'patch', text: fixerPatch };
+        if (sessionRef !== undefined) {
+          yield { where: 'session transcript', text: readIfPresent(join(SESSION_STORE_DIR, `${sessionRef}.jsonl`)) };
+          yield { where: 'session sidecar', text: readIfPresent(join(SESSION_STORE_DIR, `${sessionRef}.cq-cli-session`)) };
+        }
+        if (workspace !== undefined) yield* workspaceSources(workspace, workspace);
+      };
+      const contaminatedAt = findSentinel(needles, caseSources());
+
       let outcome: { score: number; passed: number; total: number };
       let journalResult: OpResult<unknown>;
       let diagnostics: string | undefined;
+      // W6.2: the cause a dispatched case's row is incomplete (the row-level
+      // cause column). Set only on a budget stop today; absent = complete.
+      let stopCause: ResultRow['stopCause'];
       // F4: classifier-only row fields, set in the review-classifier branch
       // below; fixer rows and every zero path leave them unset, so those
       // rows keep their exact pre-F4 shape.
@@ -636,7 +783,19 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // gradeable result failed every one of them (passed 0 of the full
       // ceiling) rather than a truncated count.
       const probeCount = isFixerCase(c) ? FIXER_PROBE_COUNT : 1;
-      if (worker === undefined) {
+      if (contaminatedAt !== undefined) {
+        // W6.3: the worker reached outside its workspace, so its outcome is
+        // evidence of nothing. NO row and NO persisted prediction (the
+        // artifact would carry the sentinel onward) — a loud absence plus the
+        // contamination list the CLI fails the run on.
+        const cause = `sentinel-contamination: the ${contaminatedAt} carries an eval-root sentinel (the worker reached outside its workspace)`;
+        outcome = zeroOutcome(probeCount);
+        journalResult = { status: 'failed', error: cause };
+        diagnostics = cause;
+        emitRow = false;
+        absences.push({ case: c.id, role: suite.role, cause });
+        contaminations.push({ case: c.id, where: contaminatedAt });
+      } else if (worker === undefined) {
         outcome = zeroOutcome(probeCount);
         // Same bound/redaction as the stopReason:error path — a driver that
         // THROWS must not persist an unbounded or secret-bearing message.
@@ -654,6 +813,11 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         outcome = zeroOutcome(probeCount); // honest budget-exhausted: no fabricated credit
         journalResult = { status: 'budget-exhausted' };
         diagnostics = 'driver stopped on budget';
+        // W6.2: the row stays (the case ran — its partial spend and its
+        // configured-but-failed probes are evidence), but the cause column
+        // marks it incomplete so coverage parity sees the stop (the cell
+        // counts it in budgetStops, not in coveredCases).
+        stopCause = 'budget';
       } else if (worker.stopReason === 'error') {
         // Post-v1.0.0 toolkit (cq-toolkit #206/#210/#212, pinned 1.0.1)
         // carries the driver's own cause in `WorkerResult.error` (bounded and
@@ -684,7 +848,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           // null probe so confusion/FP metrics count the miss instead of
           // silently dropping it from the denominator.
           rowProbes = [{ kind: 'expected-verdict', expected: c.probe.expected, observed: null, passed: false }];
-          sidecarFlag = suspiciousBenignFlag(repoRoot, c.fixture);
+          sidecarFlag = sidecarOf(c.id, c.fixture);
           const sidecarProblem = sidecarDiagnostic(c.id, c.fixture, sidecarFlag);
           if (sidecarProblem !== undefined) caseDiagnostics.push(sidecarProblem);
         }
@@ -723,7 +887,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // so the confusion matrix, macro-F1, and FP rate are computable from
         // rows.jsonl — the outcome triple alone cannot supply them.
         rowProbes = [{ kind: 'expected-verdict', expected: c.probe.expected, observed: s.observed ?? null, passed: s.passed === 1 }];
-        sidecarFlag = suspiciousBenignFlag(repoRoot, c.fixture);
+        sidecarFlag = sidecarOf(c.id, c.fixture);
         // r1-F3: a damaged sidecar is a case diagnostic (row shape
         // unchanged) — silent omission would undercount fpN/fpRate with
         // zero signal on any run the drift gate does not cover.
@@ -744,6 +908,12 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // F6/CQ-4: only a non-default variant rides the row, so the default
         // posture (and every pre-F6 row) keeps its exact shape.
         ...(variant !== 'default' ? { variant } : {}),
+        // W6.2: every row carries the suite's declared case count (the
+        // coverage denominator — budget-gated undispatched cases have no
+        // rows, so it must ride the rows) and, on a budget-stopped case,
+        // the cause its evidence is incomplete.
+        expectedCases: suite.cases.length,
+        ...(stopCause !== undefined ? { stopCause } : {}),
         outcome, costUSD: cost ?? null,
         ...(cost !== undefined ? { costBasis: 'modeled' as const } : {}),
         ...(rowProbes !== undefined ? { probes: rowProbes } : {}),
@@ -782,7 +952,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       if (emitRow) {
         console.error(`  case ${c.id}: score ${outcome.score}${diagnostics !== undefined ? ` — ${diagnostics.split('\n')[0]}` : ''}`);
       } else {
-        console.error(`  case ${c.id}: not published — driver error (dispatch-only absence): ${diagnostics?.split('\n')[0] ?? ''}`);
+        const why = contaminatedAt !== undefined ? 'sentinel contamination' : 'driver error (dispatch-only absence)';
+        console.error(`  case ${c.id}: not published — ${why}: ${diagnostics?.split('\n')[0] ?? ''}`);
       }
     } finally {
       // The materialized workspace is the driver's scratch: graded against,
@@ -838,6 +1009,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     materializationDiagnostics,
     artifacts,
     absences,
+    contaminations,
     runId,
   };
 }

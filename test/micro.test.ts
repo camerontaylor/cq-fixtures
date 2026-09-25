@@ -9,6 +9,7 @@ import {
   computeCostUSD,
   priceOf,
   type Driver,
+  SessionStore,
   type OpInvocation,
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
@@ -531,6 +532,30 @@ describe('fake-driver smoke over the micro suites (D2 subprocess lane)', () => {
   }, 60_000);
 });
 
+class BindingDriver implements Driver {
+  readonly sessions: string[] = [];
+  readonly workspaces: string[] = [];
+  async run(invocation: OpInvocation): Promise<WorkerResult> {
+    expect(invocation.sessionRef).toBeDefined();
+    const store = new SessionStore(join(/\nworkspace: (\S+)$/.exec(invocation.prompt)![1]!, '.cq-sessions'));
+    const record = await store.load(invocation.sessionRef!);
+    expect(record?.workspace).toBe(/\nworkspace: (\S+)$/.exec(invocation.prompt)![1]);
+    this.sessions.push(invocation.sessionRef!);
+    this.workspaces.push(record!.workspace);
+    const source = join(record!.workspace, 'src', 'rangeSum.ts');
+    if (existsSync(source)) {
+      writeFileSync(source,
+        'export function sumRange(a: number, b: number): number { let total = 0; for (let i = a; i <= b; i++) total += i; return total; }\\n');
+    }
+    return {
+      model: invocation.modelSpec.model,
+      structuredOutput: { fixed: true, notes: 'workspace-bound round trip' },
+      usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+      denials: [], stopReason: 'complete',
+    };
+  }
+}
+
 describe('payload/workspaces injection into prompts (J3 D3)', () => {
   it('classifier prompts carry the thread payload content', async () => {
     const suite = loadSuite(CLASSIFIER_SUITE_DIR);
@@ -549,6 +574,37 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
       expect(prompt, `case ${c.id} prompt must carry the payload body`).toContain(payload.comments[0]!.body);
     }
   }, 60_000);
+
+  it('fixer round trip edits the graded copy and passes its check', async () => {
+    const dir = join(wsRoot, 'bound-round-trip');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'suite.json'), JSON.stringify({
+      name: 'bound-round-trip', role: 'fixer-worker',
+      provenance: { origin: 'W6.1 workspace binding test' },
+      cases: [{ id: 'micro-1', fixture: 'fixtures/micro-1', task: { prompt: 'Fix sumRange.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' } }],
+    }, null, 2) + '\\n');
+    const driver = new BindingDriver();
+    const result = await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
+    expect(result.rows[0]?.outcome.passed).toBe(2);
+    expect(driver.sessions).toHaveLength(1);
+  }, 120_000);
+
+  it('fixer sessions isolate successive graded copies', async () => {
+    const dir = join(wsRoot, 'bound-isolation');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'suite.json'), JSON.stringify({
+      name: 'bound-isolation', role: 'fixer-worker',
+      provenance: { origin: 'W6.1 workspace isolation test' },
+      cases: [
+        { id: 'micro-1', fixture: 'fixtures/micro-1', task: { prompt: 'Fix one.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' } },
+        { id: 'micro-2', fixture: 'fixtures/micro-2', task: { prompt: 'Fix two.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-2/check.mjs' } },
+      ],
+    }, null, 2) + '\\n');
+    const driver = new BindingDriver();
+    await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
+    expect(driver.sessions[0]).not.toBe(driver.sessions[1]);
+    expect(driver.workspaces[0]).not.toBe(driver.workspaces[1]);
+  }, 120_000);
 
   it('fixer prompts carry the materialized workspace path', async () => {
     // One-case suite referencing the REAL micro-1 fixture so exactly one

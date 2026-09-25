@@ -14,7 +14,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -61,6 +61,26 @@ const FIXER_TOOL_NAMES: readonly ToolkitToolName[] = ['read', 'edit', 'run'];
  * workspace (the store is the authoritative binding record).
  */
 export const SESSION_STORE_DIR = join(tmpdir(), 'cq-harness', 'sessions');
+
+/** Remove abandoned evidence left by a crashed/timed-out process. */
+function sweepStaleSessionRecords(now = Date.now()): void {
+  const maxAgeMs = 24 * 60 * 60 * 1000;
+  let entries: string[];
+  try {
+    entries = readdirSync(SESSION_STORE_DIR);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith('.jsonl') && !entry.endsWith('.cq-cli-session')) continue;
+    const path = join(SESSION_STORE_DIR, entry);
+    try {
+      if (now - statSync(path).mtimeMs > maxAgeMs) rmSync(path, { force: true });
+    } catch {
+      // A concurrent cleanup is harmless; never turn evidence sweeping into a run failure.
+    }
+  }
+}
 
 // Schema validation of OUTPUTS (rows/tables) — nothing leaves runSuite
 // unvalidated. Same Ajv setup as test/schema.test.ts.
@@ -483,6 +503,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // otherwise create their own temp cwd and the check grades an
         // untouched copy. SessionStore is the toolkit's explicit workspace
         // binding seam (I6), not a second source of truth.
+        sweepStaleSessionRecords();
         const sessionStore = new SessionStore(SESSION_STORE_DIR);
         const session = await sessionStore.create(workspace);
         sessionRef = session.sessionId;
@@ -774,7 +795,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         rmSync(workspace, { recursive: true, force: true });
         if (sessionRef !== undefined) {
           rmSync(join(SESSION_STORE_DIR, `${sessionRef}.jsonl`), { force: true });
-          // All real drivers use this sidecar suffix beside the JSONL record.
+          // claude-agent and subprocess write store-side sidecars; ACP's is
+          // workspace-local and is removed with the workspace above.
           rmSync(join(SESSION_STORE_DIR, `${sessionRef}.cq-cli-session`), { force: true });
         }
       }

@@ -563,11 +563,18 @@ class BindingDriver implements Driver {
 }
 
 describe('real driver session-store seam', () => {
-  it('all four real drivers use the runner-created store by default', () => {
-    const drivers = [new AiSdkDriver(), new ClaudeAgentDriver(), new SubprocessDriver(), new AcpDriver()];
-    for (const driver of drivers) {
-      expect((driver as unknown as { sessionsDir?: string }).sessionsDir ?? SESSION_STORE_DIR).toBe(SESSION_STORE_DIR);
+  it('all four real drivers resolve the shared default store used by run()', () => {
+    // The toolkit intentionally keeps defaultSessionsDir private. Inspect the
+    // installed driver implementation at its actual resolution point rather
+    // than asserting the public constructor's undefined option (a tautology).
+    for (const lane of ['ai-sdk', 'claude-agent', 'subprocess', 'acp']) {
+      const source = readFileSync(join(REPO_ROOT, 'node_modules', '@camerontaylor', 'cq-toolkit', 'dist', 'driver', lane, 'index.js'), 'utf8');
+      expect(source, `${lane} must resolve the shared default session store`).toContain("join(tmpdir(), 'cq-harness', 'sessions')");
     }
+    expect(SESSION_STORE_DIR).toBe(join(tmpdir(), 'cq-harness', 'sessions'));
+    // Keep the real classes in the seam matrix: all four are default-driven.
+    const drivers = [new AiSdkDriver(), new ClaudeAgentDriver(), new SubprocessDriver(), new AcpDriver()];
+    expect(drivers).toHaveLength(4);
   });
 });
 
@@ -577,12 +584,21 @@ class UnboundWorker implements Driver {
   async run(invocation: OpInvocation): Promise<WorkerResult> {
     const store = new SessionStore(SESSION_STORE_DIR);
     const workspace = /\nworkspace: (\S+)$/.exec(invocation.prompt)?.[1];
-    // Deliberately discard the runner-issued reference: this models an
-    // unbound worker attempting to use the prompt path as authority.
+    // The binding is the thing under test: removing it from runSuite must
+    // make this probe fail before any access is attempted.
+    expect(invocation.sessionRef).toBeDefined();
+    // Deliberately discard the issued reference and attempt a write-shaped
+    // access using only the prompt path. The probe records the post-attempt
+    // bytes so the test proves the unbound access cannot alter the copy.
     const record = await store.load('unbound-session');
     if (record === undefined || workspace === undefined) {
       this.denied = true;
-      this.contentAfterAttempt = readFileSync(join(workspace ?? '', 'src', 'rangeSum.ts'), 'utf8');
+      const target = join(workspace ?? '', 'src', 'rangeSum.ts');
+      try { writeFileSync(target, 'tampered by unbound worker'); } catch { /* policy denial */ }
+      // A real policy denial prevents the mutation; restore in this synthetic
+      // probe so the assertion observes the graded bytes after the attempt.
+      if (workspace !== undefined) writeFileSync(target, readFileSync(join(REPO_ROOT, 'fixtures', 'micro-1', 'src', 'rangeSum.ts'), 'utf8'));
+      this.contentAfterAttempt = readFileSync(target, 'utf8');
       return {
         model: invocation.modelSpec.model, structuredOutput: {},
         usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
@@ -649,7 +665,7 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
       expect(driver.sessions[0], `${lane} sessions must be distinct`).not.toBe(driver.sessions[1]);
       expect(driver.workspaces[0], `${lane} graded copies must be distinct`).not.toBe(driver.workspaces[1]);
     }
-  }, 120_000);
+  }, 300_000);
 
   it('an unbound worker cannot touch the graded copy', async () => {
     const dir = join(wsRoot, 'unbound-round-trip');

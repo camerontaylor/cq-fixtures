@@ -892,7 +892,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d "${RUNNER_TEMP}/cq-eval-out" ]; then
-            mkdir -p reports
+            # mkdir the FULL destination: `cp -R src/. dest` requires dest to
+            # exist, and a leg that failed before its eval step never created
+            # reports/eval.
+            mkdir -p reports/eval
             cp -R "${RUNNER_TEMP}/cq-eval-out/." reports/eval/
           fi
         shell: bash

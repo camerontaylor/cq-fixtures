@@ -422,6 +422,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // The copy happens in an always() step AFTER the eval cell, when no
     // model-driven code is running.
     const copy = stepChunk('Upload eval reports');
+    expect(copy).toContain('mkdir -p reports/eval');
     expect(copy).toContain('cp -R "${RUNNER_TEMP}/cq-eval-out/." reports/eval/');
     expect(copy).toContain('if: always()');
     expect(stepLine('Eval cell —')).toBeLessThan(stepLine('Upload eval reports'));

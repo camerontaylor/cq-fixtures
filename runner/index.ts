@@ -28,6 +28,7 @@ import {
   openRunLog,
   type Budget,
   type Driver,
+  SessionStore,
   type JournalEvent,
   type OpInvocation,
   type OpResult,
@@ -447,6 +448,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     // job-finished:indeterminate journal event, a stderr + diagnostics
     // entry, and a materializationFailures increment.
     let workspace: string | undefined;
+    let sessionRef: string | undefined;
     let payload: string | undefined;
     if (isFixerCase(c)) {
       try {
@@ -466,6 +468,14 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           caseDiagnostics.push(detail);
           console.error(`  ${detail}`);
         }
+        // Bind the driver session to this exact materialized workspace. A
+        // prompt-only workspace path is not an execution boundary: drivers
+        // otherwise create their own temp cwd and the check grades an
+        // untouched copy. SessionStore is the toolkit's explicit workspace
+        // binding seam (I6), not a second source of truth.
+        const sessionStore = new SessionStore(join(workspace, '.cq-sessions'));
+        const session = await sessionStore.create(workspace);
+        sessionRef = session.sessionId;
       } catch (e) {
         if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
         await refuseCase(`fixture materialization failed for '${c.fixture}': ${e instanceof Error ? e.message : String(e)}`);
@@ -514,6 +524,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             toolPolicy: { allow: [...FIXER_TOOL_NAMES], mode: 'allowlist' },
             sandboxPolicy: { level: 'workspace-write' },
             budget,
+            ...(sessionRef !== undefined ? { sessionRef } : {}),
           };
         } else {
           // Review-classifier: tools-none / read-only — the classifier cannot
@@ -746,7 +757,11 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // The materialized workspace is the driver's scratch: graded against,
       // then removed — even when the case aborts mid-flight. The pristine
       // fixture under repoRoot is never touched.
-      if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
+      if (workspace !== undefined) {
+        // The session store lives inside the scratch workspace, so this
+        // removes both the graded copy and its private session evidence.
+        rmSync(workspace, { recursive: true, force: true });
+      }
     }
   }
   await append({

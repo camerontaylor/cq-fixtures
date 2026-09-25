@@ -637,6 +637,13 @@ jobs:
           EVAL_KEY="${RUNNER_TEMP}/cq-eval-key/answer-key.json"
           # W6.4: key path via the environment, never argv (see the smoke job).
           export CQ_ANSWER_KEY="${EVAL_KEY}"
+          # W6.3 (RS-9 A.6): the runner writes its out/journal trees HERE,
+          # outside the checkout, so no suite of this leg can read an earlier
+          # suite's rows.jsonl (expected verdicts), patches or raw outputs. The
+          # always() upload step copies them into reports/ afterwards, when no
+          # worker is running.
+          EVAL_OUT="${RUNNER_TEMP}/cq-eval-out"
+          mkdir -p "${EVAL_OUT}"
           hard_fail=0
           suite_count=0
           case "${MATRIX_PROFILE}" in
@@ -684,7 +691,14 @@ jobs:
             fi
             variant_prefix=""
             if [ "${variant}" != "default" ]; then variant_prefix="${variant}/"; fi
-            out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"
+            # W6.3/RS-9 A.6: the runner's outputs stay OUTSIDE the checkout for
+            # the whole duration of the leg. rows.jsonl carries
+            # probes[].expected plus persisted patches and raw outputs, so
+            # writing them under reports/eval inside the pruned checkout would
+            # let a later suite of the SAME leg read earlier suites' answers
+            # on a host-reach lane. The always() upload step copies them into
+            # reports/ only after the last worker has stopped.
+            out_dir="${EVAL_OUT}/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"
             # rel_dir is <role>/<suite>; the role is its first segment.
             role="${rel_dir%%/*}"
             # Discovery drift counts SUITES FOUND, before any skip decision.
@@ -786,9 +800,21 @@ jobs:
                   # otherwise be decoded into a line break); the markdown
                   # step-summary line escapes HTML instead.
                   annotated="$(printf '%s' "${absent_line}" | sed 's/%/%25/g')"
-                  echo "::warning::${annotated} (dispatch-only absence — no row published)"
-                  escaped="$(printf '%s' "${absent_line}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
-                  echo "- dispatch-only absence: ${escaped}" >> "${GITHUB_STEP_SUMMARY}"
+                  # W6.4: NOT every absence is a dispatch-only one. A
+                  # per-case USD overrun DID publish a row (carrying
+                  # stopCause 'budget', excluded from coverage), so the
+                  # dispatch-only wording would be false for it. The cause
+                  # text selects the honest label; the marker is written on
+                  # both classes, because either degrades the publish.
+                  if printf '%s' "${absent_line}" | grep -q 'per-case budget exceeded'; then
+                    echo "::warning::${annotated} (per-case budget overrun — row published with stopCause 'budget', excluded from coverage)"
+                    escaped="$(printf '%s' "${absent_line}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+                    echo "- per-case budget overrun (row published, coverage excluded): ${escaped}" >> "${GITHUB_STEP_SUMMARY}"
+                  else
+                    echo "::warning::${annotated} (dispatch-only absence — no row published)"
+                    escaped="$(printf '%s' "${absent_line}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+                    echo "- dispatch-only absence: ${escaped}" >> "${GITHUB_STEP_SUMMARY}"
+                  fi
                 done <<< "${absent_lines}"
                 touch "reports/eval/DISPATCH-ONLY-${MATRIX_MODEL}-${MATRIX_DRIVER}-${role}"
               fi
@@ -857,6 +883,20 @@ jobs:
             echo "acp leg status ${{ job.status }} — nothing to record"
           fi
       - name: Upload eval reports
+        if: always()
+        # W6.3 (RS-9 A.6): fold the off-checkout run output into reports/ now
+        # that the eval cell has finished — no model-driven code runs after
+        # this step, so copying here cannot expose anything to a worker. A
+        # leg that never reached the eval step has no output to copy and the
+        # artifact still carries its marker.
+        run: |
+          set -euo pipefail
+          if [ -d "${RUNNER_TEMP}/cq-eval-out" ]; then
+            mkdir -p reports
+            cp -R "${RUNNER_TEMP}/cq-eval-out/." reports/eval/
+          fi
+        shell: bash
+      - name: Upload eval reports (artifact)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

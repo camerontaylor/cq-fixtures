@@ -23,10 +23,11 @@ Node >= 23.6 runs the TypeScript directly (type stripping); CI uses node 24. `--
 
 Every run carries a **per-case USD budget**: an explicit `--max-usd-per-case`, or — by default — the accepted D9 envelope's cap for the exact cell (`runner/budget.ts` `D9_PER_CASE_USD`: $0.05 on the ai-sdk flash cells, $0.10 on the claude-agent/subprocess/acp GLM lanes, $1.00 on the frontier Claude cell). A cell the table does not map refuses to run (exit 2, before any spend) rather than run uncapped — fake runs resolve like real ones, so smoke proves the table covers every dispatchable cell. The budget binds at two grains: each invocation's `budget.maxUsd` (driver-enforced on claude-agent/subprocess) and the run governor's cumulative cap, the per-case budget × the suite's case count — the enforcement that also covers the lanes whose driver ignores `Budget.maxUsd` (ai-sdk, acp).
 
-The two stop shapes are recorded differently, per the honesty taxonomy below:
+The three stop shapes are recorded differently, per the honesty taxonomy below:
 
 - **Refused before dispatch** (the cumulative cap tripped): NO row, and an explicit `budget-stop: …` absence in `RunSuiteResult.absences[]` and the manifest's `absences[]` — never a silent no-row.
 - **Stopped mid-case by its own budget** (`stopReason: 'budget'`): the honest incomplete row gains `stopCause: 'budget'` — the cause column — and the cell counts it in `budgetStops`.
+- **Completed but over its own ceiling** (W6.4; the lanes whose driver ignores `Budget.maxUsd` — ai-sdk, acp — have no per-case driver stop, so the overrun is detected from the derived cost after the fact): the row keeps its measured outcome AND gains `stopCause: 'budget'`, plus a `per-case budget exceeded: …` absence, so the case is recorded and excluded from coverage instead of passing silently.
 
 Coverage is mechanical (`RS-9 §1.3`): every row carries `expectedCases` (the suite's case count), and cells aggregate it into `expectedCases` / `coveredCases` (distinct cases whose row is complete evidence — a budget-stopped row does not count) / `coverage`, with `isAtCoverageParity(a, b)` as the gate a comparison must pass before it may be labelled stronger than *descriptive*. `run.json` records `expectedCases` and the binding `maxUsdPerCase` + basis (`d9-default` | `explicit`) so a snapshot states the cap that bound it. All fields are additive-optional: pre-W6.2 rows re-aggregate to their original tables byte-identically.
 

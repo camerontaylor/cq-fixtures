@@ -300,7 +300,9 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // Same-model driver cells must never collide on one table; the snapshot
     // identity nests <date>/<model>/<driver>/<variant?>/<role>/<suite>/ off
     // this path (F6/CQ-4 adds the <variant?>/ segment only when non-default).
-    expect(evalCell).toContain('out_dir="reports/eval/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"');
+    // W6.3 (RS-9 A.6): that path is off-checkout for the whole leg — the
+    // always() upload step copies it into reports/ afterwards.
+    expect(evalCell).toContain('out_dir="${EVAL_OUT}/${MATRIX_MODEL}/${MATRIX_DRIVER}/${variant_prefix}${rel_dir}"');
     expect(evalCell, 'F6: the variant segment is empty for the default posture').toContain('if [ "${variant}" != "default" ]; then variant_prefix="${variant}/"; fi');
     expect(evalCell, 'F6: an unsafe variant fails the cell loudly').toContain('invalid variant');
     expect(evalCell, 'F6: the variant rides the suite.json the runner loads').toContain('${suite_dir}/suite.json');
@@ -406,6 +408,27 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // deleting an earlier complete run's tables and republishing nothing.
     expect(snapshotStep).toContain("landed_tables=\"$(find reports/eval -name '*.table.json' -print -quit");
     expect(snapshotStep, 'the clear guard requires a landed table').toMatch(/if \[ "\$\{\{ needs\.matrix\.result \}\}" = "success" \].*\[ -n "\$\{landed_tables\}" \]; then/s);
+  });
+
+  it('W6.3/RS-9 A.6: the run out-dir lives OUTSIDE the checkout and is copied in only after the eval cell', () => {
+    // rows.jsonl carries expected verdicts plus persisted patches and raw
+    // outputs; a later suite of the SAME leg must not be able to read an
+    // earlier suite's answers out of the (pruned but readable) checkout.
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell).toContain('EVAL_OUT="${RUNNER_TEMP}/cq-eval-out"');
+    expect(evalCell, 'no --out or --journal under reports/').not.toMatch(/--out "?reports/);
+    expect(evalCell, 'no --journal under reports/').not.toMatch(/--journal "?reports/);
+    expect(evalCell).toContain('out_dir="${EVAL_OUT}/${MATRIX_MODEL}/${MATRIX_DRIVER}/');
+    // The copy happens in an always() step AFTER the eval cell, when no
+    // model-driven code is running.
+    const copy = stepChunk('Upload eval reports');
+    expect(copy).toContain('cp -R "${RUNNER_TEMP}/cq-eval-out/." reports/eval/');
+    expect(copy).toContain('if: always()');
+    expect(stepLine('Eval cell —')).toBeLessThan(stepLine('Upload eval reports'));
+    // W6.4: an absence is not automatically dispatch-only — the per-case
+    // overrun class DID publish a row and must be labelled as such.
+    expect(evalCell).toContain("grep -q 'per-case budget exceeded'");
+    expect(evalCell).toContain("row published with stopCause 'budget', excluded from coverage");
   });
 
   it('driver-cause classification: a non-model cause publishes a loud dispatch-only absence via run.json (F1b/WB-1)', () => {

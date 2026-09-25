@@ -153,8 +153,11 @@ export interface RunSuiteOptions {
    * (ai-sdk, acp). When the cumulative cap trips, further cases are refused
    * admission: NO row each, but an explicit `budget-stop` absence (never a
    * silent no-row). Mutually exclusive with maxUsd at the CLI; at the
-   * library grain maxUsdPerCase wins the invocation budget and BOTH cap the
-   * governor. */
+   * library grain maxUsdPerCase wins the invocation budget and REPLACES the
+   * governor's USD cap with perSuiteUsdCap (their sum-of-cases bound), and
+   * a case whose derived cost exceeds its own share is recorded
+   * post-hoc (stopCause 'budget' + an absence) because the lanes that
+   * ignore Budget.maxUsd (ai-sdk, acp) have no per-case driver stop. */
   maxUsdPerCase?: number;
   maxTokens?: number;
   /** Ceiling for one check-probe execution (default: scorer's 60_000). */

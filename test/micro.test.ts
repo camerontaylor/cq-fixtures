@@ -580,7 +580,6 @@ describe('real driver session-store seam', () => {
 
 class UnboundWorker implements Driver {
   denied = false;
-  contentAfterAttempt = '';
   async run(invocation: OpInvocation): Promise<WorkerResult> {
     const store = new SessionStore(SESSION_STORE_DIR);
     const workspace = /\nworkspace: (\S+)$/.exec(invocation.prompt)?.[1];
@@ -595,10 +594,8 @@ class UnboundWorker implements Driver {
       this.denied = true;
       const target = join(workspace ?? '', 'src', 'rangeSum.ts');
       try { writeFileSync(target, 'tampered by unbound worker'); } catch { /* policy denial */ }
-      // A real policy denial prevents the mutation; restore in this synthetic
-      // probe so the assertion observes the graded bytes after the attempt.
-      if (workspace !== undefined) writeFileSync(target, readFileSync(join(REPO_ROOT, 'fixtures', 'micro-1', 'src', 'rangeSum.ts'), 'utf8'));
-      this.contentAfterAttempt = readFileSync(target, 'utf8');
+      // The write-shaped probe is intentionally not restored: the runner's
+      // error/absence path must prevent it from becoming a graded result.
       return {
         model: invocation.modelSpec.model, structuredOutput: {},
         usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
@@ -667,7 +664,7 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
     }
   }, 300_000);
 
-  it('an unbound worker cannot touch the graded copy', async () => {
+  it("an unbound worker's writes are never graded", async () => {
     const dir = join(wsRoot, 'unbound-round-trip');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'suite.json'), JSON.stringify({
@@ -675,13 +672,11 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
       provenance: { origin: 'W6.1 workspace isolation test' },
       cases: [{ id: 'micro-1', fixture: 'fixtures/micro-1', task: { prompt: 'Fix sumRange.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' } }],
     }, null, 2) + '\n');
-    const before = readFileSync(join(REPO_ROOT, 'fixtures', 'micro-1', 'src', 'rangeSum.ts'), 'utf8');
     const driver = new UnboundWorker();
     const result = await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
     expect(result.rows).toEqual([]);
     expect(result.absences).toHaveLength(1);
     expect(driver.denied).toBe(true);
-    expect(driver.contentAfterAttempt).toBe(before);
   }, 120_000);
 
   it('fixer prompts carry the materialized workspace path', async () => {

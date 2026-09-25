@@ -582,7 +582,7 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
       name: 'bound-round-trip', role: 'fixer-worker',
       provenance: { origin: 'W6.1 workspace binding test' },
       cases: [{ id: 'micro-1', fixture: 'fixtures/micro-1', task: { prompt: 'Fix sumRange.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' } }],
-    }, null, 2) + '\\n');
+    }, null, 2) + '\n');
     const driver = new BindingDriver();
     const result = await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
     expect(result.rows[0]?.outcome.passed).toBe(2);
@@ -599,7 +599,7 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
         { id: 'micro-1', fixture: 'fixtures/micro-1', task: { prompt: 'Fix one.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' } },
         { id: 'micro-2', fixture: 'fixtures/micro-2', task: { prompt: 'Fix two.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-2/check.mjs' } },
       ],
-    }, null, 2) + '\\n');
+    }, null, 2) + '\n');
     const driver = new BindingDriver();
     await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
     expect(driver.sessions[0]).not.toBe(driver.sessions[1]);

@@ -10,6 +10,10 @@ import {
   priceOf,
   type Driver,
   SessionStore,
+  AcpDriver,
+  AiSdkDriver,
+  ClaudeAgentDriver,
+  SubprocessDriver,
   type OpInvocation,
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
@@ -558,14 +562,35 @@ class BindingDriver implements Driver {
   }
 }
 
+describe('real driver session-store seam', () => {
+  it('all four real drivers use the runner-created store by default', () => {
+    const drivers = [new AiSdkDriver(), new ClaudeAgentDriver(), new SubprocessDriver(), new AcpDriver()];
+    for (const driver of drivers) {
+      expect((driver as unknown as { sessionsDir?: string }).sessionsDir ?? SESSION_STORE_DIR).toBe(SESSION_STORE_DIR);
+    }
+  });
+});
+
 class UnboundWorker implements Driver {
+  denied = false;
+  contentAfterAttempt = '';
   async run(invocation: OpInvocation): Promise<WorkerResult> {
     const store = new SessionStore(SESSION_STORE_DIR);
-    if (invocation.sessionRef === undefined) throw new Error('workspace binding required');
-    const record = await store.load(invocation.sessionRef);
-    if (record === undefined) throw new Error('workspace binding required');
+    const workspace = /\nworkspace: (\S+)$/.exec(invocation.prompt)?.[1];
+    // Deliberately discard the runner-issued reference: this models an
+    // unbound worker attempting to use the prompt path as authority.
+    const record = await store.load('unbound-session');
+    if (record === undefined || workspace === undefined) {
+      this.denied = true;
+      this.contentAfterAttempt = readFileSync(join(workspace ?? '', 'src', 'rangeSum.ts'), 'utf8');
+      return {
+        model: invocation.modelSpec.model, structuredOutput: {},
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+        denials: [{ tool: 'edit', reason: 'workspace binding required' }], stopReason: 'error',
+      };
+    }
     writeFileSync(join(record.workspace, 'src', 'rangeSum.ts'), 'tampered by unbound worker');
-    return { model: invocation.modelSpec.model, structuredOutput: {}, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete' };
+    throw new Error('unbound worker unexpectedly received a session');
   }
 }
 
@@ -602,6 +627,8 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
       expect(result.rows, `${lane} must grade its bound workspace`).toHaveLength(1);
       expect(result.rows[0]?.outcome.passed, `${lane} round trip`).toBe(2);
       expect(driver.sessions).toHaveLength(1);
+      expect(await new SessionStore(SESSION_STORE_DIR).load(driver.sessions[0]!)).toBeUndefined();
+      expect(existsSync(join(SESSION_STORE_DIR, `${driver.sessions[0]}.cq-cli-session`))).toBe(false);
     }
   }, 120_000);
 
@@ -625,20 +652,21 @@ describe('payload/workspaces injection into prompts (J3 D3)', () => {
   }, 120_000);
 
   it('an unbound worker cannot touch the graded copy', async () => {
-    const workspace = mkdtempSync(join(tmpdir(), 'cq-unbound-'));
-    try {
-      cpSync(join(REPO_ROOT, 'fixtures', 'micro-1'), workspace, { recursive: true, verbatimSymlinks: true });
-      const before = readFileSync(join(workspace, 'src', 'rangeSum.ts'), 'utf8');
-      await expect(new UnboundWorker().run({
-        prompt: `Fix it\\nworkspace: ${workspace}`,
-        modelSpec: { model: SMOKE_MODEL.model, provider: SMOKE_MODEL.provider },
-        toolPolicy: { allow: ['read', 'edit', 'run'], mode: 'allowlist' },
-        sandboxPolicy: { level: 'workspace-write' },
-        budget: { maxTokens: 100, maxAttempts: 1 },
-      })).rejects.toThrow('workspace binding required');
-      expect(readFileSync(join(workspace, 'src', 'rangeSum.ts'), 'utf8')).toBe(before);
-    } finally { rmSync(workspace, { recursive: true, force: true }); }
-  }, 60_000);
+    const dir = join(wsRoot, 'unbound-round-trip');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'suite.json'), JSON.stringify({
+      name: 'unbound-round-trip', role: 'fixer-worker',
+      provenance: { origin: 'W6.1 workspace isolation test' },
+      cases: [{ id: 'micro-1', fixture: 'fixtures/micro-1', task: { prompt: 'Fix sumRange.' }, probe: { kind: 'check-rerun', check: 'fixtures/micro-1/check.mjs' } }],
+    }, null, 2) + '\n');
+    const before = readFileSync(join(REPO_ROOT, 'fixtures', 'micro-1', 'src', 'rangeSum.ts'), 'utf8');
+    const driver = new UnboundWorker();
+    const result = await runSuite({ suiteDir: dir, driver, ...SMOKE_MODEL });
+    expect(result.rows).toEqual([]);
+    expect(result.absences).toHaveLength(1);
+    expect(driver.denied).toBe(true);
+    expect(driver.contentAfterAttempt).toBe(before);
+  }, 120_000);
 
   it('fixer prompts carry the materialized workspace path', async () => {
     // One-case suite referencing the REAL micro-1 fixture so exactly one

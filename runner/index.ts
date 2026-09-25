@@ -768,10 +768,15 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // then removed — even when the case aborts mid-flight. The pristine
       // fixture under repoRoot is never touched.
       if (workspace !== undefined) {
-        // The session store lives beside the scratch workspaces, so this
-        // removes the graded copy while the private session evidence remains
-        // available to the real driver's default SessionStore lookup.
+        // The session store lives beside the scratch workspaces, so remove
+        // the graded copy and the completed run's private transcript/sidecars
+        // after grading. A shared store must not accumulate worker history.
         rmSync(workspace, { recursive: true, force: true });
+        if (sessionRef !== undefined) {
+          rmSync(join(SESSION_STORE_DIR, `${sessionRef}.jsonl`), { force: true });
+          // All real drivers use this sidecar suffix beside the JSONL record.
+          rmSync(join(SESSION_STORE_DIR, `${sessionRef}.cq-cli-session`), { force: true });
+        }
       }
     }
   }

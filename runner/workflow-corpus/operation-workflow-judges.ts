@@ -82,9 +82,26 @@ export function judgeAnalysisRemediationProposal(value: unknown): WorkflowOracle
   const output = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
   const summary = typeof output.summary === 'string' ? output.summary : '';
   const patch = typeof output.patch === 'string' ? output.patch : '';
+  const candidateSource = typeof output.candidateSource === 'string' ? output.candidateSource : '';
   const describesFix = /empty|non-empty|blank/i.test(summary) && /reject|trim|empty|non-empty|blank/i.test(patch);
   if (!describesFix) failures.push('proposal does not describe and encode empty-setting validation');
   if (!patch.includes('src/settings.ts') && !patch.includes('validate')) failures.push('proposal does not anchor its change to settings validation');
+  if (candidateSource.length === 0 || candidateSource.length > 32 * 1024) {
+    failures.push('proposal candidate source is missing or exceeds the host judge limit');
+  } else {
+    const probe = `const source = Buffer.from(process.env.CQ_REMEDIATION_SOURCE ?? '', 'base64').toString('utf8');
+const module = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+const check = typeof module.isValidSetting === 'function' ? module.isValidSetting : null;
+if (!check || check('') !== false || check('   ') !== false || check('setting') !== true || check(null) !== false) process.exitCode = 1;`;
+    try {
+      execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
+        env: { ...process.env, CQ_REMEDIATION_SOURCE: Buffer.from(candidateSource).toString('base64') },
+        stdio: 'pipe', timeout: 5_000, maxBuffer: 64 * 1024,
+      });
+    } catch (error) {
+      failures.push(`remediation candidate failed bounded behavior checks: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const identity = OPERATION_WORKFLOW_IDENTITIES.analyze;
   return { ...identity, passed: failures.length === 0, failures };
 }

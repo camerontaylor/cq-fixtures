@@ -523,7 +523,12 @@ describe('cq-settings bounded workflow corpus', () => {
         invocations.push(invocation);
         return completedWorker({
           summary: 'Normalize empty campaign settings at the shared validation boundary.',
-          patch: '--- a/src/settings.ts\n+++ b/src/settings.ts\n@@\n-empty\n+validated',
+          patch: '--- a/src/settings.ts\n+++ b/src/settings.ts\n@@\n-empty\n+reject whitespace-only values',
+          candidateSource: `export function isValidSetting(value) {
+  if (typeof value !== 'string') return false;
+  return value.trim().length > 0;
+}
+`,
         });
       },
     };
@@ -539,9 +544,10 @@ describe('cq-settings bounded workflow corpus', () => {
       oracleId: 'cq-settings.analysis-remediation.oracle.v1',
     });
 
-    expect(expectOk(proposal).structuredOutput).toEqual({
+    expect(expectOk(proposal).structuredOutput).toMatchObject({
       summary: 'Normalize empty campaign settings at the shared validation boundary.',
-      patch: '--- a/src/settings.ts\n+++ b/src/settings.ts\n@@\n-empty\n+validated',
+      patch: expect.stringContaining('reject whitespace-only values'),
+      candidateSource: expect.stringContaining('value.trim().length > 0'),
     });
     expect(invocations[0]?.toolPolicy).toEqual({ allow: [], mode: 'none' });
     expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'read-only' });
@@ -602,4 +608,16 @@ describe('cq-settings bounded workflow corpus', () => {
       await rm(workspace, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('accepts a distinct behaviorally correct remediation implementation', () => {
+    const report = judgeAnalysisRemediationProposal({
+      summary: 'Reject blank settings at the shared validation boundary.',
+      patch: 'update isValidSetting in src/settings.ts to reject trimmed empty text',
+      candidateSource: `export function isValidSetting(value) {
+  return typeof value === 'string' && [...value.trim()].length !== 0;
+}
+`,
+    });
+    expect(report).toMatchObject({ passed: true, oracleId: 'cq-settings.analysis-remediation.oracle.v1' });
+  }, 10_000);
 });

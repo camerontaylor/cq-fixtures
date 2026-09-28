@@ -49,7 +49,8 @@ sidecar fallback; that verifies the corpus adapter, not S1's pin plumbing.
 `operation-workflow-judges.ts` exports independent, reusable checks for the
 other five operation families. They validate merge candidate behavior and
 scope, fleet changed-file ownership, the reproduced test-fix scope hazard,
-remediation content, and ratchet outcomes. Those checks strengthen local
+remediation behavior by executing candidate module bytes (including a distinct
+correct implementation), and ratchet outcomes. Those checks strengthen local
 operation evidence only: they do not turn the existing calls into model-role
 campaign tasks or add any role calls.
 

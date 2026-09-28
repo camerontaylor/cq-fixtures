@@ -1,7 +1,7 @@
 {
   "manifestVersion": 3,
   "status": "visible-calibration-in-progress",
-  "scenarioCount": 14,
+  "scenarioCount": 15,
   "integrationSubstrateCount": 5,
   "verifiedTaskCount": 1,
   "independentSubstrateCount": 1,
@@ -70,6 +70,15 @@
       "roleCall": false
     },
     {
+      "family": "analyze-remediate",
+      "scenario": "alternative-remediation-behavior-oracle",
+      "substrate": "bounded child process evaluating host-supplied candidate module bytes",
+      "action": "host judge evaluates a distinct remediation implementation without requiring reference patch identity",
+      "oracle": "same exported analysis oracle checks empty, whitespace-only, non-string, and valid settings behavior with a five-second child-process limit",
+      "campaignTask": false,
+      "roleCall": false
+    },
+    {
       "family": "monotonic-ratchets",
       "scenario": "local-baseline-tighten-and-loosen",
       "substrate": "fresh temporary workspace with an on-disk captured baseline",
@@ -95,7 +104,7 @@
     "independentOracle": "exported host judge; expected behavior and scope assertions are absent from the task worktree; candidate patch hash identifies captured bytes but is not compared with a reference solution",
     "outputFormatIndependence": "valid no-op claim grades incorrect; malformed/throwing Drivers with correct committed edits grade correct",
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
-    "scenarioCountMeaning": "14 named Vitest workflow cases including review output-fault cases, bounded arbitrary-module execution, and runSuite adaptation; this count is not 14 independent repair tasks",
+    "scenarioCountMeaning": "15 named Vitest workflow cases including review output-fault cases, bounded candidate-module execution, runSuite adaptation, and an alternative remediation behavior check; this count is not 15 independent repair tasks",
     "independentSubstrates": "five fresh local filesystem substrates across review, merge, fleet, test-fix and ratchet integration; only the review substrate has an independent task correctness oracle",
     "hostOracleExpansion": "all five non-review operations now invoke exported family-specific host judges; these remain operation-integration evidence and are not model-role campaign tasks",
     "reviewLoopPin": "review-loop-oracle-pin.json pins review-loop-judge.ts and review-loop-task.ts by content SHA256; review-loop-pin.ts exposes the equivalent API and the bundle supplies materialized baseline SHA plus oracle pin for S1 host-check scoring",

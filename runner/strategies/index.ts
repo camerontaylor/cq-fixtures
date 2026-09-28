@@ -115,6 +115,25 @@ export interface InvocationIdentity {
   readonly attemptId: string;
 }
 
+/** Deterministic S1-safe identities. Reusing a stage key preserves stageId;
+ * each retry ordinal gets a distinct attemptId under that same stage. */
+export function strategyInvocationIdentity(
+  assignmentId: string,
+  recipeDigest: string,
+  stageKey: string,
+  attemptOrdinal: number,
+): Pick<InvocationIdentity, 'stageId' | 'attemptId'> {
+  if (!assignmentId || !recipeDigest || !stageKey) throw new Error('Strategy identity fields must be non-empty');
+  if (!Number.isSafeInteger(attemptOrdinal) || attemptOrdinal < 1) throw new RangeError('attemptOrdinal must be a positive safe integer');
+  const digest = (part: string): string => createHash('sha256').update(part).digest('hex');
+  const namespace = digest(`${assignmentId}\0${recipeDigest}`).slice(0, 20);
+  const stage = digest(stageKey).slice(0, 20);
+  return {
+    stageId: `s-${namespace}-${stage}`,
+    attemptId: `a-${digest(`${assignmentId}\0${recipeDigest}\0${stageKey}\0${attemptOrdinal}`).slice(0, 32)}`,
+  };
+}
+
 export interface Candidate {
   id: string;
   /** Content-addressed by the executor when persisted; opaque to this engine. */
@@ -195,6 +214,10 @@ export interface ExecutorResult {
 }
 
 export interface StageRequest extends InvocationIdentity {
+  /** Stable logical stage key; native retry adapters reuse it across attempts. */
+  stageKey: string;
+  /** One based retry ordinal; attemptId changes while stageId remains fixed. */
+  attemptOrdinal: number;
   task: StrategyTask;
   recipeHash: string;
   kind: StageKind;
@@ -464,7 +487,6 @@ export async function runStrategy(
   const ids = options.ids ?? DEFAULT_IDS;
   const assignmentId = options.assignmentId ?? ids.next('assignment');
   if (!assignmentId) throw new Error('Assignment id must be non-empty');
-  const seenStageIds = new Set<string>();
   const seenAttemptIds = new Set<string>();
   const hash = hashForTrack(recipe, task, tier);
   const startedAt = now();
@@ -501,7 +523,7 @@ export async function runStrategy(
     kind: StageKind; purpose: StagePurpose; route: StrategyRoute | null; effort?: string;
     inputCandidates?: readonly Candidate[]; feedback?: string; selectionPolicy?: 'frozen-rule' | 'judge' | 'model';
     oracle?: boolean;
-    workspace?: unknown; workspaceId?: string;
+    workspace?: unknown; workspaceId?: string; stageKey?: string; attemptOrdinal?: number;
     workspacePolicy?: StageRequest['workspacePolicy'];
   }): Promise<{ result: ExecutorResult | null; candidate: Candidate | null; record: StageRecord }> => {
     if (input.kind === 'independent-judge' ? stageOrdinal >= tier.maxStages : stageOrdinal >= tier.maxStages - 1) throw new Error('stage-limit');
@@ -514,11 +536,15 @@ export async function runStrategy(
     if (input.kind !== 'independent-judge' && (now() >= workEndAt || options.signal?.aborted)) throw new Error(options.signal?.aborted ? 'cancelled' : 'candidate-deadline');
     stageOrdinal += 1;
     if (isModelAttempt) attempts += 1;
-    const stageId = options.assignmentId ? `${assignmentId}:${hash.slice(0, 12)}:s${stageOrdinal}` : ids.next('stage');
-    const attemptId = options.assignmentId ? `${assignmentId}:${hash.slice(0, 12)}:a${stageOrdinal}` : ids.next('attempt');
-    if (!stageId || seenStageIds.has(stageId)) throw new Error(`Stage id must be new and non-empty: ${stageId}`);
+    const stageKey = input.stageKey ?? `${input.kind}-${stageOrdinal}`;
+    const attemptOrdinal = input.attemptOrdinal ?? 1;
+    const mappedIdentity = options.assignmentId
+      ? strategyInvocationIdentity(assignmentId, hash, stageKey, attemptOrdinal)
+      : null;
+    const stageId = mappedIdentity?.stageId ?? ids.next('stage');
+    const attemptId = mappedIdentity?.attemptId ?? ids.next('attempt');
+    if (!stageId) throw new Error(`Stage id must be non-empty: ${stageId}`);
     if (!attemptId || seenAttemptIds.has(attemptId)) throw new Error(`Attempt id must be new and non-empty: ${attemptId}`);
-    seenStageIds.add(stageId);
     seenAttemptIds.add(attemptId);
     const route = input.kind === 'independent-judge' ? task.independentJudgeRoute ?? null : input.route;
     let capMode: StageRequest['tokenCapMode'] = tier.tokenBudget === undefined || route === null ? 'not-configured' : configuredTokenBudgetMode;
@@ -532,7 +558,7 @@ export async function runStrategy(
     const workspaceId = input.workspaceId ?? input.inputCandidates?.[0]?.workspaceId ?? 'task-workspace';
     const epochNow = options.epochNow ?? Date.now;
     const request: StageRequest = Object.freeze({
-      assignmentId, stageId, attemptId, task, recipeHash: hash, kind: input.kind, purpose: input.purpose,
+      assignmentId, stageId, attemptId, stageKey, attemptOrdinal, task, recipeHash: hash, kind: input.kind, purpose: input.purpose,
       route, effort: input.effort, tier, deadlineMonotonicMs: timeoutAt,
       deadlineEpochMs: epochNow() + Math.max(0, timeoutAt - stageStart), monotonicNowMs: stageStart,
       workspace: candidateWorkspace, workspaceId, workspacePolicy: input.workspacePolicy ?? 'task', signal: joined.controller.signal,
@@ -703,8 +729,10 @@ export async function runStrategy(
           const allocation = joinSignal(options.signal);
           const allocationMs = Math.max(0, workEndAt - now());
           const allocationTimer = setTimeout(() => allocation.controller.abort(new Error('Workspace allocation deadline exceeded')), allocationMs);
-          const baseRequest = { assignmentId, stageId: `${assignmentId}:candidate-workspace:${index + 1}`,
-            attemptId: `${assignmentId}:candidate-workspace:${index + 1}`, task, recipeHash: hash, kind: 'draft' as const,
+          const workspaceIdentity = strategyInvocationIdentity(assignmentId, hash, `candidate-workspace-${index + 1}`, 1);
+          const baseRequest = { assignmentId, stageId: workspaceIdentity.stageId,
+            attemptId: workspaceIdentity.attemptId, stageKey: `candidate-workspace-${index + 1}`, attemptOrdinal: 1,
+            task, recipeHash: hash, kind: 'draft' as const,
             purpose: 'candidate-generation' as const, route: recipe.route, tier, deadlineMonotonicMs: workEndAt,
             deadlineEpochMs: (options.epochNow ?? Date.now)() + Math.max(0, workEndAt - now()), monotonicNowMs: now(),
             workspacePolicy: 'fresh-independent' as const, signal: allocation.controller.signal, hardTokenCap: null,
@@ -718,7 +746,7 @@ export async function runStrategy(
           } finally {
             clearTimeout(allocationTimer); allocation.controller.abort(new Error('Workspace allocation settled')); allocation.dispose();
           }
-          if (!workspace.id || workspace.id === 'task-workspace' || candidateWorkspaceIds.has(workspace.id)) throw new Error('Candidate workspace requires a unique stable id');
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(workspace.id) || workspace.id === 'task-workspace' || candidateWorkspaceIds.has(workspace.id)) throw new Error('Candidate workspace requires a unique path-safe stable id');
           candidateWorkspaceIds.add(workspace.id);
           const candidate = await generation(recipe.route, 'draft', undefined, undefined, workspace, true);
           if (candidate && !drafts.some((item) => item.sha256 === candidate.sha256)) drafts.push(candidate);

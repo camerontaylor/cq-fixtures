@@ -10,7 +10,7 @@ import {
 } from './quota.ts';
 
 export type AssignmentState =
-  | 'queued' | 'reserved' | 'running' | 'completed' | 'quarantined' | 'blocked';
+  | 'queued' | 'reserved' | 'running' | 'completed' | 'quarantined' | 'interrupted' | 'blocked';
 export type AssignmentKind = 'frozen-evaluation' | 'validity' | 'corpus' | 'screening' | 'development';
 
 export interface AssignmentDependency {
@@ -26,7 +26,6 @@ export interface PairedBlock {
 
 export interface CampaignAssignment {
   readonly id: string;
-  readonly retryOf?: string;
   readonly provider: string;
   readonly kind: AssignmentKind;
   readonly state: AssignmentState;
@@ -34,27 +33,64 @@ export interface CampaignAssignment {
   readonly pairedBlockId?: string;
   readonly estimatedRuntimeMs: number;
   readonly estimatedUsageUnits: number | null;
+  readonly estimatedUsageUnit?: string;
+  readonly estimatedUsageByWindow?: readonly UsageEstimate[];
   readonly estimatedUsageConfidence: number | null;
   readonly createdAt: string;
   readonly deadlineAt?: string;
   readonly stageId: string;
   readonly attemptId: string;
+  readonly attemptIds?: readonly string[];
   readonly reservation?: ResourceReservation;
+  readonly reservationHistory?: readonly ResourceReservation[];
   readonly completedArtifact?: string;
+  readonly completedAt?: string;
   readonly quarantine?: QuarantineRecord;
+  readonly cancellation?: CancellationRecord;
   readonly blockedReason?: string;
 }
 
 export interface ResourceReservation {
   id: string;
+  /** Configured route, retained for strategy identity. */
   provider: string;
+  /** Shared quota account used to aggregate reservations. */
+  quotaProvider: string;
   assignmentId: string;
   reservedAt: string;
   estimatedUsageUnits: number | null;
+  windowClaims: readonly UsageEstimate[];
+  diagnostic: boolean;
   expiresAt: string;
   /** Supervisor cancellation boundary for provider blackout or assignment deadline. */
   mustStopAt: string | null;
   telemetryFetchedAt: string;
+}
+
+export interface UsageEstimate {
+  windowId: string;
+  amount: number;
+  unit: string;
+  /** Required for fractions so estimates are never confused with provider observations. */
+  calibrationId?: string;
+}
+
+export interface BindingCapacityLimit {
+  provider: string;
+  windowId: string;
+  amount: number;
+  unit: string;
+}
+
+export interface AtomicReservationRequest {
+  assignmentId: string;
+  quotaProvider: string;
+  expectedState: 'queued';
+  event: AssignmentEvent;
+  reservation: ResourceReservation;
+  maxConcurrentPerProvider: number;
+  bindingCapacityLimits: readonly BindingCapacityLimit[];
+  diagnosticLimits?: { maxAttempts: number; maxEstimatedUnits: number };
 }
 
 export interface QuarantineRecord {
@@ -62,6 +98,17 @@ export interface QuarantineRecord {
   reason: 'process-crash' | 'orphaned-running' | 'partial-invocation';
   unresolvedUsage: boolean;
   partialArtifactRefs: readonly string[];
+  knownUsageUnits: number | null;
+}
+
+export interface CancellationRecord {
+  cancelledAt: string;
+  cause: 'provider-throttle' | 'provider-cancelled' | 'operator-cancelled' | 'blackout-boundary';
+  operationalClass: 'cancellation/missingness';
+  candidateArtifactRef: string | null;
+  candidateCorrectness: boolean | null;
+  judgementArtifactRef: string | null;
+  unresolvedUsage: boolean;
   knownUsageUnits: number | null;
 }
 
@@ -77,12 +124,16 @@ export interface AssignmentEvent {
   clearReservation?: boolean;
   artifactRef?: string;
   quarantine?: QuarantineRecord;
+  cancellation?: CancellationRecord;
+  attemptId?: string;
 }
 
 export interface CampaignQueueStore {
   listAssignments(): Promise<readonly CampaignAssignment[]>;
   listPairedBlocks(): Promise<readonly PairedBlock[]>;
   appendEvent(event: AssignmentEvent): Promise<void>;
+  /** Atomically compare assignment state, concurrency, durable reservations and limits. */
+  tryReserveIfAvailable(request: AtomicReservationRequest): Promise<boolean>;
   /** Append-only create-if-absent; assignment identity and recipe never mutate. */
   createAssignment(assignment: CampaignAssignment): Promise<void>;
 }
@@ -115,6 +166,10 @@ export interface AdmissionDecision {
   telemetryAgeMs: number | null;
 }
 
+interface InternalAdmissionDecision extends AdmissionDecision {
+  bindingCapacityLimits: readonly BindingCapacityLimit[];
+}
+
 export interface SchedulerDependencies {
   store: CampaignQueueStore;
   quota: QuotaSource;
@@ -125,9 +180,10 @@ export interface SchedulerDependencies {
 const STATE_TRANSITIONS: Readonly<Record<AssignmentState, readonly AssignmentState[]>> = {
   queued: ['reserved', 'blocked'],
   reserved: ['running', 'queued', 'blocked'],
-  running: ['completed', 'quarantined'],
+  running: ['completed', 'quarantined', 'interrupted'],
   completed: [],
-  quarantined: [],
+  quarantined: ['queued'],
+  interrupted: ['queued'],
   blocked: ['queued'],
 };
 
@@ -144,7 +200,11 @@ export function priorityClass(assignment: CampaignAssignment, hasUsefulExpiringC
 }
 
 export function isGlmRoute(provider: string): boolean {
-  return provider === 'zai' || provider === 'claude-zai';
+  return provider === 'zcode' || provider === 'zai' || provider === 'claude-zai';
+}
+
+export function quotaProviderForRoute(provider: string): string {
+  return isGlmRoute(provider) ? 'zai' : provider;
 }
 
 /** Asia/Singapore weekday wall-clock blackout: Monday-Friday, 14:00 through 18:00. */
@@ -200,23 +260,45 @@ function blackoutWindow(provider: string, config: SchedulerConfig, nowMs: number
 }
 
 function providerQuota(snapshot: QuotaSnapshot, provider: string): ProviderQuota | undefined {
-  return snapshot.providers.find((entry) => entry.provider === provider);
+  const quotaProvider = quotaProviderForRoute(provider);
+  return snapshot.providers.find((entry) => entry.provider === quotaProvider);
 }
 
-function providerHasCapacity(quota: ProviderQuota | undefined, estimatedUsageUnits: number | null): boolean {
-  if (!quota?.telemetryAvailable) return false;
-  const binding = quota.windows.filter((window) => window.binding);
-  if (binding.length === 0) return false;
-  return binding.every((window) => {
-    if (window.remainingUnits === null || estimatedUsageUnits === null) return false;
-    return window.remainingUnits >= estimatedUsageUnits;
-  });
+function providerQuotaIsFresh(snapshot: QuotaSnapshot, provider: string, now: number, maxAgeMs: number): boolean {
+  const quota = providerQuota(snapshot, provider);
+  return !!quota && quota.telemetryAvailable
+    && inspectQuotaFreshness({ fetchedAt: quota.observedAt, providers: [] }, now, maxAgeMs).fresh
+    && quota.windows.filter((window) => window.binding).length > 0
+    && quota.windows.filter((window) => window.binding).every((window) =>
+      inspectQuotaFreshness({ fetchedAt: window.observedAt, providers: [] }, now, maxAgeMs).fresh);
+}
+
+function knownExhausted(quota: ProviderQuota | undefined, nowMs: number): boolean {
+  return quota?.windows.some((window) => {
+    if (!window.binding) return false;
+    if (window.resetsAt && Date.parse(window.resetsAt) <= nowMs) return false;
+    return window.remainingUnits === 0 || window.remainingFraction === 0;
+  }) ?? false;
+}
+
+function estimateForWindow(assignment: CampaignAssignment, window: ProviderQuota['windows'][number]): UsageEstimate | null {
+  const explicit = assignment.estimatedUsageByWindow?.find((estimate) => estimate.windowId === window.id);
+  if (explicit) {
+    if (explicit.unit === 'fraction') {
+      return window.remainingFraction !== null && explicit.calibrationId ? explicit : null;
+    }
+    return window.remainingUnits !== null && window.unit === explicit.unit ? explicit : null;
+  }
+  if (assignment.estimatedUsageUnits === null || !assignment.estimatedUsageUnit
+    || window.remainingUnits === null || !window.unit || window.unit !== assignment.estimatedUsageUnit) return null;
+  return { windowId: window.id, amount: assignment.estimatedUsageUnits, unit: window.unit };
 }
 
 export class CampaignScheduler {
   private readonly maxAgeMs: number;
   private diagnosticAttempts: number;
   private diagnosticUsageUnits: number;
+  private admissionTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: SchedulerDependencies) {
     this.maxAgeMs = deps.config.maxTelemetryAgeMs ?? DEFAULT_MAX_TELEMETRY_AGE_MS;
@@ -235,41 +317,90 @@ export class CampaignScheduler {
       throw new Error('New assignments must begin queued without reservation or completed artifact');
     }
     if (!assignment.id || !assignment.stageId || !assignment.attemptId) throw new Error('Assignment identity is incomplete');
+    if (assignment.attemptIds && (assignment.attemptIds.length !== 1 || assignment.attemptIds[0] !== assignment.attemptId)) {
+      throw new Error('New assignments may declare only their initial attempt ID');
+    }
     if (!Number.isFinite(assignment.estimatedRuntimeMs) || assignment.estimatedRuntimeMs <= 0) {
       throw new RangeError('Assignment runtime estimate must be positive');
     }
-    await this.deps.store.createAssignment(assignment);
+    if (assignment.estimatedUsageUnits !== null
+      && (!Number.isFinite(assignment.estimatedUsageUnits) || assignment.estimatedUsageUnits < 0)) {
+      throw new RangeError('Estimated usage must be a finite nonnegative number');
+    }
+    if (assignment.estimatedUsageUnits !== null && !assignment.estimatedUsageUnit
+      && !(assignment.estimatedUsageByWindow?.length)) {
+      throw new Error('Scalar usage estimates require explicit unit semantics');
+    }
+    const estimateWindowIds = new Set<string>();
+    for (const estimate of assignment.estimatedUsageByWindow ?? []) {
+      if (!estimate.windowId || estimateWindowIds.has(estimate.windowId)) throw new Error('Usage estimate window IDs must be unique');
+      estimateWindowIds.add(estimate.windowId);
+      if (!Number.isFinite(estimate.amount) || estimate.amount < 0 || !estimate.unit) {
+        throw new RangeError('Per-window usage estimates need a finite nonnegative amount and explicit unit');
+      }
+      if (estimate.unit === 'fraction' && (estimate.amount > 1 || !estimate.calibrationId?.trim())) {
+        throw new Error('Fraction estimates must be in [0,1] and include a calibrationId');
+      }
+    }
+    await this.deps.store.createAssignment({ ...assignment, attemptIds: assignment.attemptIds ?? [assignment.attemptId] });
     await this.event(assignment, 'new', 'queued', 'assignment-created');
   }
 
   async admitNext(): Promise<AdmissionDecision | null> {
-    const now = this.deps.clock.now();
-    const snapshot = await this.deps.quota.refresh();
-    const freshness = inspectQuotaFreshness(snapshot, now, this.maxAgeMs);
-    const assignments = await this.deps.store.listAssignments();
-    const pairedBlocks = await this.deps.store.listPairedBlocks();
-    const completed = new Set(assignments.filter((item) => item.state === 'completed').map((item) => item.id));
-    const ready = assignments.filter((item) => item.state === 'queued'
-      && item.dependencies.every((dependency) => dependency.requiredState === 'completed' && completed.has(dependency.assignmentId))
-      && (!item.pairedBlockId || pairedBlocks.some((block) => block.id === item.pairedBlockId && block.assignmentIds.every((id) => {
-        const member = assignments.find((candidate) => candidate.id === id);
-        return (member?.state === 'queued' || member?.state === 'reserved' || member?.state === 'completed')
-          && member.dependencies.every((dependency) => dependency.requiredState === 'completed' && completed.has(dependency.assignmentId));
-      }))));
-    const usefulExpiryCapacity = (assignment: CampaignAssignment) => snapshot !== null
-      && (this.deps.config.hasUsefulExpiringCapacity?.(assignment, snapshot, now) ?? false);
-    const ordered = [...ready].sort((a, b) => priorityClass(a, usefulExpiryCapacity(a))
-      - priorityClass(b, usefulExpiryCapacity(b))
-      || (Date.parse(a.deadlineAt ?? '9999-12-31T23:59:59.999Z') - Date.parse(b.deadlineAt ?? '9999-12-31T23:59:59.999Z'))
-      || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    return this.withAdmissionLock(async () => {
+      const snapshot = await this.deps.quota.refresh();
+      // Capture time only after refresh; provider timestamps cannot be in the future
+      // merely because the observation completed after admission began.
+      const now = this.deps.clock.now();
+      const freshness = inspectQuotaFreshness(snapshot, now, this.maxAgeMs);
+      const assignments = await this.deps.store.listAssignments();
+      const pairedBlocks = await this.deps.store.listPairedBlocks();
+      const ready = assignments.filter((item) => item.state === 'queued'
+        && item.dependencies.every((dependency) => dependency.requiredState === 'completed'
+          && this.logicalAssignmentCompleted(dependency.assignmentId, assignments))
+        && (!item.pairedBlockId || pairedBlocks.some((block) => block.id === item.pairedBlockId && block.assignmentIds.every((id) => {
+          const member = assignments.find((candidate) => candidate.id === id);
+          return (member?.state === 'queued' || member?.state === 'reserved' || member?.state === 'completed')
+            && member.dependencies.every((dependency) => dependency.requiredState === 'completed'
+              && this.logicalAssignmentCompleted(dependency.assignmentId, assignments));
+        }))));
+      this.diagnosticAttempts = Math.max(this.diagnosticAttempts, assignments.reduce((sum, item) =>
+        sum + (item.reservationHistory ?? (item.reservation ? [item.reservation] : [])).filter((reservation) => reservation.diagnostic).length, 0));
+      this.diagnosticUsageUnits = Math.max(this.diagnosticUsageUnits, assignments.reduce((sum, item) =>
+        sum + (item.reservationHistory ?? (item.reservation ? [item.reservation] : []))
+          .filter((reservation) => reservation.diagnostic)
+          .reduce((total, reservation) => total + (reservation.estimatedUsageUnits ?? 0), 0), 0));
+      const usefulExpiryCapacity = (assignment: CampaignAssignment) => snapshot !== null && freshness.fresh
+        && providerQuotaIsFresh(snapshot, assignment.provider, now, this.maxAgeMs)
+        && (this.deps.config.hasUsefulExpiringCapacity?.(assignment, snapshot, now) ?? false);
+      const ordered = [...ready].sort((a, b) => priorityClass(a, usefulExpiryCapacity(a))
+        - priorityClass(b, usefulExpiryCapacity(b))
+        || (Date.parse(a.deadlineAt ?? '9999-12-31T23:59:59.999Z') - Date.parse(b.deadlineAt ?? '9999-12-31T23:59:59.999Z'))
+        || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 
-    for (const assignment of ordered) {
-      const decision = this.assess(assignment, snapshot, freshness.fresh, freshness.ageMs, now, assignments);
-      if (!decision.admitted || !decision.reservation) continue;
-      await this.event(assignment, 'queued', 'reserved', 'fresh-quota-admission', decision.reservation);
-      return decision;
-    }
-    return null;
+      for (const assignment of ordered) {
+        const decision = this.assess(assignment, snapshot, freshness.fresh, freshness.ageMs, now, assignments);
+        if (!decision.admitted || !decision.reservation) continue;
+        const event: AssignmentEvent = {
+          id: randomUUID(), assignmentId: assignment.id, from: 'queued', to: 'reserved',
+          at: new Date(now).toISOString(), reason: decision.reason,
+          reservationId: decision.reservation.id, reservation: decision.reservation, attemptId: assignment.attemptId,
+        };
+        const reserved = await this.deps.store.tryReserveIfAvailable({
+          assignmentId: assignment.id,
+          quotaProvider: decision.reservation.quotaProvider,
+          expectedState: 'queued',
+          event,
+          reservation: decision.reservation,
+          maxConcurrentPerProvider: this.deps.config.maxConcurrentPerProvider,
+          bindingCapacityLimits: decision.bindingCapacityLimits,
+          diagnosticLimits: this.remainingDiagnosticLimits(),
+        });
+        if (!reserved) continue;
+        return decision;
+      }
+      return null;
+    });
   }
 
   private assess(
@@ -279,9 +410,10 @@ export class CampaignScheduler {
     telemetryAgeMs: number | null,
     now: number,
     assignments: readonly CampaignAssignment[],
-  ): AdmissionDecision {
-    const deny = (reason: string): AdmissionDecision => ({ admitted: false, assignmentId: assignment.id, reason, telemetryFresh, telemetryAgeMs });
-    const busy = assignments.filter((item) => item.provider === assignment.provider
+  ): InternalAdmissionDecision {
+    const deny = (reason: string): InternalAdmissionDecision => ({ admitted: false, assignmentId: assignment.id, reason, telemetryFresh, telemetryAgeMs, bindingCapacityLimits: [] });
+    const quotaProviderId = quotaProviderForRoute(assignment.provider);
+    const busy = assignments.filter((item) => item.reservation?.quotaProvider === quotaProviderId
       && (item.state === 'reserved' || item.state === 'running')).length;
     if (busy >= this.deps.config.maxConcurrentPerProvider) return deny('provider-concurrency-bound');
     const blackout = blackoutWindow(assignment.provider, this.deps.config, now);
@@ -297,9 +429,43 @@ export class CampaignScheduler {
     const providerFreshness = quota ? inspectQuotaFreshness({ fetchedAt: quota.observedAt, providers: [] }, now, this.maxAgeMs) : null;
     const bindingWindowsFresh = quota?.windows.filter((window) => window.binding).every((window) =>
       inspectQuotaFreshness({ fetchedAt: window.observedAt, providers: [] }, now, this.maxAgeMs).fresh) ?? false;
+    if (quota?.cooldownUntil && Date.parse(quota.cooldownUntil) > now) return deny(`provider-cooldown-until:${quota.cooldownUntil}`);
+    if (knownExhausted(quota, now)) return deny('known-binding-window-exhausted');
     const telemetryUsable = telemetryFresh && providerFreshness?.fresh === true
       && quota?.telemetryAvailable === true && bindingWindowsFresh;
-    if (!telemetryUsable) {
+      const binding = quota?.windows.filter((window) => window.binding) ?? [];
+    const limits: BindingCapacityLimit[] = [];
+    const claims: UsageEstimate[] = [];
+    let calibratedEstimateAvailable = telemetryUsable && binding.length > 0;
+    for (const window of binding) {
+      const estimate = estimateForWindow(assignment, window);
+      // Select the observed capacity in the estimate's units. CodexBar fractions
+      // remain valid inputs even when no absolute unit count is available.
+      const useFraction = estimate?.unit === 'fraction';
+      const capacityAmount = useFraction ? window.remainingFraction : window.remainingUnits;
+      const capacityUnit = useFraction ? 'fraction' : window.unit;
+      if (capacityAmount === null || capacityUnit === null) {
+        calibratedEstimateAvailable = false;
+        continue;
+      }
+      limits.push({ provider: quotaProviderId, windowId: window.id, amount: capacityAmount, unit: capacityUnit });
+      if (!estimate) {
+        calibratedEstimateAvailable = false;
+        continue;
+      }
+      const outstanding = assignments
+        .filter((item) => item.reservation?.quotaProvider === quotaProviderId
+          && (item.state === 'reserved' || item.state === 'running'))
+        .flatMap((item) => item.reservation?.windowClaims ?? [])
+        .filter((claim) => claim.windowId === window.id && claim.unit === estimate.unit)
+        .reduce((sum, claim) => sum + claim.amount, 0);
+      const unknownActiveProbe = assignments.some((item) => item.reservation?.quotaProvider === quotaProviderId
+        && item.reservation.diagnostic && (item.state === 'reserved' || item.state === 'running'));
+      if (unknownActiveProbe) return deny('bounded-diagnostic-probe-in-flight');
+      if (capacityAmount - outstanding < estimate.amount) return deny(`binding-window-capacity-reserved-or-insufficient:${window.id}`);
+      claims.push(estimate);
+    }
+    if (!telemetryUsable || !calibratedEstimateAvailable || claims.length !== binding.length) {
       const policy = this.deps.config.diagnostic ? {
         ...this.deps.config.diagnostic,
         usedAttempts: this.diagnosticAttempts,
@@ -309,18 +475,24 @@ export class CampaignScheduler {
       if (!policy || assignment.estimatedUsageUnits === null || !diagnosticProbeAllowed(policy, assignment.estimatedUsageUnits)) {
         return deny('bounded-diagnostic-limit-or-usage-unavailable');
       }
-      const reservation = this.makeReservation(assignment, null, now);
+      const reservation = this.makeReservation(assignment, snapshot, now, [], true);
       this.diagnosticAttempts += 1;
       this.diagnosticUsageUnits += assignment.estimatedUsageUnits;
-      return { admitted: true, assignmentId: assignment.id, reason: 'bounded-diagnostic-only-no-capacity-claim', reservation, telemetryFresh, telemetryAgeMs };
+      return { admitted: true, assignmentId: assignment.id, reason: telemetryUsable
+        ? 'bounded-calibration-diagnostic-no-capacity-claim' : 'bounded-diagnostic-only-no-capacity-claim',
+        reservation, telemetryFresh, telemetryAgeMs, bindingCapacityLimits: [] };
     }
-    if (quota?.cooldownUntil && Date.parse(quota.cooldownUntil) > now) return deny(`provider-cooldown-until:${quota.cooldownUntil}`);
-    if (!providerHasCapacity(quota, assignment.estimatedUsageUnits)) return deny('binding-provider-capacity-unknown-or-insufficient');
-    const reservation = this.makeReservation(assignment, snapshot, now);
-    return { admitted: true, assignmentId: assignment.id, reason: 'fresh-binding-capacity-reserved', reservation, telemetryFresh, telemetryAgeMs };
+    const reservation = this.makeReservation(assignment, snapshot, now, claims, false);
+    return { admitted: true, assignmentId: assignment.id, reason: 'fresh-binding-capacity-reserved', reservation,
+      telemetryFresh, telemetryAgeMs, bindingCapacityLimits: limits };
   }
 
-  private makeReservation(assignment: CampaignAssignment, snapshot: QuotaSnapshot | null, now: number): ResourceReservation {
+  private logicalAssignmentCompleted(assignmentId: string, assignments: readonly CampaignAssignment[]): boolean {
+    return assignments.find((item) => item.id === assignmentId)?.state === 'completed';
+  }
+
+  private makeReservation(assignment: CampaignAssignment, snapshot: QuotaSnapshot | null, now: number,
+    windowClaims: readonly UsageEstimate[], diagnostic: boolean): ResourceReservation {
     const blackout = blackoutWindow(assignment.provider, this.deps.config, now);
     const stopAt = [blackout.startsAt, assignment.deadlineAt ? Date.parse(assignment.deadlineAt) : null]
       .filter((value): value is number => value !== null && value !== undefined && value > now)
@@ -328,9 +500,12 @@ export class CampaignScheduler {
     return {
       id: randomUUID(),
       provider: assignment.provider,
+      quotaProvider: quotaProviderForRoute(assignment.provider),
       assignmentId: assignment.id,
       reservedAt: new Date(now).toISOString(),
       estimatedUsageUnits: assignment.estimatedUsageUnits,
+      windowClaims,
+      diagnostic,
       expiresAt: new Date(now + this.deps.config.reservationTtlMs).toISOString(),
       mustStopAt: stopAt === undefined ? null : new Date(stopAt).toISOString(),
       telemetryFetchedAt: snapshot?.fetchedAt ?? 'unavailable',
@@ -359,7 +534,8 @@ export class CampaignScheduler {
     const now = this.deps.clock.now();
     const expired = (await this.deps.store.listAssignments()).filter((assignment) =>
       assignment.state === 'reserved' && assignment.reservation
-      && Date.parse(assignment.reservation.expiresAt) <= now);
+      && (Date.parse(assignment.reservation.expiresAt) <= now
+        || (assignment.reservation.mustStopAt !== null && Date.parse(assignment.reservation.mustStopAt) <= now)));
     for (const assignment of expired) {
       await this.releaseReservation(assignment.id, assignment.reservation!.id, 'reservation-expired-before-start');
     }
@@ -375,17 +551,42 @@ export class CampaignScheduler {
     await this.transition(assignmentId, 'running', 'quarantined', 'unfinished-invocation-quarantined', { quarantine });
   }
 
-  async retryQuarantined(assignmentId: string, retry: CampaignAssignment): Promise<void> {
+  async retryQuarantined(assignmentId: string, newAttemptId: string): Promise<void> {
     const assignments = await this.deps.store.listAssignments();
     const previous = assignments.find((item) => item.id === assignmentId);
     if (!previous || previous.state !== 'quarantined') throw new Error('Only quarantined assignments can be retried');
-    if (retry.id === assignmentId || retry.retryOf !== assignmentId || retry.state !== 'queued') {
-      throw new Error('Retry requires a new immutable assignment ID linked through retryOf');
+    this.validateNewAttempt(previous, newAttemptId);
+    await this.transition(assignmentId, 'quarantined', 'queued', 'retry-attempt-created', { newAttemptId });
+  }
+
+  /** Persist cancellation after finally-captured evidence and its authoritative judgment. */
+  async interruptRunning(assignmentId: string, cancellation: CancellationRecord): Promise<void> {
+    if (cancellation.operationalClass !== 'cancellation/missingness') throw new Error('Cancellation must retain its operational class');
+    if (cancellation.candidateArtifactRef && cancellation.candidateCorrectness === null) {
+      throw new Error('A captured candidate must be judged before interruption is finalized');
     }
-    if (retry.attemptId === previous.attemptId || retry.stageId === previous.stageId) {
-      throw new Error('Retry requires new stage and attempt IDs');
+    if (!cancellation.candidateArtifactRef && (cancellation.candidateCorrectness !== null || cancellation.judgementArtifactRef)) {
+      throw new Error('Judgment evidence cannot exist without a captured candidate artifact');
     }
-    await this.enqueue(retry);
+    if (cancellation.candidateCorrectness !== null && !cancellation.judgementArtifactRef) {
+      throw new Error('Candidate correctness requires an immutable judgment artifact');
+    }
+    await this.transition(assignmentId, 'running', 'interrupted', `interrupted:${cancellation.cause}`, { cancellation });
+  }
+
+  async retryInterrupted(assignmentId: string, newAttemptId: string): Promise<void> {
+    const assignments = await this.deps.store.listAssignments();
+    const previous = assignments.find((item) => item.id === assignmentId);
+    if (!previous || previous.state !== 'interrupted') throw new Error('Only interrupted assignments can be retried');
+    this.validateNewAttempt(previous, newAttemptId);
+    await this.transition(assignmentId, 'interrupted', 'queued', 'retry-attempt-created-after-cancellation', { newAttemptId });
+  }
+
+  private validateNewAttempt(assignment: CampaignAssignment, newAttemptId: string): void {
+    if (!newAttemptId.trim() || newAttemptId === assignment.attemptId) throw new Error('Retry requires a new attempt ID');
+    if ((assignment.attemptIds ?? [assignment.attemptId]).includes(newAttemptId)) {
+      throw new Error(`Attempt ID already exists for assignment ${assignment.id}`);
+    }
   }
 
   private async transition(
@@ -393,7 +594,7 @@ export class CampaignScheduler {
     from: AssignmentState,
     to: AssignmentState,
     reason: string,
-    details: { reservationId?: string; artifactRef?: string; quarantine?: QuarantineRecord; clearReservation?: boolean } = {},
+    details: { reservationId?: string; artifactRef?: string; quarantine?: QuarantineRecord; cancellation?: CancellationRecord; clearReservation?: boolean; newAttemptId?: string } = {},
   ): Promise<void> {
     if (!canTransition(from, to)) throw new Error(`Invalid assignment transition ${from} -> ${to}`);
     const assignments = await this.deps.store.listAssignments();
@@ -411,7 +612,7 @@ export class CampaignScheduler {
     to: AssignmentState,
     reason: string,
     reservation?: ResourceReservation,
-    details: { reservationId?: string; artifactRef?: string; quarantine?: QuarantineRecord; clearReservation?: boolean } = {},
+    details: { reservationId?: string; artifactRef?: string; quarantine?: QuarantineRecord; cancellation?: CancellationRecord; clearReservation?: boolean; newAttemptId?: string } = {},
   ) {
     await this.deps.store.appendEvent({
       id: randomUUID(),
@@ -425,6 +626,31 @@ export class CampaignScheduler {
       clearReservation: details.clearReservation,
       artifactRef: details.artifactRef,
       quarantine: details.quarantine,
+      cancellation: details.cancellation,
+      attemptId: details.newAttemptId ?? assignment.attemptId,
     });
+  }
+
+  private remainingDiagnosticLimits() {
+    const diagnostic = this.deps.config.diagnostic;
+    if (!diagnostic) return undefined;
+    return {
+      // The durable store counts every persisted diagnostic reservation, so pass
+      // a total remaining ceiling relative only to externally supplied history.
+      maxAttempts: Math.max(0, diagnostic.maxAttempts - diagnostic.usedAttempts),
+      maxEstimatedUnits: Math.max(0, diagnostic.maxEstimatedUnits - diagnostic.usedEstimatedUnits),
+    };
+  }
+
+  private async withAdmissionLock<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.admissionTail;
+    let release!: () => void;
+    this.admissionTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
   }
 }

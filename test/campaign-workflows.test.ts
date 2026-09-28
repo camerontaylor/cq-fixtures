@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -27,6 +27,13 @@ import {
   judgeReviewLoopWorkspace,
 } from '../runner/workflow-corpus/review-loop-judge.ts';
 import { createReviewLoopRunSuiteBundle } from '../runner/workflow-corpus/review-loop-suite.ts';
+import {
+  judgeAnalysisRemediationProposal,
+  judgeFleetSweepPlan,
+  judgeMergeConflictWorkspace,
+  judgeRatchetOutcomes,
+  judgeTestFixScopePlan,
+} from '../runner/workflow-corpus/operation-workflow-judges.ts';
 import {
   REVIEW_LOOP_BASELINE_ID,
   REVIEW_LOOP_ORACLE_ID,
@@ -234,6 +241,24 @@ describe('cq-settings bounded workflow corpus', () => {
       expect(baselineCommit).toMatch(/^[a-f0-9]{40}$/);
       expect(candidateCommit).toMatch(/^[a-f0-9]{40}$/);
       expect(candidateCommit).not.toBe(baselineCommit);
+      expect(bundle.oraclePin).toMatchObject({
+        version: 1,
+        oracleId: REVIEW_LOOP_ORACLE_ID,
+        dependencies: expect.arrayContaining([
+          expect.objectContaining({ path: 'runner/workflow-corpus/review-loop-judge.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+          expect.objectContaining({ path: 'campaigns/cq-settings/corpus/review-loop-task.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+        ]),
+      });
+      expect(bundle.oraclePin.sha256).toMatch(/^[a-f0-9]{64}$/);
+      const committedOraclePin = JSON.parse(readFileSync(
+        new URL('../campaigns/cq-settings/corpus/review-loop-oracle-pin.json', import.meta.url),
+        'utf8',
+      )) as typeof bundle.oraclePin;
+      expect(bundle.oraclePin).toEqual(committedOraclePin);
+      expect(bundle.hostCheckScoringEnvironment(workerWorkspace, baselineCommit)).toEqual({
+        CQ_REVIEW_LOOP_BASELINE_SHA: baselineCommit,
+        CQ_REVIEW_LOOP_ORACLE_PIN: bundle.oraclePin.sha256,
+      });
       expect(result.artifacts.find((artifact) => artifact.kind === 'patch')?.content).toContain('Array.from');
     } finally {
       await bundle.cleanup();
@@ -313,7 +338,7 @@ describe('cq-settings bounded workflow corpus', () => {
     execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'add', '.'], { cwd: repoRoot });
     execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', 'Seed conflict task'], { cwd: repoRoot });
     const baseline = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
-    const replacement = `export function campaignLabel(label) {\n  if (typeof label !== 'string') return '';\n  return label.trim().slice(0, 40);\n}\n`;
+    const replacement = `export function campaignLabel(label) {\n  if (typeof label !== 'string') return '';\n  return Array.from(label.trim()).slice(0, 40).join('');\n}\n`;
     let validations = 0;
     let pushedCommit = '';
     const effects: MergeEffects = {
@@ -363,6 +388,12 @@ describe('cq-settings bounded workflow corpus', () => {
       });
 
       expect(expectOk(result).decision).toBe('acted');
+      expect(judgeMergeConflictWorkspace(repoRoot, baseline)).toMatchObject({
+        passed: true,
+        sourceId: 'cq-settings.merge-worktree-seed.v1',
+        baselineId: 'cq-settings.merge-conflict.baseline.v1',
+        oracleId: 'cq-settings.merge-label-limit.oracle.v1',
+      });
       expect(validations).toBe(2);
       expect(pushedCommit).not.toBe(baseline);
       expect(execFileSync('git', ['diff', '--name-only', baseline, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()).toBe('src/settings.mjs');
@@ -408,6 +439,11 @@ describe('cq-settings bounded workflow corpus', () => {
     };
     try {
       const report = expectOk(await planner(input));
+      const changedPaths = execFileSync('git', ['diff', '--name-only', `${baseline}..HEAD`], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      }).trim().split('\n').filter(Boolean);
+      expect(judgeFleetSweepPlan(report, changedPaths).passed).toBe(true);
 
       expect(report.units).toEqual([{
         package: 'core-tests',
@@ -455,6 +491,11 @@ describe('cq-settings bounded workflow corpus', () => {
       const plan = buildTestFixPlan(config, phaseA);
       const serializedJobs = JSON.stringify(plan.jobs);
 
+      expect(judgeTestFixScopePlan(serializedJobs)).toMatchObject({
+        passed: true,
+        oracleId: 'cq-settings.testfix-scope-risk.oracle.v1',
+      });
+
       expect(plan.id).toBe('test-fix');
       expect(serializedJobs).toContain('test-fix');
       expect(serializedJobs).toContain('test/settings.test.ts');
@@ -485,7 +526,12 @@ describe('cq-settings bounded workflow corpus', () => {
         invocations.push(invocation);
         return completedWorker({
           summary: 'Normalize empty campaign settings at the shared validation boundary.',
-          patch: '--- a/src/settings.ts\n+++ b/src/settings.ts\n@@\n-empty\n+validated',
+          patch: '--- a/src/settings.ts\n+++ b/src/settings.ts\n@@\n-empty\n+reject whitespace-only values',
+          candidateSource: `export function isValidSetting(value) {
+  if (typeof value !== 'string') return false;
+  return value.trim().length > 0;
+}
+`,
         });
       },
     };
@@ -496,9 +542,15 @@ describe('cq-settings bounded workflow corpus', () => {
       modelSpec: { model: 'offline-analysis', provider: 'fake' },
     });
 
-    expect(expectOk(proposal).structuredOutput).toEqual({
+    expect(judgeAnalysisRemediationProposal(expectOk(proposal).structuredOutput)).toMatchObject({
+      passed: true,
+      oracleId: 'cq-settings.analysis-remediation.oracle.v1',
+    });
+
+    expect(expectOk(proposal).structuredOutput).toMatchObject({
       summary: 'Normalize empty campaign settings at the shared validation boundary.',
-      patch: '--- a/src/settings.ts\n+++ b/src/settings.ts\n@@\n-empty\n+validated',
+      patch: expect.stringContaining('reject whitespace-only values'),
+      candidateSource: expect.stringContaining('value.trim().length > 0'),
     });
     expect(invocations[0]?.toolPolicy).toEqual({ allow: [], mode: 'none' });
     expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'read-only' });
@@ -529,9 +581,9 @@ describe('cq-settings bounded workflow corpus', () => {
       const check = createCheckRatchet(sources);
       const input = { ws: workspace, target: 'settings', metric, sourceId: 'local' };
       current = 1;
-      expect(expectOk(await check(input)).verdict).toBe('pass');
+      const tightened = expectOk(await check(input)).verdict;
       current = 3;
-      expect(expectOk(await check(input)).verdict).toBe('fail');
+      const regressed = expectOk(await check(input)).verdict;
       const baselineDiff = (from: number, to: number) => [
         'diff --git a/baselines/settings.json b/baselines/settings.json',
         '--- a/baselines/settings.json',
@@ -545,10 +597,30 @@ describe('cq-settings bounded workflow corpus', () => {
         '   "direction": "lower-is-better"',
         ' }',
       ].join('\n');
-      expect(checkDiffMonotonicity(baselineDiff(2, 3))).toMatchObject({ ok: false });
-      expect(checkDiffMonotonicity(baselineDiff(2, 1))).toMatchObject({ ok: true });
+      const loosening = checkDiffMonotonicity(baselineDiff(2, 3));
+      const tightening = checkDiffMonotonicity(baselineDiff(2, 1));
+      expect(judgeRatchetOutcomes({
+        tightened,
+        regressed,
+        tighteningAccepted: tightening.ok,
+        looseningAccepted: loosening.ok,
+      })).toMatchObject({ passed: true, oracleId: 'cq-settings.ratchet-monotonicity.oracle.v1' });
+      expect(loosening).toMatchObject({ ok: false });
+      expect(tightening).toMatchObject({ ok: true });
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('accepts a distinct behaviorally correct remediation implementation', () => {
+    const report = judgeAnalysisRemediationProposal({
+      summary: 'Reject blank settings at the shared validation boundary.',
+      patch: 'update isValidSetting in src/settings.ts to reject trimmed empty text',
+      candidateSource: `export function isValidSetting(value) {
+  return typeof value === 'string' && [...value.trim()].length !== 0;
+}
+`,
+    });
+    expect(report).toMatchObject({ passed: true, oracleId: 'cq-settings.analysis-remediation.oracle.v1' });
+  }, 10_000);
 });

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "oracleId": "cq-settings.label-length-unicode.oracle.v1",
+  "dependencies": [
+    {
+      "path": "runner/workflow-corpus/review-loop-judge.ts",
+      "sha256": "4c82554f628e0b7a7ea0b3acca71ad43228cdee4839b5e87f641642c4af03cc4"
+    },
+    {
+      "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
+      "sha256": "b07b57dc59db92d18d5f93621ed9db202b3c057c72c5cacca5f4177d4ef7984c"
+    }
+  ],
+  "sha256": "1401ce8e2e1f52845fcfbd10f4f191537a6afd979582b5f0568697313dba8552"
+}

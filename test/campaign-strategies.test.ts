@@ -565,7 +565,7 @@ describe('outcome-blind broad screening catalog', () => {
     expect(diagnosticBaseline?.recipe.kind === 'one-shot' ? diagnosticBaseline.recipe.route.transport : null).toBe('shared-diagnostic');
   });
 
-  it('binds effective profile, evaluation boundary, assistance and all cumulative tier limits into identity', () => {
+  it('binds effective profile, evaluation boundary, assistance and all cumulative tier limits into identity', async () => {
     const first = createScreeningCatalog(screeningInputs());
     const changed = createScreeningCatalog(screeningInputs({
       toolsAssistanceHashes: { native: digest('e'), diagnostic: digest('d') },
@@ -586,6 +586,12 @@ describe('outcome-blind broad screening catalog', () => {
       .toBe(5);
     expect(first.candidates.find((candidate) => candidate.recipeId === 'cheap-first-escalation' && candidate.budgetTier.id === 'screen-small')?.chargedStageEnvelope.chargedStages)
       .toBe(4); // low draft + verify + high escalation + independent judge
+    const lowEffortBaseline = first.candidates.find((candidate) => candidate.track === 'native' && candidate.recipe.kind === 'one-shot'
+      && candidate.profileIds[0] === 'codex-sol' && candidate.selectedEfforts[0] === 'low' && candidate.budgetTier.id === 'screen-small')!;
+    expect(lowEffortBaseline.recipe.kind === 'one-shot' ? lowEffortBaseline.recipe.route.selectedEffort : null).toBe('low');
+    const executor = new FakeExecutor();
+    await runStrategy(task, lowEffortBaseline.recipe, lowEffortBaseline.budgetTier, executor, { assignmentId: 'catalog-assignment-01' });
+    expect(executor.requests.find((request) => request.kind === 'draft')?.effort).toBe('low');
   });
 
   it('rejects token-cap claims for routes without verified enforcement', () => {

@@ -236,10 +236,12 @@ export function createScreeningCatalog(inputs: ScreeningCatalogInputs): Screenin
   const nativeRoute = (profile: ScreeningProfile, effort: string | null): StrategyRoute => ({
     id: routeId('native', profile, effort), transport: profile.nativeTransport,
     tokenEnforcement: 'unsupported', supportedSettings: { effort: profile.supportedEfforts },
+    ...(effort === null ? {} : { selectedEffort: effort }),
   });
   const diagnosticRoute = (profile: ScreeningProfile, effort: string | null): StrategyRoute => ({
     id: routeId('diagnostic', profile, effort), transport: 'shared-diagnostic',
     tokenEnforcement: 'unsupported', supportedSettings: { effort: profile.supportedEfforts },
+    ...(effort === null ? {} : { selectedEffort: effort }),
   });
   const defaultEffort = (profile: ScreeningProfile): string | null =>
     profile.effortEvidence === 'provider-model-inventory' ? ROLE_EFFORT_FAMILY.get(profile.id) ?? profile.requestedProfileEffort : null;

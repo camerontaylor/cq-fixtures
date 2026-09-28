@@ -130,9 +130,11 @@ cohort pooling and retains individual-model baselines by policy.
 
 The native G1 entrypoint remains the priority and does not depend on this
 catalog. No native adapter changes are required for the catalog work. When
-mapping route IDs, resolve the profile plus selected effort from the candidate
-manifest; keep `profile-requested` Space Bunny distinct from verified model
-effort, and do not send a token cap for these unsupported routes.
+mapping routes, use the route's `selectedEffort` (also copied into every
+`StageRequest.effort`) with its configured profile/model and transport; the
+native adapter does not need to parse effort out of a string ID. Keep
+`profile-requested` Space Bunny distinct from verified model effort, and do
+not send a token cap for these unsupported routes.
 
 ## Bounds and outcome fields
 

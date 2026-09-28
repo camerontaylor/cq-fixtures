@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SessionStore, type OpInvocation, type WorkerResult } from '@camerontaylor/cq-toolkit';
 import { CodexExecDriver } from '../runner/native/codex.ts';
 import { PiNativeDriver } from '../runner/native/pi.ts';
+import { assertPiConfiguredAuthHandoff } from '../runner/native/visible-g1-pi-driver.ts';
 import { ZcodeAcpDriver, assertOutsideGlmBlackout } from '../runner/native/zcode.ts';
 import { runSupervised, visibleCalibrationSpawnAdapter } from '../runner/native/process.ts';
 import { parseJsonEventLines, applyUsageObservation } from '../runner/native/events.ts';
@@ -50,6 +51,30 @@ function simulatedVisibleLaunch() {
 }
 
 describe('native transport event and identity handling', () => {
+  it('accepts only the exact configured Pi auth handoff without exposing its value', () => {
+    const root = tempRoot();
+    const secret = 'simulated-configured-route-credential';
+    const configPath = join(root, 'paseo.json');
+    writeFileSync(configPath, JSON.stringify({
+      agentProfiles: [{ name: 'Space Bunny Free (Pi OpenCode)', provider: 'pi-opencode', model: 'opencode-go/space-bunny-free' }],
+      agents: { providers: { 'pi-opencode': { extends: 'pi', env: { OPENCODE_API_KEY: secret } } } },
+    }));
+    const previous = process.env.OPENCODE_API_KEY;
+    try {
+      process.env.OPENCODE_API_KEY = secret;
+      expect(() => assertPiConfiguredAuthHandoff(configPath)).not.toThrow();
+      process.env.OPENCODE_API_KEY = 'a-different-route-credential';
+      let error: unknown;
+      try { assertPiConfiguredAuthHandoff(configPath); } catch (caught) { error = caught; }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/auth handoff is unavailable/u);
+      expect((error as Error).message).not.toContain(secret);
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODE_API_KEY;
+      else process.env.OPENCODE_API_KEY = previous;
+    }
+  });
+
   it('fails closed before native launch without a boundary admission', async () => {
     const root = tempRoot();
     const marker = join(root, 'launched');

@@ -309,6 +309,17 @@ function gitEnvironment(gitDir: string, workspace: string): NodeJS.ProcessEnv {
   env.GIT_CONFIG_COUNT = '0';
   env.GIT_ATTR_NOSYSTEM = '1';
   env.GIT_OPTIONAL_LOCKS = '0';
+  // Identical pristine trees must produce the same commit in the worker repo
+  // and the private capture repo. Fixed commit dates make that identity stable.
+  env.GIT_AUTHOR_DATE = '2000-01-01T00:00:00Z';
+  env.GIT_COMMITTER_DATE = '2000-01-01T00:00:00Z';
+  return env;
+}
+
+function workerGitEnvironment(privateGitDir: string): NodeJS.ProcessEnv {
+  const env = gitEnvironment(privateGitDir, '');
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
   return env;
 }
 
@@ -323,41 +334,78 @@ function gitCaptureArgs(gitDir: string, workspace: string, args: string[]): stri
   ];
 }
 
+/** Recreate trusted Git configuration and highest-priority attributes before capture. */
+function prepareTrustedGitMetadata(gitDir: string): void {
+  mkdirSync(join(gitDir, 'disabled-hooks'), { recursive: true });
+  writeFileSync(join(gitDir, 'empty-global-config'), '');
+  writeFileSync(join(gitDir, 'empty-global-attributes'), '');
+  writeFileSync(join(gitDir, 'config'), [
+    '[core]',
+    '  repositoryformatversion = 0',
+    '  filemode = true',
+    '  bare = false',
+    '  logallrefupdates = true',
+    '  fsmonitor = false',
+    `  hooksPath = ${join(gitDir, 'disabled-hooks')}`,
+    `  attributesFile = ${join(gitDir, 'empty-global-attributes')}`,
+    '',
+  ].join('\n'));
+  writeFileSync(join(gitDir, 'info', 'attributes'), '* -filter -text -eol\n');
+  writeFileSync(join(gitDir, 'info', 'exclude'), '/.git/\nnode_modules/\n');
+}
+
 /** Commit the pristine workspace with host-owned metadata and retain immutable pins. */
 function gitBaseline(workspace: string): GitBaseline | undefined {
   const gitDir = mkdtempSync(join(tmpdir(), 'cq-capture-git-'));
   const env = gitEnvironment(gitDir, workspace);
-  const run = (args: string[]) => spawnSync('git', args, { encoding: 'utf8', env });
+  const workerEnv = workerGitEnvironment(gitDir);
+  const runCapture = (args: string[]) => spawnSync('git', args, { encoding: 'utf8', env });
+  const runWorker = (args: string[]) => spawnSync('git', ['-C', workspace, ...GIT_COMMON,
+    '-c', `core.hooksPath=${join(workspace, '.git', 'disabled-hooks')}`,
+    '-c', `core.attributesFile=${join(gitDir, 'empty-global-attributes')}`,
+    ...args], { encoding: 'utf8', env: workerEnv });
   let retained = false;
   try {
-    // Initialize metadata outside the model-writable tree. A workspace .git
-    // directory or config supplied by a fixture is never read by capture.
-    if (run(['init', '-q', gitDir]).status !== 0) return undefined;
-    mkdirSync(join(gitDir, 'disabled-hooks'), { recursive: true });
-    writeFileSync(join(gitDir, 'empty-global-config'), '');
-    writeFileSync(join(gitDir, 'empty-global-attributes'), '');
-    // Highest-precedence attributes disable candidate-controlled clean filters
-    // and line-ending conversions. `--no-textconv` below disables textconv
-    // without marking ordinary text files as binary in the persisted patch.
-    writeFileSync(join(gitDir, 'info', 'attributes'), '* -filter -text -eol\n');
-    // W6.3 (RS-9 §4.3 B.10): keep local test-run cache leaves out of the patch.
-    writeFileSync(join(gitDir, 'info', 'exclude'), 'node_modules/\n');
-    // Preserve normal worker Git usability while keeping the metadata outside
-    // the workspace. Capture itself always supplies explicit GIT_DIR/WORK_TREE.
-    const workspaceGitEntry = join(workspace, '.git');
-    rmSync(workspaceGitEntry, { recursive: true, force: true });
-    writeFileSync(workspaceGitEntry, `gitdir: ${gitDir}\n`);
+    // Remove any fixture-provided Git metadata, then copy the pristine source
+    // into independent worker/capture object stores before dispatch.
+    rmSync(join(workspace, '.git'), { recursive: true, force: true });
+    if (runCapture(['init', '-q', gitDir]).status !== 0 ||
+        runWorker(['init', '-q']).status !== 0) return undefined;
 
-    if (run(gitCaptureArgs(gitDir, workspace, ['add', '-A'])).status !== 0 ||
-        run(gitCaptureArgs(gitDir, workspace, ['commit', '-q', '-m', 'pristine'])).status !== 0) return undefined;
-    // Resolve both pins with one process launch. Parsing is strict: malformed
-    // or incomplete Git output cannot silently replace the immutable baseline.
-    const pins = run(gitCaptureArgs(gitDir, workspace, ['rev-parse', 'HEAD', 'HEAD^{tree}']));
+    prepareTrustedGitMetadata(gitDir);
+    // The worker gets a standard .git directory inside its exported workspace.
+    // Its metadata is safe during baseline creation and intentionally becomes
+    // untrusted after dispatch; capture never consults it again.
+    mkdirSync(join(workspace, '.git', 'disabled-hooks'), { recursive: true });
+    writeFileSync(join(workspace, '.git', 'info', 'attributes'), '* -filter -text -eol\n');
+    writeFileSync(join(workspace, '.git', 'info', 'exclude'), '/.git/\nnode_modules/\n');
+
+    if (runWorker(['add', '-A']).status !== 0 ||
+        runWorker(['commit', '-q', '-m', 'pristine']).status !== 0) return undefined;
+    // Resolve both worker pins in one invocation, then copy only Git objects
+    // and the immutable ref into the private capture repo. Config, hooks,
+    // attributes, index, and worktree metadata are independently created.
+    const pins = runWorker(['rev-parse', 'HEAD', 'HEAD^{tree}']);
     if (pins.status !== 0) return undefined;
     const [commit, tree] = pins.stdout.trim().split(/\s+/);
     if (commit === undefined || tree === undefined || !/^[a-f0-9]{40,64}$/.test(commit) || !/^[a-f0-9]{40,64}$/.test(tree)) {
       return undefined;
     }
+    const headText = readFileSync(join(workspace, '.git', 'HEAD'), 'utf8');
+    const headRef = /^ref: (refs\/heads\/[A-Za-z0-9._/-]+)\n?$/.exec(headText)?.[1];
+    if (headRef === undefined || headRef.split('/').includes('..')) return undefined;
+    const workerObjects = join(workspace, '.git', 'objects');
+    const captureObjects = join(gitDir, 'objects');
+    for (const entry of readdirSync(workerObjects)) {
+      if (!/^[a-f0-9]{2}$/.test(entry) && entry !== 'pack') continue;
+      cpSync(join(workerObjects, entry), join(captureObjects, entry), { recursive: true, force: true });
+    }
+    mkdirSync(join(gitDir, ...headRef.split('/').slice(0, -1)), { recursive: true });
+    writeFileSync(join(gitDir, headRef), `${commit}\n`);
+    writeFileSync(join(gitDir, 'HEAD'), `ref: ${headRef}\n`);
+    prepareTrustedGitMetadata(gitDir);
+    const trustedPins = runCapture(gitCaptureArgs(gitDir, workspace, ['rev-parse', 'HEAD', 'HEAD^{tree}']));
+    if (trustedPins.status !== 0 || trustedPins.stdout.trim().split(/\s+/).join(' ') !== `${commit} ${tree}`) return undefined;
     retained = true;
     return { commit, tree, gitDir };
   } finally {
@@ -418,6 +466,11 @@ function readIfPresent(path: string): string | undefined {
 
 /** `git diff`-style patch of the workspace vs its pristine baseline (undefined on failure). */
 function gitPatch(workspace: string, baseline: GitBaseline): string | undefined {
+  try {
+    prepareTrustedGitMetadata(baseline.gitDir);
+  } catch {
+    return undefined;
+  }
   const env = gitEnvironment(baseline.gitDir, workspace);
   const run = (args: string[]) => spawnSync('git', gitCaptureArgs(baseline.gitDir, workspace, args), { encoding: 'utf8', env });
   const pinnedTree = run(['rev-parse', `${baseline.commit}^{tree}`]);

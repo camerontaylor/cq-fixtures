@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeFixedSample, designHash, validationDesignHash, type Assignment, type Observation, type Preregistration, type ValidationEvidence } from '../runner/statistics/inference.js';
 import { simulateProcedure } from '../runner/statistics/simulation.js';
+import { forecastFivePointDesign } from '../runner/statistics/power.js';
 
 function fixture(substrates = 24): { reg: Preregistration; rows: Observation[] } {
   const assignments: Assignment[] = [];
@@ -21,8 +22,10 @@ function fixture(substrates = 24): { reg: Preregistration; rows: Observation[] }
 }
 
 function passingValidation(reg: Preregistration): ValidationEvidence {
-  return { designHash: validationDesignHash(reg), scenarios: 2000, marginalCoverage: 0.98, marginalCoverageLower95: 0.97,
-    familywiseError: 0.02, familywiseErrorUpper95: 0.04, gatesPassed: true };
+  return { designHash: validationDesignHash(reg), scenarios: 2000, marginalCoverage: 0.98, marginalCoverageLower95: 0.93,
+    jointCovered: 1960, jointCoverage: 0.98, jointCoverageLower95: 0.93,
+    perContrastCoverage: reg.contrasts.map(c => ({ contrastId: c.id, covered: 1960, datasets: 2000, coverage: 0.98, simultaneousLower95: 0.93 })),
+    familywiseError: 0, familywiseErrorUpper95: 0.01, familywiseRejected: 0, familywiseEvaluated: 2000, gatesPassed: true };
 }
 
 describe('fixed-sample campaign inference', () => {
@@ -70,6 +73,36 @@ describe('fixed-sample campaign inference', () => {
     expect(() => analyzeFixedSample(reg, [])).toThrow(/inconsistent frozen weights/);
   });
 
+  it('accepts analytic envelope expansion for frozen unequal task weights and resample counts above the minimum', () => {
+    const { reg, rows } = fixture();
+    reg.bootstrapResamples = 257;
+    for (const a of reg.assignments) if (a.substrateId === 'sub-0') a.weight = 1000;
+    for (const row of rows) if (row.substrateId === 'sub-0') row.weight = 1000;
+    const out = analyzeFixedSample(reg, rows, passingValidation(reg));
+    expect(out.maxStatisticAdjustment).toBe('applied');
+    expect(out.contrasts[0]!.bootstrapResamples).toBe(257);
+    const [lo, hi] = out.contrasts[0]!.marginal95!;
+    expect(hi - lo).toBeGreaterThanOrEqual(2 * Math.abs(out.contrasts[0]!.estimate!));
+    const excessive = fixture();
+    excessive.reg.bootstrapResamples = 10_001;
+    expect(() => analyzeFixedSample(excessive.reg, excessive.rows)).toThrow(/199 through 10000/);
+  });
+
+  it('rejects empty rosters, unknown statuses, unknown strategies and incoherent validation evidence', () => {
+    const empty = fixture();
+    empty.reg.assignments = [];
+    expect(() => analyzeFixedSample(empty.reg, [])).toThrow(/must not be empty/);
+    const unknown = fixture();
+    (unknown.rows[0] as unknown as { status: string }).status = 'success';
+    expect(() => analyzeFixedSample(unknown.reg, unknown.rows)).toThrow(/unknown observation status/);
+    const unregistered = fixture();
+    unregistered.rows[0]!.strategyId = 'other';
+    expect(() => analyzeFixedSample(unregistered.reg, unregistered.rows)).toThrow(/unregistered strategy/);
+    const malformed = fixture(), evidence = passingValidation(malformed.reg);
+    evidence.perContrastCoverage[0]!.datasets = 6000;
+    expect(() => analyzeFixedSample(malformed.reg, malformed.rows, evidence)).toThrow(/denominator/);
+  });
+
   it('retains launched exhaustion as failure while keeping operational absence missing', () => {
     const { reg, rows } = fixture();
     const exhausted = rows.find(r => r.strategyId === 'candidate')!;
@@ -98,8 +131,23 @@ describe('fixed-sample campaign inference', () => {
       console.log('CAMPAIGN_STATISTICS_SIMULATION=' + JSON.stringify(evidence));
       expect(evidence.scenarios).toBeGreaterThanOrEqual(2000);
       expect(evidence.marginalCoverageLower95).toBeGreaterThanOrEqual(0.93);
+      expect(evidence.jointCoverageLower95).toBeGreaterThanOrEqual(0.93);
+      expect(evidence.perContrastCoverage).toHaveLength(3);
+      expect(evidence.perContrastCoverage.every(c => c.datasets === 2000)).toBe(true);
       expect(evidence.familywiseErrorUpper95).toBeLessThanOrEqual(0.07);
       expect(evidence.gatesPassed).toBe(true);
+      expect(evidence.bootstrapOnly.passesCoverageGates).toBe(false);
     }
   }, 180_000);
+
+  it('forecasts deterministic five-point power and precision across per-role planning scenarios', () => {
+    const fixer = forecastFivePointDesign('fixer-worker');
+    const reviewer = forecastFivePointDesign('review-classifier', 'diagnostic');
+    console.log('CAMPAIGN_POWER_FORECAST=' + JSON.stringify({ fixer, reviewer }));
+    expect(fixer.scenarios).toHaveLength(162);
+    expect(reviewer.scenarios).toEqual(fixer.scenarios);
+    expect(fixer.targetDifference).toBe(0.05);
+    expect(fixer.maxRequiredSubstrates).toBeGreaterThan(1000);
+    expect(fixer.quotaOrRuntimeEstimate).toBeNull();
+  });
 });

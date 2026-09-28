@@ -56,8 +56,14 @@ export interface ValidationEvidence {
   scenarios: number;
   marginalCoverage: number;
   marginalCoverageLower95: number;
+  jointCovered: number;
+  jointCoverage: number;
+  jointCoverageLower95: number;
+  perContrastCoverage: Array<{ contrastId: string; covered: number; datasets: number; coverage: number; simultaneousLower95: number }>;
   familywiseError: number;
   familywiseErrorUpper95: number;
+  familywiseRejected: number;
+  familywiseEvaluated: number;
   gatesPassed: boolean;
 }
 
@@ -66,6 +72,10 @@ export interface ContrastResult {
   estimate: number | null;
   marginal95: [number, number] | null;
   familywise95: [number, number] | null;
+  /** Diagnostic only; never used for inferential status without the Hoeffding envelope. */
+  bootstrapOnlyMarginal95: [number, number] | null;
+  /** Diagnostic only; raw bootstrap max-statistic interval before analytic expansion. */
+  bootstrapOnlyFamilywise95: [number, number] | null;
   status: 'inferential' | 'descriptive' | 'inconclusive';
   reasons: string[];
   substrates: number;
@@ -92,7 +102,7 @@ export interface AnalysisResult {
 const key = (a: Assignment): string => `${a.taskId}\u0000${a.repeatId}`;
 const pairKey = (strategy: string, a: Assignment): string => `${strategy}\u0000${key(a)}`;
 
-/** Stable, dependency-free hash used to bind validation evidence to a design. */
+/** Stable SHA-256 hash used to bind the frozen preregistration to its output. */
 export function designHash(reg: Preregistration): string {
   const canonical = JSON.stringify({
     version: reg.version, cohortId: reg.cohortId, track: reg.track, role: reg.role,
@@ -109,18 +119,23 @@ export function designHash(reg: Preregistration): string {
 /** Validation family key: pins the inferential recipe while allowing a fresh,
  * separately preregistered cohort to reuse its pre-run validation. */
 export function validationDesignHash(reg: Preregistration): string {
-  return [reg.analysisVersion, reg.track, reg.confidence, reg.expectedRepeats, reg.contrasts.length, 'substrates>=20', 'frozen-task-weights', 'paired-complete-outcomes'].join('|');
+  return [reg.analysisVersion, reg.track, reg.confidence, reg.expectedRepeats, reg.contrasts.length,
+    'substrates>=20', 'binary-complete-pairs', 'task-weighted-cluster-means',
+    'simulation:24-substrates,3-repeats,3-contrasts,10-scenarios,2000-datasets',
+    'bootstrap-resamples-199..10000-diagnostic-only', 'weighted-hoeffding-envelope-v1'].join('|');
 }
 
 function validateRegistration(reg: Preregistration): void {
   if (reg.version !== 1 || reg.frozen !== true || reg.analysisVersion !== 'cq-fixed-sample-v1') throw new Error('registration must be frozen version 1');
+  if (reg.track !== 'native' && reg.track !== 'diagnostic') throw new Error('track must be native or diagnostic');
   if (!reg.cohortId || !reg.role || !reg.budgetId || !reg.assignmentSeed) throw new Error('cohort, role, budget, and assignment seed are required');
   if (!Number.isInteger(reg.expectedRepeats) || reg.expectedRepeats < 1) throw new Error('expectedRepeats must be a positive integer');
   if (reg.confidence !== 0.95) throw new Error('only preregistered 95% confidence is supported');
-  if (!Number.isInteger(reg.bootstrapResamples) || reg.bootstrapResamples < 199) throw new Error('bootstrapResamples must be >= 199');
+  if (!Number.isSafeInteger(reg.bootstrapResamples) || reg.bootstrapResamples < 199 || reg.bootstrapResamples > 10_000) throw new Error('bootstrapResamples must be an integer from 199 through 10000');
   if (!Number.isSafeInteger(reg.bootstrapSeed)) throw new Error('bootstrapSeed must be a safe integer');
   const seen = new Set<string>();
   const taskWeights = new Map<string, number>();
+  if (!Array.isArray(reg.assignments) || reg.assignments.length === 0) throw new Error('frozen assignment roster must not be empty');
   for (const a of reg.assignments) {
     if (!a.taskId || !a.substrateId || !a.repeatId || !Number.isFinite(a.weight) || a.weight <= 0) throw new Error('assignments need ids and a positive finite frozen weight');
     const k = key(a);
@@ -143,6 +158,56 @@ function validateRegistration(reg: Preregistration): void {
     contrastIds.add(c.id);
   }
   if (reg.contrasts.length === 0) throw new Error('at least one contrast is required');
+}
+
+function validateEvidence(evidence: ValidationEvidence): boolean {
+  if (typeof evidence !== 'object' || evidence === null || typeof evidence.designHash !== 'string' || evidence.designHash.length === 0) throw new Error('validation evidence requires a designHash');
+  if (!Number.isSafeInteger(evidence.scenarios) || evidence.scenarios < 0) throw new Error('validation evidence scenarios must be a nonnegative integer');
+  for (const [name, value] of Object.entries({
+    marginalCoverage: evidence.marginalCoverage,
+    marginalCoverageLower95: evidence.marginalCoverageLower95,
+    jointCoverage: evidence.jointCoverage,
+    jointCoverageLower95: evidence.jointCoverageLower95,
+    familywiseError: evidence.familywiseError,
+    familywiseErrorUpper95: evidence.familywiseErrorUpper95,
+  })) {
+    if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error(`validation evidence ${name} must be finite and within [0,1]`);
+  }
+  if (evidence.marginalCoverageLower95 > evidence.marginalCoverage) throw new Error('marginal coverage lower bound exceeds its estimate');
+  if (evidence.jointCoverageLower95 > evidence.jointCoverage) throw new Error('joint coverage lower bound exceeds its estimate');
+  if (evidence.familywiseError > evidence.familywiseErrorUpper95) throw new Error('familywise error estimate exceeds its upper bound');
+  if (!Array.isArray(evidence.perContrastCoverage) || evidence.perContrastCoverage.length === 0) throw new Error('validation evidence requires per-contrast denominators');
+  const evidenceContrastIds = new Set<string>();
+  for (const c of evidence.perContrastCoverage) {
+    if (!c.contrastId || evidenceContrastIds.has(c.contrastId) || c.datasets !== evidence.scenarios
+      || !Number.isSafeInteger(c.covered) || c.covered < 0 || c.covered > c.datasets
+      || !Number.isFinite(c.coverage) || Math.abs(c.coverage - c.covered / c.datasets) > 1e-12
+      || !Number.isFinite(c.simultaneousLower95)
+      || c.coverage < 0 || c.coverage > 1 || c.simultaneousLower95 < 0 || c.simultaneousLower95 > c.coverage) {
+      throw new Error('validation evidence per-contrast coverage is malformed or has a non-dataset denominator');
+    }
+    const perContrastWilson = wilsonLowerOneSided(c.covered, c.datasets, 2.128045234184984);
+    if (c.simultaneousLower95 > perContrastWilson + 1e-12) throw new Error('validation evidence per-contrast lower bound is anti-conservative');
+    evidenceContrastIds.add(c.contrastId);
+  }
+  if (!Number.isSafeInteger(evidence.jointCovered) || evidence.jointCovered < 0 || evidence.jointCovered > evidence.scenarios
+    || Math.abs(evidence.jointCoverage - evidence.jointCovered / evidence.scenarios) > 1e-12) throw new Error('validation evidence joint coverage count and denominator are incoherent');
+  if (evidence.jointCoverageLower95 > wilsonBounds(evidence.jointCovered, evidence.scenarios)[0] + 1e-12) throw new Error('validation evidence joint lower bound is anti-conservative');
+  if (!Number.isSafeInteger(evidence.familywiseEvaluated) || evidence.familywiseEvaluated < 0 || evidence.familywiseEvaluated > evidence.scenarios) throw new Error('validation evidence familywise denominator is invalid');
+  if (!Number.isSafeInteger(evidence.familywiseRejected) || evidence.familywiseRejected < 0 || evidence.familywiseRejected > evidence.familywiseEvaluated
+    || evidence.familywiseEvaluated === 0 || Math.abs(evidence.familywiseError - evidence.familywiseRejected / evidence.familywiseEvaluated) > 1e-12) {
+    throw new Error('validation evidence familywise numerator and denominator are incoherent');
+  }
+  if (evidence.familywiseErrorUpper95 + 1e-12 < wilsonBounds(evidence.familywiseRejected, evidence.familywiseEvaluated)[1]) throw new Error('validation evidence familywise upper bound is anti-conservative');
+  const coverageLower = Math.min(evidence.jointCoverageLower95, ...evidence.perContrastCoverage.map(c => c.simultaneousLower95));
+  const coverageEstimate = Math.min(evidence.jointCoverage, ...evidence.perContrastCoverage.map(c => c.coverage));
+  if (Math.abs(evidence.marginalCoverageLower95 - coverageLower) > 1e-12 || Math.abs(evidence.marginalCoverage - coverageEstimate) > 1e-12) {
+    throw new Error('validation evidence marginal coverage does not match joint and per-contrast summaries');
+  }
+  const gatesPass = evidence.scenarios >= 2000
+    && coverageLower >= 0.93 && evidence.familywiseEvaluated > 0 && evidence.familywiseErrorUpper95 <= 0.07;
+  if (typeof evidence.gatesPassed !== 'boolean' || evidence.gatesPassed !== gatesPass) throw new Error('validation evidence gatesPassed is incoherent with the reported bounds');
+  return gatesPass;
 }
 
 /** SplitMix32 gives reproducible bootstrap draws without process-global RNG state. */
@@ -245,7 +310,20 @@ export function analyzeFixedSample(
 ): AnalysisResult {
   validateRegistration(reg);
   const hash = designHash(reg);
-  const validated = validation?.designHash === validationDesignHash(reg) && validation.gatesPassed && validation.scenarios >= 2000 && validation.marginalCoverageLower95 >= 0.93 && validation.familywiseErrorUpper95 <= 0.07;
+  const evidencePasses = validation === null ? false : validateEvidence(validation);
+  const validated = validation !== null && validation.designHash === validationDesignHash(reg)
+    && validation.perContrastCoverage.length === reg.contrasts.length
+    && reg.contrasts.every(c => validation.perContrastCoverage.some(v => v.contrastId === c.id)) && evidencePasses;
+  const registeredStrategies = new Set(reg.contrasts.flatMap(c => [c.strategyId, c.baselineId]));
+  for (const row of rows) {
+    if (row.cohortId !== reg.cohortId || row.track !== reg.track) throw new Error('observations cannot pool cohorts or tracks');
+    if (!registeredStrategies.has(row.strategyId)) throw new Error(`observation uses unregistered strategy '${row.strategyId}'`);
+    if (typeof row.taskId !== 'string' || !row.taskId || typeof row.substrateId !== 'string' || !row.substrateId || typeof row.repeatId !== 'string' || !row.repeatId) throw new Error('observation task, substrate, and repeat identities must be nonempty strings');
+    if (!Number.isFinite(row.weight) || row.weight <= 0) throw new Error('observation weight must be finite and positive');
+    if (row.status !== 'measured' && row.status !== 'operational-missing') throw new Error(`unknown observation status '${String(row.status)}'`);
+    if (row.status === 'measured' && typeof row.success !== 'boolean') throw new Error('measured observation requires boolean success');
+    if (row.status === 'operational-missing' && row.success !== null) throw new Error('operational missingness must have null success');
+  }
   const prepared = reg.contrasts.map(c => prepare(reg, rows, c));
   const commonClusterIds = prepared[0]?.clusterIds ?? [];
   const sameClusterRoster = prepared.every(p => p.clusterIds.length === commonClusterIds.length && p.clusterIds.every((id, i) => id === commonClusterIds[i]));
@@ -288,6 +366,9 @@ export function analyzeFixedSample(
       const radius = Math.sqrt(2 * Math.log(2 / 0.05) * sumSq / (sw * sw));
       return [Math.max(-1, Math.min(raw[0]!, estimate - radius)), Math.min(1, Math.max(raw[1]!, estimate + radius))];
     })();
+    const bootstrapOnlyMarginal: [number, number] | null = estimate === null || boot[i]!.length === 0
+      ? null
+      : [quantile([...boot[i]!], 0.025), quantile([...boot[i]!], 0.975)];
     const family: [number, number] | null = estimate === null ? null : (() => {
       const k = reg.contrasts.length;
       const ws = p.clusterWeights, sw = ws.reduce((a, b) => a + b, 0), sumSq = ws.reduce((a, b) => a + b * b, 0);
@@ -296,7 +377,11 @@ export function analyzeFixedSample(
       const half = Math.max(raw, radius);
       return [Math.max(-1, estimate - half), Math.min(1, estimate + half)];
     })();
+    const bootstrapOnlyFamily: [number, number] | null = estimate === null || !Number.isFinite(familyCritical)
+      ? null
+      : [Math.max(-1, estimate - familyCritical), Math.min(1, estimate + familyCritical)];
     return { id: reg.contrasts[i]!.id, estimate, marginal95: marginal, familywise95: inferential ? family : null,
+      bootstrapOnlyMarginal95: bootstrapOnlyMarginal, bootstrapOnlyFamilywise95: bootstrapOnlyFamily,
       status: inferential ? 'inferential' : n === 0 ? 'inconclusive' : 'descriptive', reasons: [...new Set(reasons)],
       substrates: n, tasks: p.tasks, pairedTasks: p.pairedTasks, launchedBudgetFailures: p.failures,
       operationalMissing: p.missing, bootstrapResamples: resamples };
@@ -312,4 +397,12 @@ export function wilsonBounds(successes: number, n: number, z = 1.959963984540054
   const center = (p + z2 / (2 * n)) / d;
   const half = z * Math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / d;
   return [Math.max(0, center - half), Math.min(1, center + half)];
+}
+
+function wilsonLowerOneSided(successes: number, n: number, z: number): number {
+  if (n <= 0) return 0;
+  const p = successes / n, z2 = z * z, d = 1 + z2 / n;
+  const center = (p + z2 / (2 * n)) / d;
+  const half = z * Math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / d;
+  return Math.max(0, center - half);
 }

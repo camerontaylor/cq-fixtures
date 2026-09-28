@@ -9,6 +9,13 @@ export interface NativeConformanceOptions extends Omit<RunSuiteOptions, 'driver'
   expectedTransport: string;
 }
 
+const TRANSPORT_DRIVER: Readonly<Record<string, string>> = {
+  'codex-exec': 'codex-exec',
+  'pi-json': 'pi-json',
+  'pi-rpc': 'pi-rpc',
+  'zcode-acp': 'zcode-acp',
+};
+
 /**
  * G1 entrypoint: this calls the actual runSuite path, whose row and table
  * validators remain authoritative. It is deliberately gated on runner-side
@@ -16,6 +23,8 @@ export interface NativeConformanceOptions extends Omit<RunSuiteOptions, 'driver'
  */
 export async function runNativeConformanceSuite(options: NativeConformanceOptions): Promise<RunSuiteResult> {
   const { expectedCaseIds, expectedInvocations, expectedTransport, ...suiteOptions } = options;
+  const expectedDriver = TRANSPORT_DRIVER[expectedTransport];
+  if (!expectedDriver) throw new Error(`unsupported native transport for runSuite conformance: ${expectedTransport}`);
   const result = await runSuite(suiteOptions);
   const foundCases = new Set(result.rows.map((row) => row.case));
   const missingCases = expectedCaseIds.filter((caseId) => !foundCases.has(caseId));
@@ -33,15 +42,16 @@ export async function runNativeConformanceSuite(options: NativeConformanceOption
     if (observation.transport !== expectedTransport) throw new Error(`expected ${expectedTransport}, observed ${observation.transport}`);
   }
 
-  // Native identifiers must survive validation and aggregation. The exact
-  // field is added by S1; accept either dedicated transport or driver field
-  // while keeping the value itself strict.
+  // The row schema carries the validated lane label; the native transport
+  // identity remains in the observation envelope. Aggregation must preserve
+  // that same lane in its comparison cell.
   for (const row of result.rows) {
-    const record = row as unknown as Record<string, unknown>;
-    const identity = record.transport ?? record.nativeTransport ?? record.driver;
-    if (identity !== expectedTransport) {
-      throw new Error(`native row ${String(record.case)} lost transport identity ${expectedTransport}`);
+    if (row.driver !== expectedDriver) {
+      throw new Error(`native row ${row.case} has driver ${row.driver}; expected ${expectedDriver}`);
     }
   }
+  const matchingCells = result.tables.flatMap((table) => table.cells)
+    .filter((cell) => cell.driver === expectedDriver);
+  if (matchingCells.length === 0) throw new Error(`comparison tables lost native driver lane ${expectedDriver}`);
   return result;
 }

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,7 @@ import {
 } from '@camerontaylor/cq-toolkit';
 import { describe, expect, it } from 'vitest';
 import { runSuite } from '../runner/index.ts';
+import type { ExperimentContext } from '../runner/experiment.ts';
 import { ObservedNativeDriver } from '../runner/native/observed-driver.ts';
 import type { InvocationIdentity } from '../runner/native/observation.ts';
 import {
@@ -240,6 +242,31 @@ describe('cq-settings bounded workflow corpus', () => {
     const driver = new LocalObservedDriver();
     const wrappedDriver = bundle.wrapDriver(driver);
     try {
+      const hostCheckPath = join(bundle.repoRoot, 'workflow-oracles/review-loop-check.mjs');
+      const experiment: ExperimentContext = {
+        campaignId: 'cq-settings-local-corpus',
+        cohortId: 'native-wrapper-check',
+        experimentId: 'review-loop-host-pin',
+        taskId: task.id,
+        repeatId: 'repeat-1',
+        assignmentId: 'assignment-1',
+        stageId: 'stage-1',
+        attemptId: 'attempt-1',
+        track: 'visible-calibration',
+        strategyId: 'local-observed-driver',
+        settingsId: 'settings-default',
+        budgetId: 'budget-unbounded-local',
+        profileId: 'deterministic-fixture',
+        frozenWeight: 1,
+        substrateId: task.id,
+        judgeManifest: {
+          sourcePin: bundle.oraclePin.sha256,
+          dependencies: [{
+            path: 'workflow-oracles/review-loop-check.mjs',
+            sha256: createHash('sha256').update(readFileSync(hostCheckPath)).digest('hex'),
+          }],
+        },
+      };
       expect(bundle.suite.cases[0]?.id).toBe(task.id);
       expect(bundle.suite.cases[0]?.task.notes).toContain(`source=${REVIEW_LOOP_SOURCE_ID}`);
       expect(bundle.suite.cases[0]?.task.notes).toContain(`baseline=${REVIEW_LOOP_BASELINE_ID}`);
@@ -252,6 +279,9 @@ describe('cq-settings bounded workflow corpus', () => {
         provider: bundle.modelSpec.provider,
         driverName: 'subprocess',
         checkTimeoutMs: 20_000,
+        artifactRoot: join(bundle.repoRoot, 'artifacts'),
+        experiment,
+        hostCheckScoringEnvironment: bundle.hostCheckScoringEnvironment,
       });
       expect(result.materializationFailures).toBe(0);
       expect(result.rows).toHaveLength(1);
@@ -274,7 +304,13 @@ describe('cq-settings bounded workflow corpus', () => {
         throw new Error('runSuite adapter did not capture baseline and candidate commits');
       }
       expect(candidateCommit).not.toBe(baselineCommit);
-      expect(execFileSync('git', ['-C', workerWorkspace, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(candidateCommit);
+      const taskOutcome = result.rows[0]?.taskOutcome;
+      expect(taskOutcome?.judgements).toHaveLength(1);
+      expect(taskOutcome?.judgements[0]).toMatchObject({
+        judgePin: bundle.oraclePin.sha256,
+        judgeManifest: experiment.judgeManifest,
+        baselineCommit,
+      });
       expect(bundle.oraclePin).toMatchObject({
         version: 1,
         oracleId: REVIEW_LOOP_ORACLE_ID,

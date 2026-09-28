@@ -72,6 +72,7 @@ export async function createReviewLoopRunSuiteBundle(
   const suiteDir = join(root, 'suite');
   const fixturePath = join(root, 'fixtures', task.id);
   const checkPath = join(root, 'workflow-oracles', 'review-loop-check.mjs');
+  const denylistPath = join(root, 'policy', 'denylist', 'patterns.yml');
   const baselinePinDirectory = join(root, 'host-baseline-pins');
   const baselinePins = new Map<string, string>();
   const candidatePins = new Map<string, string>();
@@ -81,7 +82,9 @@ export async function createReviewLoopRunSuiteBundle(
   await mkdir(join(fixturePath, 'src'), { recursive: true });
   await mkdir(join(fixturePath, 'test'), { recursive: true });
   await mkdir(dirname(checkPath), { recursive: true });
+  await mkdir(dirname(denylistPath), { recursive: true });
   await mkdir(baselinePinDirectory, { recursive: true });
+  await copyFile(fileURLToPath(new URL('../../policy/denylist/patterns.yml', import.meta.url)), denylistPath);
   for (const relativePath of [
     'package.json',
     'src/settings.mjs',
@@ -212,6 +215,14 @@ if (!report.passed) {
                 stdio: ['ignore', 'pipe', 'pipe'],
               });
               candidatePins.set(workspace, candidateCommit);
+            }
+            const headAfterCapture = execFileSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
+              cwd: workspace,
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            }).trim();
+            if (headAfterCapture !== candidateCommit) {
+              throw new Error('wrapped Driver changed candidate HEAD after dispatch');
             }
             await writeFile(pinPath, `${JSON.stringify({
               workspacePath: workspace,

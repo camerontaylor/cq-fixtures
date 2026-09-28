@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   buildTestFixPlan,
   checkDiffMonotonicity,
@@ -209,106 +210,165 @@ describe('cq-settings bounded workflow corpus', () => {
   }, 30_000);
 
   it('runs conflict resolution against local effects and verifies the reported head movement', async () => {
+    const taskRoot = await mkdtemp(join(tmpdir(), 'cq-merge-task-'));
+    const repoRoot = join(taskRoot, 'repo');
+    const settingsPath = join(repoRoot, 'src/settings.mjs');
+    await mkdir(join(repoRoot, 'src'), { recursive: true });
+    await writeFile(settingsPath, `export function campaignLabel(label) { return label.trim(); }\n`);
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', 'Seed conflict task'], { cwd: repoRoot });
+    const baseline = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    const replacement = `export function campaignLabel(label) {\n  if (typeof label !== 'string') return '';\n  return label.trim().slice(0, 40);\n}\n`;
     let validations = 0;
+    let pushedCommit = '';
     const effects: MergeEffects = {
       async validateRef() {
         validations += 1;
-        return { ok: true, sha: validations === 1 ? 'b'.repeat(40) : 'c'.repeat(40) };
+        const sha = validations === 1 ? baseline : execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+        return { ok: true, sha };
       },
       async fetchRef() { return { code: 0, stdout: '', stderr: '' }; },
       async readBaseRef() { return { ok: true, baseRefName: 'main' }; },
-      async worktreePrepare() { return { path: '/tmp/cq-settings-conflict-fixture' }; },
+      async worktreePrepare() { return { path: repoRoot }; },
       async worktreeRemove() {},
       async mergePr() { return { code: 0, stdout: '', stderr: '' }; },
       async retargetBase() { return { code: 0, stdout: '', stderr: '' }; },
-      async pushRef() { return { code: 0, stdout: '', stderr: '' }; },
+      async pushRef(_ref, fromPath) {
+        pushedCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fromPath, encoding: 'utf8' }).trim();
+        return { code: 0, stdout: '', stderr: '' };
+      },
     };
     const invocations: Parameters<Driver['run']>[0][] = [];
     const driver: Driver = {
       async run(invocation) {
         invocations.push(invocation);
+        await writeFile(settingsPath, replacement);
+        execFileSync('git', ['add', 'src/settings.mjs'], { cwd: repoRoot });
+        execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', 'Resolve settings conflict'], { cwd: repoRoot });
         return {
-          ...completedWorker({ decision: 'acted', summary: 'Resolve the settings conflict.' }),
+          ...completedWorker({ decision: 'acted', summary: 'Preserve trimmed labels and enforce the 40-character limit.' }),
           model: invocation.modelSpec.model,
         };
       },
     };
-    const resolveConflict = makeResolveConflictOp({
-      effects,
-      driver,
-      createSession: async () => 'local-session',
-      loadPrompt: async () => 'PR {{pr}}; files {{conflictFiles}}; base {{baseBranch}}; tree {{worktree}}',
-    });
-    const result = await resolveConflict({
-      pr: 17,
-      repoRoot: '/tmp/cq-settings-conflict-fixture',
-      headBranch: 'fix/settings',
-      baseBranch: 'main',
-      conflictFiles: ['src/settings.ts'],
-      modelSpec: { model: 'offline-conflict', provider: 'fake' },
-    });
+    try {
+      const resolveConflict = makeResolveConflictOp({
+        effects,
+        driver,
+        createSession: async () => 'local-session',
+        loadPrompt: async () => 'PR {{pr}}; files {{conflictFiles}}; base {{baseBranch}}; tree {{worktree}}',
+      });
+      const result = await resolveConflict({
+        pr: 17,
+        repoRoot,
+        headBranch: 'fix/settings',
+        baseBranch: 'main',
+        conflictFiles: ['src/settings.mjs'],
+        modelSpec: { model: 'offline-conflict', provider: 'fake' },
+      });
 
-    expect(expectOk(result).decision).toBe('acted');
-    expect(validations).toBe(2);
-    expect(invocations[0]?.prompt).toContain('src/settings.ts');
-    expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'none' });
-  });
+      expect(expectOk(result).decision).toBe('acted');
+      expect(validations).toBe(2);
+      expect(pushedCommit).not.toBe(baseline);
+      expect(execFileSync('git', ['diff', '--name-only', baseline, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()).toBe('src/settings.mjs');
+      const candidate = await import(`${pathToFileURL(settingsPath).href}?fresh=${Date.now()}`) as { campaignLabel(label: unknown): string };
+      expect(candidate.campaignLabel('x'.repeat(41))).toHaveLength(40);
+      expect(invocations[0]?.prompt).toContain('src/settings.mjs');
+      expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'none' });
+    } finally {
+      await rm(taskRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('plans a fleet sweep using changed-file evidence and nested package ownership', async () => {
+    const taskRoot = await mkdtemp(join(tmpdir(), 'cq-fleet-task-'));
+    const repoRoot = join(taskRoot, 'repo');
+    await mkdir(join(repoRoot, 'packages/core/test'), { recursive: true });
+    await mkdir(join(repoRoot, 'packages/cli'), { recursive: true });
+    await writeFile(join(repoRoot, 'packages/core/test/settings.test.ts'), 'assert.equal(true, true);\n');
+    await writeFile(join(repoRoot, 'packages/cli/index.ts'), 'export const cli = true;\n');
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', 'Fleet baseline'], { cwd: repoRoot });
+    const baseline = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    await writeFile(join(repoRoot, 'packages/core/test/settings.test.ts'), 'assert.equal(false, false);\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', 'Change settings test'], { cwd: repoRoot });
     const planner = makePlanSweep({
-      changedFiles: async () => [{
-        path: 'packages/core/test/settings.test.ts',
-        status: 'M',
-        deleted: false,
-        fixerTarget: true,
-      }],
+      changedFiles: async (base) => execFileSync('git', ['diff', '--name-status', `${base}..HEAD`], { cwd: repoRoot, encoding: 'utf8' })
+        .trim().split('\n').filter(Boolean).map((line) => {
+          const [status = '', path = ''] = line.split('\t');
+          return { path, status, deleted: status === 'D', fixerTarget: true };
+        }),
     });
     const input: PlanSweepInput = {
-      repoRoot: '/tmp/cq-settings-fleet-fixture',
+      repoRoot,
       packages: [
         { name: 'core', path: 'packages/core' },
         { name: 'core-tests', path: 'packages/core/test' },
         { name: 'cli', path: 'packages/cli' },
       ],
-      selector: { mode: 'changed-vs-base', base: 'campaign-base' },
+      selector: { mode: 'changed-vs-base', base: baseline },
       fixers: ['settings-fixer'],
     };
-    const report = expectOk(await planner(input));
+    try {
+      const report = expectOk(await planner(input));
 
-    expect(report.units).toEqual([{
-      package: 'core-tests',
-      fixer: 'settings-fixer',
-      files: ['packages/core/test/settings.test.ts'],
-    }]);
-    expect(report.jobs).toHaveLength(1);
-  });
+      expect(report.units).toEqual([{
+        package: 'core-tests',
+        fixer: 'settings-fixer',
+        files: ['packages/core/test/settings.test.ts'],
+      }]);
+      expect(report.jobs).toHaveLength(1);
+      expect(execFileSync('git', ['diff', '--quiet', baseline, 'HEAD', '--', 'packages/cli/index.ts'], { cwd: repoRoot }).toString()).toBe('');
+    } finally {
+      await rm(taskRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('builds the baseline test-fix phase with test-only scope', async () => {
+    const taskRoot = await mkdtemp(join(tmpdir(), 'cq-test-fix-task-'));
+    const repoRoot = join(taskRoot, 'repo');
+    await mkdir(join(repoRoot, 'packages/settings/src'), { recursive: true });
+    await mkdir(join(repoRoot, 'packages/settings/test'), { recursive: true });
+    await writeFile(join(repoRoot, 'packages/settings/src/settings.ts'), 'export const defaultLabel = "campaign";\n');
+    await writeFile(join(repoRoot, 'packages/settings/test/settings.test.ts'), 'assert.equal(defaultLabel, "campaign");\n');
     const config = {
-      repoRoot: '/tmp/cq-settings-test-fix-fixture',
-      worktreesDir: '/tmp/cq-settings-test-fix-worktrees',
+      repoRoot,
+      worktreesDir: join(taskRoot, 'worktrees'),
       runPrefix: 'cq/local-test-fix',
       base: 'campaign-base',
       packages: [{ name: 'settings', path: 'packages/settings' }],
       selector: { mode: 'workspace-all' as const },
       fixers: ['test-fix'],
-      packageFiles: { settings: ['packages/settings/test/settings.test.ts'] },
+      packageFiles: {
+        settings: [
+          'packages/settings/src/settings.ts',
+          'packages/settings/test/settings.test.ts',
+        ],
+      },
     };
-    const planner = makePlanSweep({ changedFiles: async () => [] });
-    const phaseA = expectOk(await planner({
-      repoRoot: config.repoRoot,
-      packages: config.packages,
-      selector: config.selector,
-      fixers: config.fixers,
-      packageFiles: config.packageFiles,
-    }));
-    const plan = buildTestFixPlan(config, phaseA);
-    const serializedJobs = JSON.stringify(plan.jobs);
+    try {
+      const planner = makePlanSweep({ changedFiles: async () => [] });
+      const phaseA = expectOk(await planner({
+        repoRoot: config.repoRoot,
+        packages: config.packages,
+        selector: config.selector,
+        fixers: config.fixers,
+        packageFiles: config.packageFiles,
+      }));
+      const plan = buildTestFixPlan(config, phaseA);
+      const serializedJobs = JSON.stringify(plan.jobs);
 
-    expect(plan.id).toBe('test-fix');
-    expect(serializedJobs).toContain('test-fix');
-    expect(serializedJobs).toContain('test/settings.test.ts');
-    expect(serializedJobs).not.toContain('product-fix');
+      expect(plan.id).toBe('test-fix');
+      expect(serializedJobs).toContain('test-fix');
+      expect(serializedJobs).toContain('test/settings.test.ts');
+      expect(serializedJobs).toContain('^packages/settings/');
+      expect(serializedJobs).not.toContain('product-fix');
+    } finally {
+      await rm(taskRoot, { recursive: true, force: true });
+    }
   });
 
   it('clusters analysis failures and requests a read-only remediation proposal', async () => {
@@ -342,7 +402,10 @@ describe('cq-settings bounded workflow corpus', () => {
       modelSpec: { model: 'offline-analysis', provider: 'fake' },
     });
 
-    expect(expectOk(proposal).structuredOutput).toMatchObject({ summary: expect.any(String) });
+    expect(expectOk(proposal).structuredOutput).toEqual({
+      summary: 'Normalize empty campaign settings at the shared validation boundary.',
+      patch: '--- a/src/settings.ts\n+++ b/src/settings.ts\n@@\n-empty\n+validated',
+    });
     expect(invocations[0]?.toolPolicy).toEqual({ allow: [], mode: 'none' });
     expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'read-only' });
   });

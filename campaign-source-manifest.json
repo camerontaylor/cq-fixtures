@@ -45,12 +45,14 @@
   },
   "workflowCorpus": {
     "manifest": "campaigns/cq-settings/corpus/workflows.json",
-    "sha256": "f43031767b8e85cec4b35ad4d4d27e13a839f370eae6e638a8d437f7d691f1d9",
+    "sha256": "05f192d8548c6438ac423ce7c29c33917d58253a0e1b4e4dc842bb2d28ac4ad7",
+    "scenarioCount": 10,
+    "integrationSubstrateCount": 5,
     "verifiedTaskCount": 1,
     "independentSubstrateCount": 1,
     "modelRoleDiversityClaim": 0,
     "verifiedTaskFamilies": ["review-loop"],
-    "operationSmokeOnlyFamilies": [
+    "operationIntegrationOnlyFamilies": [
       "merge-pr-conflicts",
       "fleet-sweep",
       "baseline-test-fix",
@@ -59,10 +61,12 @@
     ],
     "split": "one verified task is visible calibration; no held-out task or oracle is included",
     "heldoutReservation": "whole substrate/template/fault-family identities reserved before tuning in the corpus manifest; metadata only, no isolation claim",
-    "redGreenAndAdequacyEvidence": "test/campaign-workflows.test.ts: one real seeded repair with independent executable red/green oracle; five remaining families are operation smoke evidence, not tasks",
-    "coverageLimit": "one review-loop repair substrate; no role adequacy claim; other five families still need real repair tasks and independent oracles",
+    "redGreenAndAdequacyEvidence": "test/campaign-workflows.test.ts: one real seeded review repair has an independent executable red/green oracle; other families have operation integration assertions but are not tasks, and test-fix exposes a broad package-scope gap",
+    "scenarioCountMeaning": "10 named Vitest workflow cases include review output-fault cases; they are not 10 independent repair tasks",
+    "independentSubstrates": "five fresh local filesystem substrates; only review-loop has an independently judged repair task",
+    "coverageLimit": "one independently judged review-loop task; no role adequacy claim; test-fix scope is too broad; other families need independently judged task corpora",
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
-    "pristineBaselineIntegrity": "synthetic task vectors are versioned by this manifest and SHA256; no toolkit or existing substrate fixture changed"
+    "pristineBaselineIntegrity": "review task factory creates a fresh local Git seed and records its baseline commit; the host judge reads candidate repository state; no toolkit or fixtures checkout was mutated"
   },
   "scope": {
     "stage": "S0 bounded dependency reconciliation plus bounded visible S5 workflow corpus slice",

@@ -1,6 +1,8 @@
 {
-  "manifestVersion": 2,
+  "manifestVersion": 3,
   "status": "visible-calibration-in-progress",
+  "scenarioCount": 10,
+  "integrationSubstrateCount": 5,
   "verifiedTaskCount": 1,
   "independentSubstrateCount": 1,
   "modelRoleDiversityClaim": 0,
@@ -21,12 +23,52 @@
       "pristineBaselineIntegrity": "fresh initial Git commit; grader compares candidate against its recorded base SHA and checks only src/settings.mjs changed"
     }
   ],
-  "operationSmokeOnly": [
-    { "family": "merge-pr-conflicts", "test": "test/campaign-workflows.test.ts", "campaignTask": false, "roleCall": false },
-    { "family": "fleet-sweep", "test": "test/campaign-workflows.test.ts", "campaignTask": false, "roleCall": false },
-    { "family": "baseline-test-fix", "test": "test/campaign-workflows.test.ts", "campaignTask": false, "roleCall": false },
-    { "family": "analyze-remediate", "test": "test/campaign-workflows.test.ts", "campaignTask": false, "roleCall": false },
-    { "family": "monotonic-ratchets", "test": "test/campaign-workflows.test.ts", "campaignTask": false, "roleCall": false }
+  "operationIntegrationOnly": [
+    {
+      "family": "merge-pr-conflicts",
+      "scenario": "merge-conflict-local-repair",
+      "substrate": "fresh temporary Git repository",
+      "modelAction": "injected Driver edits and commits the conflict worktree source",
+      "oracle": "operation verifies local HEAD movement; host test checks exact changed path and resulting label cap",
+      "campaignTask": false,
+      "roleCall": false
+    },
+    {
+      "family": "fleet-sweep",
+      "scenario": "nested-package-changed-file-planning",
+      "substrate": "fresh temporary Git monorepo with changed test file and untouched CLI package",
+      "action": "exported planner consumes actual git diff evidence and selects the deepest package owner",
+      "oracle": "host assertions verify the selected unit, file set, and untouched sibling",
+      "campaignTask": false,
+      "roleCall": false
+    },
+    {
+      "family": "baseline-test-fix",
+      "scenario": "test-fix-plan-scope-leak-detection",
+      "substrate": "fresh temporary package tree with product source and test files",
+      "action": "exported test-fix plan builder emits a test-fix unit from test and product files",
+      "oracle": "host assertion reproduces the current broad package-prefix allowlist, which also admits product source; this is a toolkit limitation, not a passing test-only scope oracle",
+      "campaignTask": false,
+      "roleCall": false
+    },
+    {
+      "family": "analyze-remediate",
+      "scenario": "clustered-failure-exact-read-only-proposal",
+      "substrate": "host-authored failure set with repeated signature",
+      "modelAction": "injected Driver returns a concrete remediation proposal",
+      "oracle": "host assertion checks exact proposal and explicit no-tools/read-only policy",
+      "campaignTask": false,
+      "roleCall": false
+    },
+    {
+      "family": "monotonic-ratchets",
+      "scenario": "local-baseline-tighten-and-loosen",
+      "substrate": "fresh temporary workspace with an on-disk captured baseline",
+      "action": "exported capture/check ops compare live metric evidence; monotonic guard examines baseline diff",
+      "oracle": "host assertions require tighter metric pass and loosened metric fail",
+      "campaignTask": false,
+      "roleCall": false
+    }
   ],
   "heldoutReserve": {
     "reservedBeforeTuning": true,
@@ -39,10 +81,12 @@
     "note": "reservation metadata only; no held-out task or oracle is delivered or claimed isolated"
   },
   "evidence": {
-    "redGreen": "test/campaign-workflows.test.ts: original seed fails executable checks and the exact committed reference repair passes",
+    "redGreen": "test/campaign-workflows.test.ts: one original review-task seed fails executable checks and exact committed reference repair passes; the other five are integration scenarios only",
     "independentOracle": "host test process; exact expected implementation and behavior assertions are absent from the task worktree",
     "outputFormatIndependence": "valid no-op claim grades incorrect; malformed/throwing Drivers with correct committed edits grade correct",
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
-    "scopeLimit": "one verified review-loop substrate only; other five families remain operation smoke evidence and must be expanded before role adequacy or campaign claims"
+    "scenarioCountMeaning": "10 named Vitest workflow cases including review outcome-fault cases; this count is not 10 independent repair tasks",
+    "independentSubstrates": "five fresh local filesystem substrates across review, merge, fleet, test-fix and ratchet integration; only the review substrate has an independent task correctness oracle",
+    "scopeLimit": "one independently judged review-loop task; test-fix integration exposes a current broad-scope allowlist gap; remaining families have operation-level integration evidence only and need independently judged task corpora before role adequacy or campaign claims"
   }
 }

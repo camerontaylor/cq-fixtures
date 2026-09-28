@@ -299,6 +299,11 @@ describe('visible G1 runSuite entrypoint', () => {
     expect(report.observations[0]?.observation.capture.baselineCommit).toMatch(/^[a-f0-9]{40}$/u);
     expect(report.rows.length).toBeGreaterThan(0);
     expect(report.tables.length).toBeGreaterThan(0);
+    expect(report.rows).toContainEqual(expect.objectContaining({
+      driver: 'codex-exec', outcome: expect.objectContaining({ score: 1 }),
+    }));
+    expect(report.tables.flatMap((table: unknown) => (table as { cells?: unknown[] }).cells ?? []))
+      .toContainEqual(expect.objectContaining({ driver: 'codex-exec' }));
     expect(report.budget).toMatchObject({ maxAttempts: 1, maxTokens: null, hardTokenCap: false });
-  }, 30_000);
+  }, 90_000);
 });

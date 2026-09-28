@@ -1,0 +1,294 @@
+{
+  "g2": "not-established",
+  "modelCalls": 0,
+  "profile": "cq-boundary-s5",
+  "vmConfigHash": "ba26ed4f708597f85850f554d232b9022ef247f5353ad9864f1c9ca425098d0f",
+  "daemonId": "e15e4bd0-8a2f-4f5b-b335-2bd18da11100",
+  "guest": "Linux 6.8.0-117-generic\n/ ext4\n/dev devtmpfs\n/proc proc\n/sys sysfs\n/sys/kernel/security securityfs\n/dev/shm tmpfs\n/dev/pts devpts\n/run tmpfs\n/run/lock tmpfs\n/sys/fs/cgroup cgroup2\n/sys/fs/pstore pstore\n/sys/firmware/efi/efivars efivarfs\n/sys/fs/bpf bpf\n/proc/sys/fs/binfmt_misc autofs\n/dev/hugepages hugetlbfs\n/dev/mqueue mqueue\n/sys/kernel/debug debugfs\n/sys/kernel/tracing tracefs\n/sys/fs/fuse/connections fusectl\n/sys/kernel/config configfs\n/boot ext4\n/boot/efi vfat\n/proc/sys/fs/binfmt_misc binfmt_misc\n/mnt/lima-cidata iso9660\n/mnt/lima-colima-cq-boundary-s5 ext4\n/run/user/502 tmpfs\n/var/lib/docker ext4\n/var/lib/containerd ext4\n/var/lib/rancher ext4\n/var/lib/cni ext4\n/var/lib/ramalama ext4\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/root       6.8G  824M  5.9G  13% /\n/dev/vdb1        12G  1.2G   10G  11% /var/lib/docker",
+  "positiveControls": {
+    "argv": true,
+    "env": true,
+    "file": true
+  },
+  "workerImageId": "sha256:f6a4c18dc914a3602de42e6666d66b7e31f34458485583ae9558a3f6193e325a",
+  "broker": {
+    "identity": "f7a02a80a888e3c3efb2d96688d511b5bcca4c0e17e60fa51415798cc1f9cf28",
+    "productionEligible": false
+  },
+  "namespaceAclHash": "6304ed5e9fbda8428994d7d4a6ed6868f23ee1a234b12ba6d950ad689aced79a",
+  "workerContainerId": "f97d38dce9dec015c67b37d2b5087dd35ad775786cdc5c35b26f6957816d9ed7",
+  "workerNamespace": {
+    "Privileged": false,
+    "ReadonlyRootfs": true,
+    "CapDrop": [
+      "ALL"
+    ],
+    "SecurityOpt": [
+      "no-new-privileges"
+    ],
+    "PidMode": "",
+    "IpcMode": "private",
+    "NetworkMode": "cq-s5-probe",
+    "Memory": 268435456,
+    "NanoCpus": 500000000,
+    "PidsLimit": 64,
+    "PortBindings": {}
+  },
+  "mounts": [
+    {
+      "Type": "volume",
+      "Name": "cq-s5-context-probe",
+      "Destination": "/context",
+      "RW": false
+    },
+    {
+      "Type": "volume",
+      "Name": "cq-s5-task-probe",
+      "Destination": "/task",
+      "RW": true
+    }
+  ],
+  "checks": {
+    "authorizedContext": true,
+    "authorizedTaskWrite": true,
+    "contextReadOnly": true,
+    "hostJudgeDirect": true,
+    "hostJudgeSymlink": true,
+    "hostJudgeShellChild": true,
+    "hostJudgeToolChild": true,
+    "hostSolutionDirect": true,
+    "hostSolutionSymlink": true,
+    "hostSolutionShellChild": true,
+    "hostSolutionToolChild": true,
+    "hostSiblingDirect": true,
+    "hostSiblingSymlink": true,
+    "hostSiblingShellChild": true,
+    "hostSiblingToolChild": true,
+    "hostConfigDirect": true,
+    "hostConfigSymlink": true,
+    "hostConfigShellChild": true,
+    "hostConfigToolChild": true,
+    "vmJudgeDirect": true,
+    "vmJudgeSymlink": true,
+    "vmJudgeShellChild": true,
+    "vmJudgeToolChild": true,
+    "vmSolutionDirect": true,
+    "vmSolutionSymlink": true,
+    "vmSolutionShellChild": true,
+    "vmSolutionToolChild": true,
+    "vmConfigDirect": true,
+    "vmConfigSymlink": true,
+    "vmConfigShellChild": true,
+    "vmConfigToolChild": true,
+    "siblingRootDirect": true,
+    "siblingRootSymlink": true,
+    "siblingRootShellChild": true,
+    "siblingRootToolChild": true,
+    "dockerSocketAbsent": true,
+    "hostHomeAbsent": true,
+    "cleanHome": true,
+    "uidNonRoot": true,
+    "noCapabilities": true,
+    "noNewPrivileges": true,
+    "seccompEnabled": true,
+    "externalProcessSentinelsAbsent": true,
+    "privatePidNamespace": true,
+    "directSyntheticUpstreamDenied": true,
+    "brokerWrongPortDenied": true,
+    "vmGatewayDenied": true,
+    "externalEndpointDenied": true,
+    "dockerDnsTcpDenied": true,
+    "ipv6LoopbackDenied": true,
+    "dnsDenied": true,
+    "embeddedDnsUdpDenied": true,
+    "allowedTlsRoute": true,
+    "redirectDenied": true,
+    "undeclaredRouteDenied": true,
+    "absoluteUrlDenied": true,
+    "pathEscapeDenied": true,
+    "connectDenied": true,
+    "badTlsHostnameDenied": true
+  },
+  "allPassed": true,
+  "prepareAdapter": {
+    "identity": "d8069ddd43f286f0ce526509e35f3d4515a61d18ba25a6af49fca4422e8d2d7a",
+    "containerId": "aa5cfe0cc88b965149b5fabbd5c05f5d1e4bf4c9c3045186b36e88f576bc7b5d",
+    "aclVerified": true,
+    "aclHash": "cc7be89f759adb479e84644be6e25bdfb7026693133543d0b2adc0e3e273dc69",
+    "nodeVersion": "v24.21.0"
+  },
+  "elapsedSeconds": 38.84,
+  "operations": [
+    {
+      "operation": "docker",
+      "seconds": 0.9,
+      "exitCode": 0
+    },
+    {
+      "operation": "guest inventory",
+      "seconds": 6.25,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.12,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 2.7,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.89,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 1.79,
+      "exitCode": 0
+    },
+    {
+      "operation": "VM synthetic staging",
+      "seconds": 4.67,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.9,
+      "exitCode": 0
+    },
+    {
+      "operation": "worker image build",
+      "seconds": 0.98,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.82,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.03,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.9,
+      "exitCode": 0
+    },
+    {
+      "operation": "synthetic certificate",
+      "seconds": 0.26,
+      "exitCode": 0
+    },
+    {
+      "operation": "synthetic upstream build",
+      "seconds": 1.25,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 1.4,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.96,
+      "exitCode": 0
+    },
+    {
+      "operation": "broker build",
+      "seconds": 2.45,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.94,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.23,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.76,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.08,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.18,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.05,
+      "exitCode": 0
+    },
+    {
+      "operation": "install namespace ACL",
+      "seconds": 0.47,
+      "exitCode": 0
+    },
+    {
+      "operation": "actual container probes",
+      "seconds": 4.04,
+      "exitCode": 0
+    },
+    {
+      "operation": "docker",
+      "seconds": 0.12,
+      "exitCode": 0
+    },
+    {
+      "operation": "live TypeScript prepare adapter",
+      "seconds": 1.03,
+      "exitCode": 0
+    },
+    {
+      "operation": "cleanup cq-s5-broker-probe",
+      "seconds": 0.12,
+      "exitCode": 0
+    },
+    {
+      "operation": "cleanup cq-s5-upstream-probe",
+      "seconds": 0.1,
+      "exitCode": 0
+    },
+    {
+      "operation": "cleanup cq-s5-sentinel",
+      "seconds": 0.08,
+      "exitCode": 0
+    },
+    {
+      "operation": "cleanup cq-s5-context-probe",
+      "seconds": 0.02,
+      "exitCode": 0
+    },
+    {
+      "operation": "cleanup cq-s5-task-probe",
+      "seconds": 0.02,
+      "exitCode": 0
+    },
+    {
+      "operation": "cleanup cq-s5-probe",
+      "seconds": 0.07,
+      "exitCode": 0
+    },
+    {
+      "operation": "cleanup VM synthetic files",
+      "seconds": 0.49,
+      "exitCode": 0
+    }
+  ],
+  "qualificationPassed": true
+}

@@ -1,0 +1,7 @@
+{
+  "observedAtUTC": "2026-09-28T21:28:59.610067+00:00",
+  "guestExitCode": 0,
+  "guestUsage": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/root       6.8G  824M  5.9G  13% /\n/dev/vdb1        12G  1.2G   10G  11% /var/lib/docker\n               total        used        free      shared  buff/cache   available\nMem:            2970         380        1071           0        1710        2590\nSwap:              0           0           0\n",
+  "dockerUsage": "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE\nImages          10        0         1.222GB   892.3MB (73%)\nContainers      0         0         0B        0B\nLocal Volumes   0         0         0B        0B\nBuild Cache     0         0         0B        0B\n",
+  "dedicatedVmLeftRunning": true
+}

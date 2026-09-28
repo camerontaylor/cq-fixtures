@@ -10,6 +10,9 @@ import { compileBoundary } from '../runner/boundary/policy.ts';
 import type { BoundarySpec } from '../runner/boundary/policy.ts';
 import { probeHostBoundary } from '../runner/boundary/probes.ts';
 import { spawnBoundary } from '../runner/boundary/spawn.ts';
+import { compileBroker, createEgressBroker } from '../runner/boundary/egress-broker.ts';
+import { compileContainerBoundary, spawnContainerBoundary } from '../runner/boundary/container.ts';
+import type { ContainerBoundarySpec } from '../runner/boundary/container.ts';
 
 const roots: string[] = [];
 function fixture(): BoundarySpec {
@@ -26,6 +29,63 @@ function fixture(): BoundarySpec {
     endpoints: [], extensions: { mode: 'disabled', launchEvidence: null } };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+describe('container fallback admission and egress', () => {
+  function containerSpec(): ContainerBoundarySpec {
+    return { profile: 'cq-boundary-s5', daemonId: 'synthetic-daemon', vmConfigHash: 'a'.repeat(64),
+      image: 'node@sha256:' + 'b'.repeat(64), taskVolume: 'cq-s5-task-test', contextVolume: 'cq-s5-context-test',
+      stagingEvidence: 'synthetic-staging', authenticationFiles: [], namespaceEvidence: 'synthetic-acl', nativeControlEvidence: null,
+      network: { name: 'cq-s5-test', workerIP: '172.28.250.3', brokerIP: '172.28.250.2', port: 8080, brokerIdentity: 'c'.repeat(64), productionEligible: false } };
+  }
+  it('binds namespace, toolchain, mounts and broker identity without host mount escape options', () => {
+    const spec = containerSpec();
+    const policy = compileContainerBoundary(spec);
+    expect(policy.createArgs).toContain('1000:1000');
+    expect(policy.createArgs).toContain('--read-only');
+    expect(policy.createArgs).toContain('ALL');
+    expect(policy.createArgs).not.toContain('--privileged');
+    expect(policy.createArgs.join(' ')).not.toContain('type=bind');
+    expect(policy.heldOutEligible).toBe(false);
+    expect(compileContainerBoundary({ ...spec, network: { ...spec.network, port: 8081 } }).identity).not.toBe(policy.identity);
+    expect(() => compileContainerBoundary({ ...spec, image: 'node:latest' })).toThrow();
+    expect(() => compileContainerBoundary({ ...spec, taskVolume: '/Users/ctaylor' })).toThrow();
+    expect(() => compileContainerBoundary({ ...spec, network: { ...spec.network, brokerIP: '1.1.1.1' } })).toThrow();
+  });
+  it('refuses held-out, missing native admission and unbound live ACL receipts before exec', async () => {
+    const boundary = compileContainerBoundary(containerSpec());
+    let prepared = 0;
+    const prepare = async () => { prepared++; return { containerId: 'd'.repeat(64), identity: 'wrong', aclVerified: true, dispose: async () => {} }; };
+    const request = { boundary, executable: '/usr/local/bin/node', args: ['--version'], heldOut: false, purpose: 'no-model-probe' as const, prepare };
+    await expect(spawnContainerBoundary({ ...request, heldOut: true })).rejects.toThrow(/G2/);
+    await expect(spawnContainerBoundary({ ...request, purpose: 'actual-route' })).rejects.toThrow(/admission/);
+    expect(prepared).toBe(0);
+    await expect(spawnContainerBoundary(request)).rejects.toThrow(/ACL receipt/);
+    expect(prepared).toBe(1);
+  });
+  it('rejects ambiguous TLS upstream inventory and makes synthetic trust ineligible', () => {
+    const config = { timeoutMs: 1000, maxBodyBytes: 1024, routes: [{ id: 'declared', hostname: 'api.example.test',
+      port: 443, pathPrefix: '/v1', methods: ['POST'], addresses: ['8.8.8.8'], requestHeaders: ['authorization', 'content-type'] }] };
+    expect(compileBroker(config).productionEligible).toBe(true);
+    expect(() => compileBroker({ ...config, routes: [{ ...config.routes[0], hostname: '*' }] })).toThrow();
+    expect(() => compileBroker({ ...config, routes: [{ ...config.routes[0], addresses: ['127.0.0.1'] }] })).toThrow();
+    expect(() => compileBroker({ ...config, routes: [{ ...config.routes[0], requestHeaders: ['host'] }] })).toThrow();
+    expect(compileBroker({ ...config, synthetic: { ca: 'synthetic-only' } }).productionEligible).toBe(false);
+  });
+  it('rejects arbitrary CONNECT and absolute URLs through a real broker socket', async () => {
+    const { server } = createEgressBroker({ routes: [], timeoutMs: 1000, maxBodyBytes: 1024 });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing port');
+    try {
+      for (const line of ['CONNECT undeclared.test:443 HTTP/1.1', 'GET https://undeclared.test/ HTTP/1.1']) {
+        const socket = (await import('node:net')).connect(address.port, '127.0.0.1');
+        await once(socket, 'connect');
+        const reply = new Promise<string>((resolve) => socket.once('data', (data) => resolve(data.toString())));
+        socket.write(line + '\r\nHost: undeclared.test\r\nConnection: close\r\n\r\n');
+        expect(await reply).toContain('403'); socket.destroy();
+      }
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
+});
 
 describe('campaign boundary policy', () => {
   it('rejects blanket and overlapping read grants, including resolved symlinks', () => {

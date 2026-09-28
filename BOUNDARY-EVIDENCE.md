@@ -151,3 +151,56 @@ performed after the overseer steer. Bounded excerpts are retained in
 Final focused verification passed 3 files / 15 tests: boundary campaign, selected
 toolkit package smoke, and existing boundary tests (3.71s). Typecheck and lint
 passed on the final implementation. No paid model calls were made.
+
+## Authorized VM/container follow-up
+
+Dedicated `cq-boundary-s5` Colima/VZ profile provisioned successfully in 132.53s:
+2 CPUs, 3 GiB memory, 8 GiB root / 12 GiB data disk. It has no host filesystem
+mounts, SSH-agent forwarding or public port forwards. Existing default profile
+remains stopped and global Docker context unchanged. Dedicated VM remains running
+for the parent/native owner; temporary probe containers/volumes/networks/helpers
+and synthetic files were removed. Local runtime images remain on this daemon.
+No real auth was read/copied, no public service/push and no paid model calls.
+
+Concrete implementation and native seam: `runner/boundary/container.ts`,
+`container-prepare.ts`, `namespace-acl.sh`, `egress-broker.ts` and `FALLBACK.md`.
+Preparation verifies live daemon/config/image/volume/network inventory, starts a
+harmless gate, installs exact broker-only IPv4 plus default-deny IPv6 ACLs, checks
+read-back, and returns a specific container/identity/cleanup receipt. Native
+supervision must dispose the container on timeout/cancel/error/finally; killing
+the host Docker client alone does not kill native descendants.
+
+Final synthetic qualification: **59 / 59 checks passed** in 38.84s,
+including positive sibling argv/env/file controls, host/VM/sibling judge/solution/
+config denial via direct/tool/shell/symlink children, absent external process
+sentinels, non-root/capability/seccomp checks, default network and embedded DNS
+denial, allowed HTTPS broker route and rejected TLS mismatch/redirect/undeclared
+route/absolute URL/CONNECT. Actual TypeScript preparation also passed and ran
+Node v24.21.0 in a fresh verified container before disposal.
+The initial adapter refused combined NAT/filter read-back; that rejection is
+retained separately. The corrected script reads only enforced filter tables.
+
+Linux runtime image: `sha256:2a9422f0de75079fd81da5a5b68bf9936e72ce22e30d1a22ddd91bc77201de4e`.
+Codex 0.155.1 and installed Pi 0.0.0-overshrim version probes exit 0 offline;
+ZCode ACP server 0.37.3 package installs and `--help` exits 0 offline. Pi's
+unpublished version was resolved by copying only its explicit distribution plus
+Chord runtime subset (152 content-hashed files). These are startup observations,
+not auth/subscription, model, ACP-session, native-tool or actual-route G1 proofs.
+Runtime provisioning took 99.01s; auth is absent and network disabled for startup.
+
+The original host `heldOutEligible:false` and sysctl blocker remain unchanged.
+VM availability and synthetic namespace/egress controls are now resolved for this
+candidate. **G2 remains not established**: production provider/auth-refresh broker,
+reverse-base-URL subscription compatibility, sanitized native extensions/config,
+actual selected-toolkit G1 and admitted final actual-route sentinel evidence are
+still required. Both launch seams refuse held-out work. Synthetic test CA/private
+upstreams are ineligible for actual-route admission; production host/IP/TLS/paths/
+headers, image/daemon/VM/config/volume identities must be frozen into the strategy.
+
+See `runner/boundary/FALLBACK.md` for precise staging, native transport, endpoint,
+cleanup/patch-export and admission steps. Safe JSON/rule/config artifacts are in
+`runner/boundary/evidence/fallback/`; no credential payload is retained.
+Final follow-up build, typecheck and lint pass. Focused campaign/package-smoke/
+existing-boundary verification passes 3 files / 19 tests in 1.96s. No full-suite
+rerun was performed; the earlier 9 timeout failures and incomplete two-worker
+rerun remain recorded above and in the bounded validation log.

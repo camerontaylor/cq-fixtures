@@ -1,0 +1,40 @@
+{
+  "scope": "Bounded S6 offline precision escalation; no campaign outcomes or provider calls",
+  "sourceContracts": {
+    "e5702c7": "exact CONTRACT.md and task-outcome exports read",
+    "ed54581": "additive track/substrate identity checked"
+  },
+  "tarballSha256": "90cc17ea030f96c83d6f77f35fbf0af1f6df7c893b65853928b7e2a60d176c9c",
+  "checks": {
+    "offlineNpmCi": "passed",
+    "build": "passed",
+    "focusedStatisticsAndToolkitSmoke": "20 passed",
+    "subsequentChangedPrecisionAndAdapterChecks": "7 passed",
+    "statisticsLint": "passed",
+    "diffCheck": "passed",
+    "repoTypecheck": "blocked only by existing campaign-strategies.test.ts:105 FakeExecutor.captureCandidate and two implicit-any errors",
+    "fullSuite": "not run"
+  },
+  "artifactsSha256": {
+    "INFERENCE-RECONCILIATION.md": "78de45bdeac4cd4cba9d10aeffc568c5706a35b0272852556145d85a73dc702b",
+    "runner/statistics/power.ts": "4f434cc81c29cb77871ac9ad94bdca7d0f20b500e842c052038d200989a22d9e",
+    "runner/statistics/precision-diagnostic-v1-initial-run.log": "b2084c258d5e11785f13c18979816e3ac7a5f3c9ae460181873523b95b96d588",
+    "runner/statistics/precision-diagnostic-v1-second-run.log": "3d90ef8c8e8f1d0a9240674bd0cf37441dd5512dcdb4b768cf26408883054cb1",
+    "runner/statistics/precision-missingness-diagnostic-v1.json": "5e47ad055c549255933f8e06f6ef2301a8c6f7517db4205ac3c8b16c19187714",
+    "runner/statistics/precision-missingness-native-v1.json": "765bae0bddb89f06d11ca2302b69d2bc0bb75513c8f0336798c2618197d009e9",
+    "runner/statistics/precision-missingness.ts": "bf3f3d149c1a9dafda6a2f9c61bfe47b75639af4a67d8359d0de894ab82d4e4f",
+    "runner/statistics/precision-native-v1-initial-run.log": "de64798e99ec32d817bbf5fa82c63f54b019f34a133ef08aaf95ebe1b6d3e843",
+    "runner/statistics/precision-native-v1-second-run.log": "ac0fe06fc19f3cfe8feabc013c73e665240ec9b94ce28879bb0ccb7769fb9987",
+    "runner/statistics/precision-power-diagnostic-v1.json": "ed423d8c5330935dff1b4eb2016a6f1bb2013f0574410f9c0b18a7182970ede7",
+    "runner/statistics/precision-power-native-v1.json": "5cf7d8f3d94082bc4a9a6358681c8068b28e4411a889aae8a52433f44b806d2d",
+    "runner/statistics/precision-power.ts": "a52bfb60adffb5a899f8a11d453d5aaded596c70bd561b286bc4a09e0f6d731a",
+    "runner/statistics/precision-preregistration.json": "bb9783fc79df633e84589a218b57c5a050ff51bb6beab9edb7571b4d70a93af2",
+    "runner/statistics/precision-simulation.ts": "e9fcc41323fc54961f46f6673a7f72b13d64c4dd58d0272951e57f884f3d3d80",
+    "runner/statistics/precision-validation-diagnostic-v1.json": "2b875fb27177f6760e8f01ecdc746b3635de344417e8c35682d56bea5e59bd6d",
+    "runner/statistics/precision-validation-native-v1.json": "0f9f39761f978e4f6e047a8f0c038a3be8d88deb7ca93f3b9dbb72a7b16ecc9b",
+    "runner/statistics/precision.ts": "9f6ea9d601e834ae232c989d011707a3545cecd8b4cdbbe70aa3c34e3159f979",
+    "runner/statistics/student-t.ts": "0185d28608b768483afed3664d9aaa6d82a6656251f7e0dbf76e1003af04afc1",
+    "runner/statistics/task-outcome-adapter.ts": "bf82d0e2d5a527e7ddad6735b80e7a32ecde146d83d3fce6802dfd221d84bf39",
+    "test/campaign-statistics.test.ts": "2bb2d97f02e87b36e3fe85124c389c2e92fb9b7236534a3201fd2e97be18d1d5"
+  }
+}

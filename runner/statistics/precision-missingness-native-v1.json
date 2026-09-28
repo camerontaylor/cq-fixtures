@@ -1,0 +1,34 @@
+{
+  "track": "native",
+  "seed": 409274101,
+  "checks": [
+    {
+      "clusters": 40,
+      "mode": "paired-5-percent; conditioned on at least one absence",
+      "datasets": 2000,
+      "suppressed": 2000,
+      "gate": true
+    },
+    {
+      "clusters": 40,
+      "mode": "strategy-only-15-percent; conditioned on at least one absence",
+      "datasets": 2000,
+      "suppressed": 2000,
+      "gate": true
+    },
+    {
+      "clusters": 80,
+      "mode": "paired-5-percent; conditioned on at least one absence",
+      "datasets": 2000,
+      "suppressed": 2000,
+      "gate": true
+    },
+    {
+      "clusters": 80,
+      "mode": "strategy-only-15-percent; conditioned on at least one absence",
+      "datasets": 2000,
+      "suppressed": 2000,
+      "gate": true
+    }
+  ]
+}

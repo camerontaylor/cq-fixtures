@@ -84,8 +84,9 @@ point half-width target. It varies baseline success (.2/.5/.8), discordance
 (.08/.25/.45, clipped to feasible Bernoulli margins), paired-difference ICC
 (0/.3/.6), tasks per substrate (1/2/4), and repeats (1/3). The power component
 uses a normal approximation to paired Bernoulli variance with the specified
-cluster design effect. Its required-substrate count ranges from 4,000 to
-5,351 across the grid (median 4,432). The precision component uses the familywise weighted
+cluster design effect. Its original required-substrate count ranged from 4,000 to
+5,351 across the grid (median 4,432). The variance correction below leaves
+the range unchanged and raises the current legacy median to 4,572. The precision component uses the familywise weighted
 Hoeffding radius for three contrasts, so it can dominate the power count and
 require thousands of independent substrates. Forecasts are assumptions for
 planning, not role-calibrated data or promises of feasible runtime/quota;
@@ -102,9 +103,9 @@ usage/model/artifact/capture/timing evidence, and worker result. It does not
 define the task-level independent binary outcome or its judgement mapping,
 strategy-to-assignment mapping, repeat and frozen-weight roster, or the
 cohort/track/role/budget preregistration mapping. Those mappings are necessary
-to produce the explicit `Observation` safely. The S1 integration adapter is
-therefore waiting on that task-outcome and assignment mapping contract; no S1
-files were edited here.
+to produce the explicit `Observation` safely. At that earlier commit, the S1 integration adapter was
+waiting on that task-outcome and assignment mapping contract. The new S1 join
+is implemented below; no S1 files were edited here.
 
 Before launch, persist the frozen registration and analysis version. Final
 analysis consumes only that roster. Additional work starts a separately
@@ -116,3 +117,250 @@ workspace-write case and was stopped; it is not evidence for this module. A
 full-suite rerun is deferred to later integration with bounded runner-specific
 logs. This change uses only the bounded focused statistics and toolkit smoke
 tests plus the build.
+
+## S6 precision escalation (2026-09-29)
+
+The earlier bootstrap-only failure and Hoeffding evidence above remain historical
+and unchanged in `validation-evidence.json`. A separately preregistered analytic
+candidate is now available through `analyzePrecisionSample`, an explicit opt-in
+extension to the standalone analysis. It does not silently replace the legacy
+bootstrap or label an analytic adjustment as bootstrap max-statistic inference.
+No campaign outcomes, paid evaluations, credentials or public effects were used.
+
+The preregistration is `runner/statistics/precision-preregistration.json`, committed
+before completed simulations: `9c951d8` (initial), `0344df3` (+5pp coverage),
+`414a2d2` (partial-null supplement). Two initial executions per track aborted on numerical
+boundary checks, before emitting gate reports. Their logs, with local workspace prefixes redacted, remain under
+`runner/statistics/precision-*-initial-run.log` and `*-second-run.log`; a feasible
+Bernoulli boundary needed floating-point tolerance, and task averaging needed
+roundoff clipping to [-1,1]. No failed statistical stratum was removed or tuned
+away after inspection. The candidate's 1.15 critical-value inflation was frozen
+in the initial recipe, before simulation. It is a calibration choice, not a
+published theorem or a fitted campaign parameter.
+
+### Estimand, sampling unit and procedure
+
+For task i on substrate g, first average R repeated binary assigned-strategy
+outcomes separately for contender and baseline. Let d_i be the paired difference,
+w_i the frozen task weight, W_g=sum(w_i) within substrate, D_g=sum(w_i d_i)/W_g,
+and a_g=W_g/sum(W_g). The estimate is sum(a_g D_g), the weighted TASK-success
+contrast. It equals the equally weighted cluster-average contrast only when
+cluster masses match. Repeats do not multiply task weight. W_g is an estimand
+weight, not an inverse-variance weight. The target is expected assigned-strategy
+success on the frozen weighted roster under the declared independent-substrate
+sampling/outcome model; this is not a claim of representativeness of all future
+software tasks. Shared templates, codebases or tasks cannot be renamed into
+independent substrates. Task or repeat dependence within substrates is retained.
+
+The candidate computes an intercept-only weighted HC3 sandwich variance:
+`Vhat=sum(a_g^2 (D_g-estimate)^2/(1-a_g)^2)`. Its degrees of freedom are
+`1/sum(a_g^2)-1`, an effective-count approximation, NOT a CR2/Satterthwaite
+implementation. The radius is `1.15*t_df(1-.05/(2K))*sqrt(Vhat)` for K=3.
+Bonferroni controls multiplicity without assuming independent contrasts if the
+underlying marginal tail approximation is adequate. Simulation checks that
+approximation; it is not a finite-sample distribution-free guarantee. Both
+reported marginal and family intervals use this conservative family radius,
+so the marginal interval has at least the intended nominal confidence under
+the validated model. Zero variance suppresses the whole family, never produces
+an inferential zero-width interval. Numerical Student-t quantiles are tested
+against reference values, including df=1 and df=10.
+
+### Supported simulation envelope and results
+
+`precision-validation-native-v1.json` and `precision-validation-diagnostic-v1.json`
+record EVERY stratum: 720 per track, 2,000 independent datasets per stratum,
+1,440,000 datasets per track. The finite grid includes independent substrate
+counts 40/80/160/320/640, baseline probabilities .2/.5/.8, paired discordance
+.15/.35, paired-difference substrate ICC 0/.3/.6, effects 0/.02/.05 and mixed
+families [0,.02,.05]. Design modes are one task/one repeat/equal masses, or
+three tasks/three repeats/cyclic masses 1:2:3 with equal task weights within a
+substrate. Each paired vector shares the baseline across contrasts. The generator
+copies one joint vector across an entire substrate with probability rho;
+otherwise task/repeat vectors are independent. This supplies genuine persistent
+paired-difference dependence with ICC rho, rather than merely changing success
+propensities. Weights are fixed and independent of outcomes.
+
+| Track | Minimum coverage lower95 | Maximum null-family error upper95 | Stronger simultaneous MC coverage lower | Stronger simultaneous MC error upper |
+|---|---:|---:|---:|---:|
+| Native | .948844 | .032807 | .933414 | .046101 |
+| Diagnostic | .950493 | .029404 | .935236 | .042239 |
+
+Each coverage count is the dataset-level event that ALL family intervals cover
+their respective truths. Each error count is the dataset-level event that ANY
+true-null contrast rejects, including partial-null families. Per-contrast counts
+also retain dataset denominators. No gate pools contrasts or scenarios into
+independent Bernoulli trials. Every core stratum passes coverage lower95>=.93
+and error upper95<=.07. The stronger MC bounds use z=4.5 across all 1,080
+coverage/error summaries per track and also pass. Monte Carlo uncertainty is
+uncertainty about these simulations, not achieved campaign precision.
+
+The 30 stress strata per track remain in the same evidence files. Fourteen
+fail per track. They include 20 clusters, rare discordance .05, saturated
+baselines .01/.98 with discordance .02, perfect dependence, and a dominant
+cluster mass of 100. All are outside candidate eligibility, including stress
+points that happened to pass. No blanket support for "20 or more clusters",
+all weights, all ICCs, arbitrary cluster distributions, informative cluster
+weights, heterogeneous effects correlated with weights, larger contrast
+families, arbitrary repeats, or interval interpolation between grid points is
+claimed. The paired-copy mixture is a sensitivity model, not evidence that a
+real role follows it. Its applicability must be justified from visible
+calibration before held-out launch; if unknown, use the conservative/descriptive
+legacy output. The candidate cannot turn a finite simulation grid into a theorem
+for all real task populations or establish equivalence.
+
+The explicit extension freezes recipe hash, ordinary design hash, calibration
+artifact path and SHA-256, and generator/design point. Output retains extension,
+recipe and validation hashes. The implementation rechecks counts and gates for
+EVERY stratum, the track, exact roster, repeat/task/cluster counts and validated
+mass multiset. Missingness or degeneracy suppresses the entire precision family.
+The effect field identifies the pre-run sensitivity-model point; it is never
+selected using held-out estimated effects. Caller-side calibration applicability
+remains a scientific responsibility; the adapter cannot prove it from a hash.
+
+Four additional missingness strata per track, each with 2,000 datasets, use
+40/80 clusters and paired 5% or contender-only 15% absence, conditioned on at
+least one missing assignment. All 8,000 datasets per track suppress inference.
+These are operational checks, not coverage successes or eligible FWER trials.
+Evidence is in `precision-missingness-<track>-v1.json`.
+
+### Five-point power and MDE forecast
+
+`precision-power-native-v1.json` and `precision-power-diagnostic-v1.json` preserve
+all 72 forecast cells per track. Each cell uses 2,000 power datasets and four
+separate 2,000-dataset coverage/error runs (null, +2pp, +5pp, partial-null), with
+baseline .5, discordance .15/.35, ICC 0/.3/.6, three tasks and three repeats,
+equal or cyclic 1:2:3 masses, and n=80/160/320/640/1280/2560. All point gates
+pass. Worst forecast-point coverage lower95 is .965501 native / .964939
+diagnostic; worst null error upper95 is .031109 / .031675. The optional fifth
+argument to `analyzePrecisionSample` accepts this evidence and rechecks the
+ENTIRE 72-cell grid plus its four validations per cell. The base 720-stratum
+validation is still mandatory. This permits exactly these additional design
+points, including 3x3 equal masses and 1280/2560 clusters; unknown points or a
+failed cell suppress the extension. It does not extrapolate a grid point to
+other populations or sample counts. The output also hashes forecast evidence.
+
+The corrected variance is
+`(q-delta^2) * [rho + (1-rho)/(tasks*repeats)]` per substrate. The first term
+persists under arbitrarily many repeats. For normalized masses a_g, sampling
+variance is this quantity times `sum(a_g^2)`. The former forecast incorrectly
+shrunk the entire variance with repeats; the legacy Hoeffding count remains
+4,000–5,351 (new median 4,572) because its distribution-free radius dominates.
+This correction is shared by the new simulation's MDE approximation and the
+legacy planning function, with a meaningful regression test.
+
+Choose the first TESTED count whose specified-contender power lower95 is >=.80,
+rather than treating the simulation point estimate as certain power. Both tracks
+select the same counts below. The grid is coarse: a jump from 640 to 1280 does
+not imply that every intervening count would fail. MDE is a normal approximation
+at the declared variance; detection power and width are simulated separately.
+
+| Paired discordance | Persistent difference ICC | Equal masses | Cyclic masses 1:2:3 |
+|---|---:|---:|---:|
+| .15 | 0 | 160 | 160 |
+| .15 | .3 | 320 | 640 |
+| .15 | .6 | 640 | 640 |
+| .35 | 0 | 320 | 320 |
+| .35 | .3 | 1280 | 1280 |
+| .35 | .6 | 1280 | 2560 |
+
+Thus the conditional sensitivity forecast requires 160–2560 independent
+substrates per role (median 640), 480–7680 distinct tasks at three per substrate,
+and 1440–23040 repeated task assignments PER strategy at three repeats. With
+three contenders plus baseline this is 5760–92160 assignment outcomes per role,
+before extra scaffold stages/retries. At these selected counts, mean family
+interval widths are approximately .055–.073 and approximate 80%-power MDEs
+.036–.048. At 80 clusters, core mean family widths span .087–.374, so small
+samples still often cannot distinguish a five-point effect. These are much
+more usable than the earlier Hoeffding envelope under the declared model, but
+substantial independence/diversity requirements remain.
+
+Both `fixer-worker` and `review-classifier` are named in each forecast. Identical
+sensitivity assumptions are intentionally used; no role-specific pilot variance
+has been estimated. These are method-calibrated model sensitivities, not
+role-calibrated forecasts, achieved campaign power, quota/runtime estimates,
+or promises that the corpus can supply the required independent substrates.
+Visible role calibration must estimate discordance, persistent task/substrate
+variation, weight structure, saturation and missingness, then justify and freeze
+applicability before held-out launch. The current statistical candidate cannot
+resolve unsupported corpus diversity or a failed G2 boundary.
+
+### S1 task-outcome join is now implemented
+
+Read the authoritative sibling `CONTRACT.md` and `runner/experiment.ts` at
+S1 commit `e5702c7`. `task-outcome-adapter.ts` accepts a structural projection
+compatible with exported `TaskOutcome`, avoiding a dependency on a sibling
+worktree or edits to shared contracts. Freeze an `OutcomeJoinRegistration` with
+the full strategy/task/repeat roster, campaign/experiment/assignment identity,
+substrate mapping, exact weight, judge ID/version/pin and base design hash.
+`adaptTaskOutcomes` consumes `assignedStrategySuccess` from the explicitly
+selected immutable judgement; it never chooses a best retry, newest regrade,
+or substitutes candidate correctness or format conformance. An unavailable
+judgement preserves a null operationally missing/interrupted outcome, or a
+canonical S1 measured failure with unknown candidate correctness, no judgement
+and retained invocation evidence (the mechanical no-candidate budget-stop
+case). This uses the authoritative S1 mapping, not a fabricated candidate
+correctness judgement.
+Absent TaskOutcomes also remain absent in the frozen roster and suppress inference.
+
+The adapter rejects duplicate assignment outcomes, reused invocation evidence,
+identity/weight drift, missing measured-judgement selection, invalid evidence
+hashes and conflicting projections. Every stage/retry and judgement reference
+is returned for audit; retries do not increase statistical n. Artifact bytes
+and provenance authenticity remain S1's immutable persistence responsibility.
+The e5702c7 contract has no detailed budget terminal cause or track field.
+A later read-only inspection of S1 `ed54581` found additive identity `track`
+and `substrateId` fields; the adapter also accepts and validates those when
+provided. For the original contract track comes from the frozen experiment
+join, and the specific budget-stop count
+cannot be reconstructed here. Assigned failure/missingness denominators remain
+correct; do not interpret the generic operational cause as proof of zero budget
+stops. Native invocation observations alone never produce success measurements.
+
+### Sources and alternative-method assessment
+
+- [MacKinnon and White, HC covariance estimators](https://qed.econ.queensu.ca/working_papers/papers/qed_wp_537.pdf)
+  motivates leverage/jackknife corrections. The original PDF endpoint timed out
+  on direct fetch; the Queen's indexed primary working-paper entry was available.
+- [Pustejovsky and Tipton, small-sample CRVE](https://jepusto.com/files/Pustejovsky-Tipton-201601.pdf)
+  and [official clubSandwich documentation](https://jepusto.github.io/clubSandwich/reference/vcovCR.html)
+  explain working-model BRL/CR2 and Satterthwaite alternatives. Our simpler
+  effective-count HC3 procedure does not inherit their exact correction or claims.
+- [MacKinnon, Nielsen and Webb, jackknife and bootstrap methods](https://arxiv.org/abs/2301.04527)
+  considers studentized/jackknife/wild alternatives. It supports investigating
+  these methods, not assuming they validate this binary weighted design.
+- [MacKinnon and Webb, wild bootstrap with few treated clusters](https://econ.queensu.ca/faculty/mackinnon/working-papers/qed_wp_1364.pdf)
+  documents failure regimes in its own treatment-cluster setting. That setting
+  differs from paired all-substrate strategy contrasts; it is a caution against
+  unconditional bootstrap-validity claims, not evidence that our design fails.
+- [Efron, better bootstrap confidence intervals](https://statistics.stanford.edu/technical-reports/better-bootstrap-confidence-intervals)
+  is the primary BCa source. BCa skewness/bias corrections and studentization are
+  plausible future candidates, but neither BCa nor wild bootstrap was implemented
+  or validated in this bounded escalation. The retained 199-resample percentile
+  method already fails, and no source confers finite-sample protection on it.
+
+### Reproduction and integration
+
+Copy the exact ignored `vendor/cq-toolkit-1.0.1.tgz` from integration before
+`npm ci --offline`; SHA-256 is
+`90cc17ea030f96c83d6f77f35fbf0af1f6df7c893b65853928b7e2a60d176c9c`.
+Build, then use these bounded entry points with fresh output filenames (exclusive
+create prevents evidence overwrites). Commands take no provider credentials:
+
+```sh
+npm run build
+node dist/statistics/run-precision-validation.js native /tmp/native-validation.json
+node dist/statistics/run-precision-validation.js diagnostic /tmp/diagnostic-validation.json
+node dist/statistics/run-precision-missingness.js /tmp/native-validation.json /tmp/native-missingness.json
+node dist/statistics/run-precision-power.js /tmp/native-validation.json /tmp/native-power.json
+```
+
+Run the missingness and power commands independently for diagnostic evidence too.
+Frozen seeds are recorded in preregistration and outputs. The focused statistics
+suite includes parity, repeat aggregation, numerical quantiles, every-stratum
+validation gating, conditional precision activation, missingness suppression,
+persistent variance, frozen-judge selection, duplicate retries and S1 outcome
+mapping. Statistics lint and build pass; toolkit package smoke passes. Full
+repository typecheck remains blocked by three pre-existing errors in
+`test/campaign-strategies.test.ts:105` (missing `FakeExecutor.captureCandidate`
+and two implicit-any parameters), outside this task's owned paths. No full suite
+was run. Source changes stay inside statistics, its test, and this document.

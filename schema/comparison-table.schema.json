@@ -64,7 +64,7 @@
           },
           "driver": {
             "type": "string",
-            "enum": ["ai-sdk", "claude-agent", "subprocess", "acp"],
+            "enum": ["ai-sdk", "claude-agent", "subprocess", "acp", "codex-exec", "pi-json", "pi-rpc", "zcode-acp"],
             "description": "The toolkit driver lane of the rows in this cell (ADR-0001)."
           },
           "runs": {
@@ -112,26 +112,26 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["input", "output"],
-            "description": "Token usage summed over the cell's runs, same shape as a result row's tokens (ADR-0001 usage shape).",
+            "description": "Legacy toolkit usage projection summed over rows. When observedUsage is present, its nullable counters are authoritative; numeric compatibility projection values do not count as measured usage.",
             "properties": {
               "input": {
-                "type": "integer",
+                "type": ["integer", "null"],
                 "minimum": 0
               },
               "output": {
-                "type": "integer",
+                "type": ["integer", "null"],
                 "minimum": 0
               },
               "cacheRead": {
-                "type": "integer",
+                "type": ["integer", "null"],
                 "minimum": 0
               },
               "cacheWrite": {
-                "type": "integer",
+                "type": ["integer", "null"],
                 "minimum": 0
               },
               "reasoning": {
-                "type": "integer",
+                "type": ["integer", "null"],
                 "minimum": 0
               }
             }
@@ -207,6 +207,32 @@
               "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
             }
           },
+          "experiment": {
+            "type": "object", "additionalProperties": false,
+            "required": ["campaignId", "cohortId", "experimentId", "track", "strategyId", "settingsId", "budgetId", "profileId"],
+            "properties": {
+              "campaignId": { "type": "string", "minLength": 1 }, "cohortId": { "type": "string", "minLength": 1 },
+              "experimentId": { "type": "string", "minLength": 1 },
+              "track": { "type": "string", "minLength": 1 }, "strategyId": { "type": "string", "minLength": 1 },
+              "settingsId": { "type": "string", "minLength": 1 }, "budgetId": { "type": "string", "minLength": 1 }, "profileId": { "type": "string", "minLength": 1 }
+            }
+          },
+          "observedUsage": {
+            "type": "object", "additionalProperties": false,
+            "required": ["input", "output", "cacheRead", "cacheWrite", "reasoning", "tokenTotal", "complete"],
+            "properties": {
+              "input": { "type": ["integer", "null"], "minimum": 0 }, "output": { "type": ["integer", "null"], "minimum": 0 },
+              "cacheRead": { "type": ["integer", "null"], "minimum": 0 }, "cacheWrite": { "type": ["integer", "null"], "minimum": 0 },
+              "reasoning": { "type": ["integer", "null"], "minimum": 0 }, "tokenTotal": { "type": ["integer", "null"], "minimum": 0 },
+              "complete": { "type": "boolean" }
+            }
+          },
+          "assignmentCount": { "type": "integer", "minimum": 0 },
+          "launchCount": { "type": "integer", "minimum": 0 },
+          "validOutcomeCount": { "type": "integer", "minimum": 0 },
+          "operationalCompletionRate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "conditionalCorrectness": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "assignedStrategySuccess": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
           "expectedCases": {
             "type": "integer",
             "minimum": 1,
@@ -249,13 +275,13 @@
           {
             "description": "ADR-0001 eval axes enforced per cell (revised 2026-09-14): axis 1 — models vary on the ai-sdk driver; axis 2 — drivers vary on the fixed GLM served id glm-5.3-flash (served-id decision 2026-09-14). A cell on any non-ai-sdk driver must therefore carry exactly the fixed GLM served id.",
             "if": {
-              "properties": { "driver": { "const": "ai-sdk" } },
+              "properties": { "driver": { "enum": ["claude-agent", "subprocess", "acp"] } },
               "required": ["driver"]
             },
-            "then": {},
-            "else": {
+            "then": {
               "properties": { "model": { "const": "glm-5.3-flash" } }
-            }
+            },
+            "else": {}
           }
         ]
       }

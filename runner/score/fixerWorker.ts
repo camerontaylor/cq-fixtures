@@ -66,6 +66,8 @@ export function scoreFixerWorker(
   repoRoot: string,
   workspace: string,
   timeoutMs: number = DEFAULT_CHECK_TIMEOUT_MS,
+  baselineRef?: string,
+  hostCheckEnvironment?: Readonly<Record<string, string>>,
 ): ScoreOutcome {
   if (suiteCase.probe.kind !== 'check-rerun') {
     // loadSuite's semantic layer already enforces the role↔probe pairing;
@@ -73,7 +75,16 @@ export function scoreFixerWorker(
     throw new Error(`scoreFixerWorker: probe kind must be 'check-rerun', got '${suiteCase.probe.kind}'`);
   }
   const checkAbs = join(repoRoot, suiteCase.probe.check);
-  const res = spawnSync('node', [checkAbs], { cwd: workspace, encoding: 'utf8', timeout: timeoutMs });
+  const res = spawnSync('node', [checkAbs], {
+    cwd: workspace, encoding: 'utf8', timeout: timeoutMs,
+    ...(baselineRef !== undefined || hostCheckEnvironment !== undefined
+      ? { env: {
+          ...process.env,
+          ...hostCheckEnvironment,
+          ...(baselineRef !== undefined ? { CQ_BASELINE_REF: baselineRef } : {}),
+        } }
+      : {}),
+  });
   // Node's own timeout machinery is the ONLY thing that sets ETIMEDOUT
   // (verified on node 24: a timeout kill reports signal SIGTERM + error
   // ETIMEDOUT, while a script self-killing SIGTERM reports the signal with

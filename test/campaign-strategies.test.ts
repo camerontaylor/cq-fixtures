@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ArtifactStore } from '../../cq-settings-integration/runner/artifacts/index.ts';
+import { judgeManifestHash } from '../../cq-settings-integration/runner/experiment.ts';
 import { NativeSupervisorControl } from '../../cq-settings-integration/runner/native/process.ts';
 import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
 import {
@@ -110,14 +111,24 @@ describe('bounded campaign strategy engine', () => {
     const root = mkdtempSync(join(tmpdir(), 'strategy-artifact-id-'));
     try {
       const store = new ArtifactStore(root);
+      const judgePath = 'fixtures/micro-1/check.mjs';
+      const judgeBytes = readFileSync(join(process.cwd(), judgePath));
       const context = {
         campaignId: 'campaign-approved', cohortId: 'cohort-visible', experimentId: 'exp-fixed',
-        taskId: 'task-review-loop', repeatId: 'repeat-01', assignmentId: 'assignment-fixed-01',
+        taskId: 'micro-1', repeatId: 'repeat-01', assignmentId: 'assignment-fixed-01',
         stageId: retry.stageId, attemptId: retry.attemptId, track: 'native', strategyId: 'repair',
         settingsId: 'settings-fixed', budgetId: 'medium', profileId: 'profile-native', frozenWeight: 1,
+        substrateId: 'micro-1:src/rangeSum.ts',
+        judgeManifest: {
+          sourcePin: 'micro-1-judge-v1',
+          dependencies: [{ path: judgePath, sha256: createHash('sha256').update(judgeBytes).digest('hex') }],
+        },
       };
       const ref = store.write(context, 'candidate.patch', 'captured edits');
       expect(ref.sha256).toBe(createHash('sha256').update('captured edits').digest('hex'));
+      expect(ref.path).toContain('/task/micro-1/');
+      expect(judgeManifestHash(context.judgeManifest)).toMatch(/^[a-f0-9]{64}$/);
+      expect(context.judgeManifest.dependencies[0]?.sha256).toBe(createHash('sha256').update(judgeBytes).digest('hex'));
       expect(() => store.write({ ...context, stageId: 'bad:stage' }, 'candidate.patch', 'x')).toThrow(/unsafe path segment/);
     } finally {
       rmSync(root, { recursive: true, force: true });

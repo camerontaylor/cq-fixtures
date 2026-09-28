@@ -21,9 +21,6 @@
       "base_url": "http://BROKER_IP:BROKER_PORT/route/codex/backend-api/codex",
       "cli_auth_credentials_store": "file"
     },
-    "refreshEnvironment": {
-      "CODEX_REFRESH_TOKEN_URL_OVERRIDE": "http://BROKER_IP:BROKER_PORT/route/refresh/oauth/token"
-    },
     "inactiveRoutes": [
       {
         "id": "codex",
@@ -48,30 +45,26 @@
           "originator",
           "user-agent",
           "version"
-        ]
-      },
-      {
-        "id": "refresh",
-        "hostname": "auth.openai.com",
-        "port": 443,
-        "pathPrefix": "/oauth/token",
-        "exactPaths": [
-          "/oauth/token"
         ],
-        "methods": [
-          "POST"
-        ],
-        "addresses": [],
-        "requestHeaders": [
-          "content-type",
-          "accept",
-          "originator",
-          "user-agent",
-          "version"
-        ]
+        "endpointMethods": {
+          "/backend-api/codex/models": [
+            "GET"
+          ],
+          "/backend-api/codex/responses": [
+            "POST"
+          ]
+        }
       }
     ],
-    "blocker": "Generation and real refresh remain unqualified and disabled. Parent chooses HTTP-only provider identity, native owner pins final config/header/runtime inventory, then repeats G1 and obtains actual-route admission. Do not compile inactive templates as an admitted launch."
+    "blocker": "Generation and real refresh remain unqualified and disabled. Parent chooses HTTP-only provider identity, native owner pins final config/header/runtime inventory, then repeats G1 and obtains actual-route admission. Do not compile inactive templates as an admitted launch.",
+    "authLifecycle": {
+      "auth_mode": "chatgptAuthTokens",
+      "refresh_token": "empty; shared refresh token never staged",
+      "maxRunSeconds": 900,
+      "expirySafetySeconds": 120,
+      "refreshRoute": "absent",
+      "identity": "HTTP-only custom managed-subscription candidate; no built-in parity claim"
+    }
   },
   "pi": {
     "source": "installed declared pi bundle chunks/openai-codex-responses-QDSOTBBO.js",

@@ -43,7 +43,7 @@ export interface NativeObservation {
     transportException: { name: string; message: string } | null;
     observedAt: string;
   };
-  capture: { status: string; baselineCommit: string | null; patchSha256: string | null; workspaceSha256: string | null };
+  capture: { status: string; baselineCommit: string | null; baselineTree: string | null; patchSha256: string | null; workspaceSha256: string | null };
   timing: { startedAt: string; endedAt: string | null; stages: Record<string, number | null> };
   workerResult: WorkerResult | null;
 }
@@ -108,7 +108,7 @@ export function unavailableObservation(identity: InvocationIdentity, transport: 
       inclusion: { input: null, output: null, cache: null, reasoning: null },
     },
     terminal: { cause: 'observation-unavailable', cancelled: false, transportException: null, observedAt },
-    capture: { status: 'pending-runner-capture', baselineCommit: null, patchSha256: null, workspaceSha256: null },
+    capture: { status: 'pending-runner-capture', baselineCommit: null, baselineTree: null, patchSha256: null, workspaceSha256: null },
     timing: { startedAt: observedAt, endedAt: observedAt, stages: {} }, workerResult,
   };
 }
@@ -132,7 +132,7 @@ export function legacyObservation(identity: InvocationIdentity, result: WorkerRe
     },
     usage: { counters, tokenTotal: { value: total, availability: 'observed', source: 'toolkit-driver', semantics: 'authoritative-total' }, inclusion: { input: 'driver-defined', output: 'driver-defined', cache: 'driver-defined', reasoning: 'driver-defined' } },
     terminal: { cause: result.stopReason === 'complete' ? null : result.stopReason, cancelled: result.stopReason === 'aborted', transportException: null, observedAt: endedAt },
-    capture: { status: 'pending-runner-capture', baselineCommit: null, patchSha256: null, workspaceSha256: null },
+    capture: { status: 'pending-runner-capture', baselineCommit: null, baselineTree: null, patchSha256: null, workspaceSha256: null },
     timing: { startedAt, endedAt, stages: {} }, workerResult: result,
   };
 }

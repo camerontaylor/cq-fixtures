@@ -14,6 +14,11 @@ import {
   REVIEW_LOOP_SOURCE_ID,
   type ReviewLoopRepairTask,
 } from '../../campaigns/cq-settings/corpus/review-loop-task.ts';
+import {
+  createReviewLoopOraclePin,
+  reviewLoopHostCheckEnvironment,
+  type ReviewLoopOraclePin,
+} from './review-loop-pin.ts';
 
 export interface ReviewLoopRunSuiteBundle {
   readonly suite: Suite;
@@ -21,6 +26,9 @@ export interface ReviewLoopRunSuiteBundle {
   readonly repoRoot: string;
   readonly fixturePath: string;
   readonly modelSpec: ReviewLoopRepairTask['modelSpec'];
+  readonly oraclePin: ReviewLoopOraclePin;
+  /** Fields S1 must merge into the host-side check process environment. */
+  hostCheckScoringEnvironment(workspacePath: string): Readonly<Record<string, string>>;
   /** Wrap the runner's injected Driver to pin the actual copied-workspace baseline before dispatch. */
   wrapDriver(driver: Driver): Driver;
   pinnedBaselineCommit(workspacePath: string): string | undefined;
@@ -67,6 +75,7 @@ export async function createReviewLoopRunSuiteBundle(
   const baselinePinDirectory = join(root, 'host-baseline-pins');
   const baselinePins = new Map<string, string>();
   const candidatePins = new Map<string, string>();
+  const oraclePin = createReviewLoopOraclePin();
   const baselineRefNamespace = `refs/cq-corpus/${randomUUID()}`;
   await mkdir(suiteDir, { recursive: true });
   await mkdir(join(fixturePath, 'src'), { recursive: true });
@@ -94,19 +103,33 @@ export async function createReviewLoopRunSuiteBundle(
   await writeFile(join(suiteDir, 'suite.json'), `${JSON.stringify(suite, null, 2)}\n`);
 
   const judgeUrl = pathToFileURL(judgeModulePath()).href;
+  const compiledPin = fileURLToPath(new URL('./review-loop-pin.js', import.meta.url));
+  const pinModulePath = existsSync(compiledPin)
+    ? compiledPin
+    : fileURLToPath(new URL('./review-loop-pin.ts', import.meta.url));
+  const pinUrl = pathToFileURL(pinModulePath).href;
   const checkSource = `import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { judgeReviewLoopWorkspace } from ${JSON.stringify(judgeUrl)};
+import { createReviewLoopOraclePin } from ${JSON.stringify(pinUrl)};
 const workspacePath = resolve(process.cwd());
 const workspaceKey = createHash('sha256').update(workspacePath).digest('hex');
 const pinPath = ${JSON.stringify(baselinePinDirectory)} + '/' + workspaceKey + '.json';
 const pin = JSON.parse(await readFile(pinPath, 'utf8'));
-if (pin.workspacePath !== workspacePath || !/^[a-f0-9]{40}$/.test(pin.baselineCommit)) {
-  throw new Error('immutable runSuite baseline pin is missing or mismatched');
+const baselineCommit = process.env.CQ_REVIEW_LOOP_BASELINE_SHA ?? pin.baselineCommit;
+const oraclePin = process.env.CQ_REVIEW_LOOP_ORACLE_PIN ?? pin.oraclePin?.sha256;
+if (pin.workspacePath !== workspacePath || !/^[a-f0-9]{40}$/.test(baselineCommit) || baselineCommit !== pin.baselineCommit) {
+  throw new Error('host-scoring baseline pin is missing or mismatched');
+}
+if (!/^[a-f0-9]{64}$/.test(oraclePin ?? '') || oraclePin !== pin.oraclePin?.sha256) {
+  throw new Error('host-scoring oracle pin is missing or mismatched');
+}
+if (createReviewLoopOraclePin().sha256 !== oraclePin) {
+  throw new Error('review-loop oracle dependencies changed after pinning');
 }
 const report = await judgeReviewLoopWorkspace(process.cwd(), {
-  baselineRef: pin.baselineCommit,
+  baselineRef: baselineCommit,
   sourceId: ${JSON.stringify(REVIEW_LOOP_SOURCE_ID)},
   baselineId: ${JSON.stringify(REVIEW_LOOP_BASELINE_ID)},
   oracleId: ${JSON.stringify(REVIEW_LOOP_ORACLE_ID)},
@@ -124,6 +147,12 @@ if (!report.passed) {
     repoRoot: root,
     fixturePath,
     modelSpec: { ...task.modelSpec },
+    oraclePin,
+    hostCheckScoringEnvironment(workspacePath: string) {
+      const baselineCommit = baselinePins.get(resolve(workspacePath));
+      if (baselineCommit === undefined) throw new Error('runSuite has not captured this workspace baseline yet');
+      return reviewLoopHostCheckEnvironment({ baselineCommit, oraclePin: oraclePin.sha256 });
+    },
     wrapDriver(driver: Driver): Driver {
       return {
         async run(invocation: OpInvocation): Promise<WorkerResult> {
@@ -152,6 +181,7 @@ if (!report.passed) {
             sourceId: REVIEW_LOOP_SOURCE_ID,
             baselineId: REVIEW_LOOP_BASELINE_ID,
             oracleId: REVIEW_LOOP_ORACLE_ID,
+            oraclePin,
           })}\n`;
           await writeFile(pinPath, pinContents, { flag: 'wx' });
           baselinePins.set(workspace, baselineCommit);
@@ -194,6 +224,7 @@ if (!report.passed) {
               sourceId: REVIEW_LOOP_SOURCE_ID,
               baselineId: REVIEW_LOOP_BASELINE_ID,
               oracleId: REVIEW_LOOP_ORACLE_ID,
+              oraclePin,
             })}\n`);
           } catch (captureError) {
             if (thrown === undefined) thrown = captureError;

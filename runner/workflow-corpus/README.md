@@ -31,6 +31,27 @@ check reads the host pin and uses its full SHA; it never interprets the
 worker's current `HEAD` as baseline or substitutes the parent task repo's
 commit. The bundle exposes both recorded SHAs for audit.
 
+The host check also carries an explicit oracle dependency manifest. The
+exported `createReviewLoopOraclePin()` hashes the full bytes of
+`review-loop-judge.ts` and `review-loop-task.ts`, including the task's
+immutable source/baseline/oracle constants. The generated check recomputes
+that pin before calling the judge. `bundle.oraclePin` exposes the dependency
+paths, their SHA256 values, and a canonical manifest SHA256.
+`bundle.hostCheckScoringEnvironment(workspacePath)` returns
+`CQ_REVIEW_LOOP_BASELINE_SHA` and `CQ_REVIEW_LOOP_ORACLE_PIN` after the
+decorated Driver has captured that exact workspace. S1 should pass those
+host-only values to the check subprocess and use the supplied oracle pin as
+the judgement's `judgePin`; its current check-script-plus-fixture-tree hash
+does not identify imported semantic code. Existing runner tests use the
+sidecar fallback; that verifies the corpus adapter, not S1's pin plumbing.
+
+`operation-workflow-judges.ts` exports independent, reusable checks for the
+other five operation families. They validate merge candidate behavior and
+scope, fleet changed-file ownership, the reproduced test-fix scope hazard,
+remediation content, and ratchet outcomes. Those checks strengthen local
+operation evidence only: they do not turn the existing calls into model-role
+campaign tasks or add any role calls.
+
 Candidate module imports and behavior calls run in a child Node process with a
 five-second wall timeout; the visible task check has a separate ten-second
 timeout. This bounds the direct judge child and prevents a synchronous infinite
@@ -72,7 +93,8 @@ modify toolkit source.
 
 This is one visible calibration substrate with one executable correctness
 oracle. The other workflow families remain operation-integration scenarios,
-not independently judged campaign tasks. The held-out family names in
+now with exported family-specific host oracles. They are still not
+independently judged model-role campaign tasks. The held-out family names in
 `campaigns/cq-settings/corpus/workflows.json` are reservation metadata only;
 no held-out task is materialized and no isolation or role-adequacy claim is
 made.

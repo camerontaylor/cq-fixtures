@@ -45,7 +45,11 @@
   },
   "workflowCorpus": {
     "manifest": "campaigns/cq-settings/corpus/workflows.json",
-    "sha256": "e43364f3e14bd7b10339c521cdc8e6f41507173a38e2180dc9cf70b0bbf7ad25",
+    "sha256": "08f78b8dbcb89a9d24cf83aa0cc20d8fc75deb469f603e1daebfcadae3da2345",
+    "oracleDependencyManifest": "campaigns/cq-settings/corpus/review-loop-oracle-pin.json",
+    "oracleDependencyManifestSha256": "c1453d325645fa9881551e553f9b98b9a905a4c0cd7bf8b7882e5092fe1c33f0",
+    "operationOracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts",
+    "operationOracleImplementationSha256": "be5d97655ae13e7befbdb4c95b0a1486aa2bfea950e0b2a8b86074c11ecc24c6",
     "scenarioCount": 14,
     "integrationSubstrateCount": 5,
     "verifiedTaskCount": 1,
@@ -61,15 +65,15 @@
     ],
     "split": "one verified task is visible calibration; no held-out task or oracle is included",
     "heldoutReservation": "whole substrate/template/fault-family identities reserved before tuning in the corpus manifest; metadata only, no isolation claim",
-    "redGreenAndAdequacyEvidence": "test/campaign-workflows.test.ts: one real seeded review repair has an independent executable red/green oracle; reference and distinct alternative patches pass; exported host judge and typed runSuite adapter pass under injected Driver; other families have operation integration assertions but are not tasks, and test-fix exposes a broad package-scope gap",
+    "redGreenAndAdequacyEvidence": "test/campaign-workflows.test.ts: one real seeded review repair has an independent executable red/green oracle; reference and distinct alternative patches pass; exported host judge and typed runSuite adapter pass under injected Driver; five other local operations now have exported family-specific judges but remain integration scenarios, and test-fix exposes a broad package-scope gap",
     "scenarioCountMeaning": "14 named Vitest workflow cases include review output-fault cases, bounded candidate-module execution, and runSuite adapter smoke; they are not 14 independent repair tasks",
     "independentSubstrates": "five fresh local filesystem substrates; only review-loop has an independently judged repair task",
-    "coverageLimit": "one independently judged review-loop task; no role adequacy claim or 20-task-per-role adequacy claim; test-fix scope is too broad; other families need independently judged task corpora",
+    "coverageLimit": "one independently judged review-loop task; five additional operation scenarios have reusable host judges but no role calls; no role adequacy claim or 20-task-per-role adequacy claim; test-fix scope is too broad",
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
     "hostJudge": "runner/workflow-corpus/review-loop-judge.ts exports judgeReviewLoopWorkspace and judgeReviewLoopRepairTask; semantic conformance accepts multiple implementations, executes arbitrary candidate modules in a 5000ms child process, and candidate identity separately hashes actual patch bytes",
     "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports typed SuiteCase adapter and deterministic local runSuite bundle; wrapDriver pins materialized baseline SHA before dispatch and preserves candidate commits under a side ref for baseline-relative patch capture",
     "toolkitTestFixFinding": "pinned dd247ca source test-fix.ts:64-66 omits stagePathAllowlist; sweep.ts:392-395,417-418 therefore applies package-prefix default; details and reproduction in runner/workflow-corpus/README.md",
-    "pristineBaselineIntegrity": "review task factory creates a fresh local Git seed; runSuite adapter captures the actual materialized workspace baseline before delegation, uses its full SHA for judging, and handles model-created commits; no toolkit or fixtures checkout was mutated"
+    "pristineBaselineIntegrity": "review task factory creates a fresh local Git seed; runSuite adapter captures the actual materialized workspace baseline before delegation, supplies its full SHA and pinned semantic oracle through hostCheckScoringEnvironment, and handles model-created commits; no toolkit or fixtures checkout was mutated"
   },
   "scope": {
     "stage": "S0 bounded dependency reconciliation plus bounded visible S5 workflow corpus slice",

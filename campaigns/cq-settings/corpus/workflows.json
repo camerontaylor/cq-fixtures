@@ -24,6 +24,7 @@
       "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports a typed FixerSuiteCase adapter and bundle materializer; injected Driver pins the materialized baseline before delegation, preserves a worker-created candidate commit under a side ref, and the independent host probe passes",
       "boundedOracle": "candidate module import and behavior child has a 5000ms wall limit; visible check is separately limited to 10000ms; process/host confinement is not claimed",
       "oracleImplementation": "runner/workflow-corpus/review-loop-judge.ts#judgeReviewLoopRepairTask and #judgeReviewLoopWorkspace",
+      "oracleDependencyManifest": "campaigns/cq-settings/corpus/review-loop-oracle-pin.json",
       "candidateIdentity": "full commit SHA, recorded baseline ancestry, clean Git state, and SHA256 of actual binary patch are separately reported from semantic conformance"
     }
   ],
@@ -33,7 +34,8 @@
       "scenario": "merge-conflict-local-repair",
       "substrate": "fresh temporary Git repository",
       "modelAction": "injected Driver edits and commits the conflict worktree source",
-      "oracle": "operation verifies local HEAD movement; host test checks exact changed path and resulting label cap",
+      "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace checks pinned baseline ancestry, exact source allowlist, and Unicode label behavior in a bounded child process",
+      "identity": { "sourceId": "cq-settings.merge-worktree-seed.v1", "baselineId": "cq-settings.merge-conflict.baseline.v1", "oracleId": "cq-settings.merge-label-limit.oracle.v1" },
       "campaignTask": false,
       "roleCall": false
     },
@@ -42,7 +44,8 @@
       "scenario": "nested-package-changed-file-planning",
       "substrate": "fresh temporary Git monorepo with changed test file and untouched CLI package",
       "action": "exported planner consumes actual git diff evidence and selects the deepest package owner",
-      "oracle": "host assertions verify the selected unit, file set, and untouched sibling",
+      "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeFleetSweepPlan independently checks captured changed paths and deepest package ownership",
+      "identity": { "sourceId": "cq-settings.fleet-nested-package-seed.v1", "baselineId": "cq-settings.fleet-dirty-test.baseline.v1", "oracleId": "cq-settings.fleet-deepest-owner.oracle.v1" },
       "campaignTask": false,
       "roleCall": false
     },
@@ -51,7 +54,8 @@
       "scenario": "test-fix-plan-scope-leak-detection",
       "substrate": "fresh temporary package tree with product source and test files",
       "action": "exported test-fix plan builder emits a test-fix unit from test and product files",
-      "oracle": "host assertion reproduces the current broad package-prefix allowlist, which also admits product source; this is a toolkit limitation, not a passing test-only scope oracle",
+      "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeTestFixScopePlan independently reproduces and identifies the broad package-prefix staging leak; passed means the fault was detected, not that the unsafe plan is accepted",
+      "identity": { "sourceId": "cq-settings.testfix-scope-seed.v1", "baselineId": "cq-settings.testfix-broad-scope.baseline.v1", "oracleId": "cq-settings.testfix-scope-risk.oracle.v1" },
       "campaignTask": false,
       "roleCall": false
     },
@@ -60,7 +64,8 @@
       "scenario": "clustered-failure-exact-read-only-proposal",
       "substrate": "host-authored failure set with repeated signature",
       "modelAction": "injected Driver returns a concrete remediation proposal",
-      "oracle": "host assertion checks exact proposal and explicit no-tools/read-only policy",
+      "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeAnalysisRemediationProposal checks proposal content against the empty-setting defect; operation policy assertions remain separate",
+      "identity": { "sourceId": "cq-settings.analysis-setting-failures.v1", "baselineId": "cq-settings.analysis-duplicate-errors.baseline.v1", "oracleId": "cq-settings.analysis-remediation.oracle.v1" },
       "campaignTask": false,
       "roleCall": false
     },
@@ -69,7 +74,8 @@
       "scenario": "local-baseline-tighten-and-loosen",
       "substrate": "fresh temporary workspace with an on-disk captured baseline",
       "action": "exported capture/check ops compare live metric evidence; monotonic guard examines baseline diff",
-      "oracle": "host assertions require tighter metric pass and loosened metric fail",
+      "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeRatchetOutcomes checks live tightened/regressed verdicts and monotonicity results for both directions",
+      "identity": { "sourceId": "cq-settings.ratchet-metric-seed.v1", "baselineId": "cq-settings.ratchet-captured-metric.baseline.v1", "oracleId": "cq-settings.ratchet-monotonicity.oracle.v1" },
       "campaignTask": false,
       "roleCall": false
     }
@@ -91,6 +97,8 @@
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
     "scenarioCountMeaning": "14 named Vitest workflow cases including review output-fault cases, bounded arbitrary-module execution, and runSuite adaptation; this count is not 14 independent repair tasks",
     "independentSubstrates": "five fresh local filesystem substrates across review, merge, fleet, test-fix and ratchet integration; only the review substrate has an independent task correctness oracle",
-    "scopeLimit": "one independently judged review-loop task; test-fix integration exposes a current broad-scope allowlist gap; remaining families have operation-level integration evidence only and need independently judged task corpora before role adequacy or campaign claims"
+    "hostOracleExpansion": "all five non-review operations now invoke exported family-specific host judges; these remain operation-integration evidence and are not model-role campaign tasks",
+    "reviewLoopPin": "review-loop-oracle-pin.json pins review-loop-judge.ts and review-loop-task.ts by content SHA256; review-loop-pin.ts exposes the equivalent API and the bundle supplies materialized baseline SHA plus oracle pin for S1 host-check scoring",
+    "scopeLimit": "one independently judged review-loop model task; five additional operation scenarios have host oracles but no role calls; test-fix scope remains unsafe and is recorded as a detected toolkit limitation"
   }
 }

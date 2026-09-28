@@ -8,7 +8,7 @@ carrier, so the runner does not cast extra properties onto it.
 ```ts
 import type { Usage, WorkerResult } from '@camerontaylor/cq-toolkit';
 import type {
-  StageAttemptEvidenceRef, TaskAssignmentIdentity, TaskOutcome, TaskOutcomeJudgement,
+  JudgeDependencyManifest, StageAttemptEvidenceRef, TaskAssignmentIdentity, TaskOutcome, TaskOutcomeJudgement,
 } from './runner/experiment.ts';
 
 interface NativeObservationDriver {
@@ -59,16 +59,16 @@ interface NativeObservation {
     transportException: { name: string; message: string } | null;
     observedAt: string;
   };
-  capture: { status: string; baselineCommit: string | null; patchSha256: string | null; workspaceSha256: string | null };
+  capture: { status: string; baselineCommit: string | null; baselineTree: string | null; patchSha256: string | null; workspaceSha256: string | null };
   timing: { startedAt: string; endedAt: string | null; stages: Record<string, number | null> };
   workerResult: WorkerResult | null;
 }
 ```
 
-`TaskOutcome`, `TaskAssignmentIdentity`, `TaskOutcomeJudgement`, and
+`JudgeDependencyManifest`, `TaskOutcome`, `TaskAssignmentIdentity`, `TaskOutcomeJudgement`, and
 `StageAttemptEvidenceRef` are the canonical exported join types in
 `runner/experiment.ts`. One task assignment freezes campaign, cohort,
-experiment, suite-plus-substrate task and explicit substrate ID, track,
+experiment, suite-plus-explicit-substrate task, track,
 repeat, assignment, strategy, role, budget and analysis weight. Every stage and retry joins to that same frozen
 identity; a retry keeps its stage ID and gets a new attempt ID. `stages[]`
 retains every attempt's invocation, observation and artifact references.
@@ -76,24 +76,56 @@ retains every attempt's invocation, observation and artifact references.
 exact candidate SHA-256. Regrading creates a new judgement ID/version and
 never overwrites or implicitly selects a “best” attempt.
 
+For one-case runs, `ExperimentContext.substrateId` and
+`ExperimentContext.judgeManifest` identify the task. Multi-case runs require
+each `caseAssignments[caseId]` entry to carry its own assignment, stage,
+attempt, substrate ID and judge dependency manifest. The suite case label is
+not used as a substrate identity. Each task supplies the independent judge's
+source pin and dependency path/hash manifest; the runner verifies those files,
+binds the manifest hash and immutable initial workspace tree into `judgePin`,
+preserves the manifest and baseline commit/tree in the judgement artifact, and
+passes the baseline commit to the check process as `CQ_BASELINE_REF`. This
+always names the pristine commit captured before dispatch, never mutable
+`HEAD`.
+
 An invocation envelope is execution evidence, never task success by itself.
 Candidate correctness and assigned-strategy success are separate nullable
 outcomes, with operational status retained separately. Apply the approved
 mapping mechanically: prelaunch failures retain assignment but do not count as
-launched outcomes; a launched budget stop without a candidate has unknown
-candidate correctness and assigned-strategy failure; a recoverable partial
+launched outcomes; a launched budget stop without a candidate is a failed
+candidate and assigned-strategy outcome; a recoverable partial
 candidate at budget stop is independently judged and follows that oracle;
 transport failure after recoverable edits is independently judged while its
 transport status remains visible; a transport failure without a candidate,
 operator cancellation, or judge-host failure has null assigned success unless
-the frozen analysis rule supplies a valid oracle result. Deterministic judge
-assertion failure is measured failure. A final-format miss is tracked as
-separate conformance evidence: identical patch correctness remains identical,
-while the statistical adapter consumes `assignedStrategySuccess` from the
-mechanical mapping (never substitutes `candidateCorrectness` when cancellation,
-budget, or format conformance changes the assignment outcome). Integrity
-violations remain separately flagged and disqualified under the approved
-table.
+the frozen analysis rule supplies a valid oracle result. A recoverable patch
+after operator cancellation retains independently judged candidate correctness
+and its oracle-derived assigned success, with `interrupted` operational status. Deterministic
+judge assertion failure is measured failure. A final-format miss is tracked as
+separate conformance evidence: identical patch correctness and assigned
+strategy success remain identical regardless of format. The adapter consumes
+`assignedStrategySuccess`, including its explicit nulls for interrupted or
+unmeasurable assignments; it never estimates budget exhaustion from a zero
+score. `TaskOutcome.execution` is optional for historical records and has the
+exact shape `{ launched: boolean | null, terminalCause: 'complete' |
+'budget-exhausted' | 'transport-error' | 'provider-cancelled' |
+'operator-cancelled' | 'prelaunch-failure' | 'unknown', sourceInvocationIds:
+readonly string[] }`. Missing execution, `launched: null`, or cause `unknown`
+means the budget-exhaustion count is unknown. The runner emits
+`budget-exhausted` only for an authoritative launched `WorkerResult` budget
+stop; transport and operator evidence remain separately visible. A
+prelaunch failure has `launched: false`. The current one-invocation run binds
+the field to that invocation ID; a staged pipeline counts whole assignments
+and retains each stage's cause separately. Integrity violations remain
+separately flagged and disqualified under the approved table.
+
+`runSuite` accepts an optional host-only
+`hostCheckScoringEnvironment(workspacePath, pinnedBaselineCommit)` callback.
+It merges the returned string environment into the check subprocess while
+always supplying the runner's captured commit as `CQ_BASELINE_REF`. If the
+provider returns `CQ_REVIEW_LOOP_ORACLE_PIN`, that SHA256 is the judgement pin
+for the candidate; the corpus provider verifies its workspace and baseline
+pins before returning `CQ_REVIEW_LOOP_BASELINE_SHA` and the oracle pin.
 
 `UsageCounterName` is the fixtures-local union `'input' | 'output' |
 'cacheRead' | 'cacheWrite' | 'reasoning'`, matching `Usage` keys. The runner

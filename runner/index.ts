@@ -789,9 +789,10 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       };
       const baselineCommit = workspaceBaseline?.commit ?? null;
       const baselineTree = workspaceBaseline?.tree ?? null;
-      const judgePin = taskInput === undefined ? undefined : sha256(canonicalJson({
+      let judgePin = taskInput === undefined ? undefined : sha256(canonicalJson({
         taskManifestHash: taskInput.manifestHash, baselineCommit, baselineTree,
       }));
+      let hostCheckEnv: Readonly<Record<string, string>> | undefined;
       let nativeObservation: NativeObservation | undefined;
       try {
         if (isFixerCase(c)) {
@@ -867,9 +868,10 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // Capture the candidate before observation retrieval or any oracle
       // operation. Native bridges may fail while returning telemetry, and a
       // worker may commit its edit before throwing.
-      const fixerPatch = isFixerCase(c) && workspace !== undefined && workspaceBaseline !== undefined
+      const capturedPatch = isFixerCase(c) && workspace !== undefined && workspaceBaseline !== undefined
         ? gitPatch(workspace, workspaceBaseline)
         : undefined;
+      const fixerPatch = capturedPatch === undefined || capturedPatch.length === 0 ? undefined : capturedPatch;
       if (thrown instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(thrown.message) && isFixerCase(c)) {
         if (fixerPatch === undefined) {
           await append({
@@ -1157,12 +1159,27 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         const scoringWorker: WorkerResult = worker ?? {
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'error',
         };
-          const hostCheckEnv = workspaceBaseline?.commit === undefined
-            ? undefined
-            : opts.hostCheckScoringEnvironment?.(workspace as string, workspaceBaseline.commit);
-          const check = scoreFixerWorker(
-            c, scoringWorker, repoRoot, workspace as string, opts.checkTimeoutMs, workspaceBaseline?.commit, hostCheckEnv,
-          );
+          let check: ReturnType<typeof scoreFixerWorker>;
+          try {
+            hostCheckEnv = workspaceBaseline?.commit === undefined
+              ? undefined
+              : opts.hostCheckScoringEnvironment?.(workspace as string, workspaceBaseline.commit);
+            const hostOraclePin = hostCheckEnv?.CQ_REVIEW_LOOP_ORACLE_PIN;
+            if (hostOraclePin !== undefined) {
+              if (!/^[a-f0-9]{64}$/.test(hostOraclePin)) throw new Error('host scoring oracle pin must be a SHA256');
+              judgePin = hostOraclePin;
+            }
+            check = scoreFixerWorker(
+              c, scoringWorker, repoRoot, workspace as string, opts.checkTimeoutMs, workspaceBaseline?.commit, hostCheckEnv,
+            );
+          } catch (error) {
+            const why = error instanceof Error ? error.message : String(error);
+            caseDiagnostics.push(`host scoring setup failed: ${boundDriverCause(why)}`);
+            check = {
+              score: 0, passed: 0, total: 1, correctness: null, operationalStatus: 'judge-failure' as const,
+              formatConformance: null, diagnostics: `host scoring setup failed: ${boundDriverCause(why)}`,
+            };
+          }
         // Probe 2 — schema compliance (runner/dimensions/schemaCompliance.ts):
         // grades ONLY the structuredOutput's shape discipline, never the
         // fix's content, so the check's sweep-agnostic contract is intact.
@@ -1175,7 +1192,6 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           : worker?.stopReason === 'aborted' ? 'interrupted'
           : thrown !== undefined ? 'measured-transport-failure'
           : check.correctness === true ? 'complete' : 'measured-failure';
-        if (worker?.stopReason === 'aborted') assignedStrategySuccess = null;
         const passed = check.passed + schema.passed;
         outcome = { score: passed / FIXER_PROBE_COUNT, passed, total: FIXER_PROBE_COUNT };
         journalResult = worker?.stopReason === 'budget'
@@ -1263,15 +1279,23 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         assignedStrategySuccess = false;
         if (operationalStatus !== 'judge-failure') operationalStatus = 'measured-failure';
       }
-      const terminalCause: NonNullable<TaskOutcome['terminalCause']> = launchedBudgetStop ? 'budget-exhausted'
-        : thrown !== undefined ? 'transport-failure'
-          : worker?.stopReason === 'aborted' ? 'operator-cancelled'
-            : operationalStatus === 'judge-failure' ? 'judge-failure'
-              : operationalStatus === 'integrity-violation' ? 'integrity-violation'
-                : worker?.stopReason === 'complete' ? 'complete' : 'unknown';
-      const budgetOutcome: NonNullable<TaskOutcome['budgetOutcome']> = launchedBudgetStop
-        ? hasCandidate ? 'exhausted-with-candidate' : 'exhausted-no-candidate'
-        : worker === undefined ? 'unknown' : 'not-exhausted';
+      const credentialFailure = thrown instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(thrown.message);
+      const observedTerminal = nativeObservation?.terminal.cause;
+      const execution: NonNullable<TaskOutcome['execution']> = {
+        launched: launchedBudgetStop || worker?.stopReason === 'complete' ? true
+          : credentialFailure ? false
+            : thrown !== undefined ? null
+              : worker !== undefined ? true : false,
+        terminalCause: launchedBudgetStop ? 'budget-exhausted'
+          : worker?.stopReason === 'complete' ? 'complete'
+            : credentialFailure ? 'prelaunch-failure'
+              : thrown !== undefined || nativeObservation?.terminal.transportException !== null && nativeObservation !== undefined
+                ? 'transport-error'
+                : observedTerminal === 'provider-cancelled' ? 'provider-cancelled'
+                  : observedTerminal === 'operator-cancelled' || nativeObservation?.terminal.cancelled === true ? 'operator-cancelled'
+                    : worker === undefined ? 'prelaunch-failure' : 'unknown',
+        sourceInvocationIds: [invocationIdentity.invocationId],
+      };
       const taskOutcome: TaskOutcome | undefined = opts.experiment === undefined ? undefined : {
         identity: {
           campaignId: artifactContext.campaignId, cohortId: artifactContext.cohortId,
@@ -1281,7 +1305,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           role: suite.role, budgetId: artifactContext.budgetId, frozenWeight: artifactContext.frozenWeight,
         },
         candidateCorrectness, formatConformance, assignedStrategySuccess, operationalStatus,
-        terminalCause, budgetOutcome,
+        execution,
         stages: [{
           stageId: invocationIdentity.stageId, attemptId: invocationIdentity.attemptId,
           invocationId: invocationIdentity.invocationId,
@@ -1317,7 +1341,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           track: artifactContext.track, strategyId: artifactContext.strategyId,
           settingsId: artifactContext.settingsId, budgetId: artifactContext.budgetId,
           profileId: artifactContext.profileId, frozenWeight: artifactContext.frozenWeight,
-          substrateId: artifactContext.substrateId, ...(judgePin !== undefined ? { judgePin } : {}),
+          substrateId: artifactContext.substrateId, judgePin: judgePin!,
         } } : {}),
         ...(taskOutcome !== undefined ? { taskOutcome } : {}),
         ...(nativeObservation !== undefined ? {

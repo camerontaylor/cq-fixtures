@@ -28,8 +28,27 @@ export interface ExperimentContext {
   budgetId: string;
   profileId: string;
   frozenWeight: number;
+  /** Task's stable substrate identity; it is independent of the suite case label. */
+  substrateId: string;
+  judgeManifest: JudgeDependencyManifest;
   /** Required for multi-case runSuite dispatch; keys are suite case IDs. */
-  caseAssignments?: Record<string, { assignmentId: string; stageId: string; attemptId: string }>;
+  caseAssignments?: Record<string, {
+    assignmentId: string;
+    stageId: string;
+    attemptId: string;
+    substrateId: string;
+    judgeManifest: JudgeDependencyManifest;
+  }>;
+}
+
+/** Exact task-supplied oracle provenance and the source files it depends on. */
+export interface JudgeDependencyManifest {
+  sourcePin: string;
+  dependencies: ReadonlyArray<{ path: string; sha256: string }>;
+}
+
+export function judgeManifestHash(manifest: JudgeDependencyManifest): string {
+  return createHash('sha256').update(canonicalJson(manifest)).digest('hex');
 }
 
 /** Frozen assignment identity shared by every retry and stage for one task. */
@@ -62,6 +81,9 @@ export interface TaskOutcomeJudgement {
   judgementId: string;
   version: number;
   judgePin: string;
+  judgeManifest: JudgeDependencyManifest;
+  baselineCommit: string | null;
+  baselineTree: string | null;
   candidateSha256: string;
   candidateCorrectness: boolean | null;
   formatConformance: boolean | null;
@@ -83,6 +105,12 @@ export interface TaskOutcome {
   formatConformance: boolean | null;
   assignedStrategySuccess: boolean | null;
   operationalStatus: TaskOutcomeJudgement['operationalStatus'];
+  /** Optional authoritative launch/terminal provenance; absent legacy values stay unknown. */
+  execution?: {
+    launched: boolean | null;
+    terminalCause: 'complete' | 'budget-exhausted' | 'transport-error' | 'provider-cancelled' | 'operator-cancelled' | 'prelaunch-failure' | 'unknown';
+    sourceInvocationIds: readonly string[];
+  };
   stages: ReadonlyArray<StageAttemptEvidenceRef>;
   judgements: ReadonlyArray<TaskOutcomeJudgement>;
 }

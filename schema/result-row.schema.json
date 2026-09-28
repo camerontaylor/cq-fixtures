@@ -121,7 +121,7 @@
     },
     "experiment": {
       "type": "object", "additionalProperties": false,
-      "required": ["campaignId", "cohortId", "experimentId", "taskId", "repeatId", "assignmentId", "stageId", "attemptId", "track", "strategyId", "settingsId", "budgetId", "profileId", "frozenWeight"],
+      "required": ["campaignId", "cohortId", "experimentId", "taskId", "repeatId", "assignmentId", "stageId", "attemptId", "track", "strategyId", "settingsId", "budgetId", "profileId", "frozenWeight", "substrateId", "judgePin"],
       "properties": {
         "campaignId": { "type": "string", "minLength": 1 }, "cohortId": { "type": "string", "minLength": 1 },
         "experimentId": { "type": "string", "minLength": 1 }, "taskId": { "type": "string", "minLength": 1 },
@@ -129,7 +129,9 @@
         "stageId": { "type": "string", "minLength": 1 }, "attemptId": { "type": "string", "minLength": 1 },
         "track": { "type": "string", "minLength": 1 }, "strategyId": { "type": "string", "minLength": 1 },
         "settingsId": { "type": "string", "minLength": 1 }, "budgetId": { "type": "string", "minLength": 1 }, "profileId": { "type": "string", "minLength": 1 },
-        "frozenWeight": { "type": "number", "exclusiveMinimum": 0 }
+        "frozenWeight": { "type": "number", "exclusiveMinimum": 0 },
+        "substrateId": { "type": "string", "minLength": 1 },
+        "judgePin": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       }
     },
     "observedUsage": {
@@ -169,6 +171,16 @@
         "candidateCorrectness": { "type": ["boolean", "null"] }, "formatConformance": { "type": ["boolean", "null"] },
         "assignedStrategySuccess": { "type": ["boolean", "null"] },
         "operationalStatus": { "enum": ["complete", "measured-failure", "measured-transport-failure", "operational-missingness", "judge-failure", "interrupted", "integrity-violation"] },
+        "execution": {
+          "type": "object",
+          "required": ["launched", "terminalCause", "sourceInvocationIds"],
+          "properties": {
+            "launched": { "type": ["boolean", "null"] },
+            "terminalCause": { "enum": ["complete", "budget-exhausted", "transport-error", "provider-cancelled", "operator-cancelled", "prelaunch-failure", "unknown"] },
+            "sourceInvocationIds": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        },
         "stages": { "type": "array", "items": { "type": "object", "additionalProperties": false,
           "required": ["stageId", "attemptId", "invocationId", "artifacts"],
           "properties": {
@@ -179,10 +191,18 @@
           }
         } },
         "judgements": { "type": "array", "items": { "type": "object", "additionalProperties": false,
-          "required": ["judgementId", "version", "judgePin", "candidateSha256", "candidateCorrectness", "formatConformance", "assignedStrategySuccess", "operationalStatus", "artifact"],
+          "required": ["judgementId", "version", "judgePin", "judgeManifest", "baselineCommit", "baselineTree", "candidateSha256", "candidateCorrectness", "formatConformance", "assignedStrategySuccess", "operationalStatus", "artifact"],
           "properties": {
             "judgementId": { "type": "string", "minLength": 1 }, "version": { "type": "integer", "minimum": 1 },
-            "judgePin": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "candidateSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "judgePin": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "judgeManifest": { "type": "object", "additionalProperties": false, "required": ["sourcePin", "dependencies"], "properties": {
+              "sourcePin": { "type": "string", "minLength": 1 },
+              "dependencies": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {
+                "path": { "type": "string", "minLength": 1 }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+              } } }
+            } },
+            "baselineCommit": { "type": ["string", "null"] }, "baselineTree": { "type": ["string", "null"] },
+            "candidateSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "candidateCorrectness": { "type": ["boolean", "null"] }, "formatConformance": { "type": ["boolean", "null"] },
             "assignedStrategySuccess": { "type": ["boolean", "null"] },
             "operationalStatus": { "enum": ["complete", "measured-failure", "measured-transport-failure", "operational-missingness", "judge-failure", "interrupted", "integrity-violation"] },

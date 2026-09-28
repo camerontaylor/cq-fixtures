@@ -31,6 +31,8 @@ export interface ProviderQuota {
   windows: readonly QuotaWindow[];
   normalResetsAt: readonly string[];
   resetCredits: readonly ResetCredit[];
+  /** Provider-reported count; never inferred from a possibly truncated credit list. */
+  resetCreditsAvailableCount: number | null;
   /** True only when the telemetry explicitly establishes that credit metadata was read. */
   resetCreditsKnown: boolean;
   cooldownUntil: string | null;
@@ -51,7 +53,7 @@ export interface QuotaFreshness {
 
 export const DEFAULT_MAX_TELEMETRY_AGE_MS = 60_000;
 export const RESET_REDEMPTION_INTEGRATION_DEPENDENCY =
-  'Parent integration must inject the authenticated account/rateLimitResetCredit/consume adapter and account/rateLimits/read refresher.';
+  'The Codex app-server adapter is available; parent must verify the installed generated protocol exposes account/rateLimitResetCredit/consume before enabling explicit redemption.';
 
 export function inspectQuotaFreshness(
   snapshot: QuotaSnapshot | null | undefined,
@@ -84,7 +86,9 @@ export interface ResetCreditConsumeResult {
   beforeAllowance: number | null;
   afterAllowance: number | null;
   observedAt: string;
+  beforeQuota?: QuotaSnapshot;
   refreshedQuota?: QuotaSnapshot;
+  allowanceChangeVerified?: boolean;
 }
 
 /** Narrow adapter for the documented account/rateLimitResetCredit/consume route. */
@@ -120,6 +124,7 @@ export async function consumeResetCreditOnce(
   consumer: SupportedResetCreditConsumer,
   journal: ResetJournal,
   request: ResetCreditConsumeRequest,
+  options: { now?: () => number; maxAgeMs?: number } = {},
 ): Promise<ResetCreditConsumeResult> {
   if (consumer.route !== 'account/rateLimitResetCredit/consume') {
     throw new Error('Unsupported reset-credit route');
@@ -130,13 +135,15 @@ export async function consumeResetCreditOnce(
   if (!request.resetType.trim()) throw new Error('Reset type must be explicit');
 
   const prior = await journal.get(request.idempotencyKey);
-  if (prior?.state === 'completed' && prior.result) return prior.result;
-  if (!prior) {
-    await journal.create({ ...request, state: 'prepared' });
-  } else if (prior.resetType !== request.resetType || prior.creditId !== request.creditId) {
+  if (prior && (prior.resetType !== request.resetType || prior.creditId !== request.creditId)) {
     throw new Error('Idempotency key is already journaled for a different reset request');
   }
+  if (prior?.state === 'completed' && prior.result) return prior.result;
+  if (!prior) await journal.create({ ...request, state: 'prepared' });
 
+  const beforeQuota = await consumer.readRateLimits();
+  const beforeFreshness = inspectQuotaFreshness(beforeQuota, (options.now ?? Date.now)(), options.maxAgeMs ?? DEFAULT_MAX_TELEMETRY_AGE_MS);
+  if (!beforeFreshness.fresh) throw new Error(`Reset redemption requires fresh rate-limit telemetry (${beforeFreshness.reason})`);
   const consumed = await consumer.consume(request);
   if (!['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'].includes(consumed.outcome)) {
     throw new Error('Provider returned an unsupported reset-credit outcome');
@@ -144,13 +151,35 @@ export async function consumeResetCreditOnce(
   if (consumed.resetType !== request.resetType) {
     throw new Error('Provider returned a different reset type than requested');
   }
-  if (consumed.outcome === 'reset' && (consumed.beforeAllowance === null || consumed.afterAllowance === null)) {
-    throw new Error('A reset outcome requires observed before and after allowance');
+  if (request.creditId !== undefined && consumed.creditId !== request.creditId) {
+    throw new Error('Provider returned a different credit ID than requested');
   }
   const refreshedQuota = await consumer.readRateLimits();
-  const result = { ...consumed, refreshedQuota };
+  const refreshedFreshness = inspectQuotaFreshness(refreshedQuota, (options.now ?? Date.now)(), options.maxAgeMs ?? DEFAULT_MAX_TELEMETRY_AGE_MS);
+  if (!refreshedFreshness.fresh) {
+    throw new Error(`Reset redemption requires fresh post-consumption rate-limit telemetry (${refreshedFreshness.reason})`);
+  }
+  const allowanceChangeVerified = hasObservedAllowanceIncrease(beforeQuota, refreshedQuota);
+  const result = { ...consumed, beforeQuota, refreshedQuota, allowanceChangeVerified };
   await journal.complete(request.idempotencyKey, result);
   return result;
+}
+
+function hasObservedAllowanceIncrease(before: QuotaSnapshot, after: QuotaSnapshot): boolean {
+  for (const afterProvider of after.providers) {
+    const beforeProvider = before.providers.find((provider) => provider.provider === afterProvider.provider);
+    if (!beforeProvider) continue;
+    for (const afterWindow of afterProvider.windows) {
+      const beforeWindow = beforeProvider.windows.find((window) => window.id === afterWindow.id);
+      if (!beforeWindow) continue;
+      if (afterWindow.remainingUnits !== null && beforeWindow.remainingUnits !== null
+        && afterWindow.remainingUnits > beforeWindow.remainingUnits) return true;
+      if (afterWindow.remainingFraction !== null && beforeWindow.remainingFraction !== null
+        && afterWindow.remainingFraction > beforeWindow.remainingFraction) return true;
+      if (afterWindow.resetsAt && beforeWindow.resetsAt && Date.parse(afterWindow.resetsAt) > Date.parse(beforeWindow.resetsAt)) return true;
+    }
+  }
+  return false;
 }
 
 export interface BoundedDiagnosticPolicy {

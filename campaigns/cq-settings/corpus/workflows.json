@@ -1,6 +1,12 @@
 {
   "manifestVersion": 3,
   "status": "visible-calibration-in-progress",
+  "latestFullCorpusRun": {
+    "sessionId": 15920,
+    "exitCode": 143,
+    "observedOutput": "RUN header only",
+    "conclusion": "incomplete; no full-suite pass claimed"
+  },
   "scenarioCount": 23,
   "integrationSubstrateCount": 13,
   "verifiedTaskCount": 9,
@@ -235,6 +241,44 @@
       "roleCall": false
     }
   ],
+  "testFixBoundaryReconciliation": {
+    "selectedCampaignPin": {
+      "sourceCommit": "dd247ca059f7bb183a74d7a3ed17cb17cebd2bef",
+      "lockFile": "toolkit.lock",
+      "tarball": "vendor/cq-toolkit-1.0.1.tgz",
+      "tarballSha256": "90cc17ea030f96c83d6f77f35fbf0af1f6df7c893b65853928b7e2a60d176c9c",
+      "anchors": [
+        "cq-toolkit@dd247ca:src/plans/test-fix.ts:64-66 (blob 873ebb615df89d59946537129f17a523ffe540e1): buildTestFixPlan passes proposeOnly:true without stagePathAllowlist",
+        "cq-toolkit@dd247ca:src/ops/sweep/unit.ts:1092-1110,1165-1169: nonempty propose-only staged set routes to needs-human before commit/push"
+      ],
+      "meaning": "Human review/no automatic commit is enforced; test-only staged scope is not. Product files can be included in the proposal."
+    },
+    "inFlightSource": {
+      "sourceCommit": "915f2b6301e2fae5c52d9c9616ad45134ee3f1bd",
+      "branch": "lane/p4-integration",
+      "boundaryCommit": "9879eb6a188c8936b934c59f51c3e28f90092d82",
+      "anchors": [
+        "cq-toolkit@915f2b6:src/plans/test-fix.ts:32-40,73-75 (blob ccd4a0a48a8c2c22347c55a62e90b2e282c3e1ab): passes TEST_FIX_STAGE_PATH_ALLOWLIST from test-file patterns",
+        "cq-toolkit@915f2b6:src/ops/sweep/unit.ts:755-788 (blob c95ef953d2e56744788854ebcdc6104a6df9309f): validates staged path set before commit",
+        "cq-toolkit@915f2b6:test/e2e/sweep/sweep.e2e.test.ts:652-700,779-807: production edit and production-to-test rename are rejected"
+      ],
+      "meaning": "In-flight source adds actual test-file staging enforcement; it does not change the immutable selected campaign archive."
+    },
+    "directFactoryTestGap": {
+      "anchor": "cq-toolkit@915f2b6:test/plans/sweep.test.ts:314-330",
+      "finding": "The buildTestFixPlan test covers prep mode and fixer identity but does not assert the generated unit inputs carry TEST_FIX_STAGE_PATH_ALLOWLIST. The e2e boundary tests provide the allowlist directly instead of invoking buildTestFixPlan.",
+      "classification": "factory wiring coverage gap; not evidence that the in-flight source lacks the wiring"
+    },
+    "campaignDisposition": "Keep dd247ca and its tarball unchanged for the first G1 epoch. A future package claim must identify a new version and source epoch."
+  },
+  "wholeWorkflowG2Readiness": {
+    "status": "blocked",
+    "blocker": "Host-side execFileSync(node) evaluation of candidate code is not protected execution.",
+    "dependency": "Boundary owner is implementing runner/boundary/judge-child.ts with an exact pinned native image and dedicated VM/daemon; candidate volume is the only read-only mount; execution is nonroot with no credentials, host mounts, or network; timeout kills and awaits the container namespace before volume disposal.",
+    "expectedCallerApi": "executeProtectedJudgeChild({candidateRoot, module, exportName, requests}) -> private {stdout: Buffer, exitCode, timedOut, containerAbsentVerified, scope:'protected-candidate-execution'}; module is a relative js/mjs/cjs/ts path; requests are unknown[][] with at most 128 cases and 64 KiB total; timeoutMs is at most 15000.",
+    "callerAdaptation": "Wait for the boundary implementation commit and published exact contract. Do not edit oracle code or run candidate-code/model evaluation before adapting callers to the protected executor.",
+    "stdoutPolicy": "The generic bootstrap imports the candidate module and invokes the named export with each request tuple. Protected child stdout remains private/untrusted; parse bounded behavior results into host booleans/logs and never put raw stdout in model context."
+  },
   "heldoutReserve": {
     "reservedBeforeTuning": true,
     "completeSubstrateFamilies": ["campaign-settings-module-v2", "analysis-semver-config-v2", "ratchet-missing-baseline-v2"],

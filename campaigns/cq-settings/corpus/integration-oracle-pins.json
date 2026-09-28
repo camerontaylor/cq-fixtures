@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "oracleIds": [
+    "cq-settings.merge-label-limit.oracle.v1",
+    "cq-settings.merge-reserved-prefix.oracle.v1",
+    "cq-settings.fleet-deepest-owner.oracle.v1",
+    "cq-settings.fleet-service-owner.oracle.v1"
+  ],
+  "dependencies": [
+    {
+      "path": "campaigns/cq-settings/corpus/integration-tasks.ts",
+      "sha256": "63508aa9360dab2c2e30bc3142affdb218b3597a62b7ccbff832cf005e44b76e"
+    },
+    {
+      "path": "runner/workflow-corpus/operation-workflow-judges.ts",
+      "sha256": "7f47f8462258e0c8f4e31d6a52ce878a1488dc49f83c5e1571c5d40580290c8e"
+    }
+  ]
+}

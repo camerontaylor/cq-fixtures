@@ -23,7 +23,27 @@ function git(cwd: string, args: readonly string[]): string {
 }
 
 /** Independent behavior/scope check for a locally committed conflict repair. */
-export function judgeMergeConflictWorkspace(repoRoot: string, baselineCommit: string): WorkflowOracleReport {
+export interface MergeConflictContract {
+  readonly sourceId: string;
+  readonly baselineId: string;
+  readonly oracleId: string;
+  readonly examples: readonly { readonly input: unknown; readonly expected: string }[];
+}
+
+const DEFAULT_MERGE_CONTRACT: MergeConflictContract = {
+  ...OPERATION_WORKFLOW_IDENTITIES.merge,
+  examples: [
+    { input: null, expected: '' }, { input: 7, expected: '' }, { input: '', expected: '' },
+    { input: '  ', expected: '' }, { input: '😀'.repeat(40), expected: '😀'.repeat(40) },
+    { input: '😀'.repeat(41), expected: '' }, { input: 'x'.repeat(39), expected: 'x'.repeat(39) },
+  ],
+};
+
+export function judgeMergeConflictWorkspace(
+  repoRoot: string,
+  baselineCommit: string,
+  contract: MergeConflictContract = DEFAULT_MERGE_CONTRACT,
+): WorkflowOracleReport {
   const failures: string[] = [];
   try {
     const head = git(repoRoot, ['rev-parse', '--verify', 'HEAD^{commit}']).trim();
@@ -35,8 +55,9 @@ export function judgeMergeConflictWorkspace(repoRoot: string, baselineCommit: st
     if (JSON.stringify(changed) !== JSON.stringify(['src/settings.mjs'])) failures.push(`unexpected candidate paths: ${changed.join(',')}`);
     const moduleUrl = pathToFileURL(join(repoRoot, 'src/settings.mjs')).href;
     const probe = `const m = await import(${JSON.stringify(moduleUrl)} + '?judge=' + Date.now());
-const values = [null, 7, '', '  ', '😀'.repeat(40), '😀'.repeat(41), 'x'.repeat(39)];
-const expected = ['', '', '', '', '😀'.repeat(40), '', 'x'.repeat(39)];
+const cases = ${JSON.stringify(contract.examples)};
+const values = cases.map(({ input }) => input);
+const expected = cases.map(({ expected }) => expected);
 const actual = values.map((value) => m.campaignLabel(value));
 if (actual.some((value, index) => value !== expected[index])) {
   console.error(JSON.stringify({ actual, expected }));
@@ -52,7 +73,7 @@ if (actual.some((value, index) => value !== expected[index])) {
       : '';
     failures.push(`merge candidate check failed: ${detail}${stderr.length > 0 ? `; stderr: ${stderr}` : ''}`);
   }
-  const identity = OPERATION_WORKFLOW_IDENTITIES.merge;
+  const identity = contract;
   return { ...identity, passed: failures.length === 0, failures };
 }
 
@@ -60,16 +81,22 @@ if (actual.some((value, index) => value !== expected[index])) {
 export function judgeFleetSweepPlan(
   report: { readonly units?: readonly { readonly package: string; readonly files: readonly string[] }[] },
   changedPaths: readonly string[],
+  contract: {
+    readonly sourceId: string;
+    readonly baselineId: string;
+    readonly oracleId: string;
+    readonly expectedPackage: string;
+    readonly expectedPaths: readonly string[];
+  } = { ...OPERATION_WORKFLOW_IDENTITIES.fleet, expectedPackage: 'core-tests', expectedPaths: ['packages/core/test/settings.test.ts'] },
 ): WorkflowOracleReport {
   const failures: string[] = [];
-  const expected = ['packages/core/test/settings.test.ts'];
+  const expected = [...contract.expectedPaths].sort();
   if (JSON.stringify([...changedPaths].sort()) !== JSON.stringify(expected)) failures.push('pinned changed-file substrate drifted');
   const units = report.units ?? [];
-  if (units.length !== 1 || units[0]?.package !== 'core-tests' || JSON.stringify(units[0]?.files) !== JSON.stringify(expected)) {
+  if (units.length !== 1 || units[0]?.package !== contract.expectedPackage || JSON.stringify([...(units[0]?.files ?? [])].sort()) !== JSON.stringify(expected)) {
     failures.push('sweep plan did not choose the deepest package owner for the changed test');
   }
-  const identity = OPERATION_WORKFLOW_IDENTITIES.fleet;
-  return { ...identity, passed: failures.length === 0, failures };
+  return { sourceId: contract.sourceId, baselineId: contract.baselineId, oracleId: contract.oracleId, passed: failures.length === 0, failures };
 }
 
 /** Detects the selected test-fix builder's current package-wide staging leak. */

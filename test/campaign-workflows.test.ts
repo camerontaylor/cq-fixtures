@@ -53,6 +53,13 @@ import {
   executeRatchetTask,
 } from '../campaigns/cq-settings/corpus/operation-tasks.js';
 import { ANALYSIS_REMEDIATION_CONTRACTS } from '../runner/workflow-corpus/operation-workflow-judges.js';
+import {
+  createFleetSweepTask,
+  createMergeConflictTask,
+  executeFleetSweepTask,
+  executeMergeConflictTask,
+  judgeMergeConflictTask,
+} from '../campaigns/cq-settings/corpus/integration-tasks.js';
 
 function expectOk<T>(result: OpResult<T>): T {
   if (result.status !== 'ok') {
@@ -795,5 +802,51 @@ describe('cq-settings bounded workflow corpus', () => {
         await task.cleanup();
       }
     },
+    30_000,
+  );
+
+  it.each(['unicodeLabelLimit', 'reservedPrefix'] as const)(
+    'runs the exported merge conflict operation for $variant and independently judges committed source', async (variant) => {
+      const task = await createMergeConflictTask(variant, { model: `offline-${variant}`, provider: 'fake' });
+      const source = variant === 'unicodeLabelLimit'
+        ? `export function campaignLabel(v) { if (typeof v !== 'string') return ''; const s = v.trim(); return [...s].length > 0 && [...s].length <= 40 ? s : ''; }\n`
+        : `export function campaignLabel(v) { if (typeof v !== 'string') return ''; const s = v.trim(); return s && !s.startsWith('sys:') ? s : ''; }\n`;
+      const driver: Driver = {
+        async run(invocation) {
+          await writeFile(task.settingsPath, source);
+          execFileSync('git', ['add', 'src/settings.mjs'], { cwd: task.repoRoot });
+          execFileSync('git', ['commit', '-q', '-m', 'Resolve local settings conflict'], { cwd: task.repoRoot });
+          return { ...completedWorker({ decision: 'acted', summary: 'Apply the conflict repair while retaining branch requirements.' }), model: invocation.modelSpec.model };
+        },
+      };
+      try {
+        expect(judgeMergeConflictTask(task).passed).toBe(false);
+        expect(task.oraclePin).toMatch(/^[a-f0-9]{64}$/);
+        const outcome = await executeMergeConflictTask(task, driver);
+        expect(expectOk(outcome).decision).toBe('acted');
+        const report = judgeMergeConflictTask(task);
+        expect(report).toMatchObject({ passed: true, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId });
+        expect(task.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
+      } finally {
+        await task.cleanup();
+      }
+    },
+    30_000,
+  );
+
+  it.each(['nestedUnit', 'serviceLeaf'] as const)(
+    'executes the exported fleet planner for the independent $variant package substrate', async (variant) => {
+      const task = await createFleetSweepTask(variant);
+      try {
+        expect(task.baselineCommit).toMatch(/^[a-f0-9]{40}$/);
+        expect(task.oraclePin).toMatch(/^[a-f0-9]{64}$/);
+        const { report, oracle } = await executeFleetSweepTask(task);
+        expect(oracle).toMatchObject({ passed: true, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId });
+        expect((report as { units: { package: string }[] }).units.map((unit) => unit.package)).toEqual([task.expectedPackage]);
+      } finally {
+        await task.cleanup();
+      }
+    },
+    30_000,
   );
 });

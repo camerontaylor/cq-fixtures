@@ -162,6 +162,26 @@ describe('native transport event and identity handling', () => {
     unlinkSync(join(RUNNER_SESSION_DIRECTORY, `${session.sessionId}.jsonl`));
   });
 
+  it('returns stage-matched native stop proof only after cancellation settles and the process group is gone', async () => {
+    if (process.platform === 'win32') return;
+    const root = tempRoot();
+    const script = join(root, 'hanging-cli');
+    const child = `process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);`;
+    const source = `#!/usr/bin/env node\nconst {spawn}=require('node:child_process'); spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'}); process.stdout.write('partial\\n'); setInterval(()=>{},1000);\n`;
+    writeFileSync(script, source, { mode: 0o700 });
+    chmodSync(script, 0o700);
+    const driver = new CodexExecDriver({ executable: script, artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch(), killGraceMs: 80 });
+    const invocationIdentity = identity('cancel-proof');
+    await driver.beginInvocation(invocationIdentity);
+    const execution = driver.run(invocation());
+    const proof = await driver.cancelInvocationAndWait({ identity: invocationIdentity, cause: 'stage deadline', deadlineEpochMs: Date.now() + 3_000 });
+    const result = await execution;
+    expect(proof).toEqual({ invocationId: 'cancel-proof', stageId: 'draft', attemptId: 'attempt-cancel-proof', processTree: 'stopped-and-reaped', invocation: 'settled' });
+    expect(result.stopReason).toBe('aborted');
+    expect(driver.getObservation('cancel-proof')?.model.settings.processTree).toMatchObject({ value: true, status: 'stopped-and-settled' });
+    await expect(driver.cancelInvocationAndWait({ identity: { ...invocationIdentity, stageId: 'wrong-stage' }, cause: 'bad proof', deadlineEpochMs: Date.now() + 100 })).rejects.toThrow(/no matching invocation/u);
+  });
+
   it('preserves a ZCode ACP envelope around a simulated native result and refuses blackout dispatch', async () => {
     const root = tempRoot();
     const fake: Pick<{ run(input: OpInvocation): Promise<WorkerResult> }, 'run'> = {

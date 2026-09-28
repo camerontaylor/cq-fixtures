@@ -44,6 +44,110 @@ export interface NativeSpawnReceipt {
 }
 export type NativeSpawnAdapter = (command: string, args: readonly string[], options: { cwd: string }) => Promise<NativeSpawnReceipt>;
 
+export interface SupervisedInvocationIdentity {
+  invocationId: string;
+  assignmentId: string;
+  stageId: string;
+  attemptId: string;
+}
+
+export interface NativeStopProof {
+  invocationId: string;
+  stageId: string;
+  attemptId: string;
+  processTree: 'stopped-and-reaped';
+  invocation: 'settled';
+}
+
+interface SupervisedInvocation {
+  identity: SupervisedInvocationIdentity;
+  controller: AbortController;
+  settled: Promise<void>;
+  settle: () => void;
+  invocationSettled: boolean;
+  processTreeStopped: boolean | undefined;
+}
+
+/** Tracks native invocation cancellation through process-tree reap and Driver settlement. */
+export class NativeSupervisorControl {
+  private readonly invocations = new Map<string, SupervisedInvocation>();
+
+  beginInvocation(identity: SupervisedInvocationIdentity): void {
+    if (this.invocations.has(identity.invocationId)) throw new Error(`native invocation '${identity.invocationId}' is already active`);
+    let settle!: () => void;
+    this.invocations.set(identity.invocationId, {
+      identity: { ...identity }, controller: new AbortController(),
+      settled: new Promise<void>((resolve) => { settle = resolve; }), settle: () => settle(),
+      invocationSettled: false, processTreeStopped: true,
+    });
+    // Keep a bounded history so late stop requests can still prove a settled
+    // invocation without retaining an unbounded campaign's control objects.
+    while (this.invocations.size > 256) {
+      const oldest = this.invocations.entries().next().value as [string, SupervisedInvocation] | undefined;
+      if (!oldest || !oldest[1].invocationSettled) break;
+      this.invocations.delete(oldest[0]);
+    }
+  }
+
+  signal(identity: SupervisedInvocationIdentity, parent?: AbortSignal): AbortSignal {
+    const state = this.require(identity);
+    return parent ? AbortSignal.any([parent, state.controller.signal]) : state.controller.signal;
+  }
+
+  expectProcessTree(identity: SupervisedInvocationIdentity): void {
+    this.require(identity).processTreeStopped = false;
+  }
+
+  reportProcessTree(identity: SupervisedInvocationIdentity, stopped: boolean): void {
+    this.require(identity).processTreeStopped = stopped;
+  }
+
+  settleInvocation(identity: SupervisedInvocationIdentity): void {
+    const state = this.require(identity);
+    state.invocationSettled = true;
+    state.settle();
+  }
+
+  async cancelInvocationAndWait(input: {
+    identity: SupervisedInvocationIdentity;
+    cause: unknown;
+    deadlineEpochMs: number;
+  }): Promise<NativeStopProof> {
+    const state = this.require(input.identity);
+    if (!Number.isFinite(input.deadlineEpochMs)) throw new RangeError('native stop proof requires a finite epoch deadline');
+    state.controller.abort(input.cause);
+    const remaining = Math.max(0, input.deadlineEpochMs - Date.now());
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        state.settled,
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('native invocation settlement deadline elapsed')), remaining); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (!sameSupervisorIdentity(state.identity, input.identity)) throw new Error('native stop proof identity mismatch');
+    if (!state.invocationSettled || state.processTreeStopped !== true) {
+      throw new Error('native supervisor cannot prove the invocation settled and its process tree was reaped');
+    }
+    return {
+      invocationId: state.identity.invocationId, stageId: state.identity.stageId, attemptId: state.identity.attemptId,
+      processTree: 'stopped-and-reaped', invocation: 'settled',
+    };
+  }
+
+  private require(identity: SupervisedInvocationIdentity): SupervisedInvocation {
+    const state = this.invocations.get(identity.invocationId);
+    if (!state || !sameSupervisorIdentity(state.identity, identity)) throw new Error('native supervisor has no matching invocation');
+    return state;
+  }
+}
+
+function sameSupervisorIdentity(left: SupervisedInvocationIdentity, right: SupervisedInvocationIdentity): boolean {
+  return left.invocationId === right.invocationId && left.assignmentId === right.assignmentId
+    && left.stageId === right.stageId && left.attemptId === right.attemptId;
+}
+
 export interface VisibleCalibrationAdmission {
   admissionId: string;
   scope: 'visible-calibration';

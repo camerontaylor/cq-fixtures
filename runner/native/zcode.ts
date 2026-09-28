@@ -94,6 +94,7 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
       };
       const parent = currentJobContext();
       let worker: WorkerResult;
+      this.nativeSupervisor.expectProcessTree(identity);
       if (parent) {
         if (parent.info.wallClockMs === undefined) {
           throw new Error('ZCode ACP requires a governed wall-clock bound when called inside a toolkit job');
@@ -112,6 +113,7 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
             killGraceMs: this.killGraceMs,
           },
           { op: 'zcode-acp', jobKey: identity.assignmentId, attempt: 1 },
+          { signal: this.signalFor(identity) },
         );
         if (ladder.outcome === 'threw') throw ladder.error;
         if (ladder.outcome === 'killed') {

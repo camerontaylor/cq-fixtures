@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "status": "public-preregistration-input-not-admission",
+  "profile": "cq-subscription-http",
+  "heldOut": false,
+  "workerImage": "sha256:2a9422f0de75079fd81da5a5b68bf9936e72ce22e30d1a22ddd91bc77201de4e",
+  "brokerImage": "sha256:a0af04214c67a25e4c5ab01b20f6e6deea98fc664b65ae5532576949234adfe3",
+  "brokerIdentity": "c6d8d0b3dba5ac98779663e4cc75b92107fddb14430fc42180f4ec675c0f99b0",
+  "nativeConfigHash": "8451e107ce3833b01bd6e96f748c783ec7021a9b6b857a4a1325ab9d339a5c03",
+  "daemon": {
+    "endpoint": "unix:///Users/ctaylor/.colima/cq-boundary-s5/docker.sock",
+    "id": "e15e4bd0-8a2f-4f5b-b335-2bd18da11100"
+  },
+  "vm": {
+    "profile": "cq-boundary-s5",
+    "configPath": "/Users/ctaylor/.colima/_lima/colima-cq-boundary-s5/lima.yaml",
+    "configHash": "ba26ed4f708597f85850f554d232b9022ef247f5353ad9864f1c9ca425098d0f",
+    "cpu": 2,
+    "memoryGiB": 3
+  },
+  "network": {
+    "workerIP": "172.29.249.3",
+    "brokerIP": "172.29.249.2",
+    "port": 8080,
+    "internalSubnet": "172.29.249.0/24"
+  },
+  "bootstrapHash": "402b2749219c25f2964e880d24aff46ec04420f36cb77d01cb6642220497e667",
+  "finalArguments": [
+    "exec",
+    "--json",
+    "--ephemeral",
+    "--ignore-user-config",
+    "--sandbox",
+    "danger-full-access",
+    "-C",
+    "/task",
+    "-m",
+    "gpt-6-sol",
+    "-c",
+    "model_reasoning_effort=\"low\"",
+    "-c",
+    "model_provider=\"cq-subscription-http\"",
+    "-c",
+    "cli_auth_credentials_store=\"file\"",
+    "-c",
+    "model_providers.cq-subscription-http.name=\"CQ HTTP-only managed subscription\"",
+    "-c",
+    "model_providers.cq-subscription-http.base_url=\"http://172.29.249.2:8080/route/codex/backend-api/codex\"",
+    "-c",
+    "model_providers.cq-subscription-http.wire_api=\"responses\"",
+    "-c",
+    "model_providers.cq-subscription-http.requires_openai_auth=true",
+    "-c",
+    "model_providers.cq-subscription-http.supports_websockets=false",
+    "-"
+  ],
+  "sourceAssets": {
+    "codex-final-profile.ts": "bbd7302a556264d28956526ecba7763e843863bc6d094e30f6b6c9c8d15bd9ae",
+    "container.ts": "1c7756bf8cec7eb7e74597137c3c9472b60bc7efc79a0e5ffbe30f3f72935ae0",
+    "container-prepare.ts": "11d84e4376b303c4c609bb40a8d02509efa0c1b5d3cda4b32394c31ad1f9b509",
+    "task-session.ts": "b30bda6a6e4f5bdbf3333b2e901ff3747de795fd97a331df84ded436d6047d8d",
+    "task-staging.ts": "67e84c3d353218af2086a8ec537b3325cc04d29ea98c4a48f5b6ddd567341b58",
+    "namespace-acl.sh": "6abafb0afac7421ce082b42865a70c7e11b6e623e6ed9f046156bccc2050da73"
+  },
+  "dynamicPrivateInputs": [
+    "exclusive stage receipt/content inventory and task baseline identity",
+    "network name and native control evidence",
+    "stage and budget",
+    "parent independent source/assignment identity",
+    "expected boundary=compileContainerBoundary(spec).identity",
+    "expected invocation=sha256(JSON.stringify({boundaryIdentity,stage,executable:\"/usr/local/bin/codex\",args:finalArguments,bootstrap:bootstrapHash,budget}))"
+  ],
+  "authoritativeAdmission": "Parent preregisters expected identities independently, verifies source/assignment linkage, consumes exclusive wx replay ledger BEFORE returning receipt. Provision failure consumes admission; native enforces whole-provision deadline. Callback echo is not authorization."
+}

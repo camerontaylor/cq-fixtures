@@ -389,3 +389,42 @@ describe('final native container admission and argument boundary', () => {
     expect(() => validateFinalCodexAuth(JSON.stringify(auth), 900, now)).toThrow(/access-only/);
   });
 });
+
+describe('final container lifecycle failure and exit races', () => {
+  it('stops an already-exited child and preserves the first stop error', async () => {
+    const { finalContainerLifecycle } = await import('../runner/boundary/codex-final-profile.ts');
+    const { EventEmitter } = await import('node:events');
+    const child = Object.assign(new EventEmitter(), { exitCode: 0, signalCode: null });
+    const error = new Error('first synthetic termination failure'); let stops = 0; let exports = 0; let closed = 0;
+    const lifecycle = finalContainerLifecycle({ child, budgetSeconds: 900, terminate: async () => { stops++; throw error; }, exportTask: async () => { exports++; }, cleanup: async () => {}, closeControl: () => { closed++; throw new Error('later synthetic control-close failure'); } });
+    await expect(lifecycle.terminate()).rejects.toBe(error);
+    await expect(lifecycle.finalize()).rejects.toBe(error);
+    expect(stops).toBe(1); expect(exports).toBe(0); expect(closed).toBe(1);
+  });
+  it('closes trusted control after export failure and skips volume cleanup', async () => {
+    const { finalContainerLifecycle } = await import('../runner/boundary/codex-final-profile.ts');
+    const { EventEmitter } = await import('node:events');
+    const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null });
+    const error = new Error('synthetic unsafe export'); const events: string[] = [];
+    const lifecycle = finalContainerLifecycle({ child, budgetSeconds: 900, terminate: async () => { events.push('stop'); }, exportTask: async () => { events.push('export'); throw error; }, cleanup: async () => { events.push('remove-volumes'); }, closeControl: () => { events.push('close-control'); } });
+    await expect(lifecycle.finalize()).rejects.toBe(error);
+    expect(events).toEqual(['stop', 'export', 'close-control']);
+  });
+  it('closes trusted control on cleanup failure and retains that original error', async () => {
+    const { finalContainerLifecycle } = await import('../runner/boundary/codex-final-profile.ts');
+    const { EventEmitter } = await import('node:events');
+    const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null });
+    const error = new Error('synthetic volume ownership failure'); let closed = 0;
+    const lifecycle = finalContainerLifecycle({ child, budgetSeconds: 900, terminate: async () => {}, exportTask: async () => 'partial-export', cleanup: async () => { throw error; }, closeControl: () => { closed++; } });
+    await expect(lifecycle.finalize()).rejects.toBe(error); expect(closed).toBe(1);
+  });
+});
+
+
+it('rejects alternate content-pinned workers before staging or admission', async () => {
+  const { createFinalCodexSpawnAdapter } = await import('../runner/boundary/codex-final-profile.ts');
+  for (const image of ['sha256:' + 'f'.repeat(64), 'node:latest']) {
+    const input = { specification: { image } } as Parameters<typeof createFinalCodexSpawnAdapter>[0];
+    expect(() => createFinalCodexSpawnAdapter(input)).toThrow(/hard-pinned final native worker/);
+  }
+});

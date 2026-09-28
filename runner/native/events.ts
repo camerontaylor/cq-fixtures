@@ -88,7 +88,12 @@ export function applyUsageObservation(observation: NativeObservation, parsed: Pa
     }
   }
   if (typeof parsed.usage.tokenTotal === 'number') {
-    observation.usage.tokenTotal = { value: parsed.usage.tokenTotal, availability: 'observed', source };
+    observation.usage.tokenTotal = {
+      value: parsed.usage.tokenTotal,
+      availability: 'observed',
+      source,
+      semantics: 'authoritative-total',
+    };
   }
   if (parsed.model) observation.model.observed = { value: parsed.model, source, status: 'observed' };
 }

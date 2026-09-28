@@ -16,6 +16,11 @@ export interface NativeDriverOptions {
 
 export type { NativeStopProof } from './process.ts';
 
+export interface NativeCampaignBudgetCapabilities {
+  hardTokenCap: boolean;
+  authoritativeTokenTotal: boolean;
+}
+
 /**
  * Base class for fixtures-local native bridges. The shared S1 seam performs a
  * serialized identity handoff immediately before Driver.run(). Serializing
@@ -23,6 +28,9 @@ export type { NativeStopProof } from './process.ts';
  */
 export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
   readonly observations = new Map<string, NativeObservation>();
+  readonly campaignBudgetCapabilities: NativeCampaignBudgetCapabilities = { hardTokenCap: false, authoritativeTokenTotal: false };
+  get nativeTransport(): string { return this.options.transport; }
+  get configuredNativeTarget(): string { return this.options.configuredTarget; }
   protected readonly artifactDirectory: string;
   private identityQueue: Promise<void> = Promise.resolve();
   private activeIdentity: InvocationIdentity | undefined;
@@ -95,6 +103,7 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
       transport: this.options.transport,
       executable: { path: this.options.executable, version: this.options.executableVersion, profile: this.options.profile },
       artifacts: [],
+      withheldArtifacts: [],
       model: {
         configuredTarget: this.options.configuredTarget,
         requested: { value: invocation.modelSpec.model, source: 'OpInvocation.modelSpec', status: 'requested' },
@@ -108,11 +117,14 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
       },
       usage: {
         counters,
-        tokenTotal: { value: null, availability: 'not-reported', source: null },
+        tokenTotal: { value: null, availability: 'not-reported', source: null, semantics: 'unknown' },
         inclusion: { input: null, output: null, cache: null, reasoning: null },
       },
       terminal: { cause: null, cancelled: false, transportException: null, observedAt: startedAt },
-      capture: { status: 'pending-runner-capture', patchSha256: null, workspaceSha256: null },
+      capture: {
+        status: 'pending-runner-capture', baselineCommit: null, patchSha256: null, workspaceSha256: null,
+        ...({ baselineTree: null } as { baselineTree: string | null }),
+      } as NativeObservation['capture'],
       timing: { startedAt, endedAt: null, stages: {} },
       workerResult: null,
     };

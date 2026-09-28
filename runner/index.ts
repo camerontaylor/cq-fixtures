@@ -16,7 +16,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, lstatSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -276,34 +276,93 @@ export interface RunSuiteResult {
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // F6 (WB-5.2a): the persisted fixer patch is a `git diff` of the materialized
-// workspace against its pristine copy. Git is initialized in the workspace and
-// the pristine state committed BEFORE the driver runs, so a later `git diff
-// --cached HEAD` is exactly "what the worker changed". These config overrides
-// keep the baseline commit identity-free and locale-independent; the eval job
-// excises the repo's .git but the git BINARY is still present.
+// workspace against its pristine copy. Host-owned Git metadata is initialized
+// outside the candidate-writable tree and the pristine state committed before
+// dispatch, so capture can diff against that fixed commit even if the worker
+// commits its own edits or replaces workspace Git files. The environment and
+// attribute overrides keep candidate/global Git config from running helpers.
 const GIT_COMMON = [
   '-c', 'user.email=cq-fixtures@localhost',
   '-c', 'user.name=cq-fixtures',
   '-c', 'commit.gpgsign=false',
   '-c', 'core.autocrlf=false',
+  '-c', 'core.fsmonitor=false',
 ];
 
-/** Commit the materialized workspace's pristine state and retain its immutable tree pin. */
-function gitBaseline(workspace: string): { commit: string; tree: string } | undefined {
-  const run = (args: string[]) => spawnSync('git', ['-C', workspace, ...GIT_COMMON, ...args], { encoding: 'utf8' });
-  if (run(['init', '-q']).status !== 0) return undefined;
-  // W6.3 (RS-9 §4.3 B.10): vitest/vite caches a worker's own test run leaves
-  // under node_modules/ are not the worker's fix — keep them out of the
-  // persisted patch.
+interface GitBaseline {
+  commit: string;
+  tree: string;
+  /** Host-owned Git metadata lives outside the model-writable workspace. */
+  gitDir: string;
+}
+
+function gitEnvironment(gitDir: string, workspace: string): NodeJS.ProcessEnv {
+  // Do not inherit ambient GIT_* overrides: callers or worker environments
+  // must not redirect the metadata, index, config, or worktree for capture.
+  const env: NodeJS.ProcessEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+  );
+  env.GIT_DIR = gitDir;
+  env.GIT_WORK_TREE = workspace;
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = join(gitDir, 'empty-global-config');
+  env.GIT_CONFIG_COUNT = '0';
+  env.GIT_ATTR_NOSYSTEM = '1';
+  env.GIT_OPTIONAL_LOCKS = '0';
+  return env;
+}
+
+function gitCaptureArgs(gitDir: string, workspace: string, args: string[]): string[] {
+  return [
+    '--git-dir', gitDir,
+    '--work-tree', workspace,
+    ...GIT_COMMON,
+    '-c', `core.hooksPath=${join(gitDir, 'disabled-hooks')}`,
+    '-c', `core.attributesFile=${join(gitDir, 'empty-global-attributes')}`,
+    ...args,
+  ];
+}
+
+/** Commit the pristine workspace with host-owned metadata and retain immutable pins. */
+function gitBaseline(workspace: string): GitBaseline | undefined {
+  const gitDir = mkdtempSync(join(tmpdir(), 'cq-capture-git-'));
+  const env = gitEnvironment(gitDir, workspace);
+  const run = (args: string[]) => spawnSync('git', args, { encoding: 'utf8', env });
+  let retained = false;
   try {
-    writeFileSync(join(workspace, '.git', 'info', 'exclude'), 'node_modules/\n');
-  } catch {
-    return undefined;
+    // Initialize metadata outside the model-writable tree. A workspace .git
+    // directory or config supplied by a fixture is never read by capture.
+    if (run(['init', '-q', gitDir]).status !== 0) return undefined;
+    mkdirSync(join(gitDir, 'disabled-hooks'), { recursive: true });
+    writeFileSync(join(gitDir, 'empty-global-config'), '');
+    writeFileSync(join(gitDir, 'empty-global-attributes'), '');
+    // Highest-precedence attributes disable candidate-controlled clean filters
+    // and line-ending conversions. `--no-textconv` below disables textconv
+    // without marking ordinary text files as binary in the persisted patch.
+    writeFileSync(join(gitDir, 'info', 'attributes'), '* -filter -text -eol\n');
+    // W6.3 (RS-9 §4.3 B.10): keep local test-run cache leaves out of the patch.
+    writeFileSync(join(gitDir, 'info', 'exclude'), 'node_modules/\n');
+    // Preserve normal worker Git usability while keeping the metadata outside
+    // the workspace. Capture itself always supplies explicit GIT_DIR/WORK_TREE.
+    const workspaceGitEntry = join(workspace, '.git');
+    rmSync(workspaceGitEntry, { recursive: true, force: true });
+    writeFileSync(workspaceGitEntry, `gitdir: ${gitDir}\n`);
+
+    if (run(gitCaptureArgs(gitDir, workspace, ['add', '-A'])).status !== 0 ||
+        run(gitCaptureArgs(gitDir, workspace, ['commit', '-q', '-m', 'pristine'])).status !== 0) return undefined;
+    // Resolve both pins with one process launch. Parsing is strict: malformed
+    // or incomplete Git output cannot silently replace the immutable baseline.
+    const pins = run(gitCaptureArgs(gitDir, workspace, ['rev-parse', 'HEAD', 'HEAD^{tree}']));
+    if (pins.status !== 0) return undefined;
+    const [commit, tree] = pins.stdout.trim().split(/\s+/);
+    if (commit === undefined || tree === undefined || !/^[a-f0-9]{40,64}$/.test(commit) || !/^[a-f0-9]{40,64}$/.test(tree)) {
+      return undefined;
+    }
+    retained = true;
+    return { commit, tree, gitDir };
+  } finally {
+    if (!retained) rmSync(gitDir, { recursive: true, force: true });
   }
-  if (run(['add', '-A']).status !== 0 || run(['commit', '-q', '-m', 'pristine']).status !== 0) return undefined;
-  const commit = run(['rev-parse', 'HEAD']).stdout.trim();
-  const tree = run(['rev-parse', `${commit}^{tree}`]).stdout.trim();
-  return /^[a-f0-9]{40,64}$/.test(commit) && /^[a-f0-9]{40,64}$/.test(tree) ? { commit, tree } : undefined;
 }
 
 /** Bound on one workspace file read by the sentinel scan (a huge file is skipped, not read). */
@@ -358,8 +417,9 @@ function readIfPresent(path: string): string | undefined {
 }
 
 /** `git diff`-style patch of the workspace vs its pristine baseline (undefined on failure). */
-function gitPatch(workspace: string, baseline: { commit: string; tree: string }): string | undefined {
-  const run = (args: string[]) => spawnSync('git', ['-C', workspace, ...GIT_COMMON, ...args], { encoding: 'utf8' });
+function gitPatch(workspace: string, baseline: GitBaseline): string | undefined {
+  const env = gitEnvironment(baseline.gitDir, workspace);
+  const run = (args: string[]) => spawnSync('git', gitCaptureArgs(baseline.gitDir, workspace, args), { encoding: 'utf8', env });
   const pinnedTree = run(['rev-parse', `${baseline.commit}^{tree}`]);
   if (pinnedTree.status !== 0 || pinnedTree.stdout.trim() !== baseline.tree) return undefined;
   if (run(['add', '-A']).status !== 0) return undefined;
@@ -369,7 +429,7 @@ function gitPatch(workspace: string, baseline: { commit: string; tree: string })
   // from hijacking the output; apply strips one path component, so a/ b/ is
   // the format regrade re-applies cleanly.
   const res = run([
-    'diff', '--cached', '--no-color', '--no-ext-diff',
+    'diff', '--cached', '--no-color', '--no-ext-diff', '--no-textconv',
     '--src-prefix=a/', '--dst-prefix=b/', baseline.commit,
   ]);
   return res.status === 0 ? res.stdout : undefined;
@@ -690,7 +750,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     // job-finished:indeterminate journal event, a stderr + diagnostics
     // entry, and a materializationFailures increment.
     let workspace: string | undefined;
-    let workspaceBaseline: { commit: string; tree: string } | undefined;
+    let workspaceBaseline: GitBaseline | undefined;
     let sessionRef: string | undefined;
     let payload: string | undefined;
     if (isFixerCase(c)) {
@@ -723,6 +783,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         sessionRef = session.sessionId;
       } catch (e) {
         if (workspace !== undefined) rmSync(workspace, { recursive: true, force: true });
+        if (workspaceBaseline !== undefined) rmSync(workspaceBaseline.gitDir, { recursive: true, force: true });
         await refuseCase(`fixture materialization failed for '${c.fixture}': ${e instanceof Error ? e.message : String(e)}`);
         continue;
       }
@@ -1405,6 +1466,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // the graded copy and the completed run's private transcript/sidecars
         // after grading. A shared store must not accumulate worker history.
         rmSync(workspace, { recursive: true, force: true });
+        if (workspaceBaseline !== undefined) rmSync(workspaceBaseline.gitDir, { recursive: true, force: true });
         if (sessionRef !== undefined) {
           rmSync(join(SESSION_STORE_DIR, `${sessionRef}.jsonl`), { force: true });
           // claude-agent and subprocess write store-side sidecars; ACP's is

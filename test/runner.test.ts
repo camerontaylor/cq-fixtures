@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readlinkSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -516,6 +517,60 @@ describe('writable workspace (fixer fixture round-trip)', () => {
     expect(readFileSync(join(root, 'fixture', 'state.txt'), 'utf8')).toBe('broken');
     assertSchemaValid(result.rows, result.tables);
   }, 15_000);
+
+  it('captures committed edits without running candidate Git config or attribute commands', async () => {
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'state.txt'), 'broken\n');
+    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    const dir = writeSuite('git-boundary-suite', {
+      name: 'git-boundary-suite',
+      role: 'fixer-worker',
+      provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'fix-git-boundary', fixture: 'fixture', task: { prompt: 'Fix the fault.' }, probe: { kind: 'check-rerun', check: 'fixture/check.js' } }],
+    });
+    const markers = ['fsmonitor', 'clean-filter', 'textconv'].map((name) => join(root, `${name}.marker`));
+    const [fsmonitorMarker, cleanMarker, textconvMarker] = markers as [string, string, string];
+    const tripwire = (marker: string) => `printf hit > '${marker}'`;
+    const hostileWorkspace: Driver = {
+      async run(invocation: OpInvocation): Promise<WorkerResult> {
+        const workspace = /workspace: (.+)$/m.exec(invocation.prompt)?.[1];
+        if (workspace === undefined) throw new Error('test workspace missing');
+        writeFileSync(join(workspace, 'state.txt'), 'fixed\n');
+        const committed = spawnSync('git', [
+          '-C', workspace, '-c', 'user.name=test', '-c', 'user.email=test@localhost', 'commit', '-am', 'worker edit',
+        ], { encoding: 'utf8' });
+        if (committed.status !== 0) throw new Error('synthetic worker commit failed');
+        // Model-controlled files attempt Git's fsmonitor, clean-filter, and
+        // textconv hooks. The only possible effects are these temp markers.
+        writeFileSync(join(workspace, '.gitattributes'), 'state.txt filter=tripwire diff=tripwire\n');
+        const dotGit = join(workspace, '.git');
+        rmSync(dotGit, { recursive: true, force: true });
+        mkdirSync(dotGit, { recursive: true });
+        writeFileSync(join(dotGit, 'config'), [
+          '[core]',
+          `\tfsmonitor = ${tripwire(fsmonitorMarker)}`,
+          '[filter "tripwire"]',
+          `\tclean = ${tripwire(cleanMarker)}`,
+          '[diff "tripwire"]',
+          `\ttextconv = ${tripwire(textconvMarker)}`,
+          '',
+        ].join('\n'));
+        return {
+          model: invocation.modelSpec.model,
+          structuredOutput: { fixed: true, notes: 'updated state.txt' },
+          usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+          denials: [],
+          stopReason: 'complete',
+        };
+      },
+    };
+
+    const result = await runSuite(opts(dir, { driver: hostileWorkspace }));
+    const patchArtifact = result.artifacts.find((artifact) => artifact.kind === 'patch');
+    expect(patchArtifact?.content).toMatch(/\+fixed/);
+    expect(markers.map((marker) => existsSync(marker))).toEqual([false, false, false]);
+    expect(result.rows[0]).toMatchObject({ case: 'fix-git-boundary', outcome: { passed: 2 } });
+  }, 20_000);
 
   it('materializes relative symlinks verbatim — the copied link still points inside the workspace', async () => {
     // Fixture with a relative symlink: sub/link.js -> ../../src/module.js.

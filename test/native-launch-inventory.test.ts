@@ -8,6 +8,7 @@ import {
   readPaseoProfile,
   resolveLaunchExecutable,
 } from '../runner/native/launch-inventory.ts';
+import { resolveNativeLaunchInventory } from '../runner/native/inventory.ts';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -53,5 +54,30 @@ describe('launch inventory', () => {
   it('hashes stable profile identity and resolves the actual executable without shell interpolation', () => {
     expect(launchInventoryHash(profile)).toBe(launchInventoryHash({ ...profile }));
     expect(resolveLaunchExecutable(process.execPath)).toBe(process.execPath);
+  });
+
+  it('compares actual native commands with configured profiles and records only admitted environment names', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cq-native-inventory-'));
+    roots.push(root);
+    const configPath = join(root, 'config.json');
+    const names = ['codex', 'pi-opencode', 'zcode'];
+    writeFileSync(configPath, JSON.stringify({
+      agentProfiles: names.map((provider) => ({
+        name: `${provider} profile`, provider, model: provider === 'pi-opencode' ? 'opencode-go/space-bunny-free' : 'test-model',
+        thinkingOptionId: 'high', featureValues: { auto_accept: true },
+      })),
+      agents: { providers: Object.fromEntries(names.map((provider) => [provider, {
+        extends: provider, command: [process.execPath], env: { PROFILE_TOKEN: 'private-value' },
+      }])) },
+    }));
+    const inventory = resolveNativeLaunchInventory(configPath, { environmentNames: { codex: ['PATH'], 'pi-opencode': ['OPENCODE_API_KEY'], zcode: ['ZAI_API_KEY'] } });
+    expect(inventory.proposedBridges).toHaveLength(4);
+    expect(inventory.proposedBridges.map((bridge) => bridge.envKeys)).toEqual([
+      ['PATH'], ['OPENCODE_API_KEY'], ['OPENCODE_API_KEY'], ['ZAI_API_KEY'],
+    ]);
+    expect(inventory.proposedBridges[0]?.args).toContain('--ignore-user-config');
+    expect(inventory.proposedBridges[1]?.args).toContain('--no-extensions');
+    expect(inventory.comparisons.some(({ comparison }) => comparison.unknown.includes('tools'))).toBe(true);
+    expect(JSON.stringify(inventory)).not.toContain('private-value');
   });
 });

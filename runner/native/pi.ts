@@ -71,6 +71,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
     observation.model.settings.effort = { value: this.thinking, source: 'Paseo pi-opencode profile', status: 'requested-unobservable' };
     observation.model.settings.session = { value: 'ephemeral', source: 'Pi --no-session', status: 'requested' };
     observation.model.settings.toolPolicy = { value: invocation.toolPolicy, source: 'Pi --tools/--no-tools', status: 'requested-unverified' };
+    observation.model.settings.extensions = { value: [], source: 'Pi --no-extensions', status: 'disabled' };
     observation.model.settings.sandbox = { value: invocation.sandboxPolicy.level, source: 'Pi native profile', status: 'unsupported-by-pi-cli' };
     this.observations.set(identity.invocationId, observation);
     try {
@@ -87,6 +88,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
         '--model', `${this.model}:${this.thinking}`,
         '--thinking', this.thinking,
         '--no-session',
+        '--no-extensions',
         '-p', invocation.prompt,
       ];
       const toolArgs = piToolArgs(invocation);

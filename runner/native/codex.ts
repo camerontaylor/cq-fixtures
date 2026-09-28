@@ -63,6 +63,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
     observation.model.settings.effort = { value: this.effort, source: 'codex exec --config', status: 'requested-unobservable' };
     observation.model.settings.sandbox = { value: invocation.sandboxPolicy.level, source: 'codex exec --sandbox', status: 'requested' };
     observation.model.settings.toolPolicy = { value: invocation.toolPolicy, source: 'OpInvocation.toolPolicy', status: 'not-enforced-by-codex-exec-flags' };
+    observation.model.settings.extensions = { value: [], source: 'codex exec --ignore-user-config', status: 'user-config-disabled' };
     this.observations.set(identity.invocationId, observation);
     try {
       this.assertRequestedModel(invocation, this.model);
@@ -73,7 +74,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
         source: 'runner SessionStore + codex exec --ephemeral', status: session.status,
       };
       const args = [
-        'exec', '--json', '--ephemeral', '--sandbox', codexSandbox(invocation),
+        'exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', codexSandbox(invocation),
         '-C', cwd, '-m', this.model,
         '-c', `model_reasoning_effort=${JSON.stringify(this.effort)}`, '-',
       ];

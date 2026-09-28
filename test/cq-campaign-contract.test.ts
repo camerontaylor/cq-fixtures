@@ -35,7 +35,7 @@ function fixtureObservation(identity: InvocationIdentity, workerResult: WorkerRe
       inclusion: { input: null, output: null, cache: null, reasoning: 'unknown' },
     },
     terminal: { cause: 'transport-throw', cancelled: false, transportException: null, observedAt: new Date().toISOString() },
-    capture: { status: 'pending', baselineCommit: null, patchSha256: null, workspaceSha256: null },
+    capture: { status: 'pending', baselineCommit: null, baselineTree: null, patchSha256: null, workspaceSha256: null },
     timing: { startedAt: new Date().toISOString(), endedAt: null, stages: {} }, workerResult,
   };
 }
@@ -58,12 +58,31 @@ class ThrowsAfterEditing implements Driver {
   }
 }
 
+class BudgetStop implements Driver {
+  private identity?: InvocationIdentity;
+  async beginInvocation(identity: InvocationIdentity): Promise<void> { this.identity = identity; }
+  async run(): Promise<WorkerResult> {
+    return { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'budget' };
+  }
+  getObservation(invocationId: string): NativeObservation | undefined {
+    if (this.identity?.invocationId !== invocationId) return undefined;
+    const observation = fixtureObservation(this.identity, {
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'budget',
+    });
+    observation.terminal.cause = 'budget-exhausted';
+    return observation;
+  }
+}
+
 function experiment(): ExperimentContext {
   return {
     campaignId: 'campaign-test', cohortId: 'cohort-1', experimentId: 'exp-test', taskId: 'task-test',
     repeatId: 'repeat-1', assignmentId: 'assign-base', stageId: 'stage-1', attemptId: 'attempt-base',
     track: 'native-primary', strategyId: 'codex-one-shot', settingsId: 'settings-default',
     budgetId: 'budget-small', profileId: 'codex-profile-v1', frozenWeight: 1,
+    substrateId: 'substrate-default', judgeManifest: {
+      sourcePin: 'judge-source-v1', dependencies: [{ path: 'fixture/check.mjs', sha256: '0'.repeat(64) }],
+    },
   };
 }
 
@@ -168,7 +187,7 @@ describe('campaign envelope', () => {
     writeFileSync(join(root, 'policy', 'denylist', 'patterns.yml'), readFileSync(new URL('../policy/denylist/patterns.yml', import.meta.url)));
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'fix.txt'), 'broken\n');
-    writeFileSync(join(root, 'fixture', 'check.mjs'), "import { readFileSync } from 'node:fs'; process.exit(readFileSync('fix.txt', 'utf8') === 'fixed\\n' ? 0 : 1);\n");
+    writeFileSync(join(root, 'fixture', 'check.mjs'), "import { readFileSync } from 'node:fs'; import { execFileSync } from 'node:child_process'; const ref = process.env.CQ_BASELINE_REF; const corpusBaseline = process.env.CQ_REVIEW_LOOP_BASELINE_SHA; const oraclePin = process.env.CQ_REVIEW_LOOP_ORACLE_PIN; const pristine = ref ? execFileSync('git', ['show', ref + ':fix.txt'], { encoding: 'utf8' }) : ''; process.exit(ref && corpusBaseline === ref && oraclePin === 'a'.repeat(64) && pristine === 'broken\\n' && readFileSync('fix.txt', 'utf8') === 'fixed\\n' ? 0 : 1);\n");
     const suiteDir = join(root, 'suite');
     mkdirSync(suiteDir);
     writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify({
@@ -176,13 +195,23 @@ describe('campaign envelope', () => {
       cases: [{ id: 'case-1', fixture: 'fixture', task: { prompt: 'Fix the file.' }, probe: { kind: 'check-rerun', check: 'fixture/check.mjs' } }],
     }));
     const driver = new ThrowsAfterEditing();
+    const runExperiment = experiment();
+    runExperiment.substrateId = 'repair-task-44';
+    runExperiment.judgeManifest = {
+      sourcePin: 'review-loop-judge@v1',
+      dependencies: [{ path: 'fixture/check.mjs', sha256: sha256(readFileSync(join(root, 'fixture', 'check.mjs'))) }],
+    };
     await expect(runSuite({
       suiteDir, driver, model: 'gpt-6-luna', provider: 'openai', driverName: 'codex-exec',
-      repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: experiment(), maxTokens: 1,
+      repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: runExperiment, maxTokens: 1,
     })).rejects.toThrow(/hard token cap unsupported/);
     const result = await runSuite({
       suiteDir, driver, model: 'gpt-6-luna', provider: 'openai',
-      driverName: 'codex-exec', repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: experiment(),
+      driverName: 'codex-exec', repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: runExperiment,
+      hostCheckScoringEnvironment: (_workspace, pinnedBaselineCommit) => ({
+        CQ_REVIEW_LOOP_BASELINE_SHA: pinnedBaselineCommit,
+        CQ_REVIEW_LOOP_ORACLE_PIN: 'a'.repeat(64),
+      }),
     });
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({
@@ -192,7 +221,7 @@ describe('campaign envelope', () => {
     });
     expect(result.rows[0]?.outcome).toMatchObject({ passed: 1, total: 2 });
     expect(result.rows[0]?.taskOutcome).toMatchObject({
-      identity: { assignmentId: 'assign-base', substrateId: 'case-1', track: 'native-primary', frozenWeight: 1 },
+      identity: { assignmentId: 'assign-base', substrateId: 'repair-task-44', track: 'native-primary', frozenWeight: 1 },
       candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: true,
       operationalStatus: 'measured-transport-failure',
     });
@@ -201,7 +230,15 @@ describe('campaign envelope', () => {
     expect(result.observations[0]?.observation.terminal.transportException?.message).toContain('transport broke');
     expect(result.judgements).toHaveLength(1);
     expect(result.tables).toHaveLength(1);
-    const attemptDir = join(root, 'artifacts', 'campaign', 'campaign-test', 'cohort', 'cohort-1', 'experiment', 'exp-test', 'task', suiteTaskId('native-fixer', 'case-1'));
+    expect(result.rows[0]?.experiment?.substrateId).toBe('repair-task-44');
+    expect(result.rows[0]?.experiment?.judgePin).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.rows[0]?.taskOutcome?.identity.taskId).toBe(suiteTaskId('native-fixer', 'repair-task-44'));
+    expect(result.rows[0]?.taskOutcome?.judgements[0]).toMatchObject({
+      judgeManifest: runExperiment.judgeManifest,
+      baselineCommit: expect.stringMatching(/^[a-f0-9]{40}$/),
+      baselineTree: expect.stringMatching(/^[a-f0-9]{40}$/),
+    });
+    const attemptDir = join(root, 'artifacts', 'campaign', 'campaign-test', 'cohort', 'cohort-1', 'experiment', 'exp-test', 'task', suiteTaskId('native-fixer', 'repair-task-44'));
     const candidates = (await import('node:fs/promises')).readdir(join(attemptDir, 'repeat', 'repeat-1', 'assignment'));
     const assignments = await candidates;
     expect(assignments).toEqual(['assign-base']);
@@ -213,5 +250,16 @@ describe('campaign envelope', () => {
     expect(attemptNames).toContain('candidate.patch');
     expect(attemptNames).toContain('observation.json');
     expect(readFileSync(join(attemptPath, 'candidate.patch'), 'utf8')).toContain('fixed');
+
+    const budgetExperiment = { ...runExperiment, attemptId: 'attempt-budget' };
+    const budgetResult = await runSuite({
+      suiteDir, driver: new BudgetStop(), model: 'gpt-6-luna', provider: 'openai',
+      driverName: 'codex-exec', repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: budgetExperiment,
+    });
+    expect(budgetResult.rows[0]?.taskOutcome).toMatchObject({
+      candidateCorrectness: false, assignedStrategySuccess: false,
+      terminalCause: 'budget-exhausted', budgetOutcome: 'exhausted-no-candidate',
+    });
+    expect(budgetResult.rows[0]?.stopCause).toBe('budget');
   }, 20_000);
 });

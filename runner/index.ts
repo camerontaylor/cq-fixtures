@@ -16,9 +16,9 @@
 
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, lstatSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, lstatSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import ajvFormats from 'ajv-formats';
@@ -49,7 +49,7 @@ import { scoreReviewClassifier } from './score/reviewClassifier.ts';
 import { isFixerCase, loadSuite, suiteVariant } from './suite.ts';
 import { ArtifactStore, sha256, type ImmutableArtifactRef } from './artifacts/index.ts';
 import { findDenylistMatch, loadDenylistRules } from './denylist.ts';
-import { suiteTaskId, type ExperimentContext, type TaskOutcome, type TaskOutcomeJudgement } from './experiment.ts';
+import { canonicalJson, judgeManifestHash, suiteTaskId, type ExperimentContext, type JudgeDependencyManifest, type TaskOutcome, type TaskOutcomeJudgement } from './experiment.ts';
 import { campaignUsage, sanitizeNativeObservation, unavailableObservation, type InvocationIdentity, type NativeObservation, type ObservedDriver } from './native/observation.ts';
 
 // Public library surface: the suite loader rides along with the runner.
@@ -99,6 +99,30 @@ const validateRow = ajv.compile(
 const validateTable = ajv.compile(
   JSON.parse(readFileSync(new URL('../schema/comparison-table.schema.json', import.meta.url), 'utf8')) as object,
 );
+
+function validateJudgeManifest(repoRoot: string, manifest: JudgeDependencyManifest): string {
+  if (manifest.sourcePin.trim() === '' || manifest.dependencies.length === 0) {
+    throw new Error('campaign judge manifest must pin its source and list dependencies');
+  }
+  const seen = new Set<string>();
+  for (const dependency of manifest.dependencies) {
+    if (isAbsolute(dependency.path) || dependency.path.split(/[\\/]/).includes('..') || seen.has(dependency.path)) {
+      throw new Error(`campaign judge dependency has an unsafe or duplicate path: ${dependency.path}`);
+    }
+    seen.add(dependency.path);
+    const path = resolve(repoRoot, dependency.path);
+    const rel = relative(resolve(repoRoot), path);
+    if (rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('campaign judge dependency escaped repo root');
+    const actualPath = realpathSync(path);
+    const actualRel = relative(realpathSync(repoRoot), actualPath);
+    if (actualRel === '..' || actualRel.startsWith(`..${sep}`)) throw new Error('campaign judge dependency escaped repo root through symlink');
+    const actualHash = sha256(readFileSync(actualPath));
+    if (!/^[a-f0-9]{64}$/.test(dependency.sha256) || actualHash !== dependency.sha256) {
+      throw new Error(`campaign judge dependency hash mismatch: ${dependency.path}`);
+    }
+  }
+  return judgeManifestHash(manifest);
+}
 
 // Review-debt #14: the ACP auth preflight probe (suite.yml `ACP headless
 // auth preflight`) performs a real — tiny — model request BEFORE the runner
@@ -196,6 +220,8 @@ export interface RunSuiteOptions {
   sentinelNeedles?: readonly string[];
   /** Campaign assignment context; omitted for legacy-only runs. */
   experiment?: ExperimentContext;
+  /** Host-only check environment derived from the materialized workspace's immutable baseline. */
+  hostCheckScoringEnvironment?: (workspacePath: string, pinnedBaselineCommit: string) => Readonly<Record<string, string>>;
   /** Immutable observation root. Defaults to the runner's private temp artifact store. */
   artifactRoot?: string;
 }
@@ -487,6 +513,19 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       : suspiciousBenignFlag(repoRoot, fixture);
   const variant = suiteVariant(suite);
   const repoRoot = opts.repoRoot ?? DEFAULT_REPO_ROOT;
+  const campaignTaskInputs = new Map<string, { substrateId: string; judgeManifest: JudgeDependencyManifest; manifestHash: string }>();
+  if (opts.experiment !== undefined) {
+    for (const suiteCase of suite.cases) {
+      const mapped = opts.experiment.caseAssignments?.[suiteCase.id];
+      const substrateId = mapped?.substrateId ?? opts.experiment.substrateId;
+      const judgeManifest = mapped?.judgeManifest ?? opts.experiment.judgeManifest;
+      if (substrateId.trim() === '') throw new Error(`campaign task '${suiteCase.id}' has an empty substrateId`);
+      campaignTaskInputs.set(suiteCase.id, {
+        substrateId, judgeManifest,
+        manifestHash: validateJudgeManifest(repoRoot, judgeManifest),
+      });
+    }
+  }
   const driverName = opts.driverName ?? 'ai-sdk';
   const runId = randomUUID();
   const now = () => new Date().toISOString();
@@ -723,6 +762,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       let worker: WorkerResult | undefined;
       let thrown: unknown;
       const perCaseAssignment = opts.experiment?.caseAssignments?.[c.id];
+      const taskInput = campaignTaskInputs.get(c.id);
       const invocationIdentity: InvocationIdentity = {
         invocationId: randomUUID(),
         assignmentId: perCaseAssignment?.assignmentId ?? opts.experiment?.assignmentId ?? `assignment-${randomUUID()}`,
@@ -733,7 +773,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         campaignId: opts.experiment?.campaignId ?? 'ad-hoc-native',
         cohortId: opts.experiment?.cohortId ?? 'unassigned',
         experimentId: opts.experiment?.experimentId ?? 'unassigned',
-        taskId: suiteTaskId(suite.name, c.id),
+        taskId: suiteTaskId(suite.name, taskInput?.substrateId ?? c.id),
         repeatId: opts.experiment?.repeatId ?? runId,
         assignmentId: invocationIdentity.assignmentId,
         stageId: invocationIdentity.stageId,
@@ -744,7 +784,14 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         budgetId: opts.experiment?.budgetId ?? 'unassigned',
         profileId: opts.experiment?.profileId ?? 'unassigned',
         frozenWeight: opts.experiment?.frozenWeight ?? 1,
+        substrateId: taskInput?.substrateId ?? c.id,
+        judgeManifest: taskInput?.judgeManifest ?? { sourcePin: 'unassigned', dependencies: [] },
       };
+      const baselineCommit = workspaceBaseline?.commit ?? null;
+      const baselineTree = workspaceBaseline?.tree ?? null;
+      const judgePin = taskInput === undefined ? undefined : sha256(canonicalJson({
+        taskManifestHash: taskInput.manifestHash, baselineCommit, baselineTree,
+      }));
       let nativeObservation: NativeObservation | undefined;
       try {
         if (isFixerCase(c)) {
@@ -933,6 +980,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           nativeObservation.capture = {
             status: patchCaptureStatus,
             baselineCommit: workspaceBaseline?.commit ?? null,
+            baselineTree: workspaceBaseline?.tree ?? null,
             patchSha256: fixerPatch === undefined ? null : sha256(fixerPatch),
             workspaceSha256: null,
           };
@@ -1024,7 +1072,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // handled earlier and aborts the run entirely.)
         emitRow = false;
         absences.push({ case: c.id, role: suite.role, cause: thrownCause });
-      } else if (worker?.stopReason === 'budget' && !isFixerCase(c)) {
+      } else if (worker?.stopReason === 'budget' && !isFixerCase(c) && worker.structuredOutput === undefined) {
         outcome = zeroOutcome(probeCount); // honest budget-exhausted: no fabricated credit
         candidateCorrectness = false;
         assignedStrategySuccess = false;
@@ -1109,7 +1157,12 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         const scoringWorker: WorkerResult = worker ?? {
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'error',
         };
-          const check = scoreFixerWorker(c, scoringWorker, repoRoot, workspace as string, opts.checkTimeoutMs);
+          const hostCheckEnv = workspaceBaseline?.commit === undefined
+            ? undefined
+            : opts.hostCheckScoringEnvironment?.(workspace as string, workspaceBaseline.commit);
+          const check = scoreFixerWorker(
+            c, scoringWorker, repoRoot, workspace as string, opts.checkTimeoutMs, workspaceBaseline?.commit, hostCheckEnv,
+          );
         // Probe 2 — schema compliance (runner/dimensions/schemaCompliance.ts):
         // grades ONLY the structuredOutput's shape discipline, never the
         // fix's content, so the check's sweep-agnostic contract is intact.
@@ -1119,8 +1172,10 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         assignedStrategySuccess = check.correctness ?? null;
         operationalStatus = check.operationalStatus === 'judge-failure'
           ? 'judge-failure'
+          : worker?.stopReason === 'aborted' ? 'interrupted'
           : thrown !== undefined ? 'measured-transport-failure'
           : check.correctness === true ? 'complete' : 'measured-failure';
+        if (worker?.stopReason === 'aborted') assignedStrategySuccess = null;
         const passed = check.passed + schema.passed;
         outcome = { score: passed / FIXER_PROBE_COUNT, passed, total: FIXER_PROBE_COUNT };
         journalResult = worker?.stopReason === 'budget'
@@ -1135,6 +1190,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         }
       } else {
         const s = scoreReviewClassifier(c, worker!);
+        if (worker?.stopReason === 'budget') stopCause = 'budget';
         outcome = { score: s.score, passed: s.passed, total: s.total };
         formatConformance = s.formatConformance ?? null;
         candidateCorrectness = s.passed === 1;
@@ -1178,20 +1234,11 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             caseDiagnostics.push(`case ${c.id}: candidate persistence failed: ${boundDriverCause(why)}`);
           }
         }
-        let judgePin: string | undefined;
-        try {
-          if (isFixer) {
-            const judgePath = join(repoRoot, c.probe.check);
-            const checkSha256 = sha256(readFileSync(judgePath));
-            judgePin = sha256(JSON.stringify({ kind: 'fixer-check-v1', checkPath: c.probe.check, checkSha256, fixtureTree: workspaceBaseline?.tree ?? null }));
-          } else {
-            judgePin = sha256(readFileSync(join(repoRoot, 'runner', 'score', 'reviewClassifier.ts')));
-          }
-        } catch { /* a missing pin invalidates judgement evidence, never the independent candidate measurement */ }
         if (candidateRef !== undefined && judgePin !== undefined && /^[a-f0-9]{64}$/.test(judgePin)) {
           const judgementId = randomUUID();
           const judgement = {
             judgementId, version: 1, judgePin, candidateSha256,
+            judgeManifest: taskInput!.judgeManifest, baselineCommit, baselineTree,
             candidateCorrectness, formatConformance, assignedStrategySuccess, operationalStatus,
           };
           const artifact = artifactStore.writeJudgement(artifactContext, judgementId, candidateSha256, judgePin, { ...judgement, outcome });
@@ -1208,15 +1255,33 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         result: journalResult,
         ...(worker !== undefined ? { usage } : {}),
       });
+      const launchedBudgetStop = worker?.stopReason === 'budget';
+      const hasCandidate = fixerPatch !== undefined || worker?.structuredOutput !== undefined;
+      if (launchedBudgetStop) stopCause = 'budget';
+      if (launchedBudgetStop && !hasCandidate) {
+        candidateCorrectness = false;
+        assignedStrategySuccess = false;
+        if (operationalStatus !== 'judge-failure') operationalStatus = 'measured-failure';
+      }
+      const terminalCause: NonNullable<TaskOutcome['terminalCause']> = launchedBudgetStop ? 'budget-exhausted'
+        : thrown !== undefined ? 'transport-failure'
+          : worker?.stopReason === 'aborted' ? 'operator-cancelled'
+            : operationalStatus === 'judge-failure' ? 'judge-failure'
+              : operationalStatus === 'integrity-violation' ? 'integrity-violation'
+                : worker?.stopReason === 'complete' ? 'complete' : 'unknown';
+      const budgetOutcome: NonNullable<TaskOutcome['budgetOutcome']> = launchedBudgetStop
+        ? hasCandidate ? 'exhausted-with-candidate' : 'exhausted-no-candidate'
+        : worker === undefined ? 'unknown' : 'not-exhausted';
       const taskOutcome: TaskOutcome | undefined = opts.experiment === undefined ? undefined : {
         identity: {
           campaignId: artifactContext.campaignId, cohortId: artifactContext.cohortId,
           experimentId: artifactContext.experimentId, taskId: artifactContext.taskId,
-          substrateId: c.id, track: artifactContext.track, repeatId: artifactContext.repeatId,
+          substrateId: artifactContext.substrateId, track: artifactContext.track, repeatId: artifactContext.repeatId,
           assignmentId: artifactContext.assignmentId, strategyId: artifactContext.strategyId,
           role: suite.role, budgetId: artifactContext.budgetId, frozenWeight: artifactContext.frozenWeight,
         },
         candidateCorrectness, formatConformance, assignedStrategySuccess, operationalStatus,
+        terminalCause, budgetOutcome,
         stages: [{
           stageId: invocationIdentity.stageId, attemptId: invocationIdentity.attemptId,
           invocationId: invocationIdentity.invocationId,
@@ -1244,7 +1309,16 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         ...(sidecarFlag === 'flagged' ? { suspiciousBenign: true } : {}),
         wallTimeMs,
         tokens: tokensOf(usage),
-        ...(opts.experiment !== undefined ? { experiment: artifactContext } : {}),
+        ...(opts.experiment !== undefined ? { experiment: {
+          campaignId: artifactContext.campaignId, cohortId: artifactContext.cohortId,
+          experimentId: artifactContext.experimentId, taskId: artifactContext.taskId,
+          repeatId: artifactContext.repeatId, assignmentId: artifactContext.assignmentId,
+          stageId: artifactContext.stageId, attemptId: artifactContext.attemptId,
+          track: artifactContext.track, strategyId: artifactContext.strategyId,
+          settingsId: artifactContext.settingsId, budgetId: artifactContext.budgetId,
+          profileId: artifactContext.profileId, frozenWeight: artifactContext.frozenWeight,
+          substrateId: artifactContext.substrateId, ...(judgePin !== undefined ? { judgePin } : {}),
+        } } : {}),
         ...(taskOutcome !== undefined ? { taskOutcome } : {}),
         ...(nativeObservation !== undefined ? {
           observedUsage: measuredUsage!,

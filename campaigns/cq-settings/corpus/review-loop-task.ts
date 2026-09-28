@@ -7,15 +7,25 @@ import {
   type Driver,
   type FixReviewItemInput,
   type FixReviewItemResult,
+  type ModelSpec,
   type OpResult,
 } from '@camerontaylor/cq-toolkit';
 
+export const REVIEW_LOOP_TASK_ID = 'review-loop-label-limit-01' as const;
+export const REVIEW_LOOP_SOURCE_ID = 'cq-settings.settings-module-seed.v1' as const;
+export const REVIEW_LOOP_BASELINE_ID = 'cq-settings.label-length-defect.baseline.v1' as const;
+export const REVIEW_LOOP_ORACLE_ID = 'cq-settings.label-length-unicode.oracle.v1' as const;
+
 /** A worker-visible repair task; it intentionally contains no judge data. */
 export interface ReviewLoopRepairTask {
-  readonly id: 'review-loop-label-limit-01';
+  readonly id: typeof REVIEW_LOOP_TASK_ID;
+  readonly sourceId: typeof REVIEW_LOOP_SOURCE_ID;
+  readonly baselineId: typeof REVIEW_LOOP_BASELINE_ID;
+  readonly oracleId: typeof REVIEW_LOOP_ORACLE_ID;
   readonly substrateFamily: 'campaign-settings-module-v1';
   readonly worktreePath: string;
   readonly baselineCommit: string;
+  readonly modelSpec: ModelSpec;
   readonly operationInput: FixReviewItemInput;
   cleanup(): Promise<void>;
 }
@@ -45,7 +55,10 @@ assert.equal(displayCampaignLabel('  Campaign A  '), '  Campaign A  ');
  * Materialize a fresh, real Git repository for the review-fix operation.
  * Only task context and visible regression tests are placed in the worktree.
  */
-export async function createReviewLoopRepairTask(parentDirectory = tmpdir()): Promise<ReviewLoopRepairTask> {
+export async function createReviewLoopRepairTask(
+  modelSpec: ModelSpec,
+  parentDirectory = tmpdir(),
+): Promise<ReviewLoopRepairTask> {
   const taskRoot = await mkdtemp(join(parentDirectory, 'cq-review-task-'));
   const worktreePath = join(taskRoot, 'repo');
   await mkdir(join(worktreePath, 'src'), { recursive: true });
@@ -83,14 +96,18 @@ export async function createReviewLoopRepairTask(parentDirectory = tmpdir()): Pr
       comments: [],
     },
     worktree: { path: worktreePath, branch: 'review/fix-label-limit' },
-    driver: { model: 'injected-review-driver', provider: 'fake' },
+    driver: { ...modelSpec },
   };
 
   return {
-    id: 'review-loop-label-limit-01',
+    id: REVIEW_LOOP_TASK_ID,
+    sourceId: REVIEW_LOOP_SOURCE_ID,
+    baselineId: REVIEW_LOOP_BASELINE_ID,
+    oracleId: REVIEW_LOOP_ORACLE_ID,
     substrateFamily: 'campaign-settings-module-v1',
     worktreePath,
     baselineCommit,
+    modelSpec: { ...modelSpec },
     operationInput,
     async cleanup() {
       await rm(taskRoot, { recursive: true, force: true });

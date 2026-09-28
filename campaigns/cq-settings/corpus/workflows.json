@@ -1,7 +1,7 @@
 {
   "manifestVersion": 3,
   "status": "visible-calibration-in-progress",
-  "scenarioCount": 10,
+  "scenarioCount": 13,
   "integrationSubstrateCount": 5,
   "verifiedTaskCount": 1,
   "independentSubstrateCount": 1,
@@ -17,10 +17,13 @@
       "substrateFamily": "campaign-settings-module-v1",
       "templateFamily": "review-anchored-limit-v1",
       "faultFamily": "missing-unicode-length-bound-v1",
-      "oracle": "host-side executable judge checks semantics, exact reference source bytes, one-file commit diff, clean candidate state, and unchanged visible tests; oracle is not in the task worktree",
-      "adequacyEvidence": "public regression test is red on seed and green after repair; hidden host oracle is red on seed and green only for exact patch; no-op claim, malformed output after edits, and throw after edits are independently judged",
+      "oracle": "host-side exported judge checks immutable source/baseline/oracle IDs, baseline contents, Unicode semantics, display preservation, visible tests, and one-source-file scope; it hashes candidate patch bytes without requiring a reference solution; oracle is not in the task worktree",
+      "adequacyEvidence": "public regression test and independent host semantic checks are red on the known-buggy baseline and green on both reference and distinct alternative correct implementations; no-op claim, malformed output after edits, and throw after edits are independently judged; candidate commit identity and clean Git state are separate from workspace conformance",
       "split": "calibration",
-      "pristineBaselineIntegrity": "fresh initial Git commit; grader compares candidate against its recorded base SHA and checks only src/settings.mjs changed"
+      "pristineBaselineIntegrity": "fresh initial Git commit; grader compares candidate against its recorded base SHA and checks only src/settings.mjs changed; task factory's ModelSpec is caller supplied",
+      "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports a typed FixerSuiteCase adapter and bundle materializer; local injected Driver run passes the independent host probe",
+      "oracleImplementation": "runner/workflow-corpus/review-loop-judge.ts#judgeReviewLoopRepairTask and #judgeReviewLoopWorkspace",
+      "candidateIdentity": "full commit SHA, recorded baseline ancestry, clean Git state, and SHA256 of actual binary patch are separately reported from semantic conformance"
     }
   ],
   "operationIntegrationOnly": [
@@ -81,11 +84,11 @@
     "note": "reservation metadata only; no held-out task or oracle is delivered or claimed isolated"
   },
   "evidence": {
-    "redGreen": "test/campaign-workflows.test.ts: one original review-task seed fails executable checks and exact committed reference repair passes; the other five are integration scenarios only",
-    "independentOracle": "host test process; exact expected implementation and behavior assertions are absent from the task worktree",
+    "redGreen": "test/campaign-workflows.test.ts: original review-task seed fails executable checks; reference and distinct alternative committed repairs pass; the other five are integration scenarios only",
+    "independentOracle": "exported host judge; expected behavior and scope assertions are absent from the task worktree; candidate patch hash identifies captured bytes but is not compared with a reference solution",
     "outputFormatIndependence": "valid no-op claim grades incorrect; malformed/throwing Drivers with correct committed edits grade correct",
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
-    "scenarioCountMeaning": "10 named Vitest workflow cases including review outcome-fault cases; this count is not 10 independent repair tasks",
+    "scenarioCountMeaning": "13 named Vitest workflow cases including review outcome-fault cases and runSuite adaptation; this count is not 13 independent repair tasks",
     "independentSubstrates": "five fresh local filesystem substrates across review, merge, fleet, test-fix and ratchet integration; only the review substrate has an independent task correctness oracle",
     "scopeLimit": "one independently judged review-loop task; test-fix integration exposes a current broad-scope allowlist gap; remaining families have operation-level integration evidence only and need independently judged task corpora before role adequacy or campaign claims"
   }

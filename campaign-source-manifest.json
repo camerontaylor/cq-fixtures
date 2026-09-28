@@ -45,8 +45,8 @@
   },
   "workflowCorpus": {
     "manifest": "campaigns/cq-settings/corpus/workflows.json",
-    "sha256": "05f192d8548c6438ac423ce7c29c33917d58253a0e1b4e4dc842bb2d28ac4ad7",
-    "scenarioCount": 10,
+    "sha256": "b1b2b475b3260e7e7c023df339add251597d604b78450b7aa0058e6defe42611",
+    "scenarioCount": 13,
     "integrationSubstrateCount": 5,
     "verifiedTaskCount": 1,
     "independentSubstrateCount": 1,
@@ -61,11 +61,14 @@
     ],
     "split": "one verified task is visible calibration; no held-out task or oracle is included",
     "heldoutReservation": "whole substrate/template/fault-family identities reserved before tuning in the corpus manifest; metadata only, no isolation claim",
-    "redGreenAndAdequacyEvidence": "test/campaign-workflows.test.ts: one real seeded review repair has an independent executable red/green oracle; other families have operation integration assertions but are not tasks, and test-fix exposes a broad package-scope gap",
-    "scenarioCountMeaning": "10 named Vitest workflow cases include review output-fault cases; they are not 10 independent repair tasks",
+    "redGreenAndAdequacyEvidence": "test/campaign-workflows.test.ts: one real seeded review repair has an independent executable red/green oracle; reference and distinct alternative patches pass; exported host judge and typed runSuite adapter pass under injected Driver; other families have operation integration assertions but are not tasks, and test-fix exposes a broad package-scope gap",
+    "scenarioCountMeaning": "13 named Vitest workflow cases include review output-fault cases and runSuite adapter smoke; they are not 13 independent repair tasks",
     "independentSubstrates": "five fresh local filesystem substrates; only review-loop has an independently judged repair task",
-    "coverageLimit": "one independently judged review-loop task; no role adequacy claim; test-fix scope is too broad; other families need independently judged task corpora",
+    "coverageLimit": "one independently judged review-loop task; no role adequacy claim or 20-task-per-role adequacy claim; test-fix scope is too broad; other families need independently judged task corpora",
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
+    "hostJudge": "runner/workflow-corpus/review-loop-judge.ts exports judgeReviewLoopWorkspace and judgeReviewLoopRepairTask; semantic conformance accepts multiple implementations and candidate identity separately hashes actual patch bytes",
+    "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports typed SuiteCase adapter and deterministic local runSuite bundle",
+    "toolkitTestFixFinding": "pinned dd247ca source test-fix.ts:64-66 omits stagePathAllowlist; sweep.ts:392-395,417-418 therefore applies package-prefix default; details and reproduction in runner/workflow-corpus/README.md",
     "pristineBaselineIntegrity": "review task factory creates a fresh local Git seed and records its baseline commit; the host judge reads candidate repository state; no toolkit or fixtures checkout was mutated"
   },
   "scope": {

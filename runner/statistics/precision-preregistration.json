@@ -1,0 +1,22 @@
+{
+  "recipe": "weighted-cluster-hc3-t-bonferroni-v1",
+  "frozenBeforeSimulation": "2026-09-29",
+  "candidate": "Fixed weighted task-mean contrast; HC3 intercept residual variance; df=1/sum(normalized cluster weights squared)-1; Student t two-sided Bonferroni critical multiplied by 1.15. Identical conservative marginal/family intervals. No outcome-dependent method selection.",
+  "variance": "sum(a_g^2 * (D_g-estimate)^2 / (1-a_g)^2)",
+  "generator": "Independent substrates. For each contrast, paired Bernoulli margins p,p+delta and discordance q. With probability rho copy one substrate-level joint categorical outcome to every task/repeat; otherwise independent assignment-level categorical draws. Baseline shared across all contrasts. This gives persistent paired-difference ICC rho. Fixed weights independent of outcomes.",
+  "coreGrid": {
+    "clusters": [40, 80, 160, 320, 640],
+    "baseline": [0.2, 0.5, 0.8],
+    "discordance": [0.15, 0.35],
+    "pairedDifferenceICC": [0, 0.3, 0.6],
+    "effects": [0, 0.02],
+    "tasksAndRepeatsAndWeights": [[1, 1, "equal"], [3, 3, "cycle-1-2-3"]],
+    "contrasts": 3
+  },
+  "stressGrid": "20 clusters; saturated p=.01/.98,q=.02; q=.05; dominant cluster weight=100; perfect substrate dependence rho=1; strategy-only and paired missingness. These are outside candidate eligibility and retain conservative/descriptive fallback; raw failures remain reported.",
+  "datasetsPerStratumPerTrack": 2000,
+  "seeds": {"native": 9274101, "diagnostic": 9274102},
+  "gates": "Each core stratum: lower two-sided 95% Wilson bound on dataset-level simultaneous coverage >=.93; upper 95% Wilson bound on any true-null contrast rejection <=.07. No pooling. All strata must pass. Bonferroni Monte Carlo simultaneous bounds across all strata additionally reported; per-contrast bounds use dataset denominators. Stress missingness checks suppression separately, never count suppression as coverage.",
+  "power": "After validation, simulate same recipe for delta=.05, q=.15/.35, rho=0/.3/.6, p=.5, 3 tasks x 3 repeats, equal and cycle weights, n=80/160/320/640/1280/2560, 2000 per cell. No quota estimates. Latent variance persists as q-delta^2 times [rho+(1-rho)/(tasks*repeats)]. Report detection power, interval width and MDE separately.",
+  "scope": "Simulation validation is conditional on the declared finite generator grid, not a distribution-free theorem or calibration of real roles. Before held-out launch a calibration source and exact supported generator/design point must be frozen; unknown model applicability uses legacy conservative fallback. A failed core grid never activates this recipe. No campaign outcomes have been inspected."
+}

@@ -231,9 +231,10 @@ describe('campaign envelope', () => {
     expect(result.judgements).toHaveLength(1);
     expect(result.tables).toHaveLength(1);
     expect(result.rows[0]?.experiment?.substrateId).toBe('repair-task-44');
-    expect(result.rows[0]?.experiment?.judgePin).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.rows[0]?.experiment?.judgePin).toBe('a'.repeat(64));
     expect(result.rows[0]?.taskOutcome?.identity.taskId).toBe(suiteTaskId('native-fixer', 'repair-task-44'));
     expect(result.rows[0]?.taskOutcome?.judgements[0]).toMatchObject({
+      judgePin: 'a'.repeat(64),
       judgeManifest: runExperiment.judgeManifest,
       baselineCommit: expect.stringMatching(/^[a-f0-9]{40}$/),
       baselineTree: expect.stringMatching(/^[a-f0-9]{40}$/),
@@ -255,10 +256,14 @@ describe('campaign envelope', () => {
     const budgetResult = await runSuite({
       suiteDir, driver: new BudgetStop(), model: 'gpt-6-luna', provider: 'openai',
       driverName: 'codex-exec', repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: budgetExperiment,
+      hostCheckScoringEnvironment: (_workspace, pinnedBaselineCommit) => ({
+        CQ_REVIEW_LOOP_BASELINE_SHA: pinnedBaselineCommit,
+        CQ_REVIEW_LOOP_ORACLE_PIN: 'a'.repeat(64),
+      }),
     });
     expect(budgetResult.rows[0]?.taskOutcome).toMatchObject({
       candidateCorrectness: false, assignedStrategySuccess: false,
-      terminalCause: 'budget-exhausted', budgetOutcome: 'exhausted-no-candidate',
+      execution: { launched: true, terminalCause: 'budget-exhausted', sourceInvocationIds: [expect.any(String)] },
     });
     expect(budgetResult.rows[0]?.stopCause).toBe('budget');
   }, 20_000);

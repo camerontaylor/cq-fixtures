@@ -83,6 +83,7 @@ export interface ResultRow {
     campaignId: string; cohortId: string; experimentId: string; taskId: string;
     repeatId: string; assignmentId: string; stageId: string; attemptId: string;
     track: string; strategyId: string; settingsId: string; budgetId: string; profileId: string; frozenWeight: number;
+    substrateId: string; judgePin: string;
   };
   /** Authoritative accounting. Null means unavailable, never zero imputation. */
   observedUsage?: { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; reasoning: number | null; tokenTotal: number | null; complete: boolean };

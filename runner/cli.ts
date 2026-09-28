@@ -163,7 +163,19 @@ const EXPERIMENT_CONTEXT_SCHEMA = z.object({
   stageId: z.string().min(1), attemptId: z.string().min(1), track: z.string().min(1),
   strategyId: z.string().min(1), settingsId: z.string().min(1), budgetId: z.string().min(1), profileId: z.string().min(1),
   frozenWeight: z.number().finite().positive(),
-  caseAssignments: z.record(z.string(), z.object({ assignmentId: z.string().min(1), stageId: z.string().min(1), attemptId: z.string().min(1) }).strict()).optional(),
+  substrateId: z.string().min(1),
+  judgeManifest: z.object({
+    sourcePin: z.string().min(1),
+    dependencies: z.array(z.object({ path: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).min(1),
+  }).strict(),
+  caseAssignments: z.record(z.string(), z.object({
+    assignmentId: z.string().min(1), stageId: z.string().min(1), attemptId: z.string().min(1),
+    substrateId: z.string().min(1),
+    judgeManifest: z.object({
+      sourcePin: z.string().min(1),
+      dependencies: z.array(z.object({ path: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).min(1),
+    }).strict(),
+  }).strict()).optional(),
 }).strict();
 
 function parseArgs(argv: readonly string[]): CliOptions {

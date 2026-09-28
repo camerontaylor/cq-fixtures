@@ -78,14 +78,16 @@ export class CodexExecDriver extends ObservedNativeDriver {
         '-C', cwd, '-m', this.model,
         '-c', `model_reasoning_effort=${JSON.stringify(this.effort)}`, '-',
       ];
+      this.nativeSupervisor.expectProcessTree(identity);
       const result = await runSupervised(this.executable, args, {
         cwd, input: invocation.prompt,
         timeoutMs: invocation.budget.wallClockMs ?? this.hardWallClockMs,
         killGraceMs: this.killGraceMs,
-        signal: currentJobContext()?.signal,
+        signal: this.signalFor(identity, currentJobContext()?.signal),
         ...(this.boundaryForInvocation ? { boundary: this.boundaryForInvocation(identity, invocation, cwd) } : {}),
         ...(this.spawnAdapter ? { spawnAdapter: this.spawnAdapter } : {}),
       });
+      this.reportProcessTree(identity, result.treeStopped);
       if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };
       observation.model.settings.processTree = { value: result.treeStopped, source: 'native process-group stop proof', status: result.treeStopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden' };
       const raw = [result.stdout, result.stderr ? `\n${result.stderr}` : ''].join('');

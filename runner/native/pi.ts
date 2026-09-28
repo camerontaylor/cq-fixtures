@@ -93,13 +93,15 @@ export class PiNativeDriver extends ObservedNativeDriver {
       ];
       const toolArgs = piToolArgs(invocation);
       args.splice(args.length - 2, 0, ...toolArgs);
+      this.nativeSupervisor.expectProcessTree(identity);
       const result = await runSupervised(this.executable, args, {
         cwd, timeoutMs: invocation.budget.wallClockMs ?? this.hardWallClockMs,
         killGraceMs: this.killGraceMs,
-        signal: currentJobContext()?.signal,
+        signal: this.signalFor(identity, currentJobContext()?.signal),
         ...(this.boundaryForInvocation ? { boundary: this.boundaryForInvocation(identity, invocation, cwd) } : {}),
         ...(this.spawnAdapter ? { spawnAdapter: this.spawnAdapter } : {}),
       });
+      this.reportProcessTree(identity, result.treeStopped);
       if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };
       observation.model.settings.processTree = { value: result.treeStopped, source: 'native process-group stop proof', status: result.treeStopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden' };
       const raw = redactAnonymousRouteEvents([result.stdout, result.stderr ? `\n${result.stderr}` : ''].join(''));

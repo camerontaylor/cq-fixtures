@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import type { InvocationIdentity, NativeObservation, ObservedDriver } from './observation.ts';
+import { NativeSupervisorControl } from './process.ts';
 
 export interface NativeDriverOptions {
   configuredTarget: string;
@@ -12,6 +13,8 @@ export interface NativeDriverOptions {
   profile: string;
   artifactDirectory?: string;
 }
+
+export type { NativeStopProof } from './process.ts';
 
 /**
  * Base class for fixtures-local native bridges. The shared S1 seam performs a
@@ -24,6 +27,7 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
   private identityQueue: Promise<void> = Promise.resolve();
   private activeIdentity: InvocationIdentity | undefined;
   private releaseIdentity: (() => void) | undefined;
+  protected readonly nativeSupervisor = new NativeSupervisorControl();
 
   protected constructor(protected readonly options: NativeDriverOptions) {
     this.artifactDirectory = options.artifactDirectory ?? join(process.env.TMPDIR ?? '/tmp', 'cq-native-artifacts');
@@ -44,15 +48,28 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
       await this.beginInvocation({ invocationId: id, assignmentId: id, stageId: id, attemptId: id });
     }
     const identity = this.activeIdentity!;
+    this.nativeSupervisor.beginInvocation(identity);
     const release = this.releaseIdentity;
     this.activeIdentity = undefined;
     this.releaseIdentity = undefined;
     try {
       return await this.runObserved(invocation, identity);
     } finally {
+      this.nativeSupervisor.settleInvocation(identity);
       release?.();
     }
   }
+
+  /** Cancellation seam consumed by the bounded native strategy executor. */
+  protected signalFor(identity: InvocationIdentity, parent?: AbortSignal): AbortSignal {
+    return this.nativeSupervisor.signal(identity, parent);
+  }
+
+  protected reportProcessTree(identity: InvocationIdentity, stopped: boolean): void {
+    this.nativeSupervisor.reportProcessTree(identity, stopped);
+  }
+
+  cancelInvocationAndWait = this.nativeSupervisor.cancelInvocationAndWait.bind(this.nativeSupervisor);
 
   getObservation(invocationId: string): NativeObservation | undefined {
     return this.observations.get(invocationId);
@@ -127,6 +144,7 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
     });
   }
 }
+
 
 export function createWorkerResult(
   usage: WorkerResult['usage'],

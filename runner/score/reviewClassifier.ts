@@ -44,6 +44,7 @@ export function scoreReviewClassifier(
       passed: 0,
       total: 1,
       observed: null,
+      formatConformance: false,
       diagnostics: `missing or unparseable structuredOutput.verdict (expected '${expected}')`,
     };
   }
@@ -53,6 +54,7 @@ export function scoreReviewClassifier(
       passed: 0,
       total: 1,
       observed: verdict,
+      formatConformance: false,
       diagnostics: `verdict '${verdict}' is outside the classifyThreads vocabulary (expected '${expected}')`,
     };
   }
@@ -65,6 +67,7 @@ export function scoreReviewClassifier(
     // into the row's probes[] — the confusion matrix is computed from
     // rows.jsonl, and the outcome triple alone cannot supply it.
     observed: verdict,
+    formatConformance: true,
     ...(passed ? {} : { diagnostics: `verdict '${verdict}' did not match expected '${expected}'` }),
   };
 }

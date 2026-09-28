@@ -1,0 +1,29 @@
+native: 10 strata complete
+native: 20 strata complete
+native: 30 strata complete
+native: 40 strata complete
+native: 50 strata complete
+native: 60 strata complete
+native: 70 strata complete
+native: 80 strata complete
+native: 90 strata complete
+native: 100 strata complete
+native: 110 strata complete
+native: 120 strata complete
+native: 130 strata complete
+<workspace>/dist/statistics/precision.js:22
+        throw new Error('bounded cluster differences and matching positive weights required');
+              ^
+
+Error: bounded cluster differences and matching positive weights required
+    at weightedClusterT (<workspace>/dist/statistics/precision.js:22:15)
+    at simulatePrecisionStratum (<workspace>/dist/statistics/precision-simulation.js:55:25)
+    at <workspace>/dist/statistics/precision-simulation.js:80:60
+    at Array.map (<anonymous>)
+    at simulatePrecision (<workspace>/dist/statistics/precision-simulation.js:80:30)
+    at <workspace>/dist/statistics/run-precision-validation.js:14:20
+    at ModuleJob.run (node:internal/modules/esm/module_job:561:25)
+    at async node:internal/modules/esm/loader:647:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.21.0

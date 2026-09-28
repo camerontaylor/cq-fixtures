@@ -49,8 +49,8 @@ import { scoreReviewClassifier } from './score/reviewClassifier.ts';
 import { isFixerCase, loadSuite, suiteVariant } from './suite.ts';
 import { ArtifactStore, sha256, type ImmutableArtifactRef } from './artifacts/index.ts';
 import { findDenylistMatch, loadDenylistRules } from './denylist.ts';
-import { suiteTaskId, type ExperimentContext } from './experiment.ts';
-import { campaignUsage, unavailableObservation, type InvocationIdentity, type NativeObservation, type ObservedDriver } from './native/observation.ts';
+import { suiteTaskId, type ExperimentContext, type TaskOutcome, type TaskOutcomeJudgement } from './experiment.ts';
+import { campaignUsage, sanitizeNativeObservation, unavailableObservation, type InvocationIdentity, type NativeObservation, type ObservedDriver } from './native/observation.ts';
 
 // Public library surface: the suite loader rides along with the runner.
 export { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
@@ -262,19 +262,22 @@ const GIT_COMMON = [
   '-c', 'core.autocrlf=false',
 ];
 
-/** Commit the materialized workspace's pristine state so a later diff is vs pristine. */
-function gitBaseline(workspace: string): boolean {
+/** Commit the materialized workspace's pristine state and retain its immutable tree pin. */
+function gitBaseline(workspace: string): { commit: string; tree: string } | undefined {
   const run = (args: string[]) => spawnSync('git', ['-C', workspace, ...GIT_COMMON, ...args], { encoding: 'utf8' });
-  if (run(['init', '-q']).status !== 0) return false;
+  if (run(['init', '-q']).status !== 0) return undefined;
   // W6.3 (RS-9 §4.3 B.10): vitest/vite caches a worker's own test run leaves
   // under node_modules/ are not the worker's fix — keep them out of the
   // persisted patch.
   try {
     writeFileSync(join(workspace, '.git', 'info', 'exclude'), 'node_modules/\n');
   } catch {
-    return false;
+    return undefined;
   }
-  return run(['add', '-A']).status === 0 && run(['commit', '-q', '-m', 'pristine']).status === 0;
+  if (run(['add', '-A']).status !== 0 || run(['commit', '-q', '-m', 'pristine']).status !== 0) return undefined;
+  const commit = run(['rev-parse', 'HEAD']).stdout.trim();
+  const tree = run(['rev-parse', `${commit}^{tree}`]).stdout.trim();
+  return /^[a-f0-9]{40,64}$/.test(commit) && /^[a-f0-9]{40,64}$/.test(tree) ? { commit, tree } : undefined;
 }
 
 /** Bound on one workspace file read by the sentinel scan (a huge file is skipped, not read). */
@@ -329,8 +332,10 @@ function readIfPresent(path: string): string | undefined {
 }
 
 /** `git diff`-style patch of the workspace vs its pristine baseline (undefined on failure). */
-function gitPatch(workspace: string): string | undefined {
+function gitPatch(workspace: string, baseline: { commit: string; tree: string }): string | undefined {
   const run = (args: string[]) => spawnSync('git', ['-C', workspace, ...GIT_COMMON, ...args], { encoding: 'utf8' });
+  const pinnedTree = run(['rev-parse', `${baseline.commit}^{tree}`]);
+  if (pinnedTree.status !== 0 || pinnedTree.stdout.trim() !== baseline.tree) return undefined;
   if (run(['add', '-A']).status !== 0) return undefined;
   // Explicit a/ b/ prefixes so the published patch is a standard git diff
   // regardless of the operator's git config (diff.mnemonicPrefix produces
@@ -339,7 +344,7 @@ function gitPatch(workspace: string): string | undefined {
   // the format regrade re-applies cleanly.
   const res = run([
     'diff', '--cached', '--no-color', '--no-ext-diff',
-    '--src-prefix=a/', '--dst-prefix=b/', 'HEAD',
+    '--src-prefix=a/', '--dst-prefix=b/', baseline.commit,
   ]);
   return res.status === 0 ? res.stdout : undefined;
 }
@@ -451,6 +456,27 @@ export function suspiciousBenignFlag(repoRoot: string, fixture: string): Sidecar
 
 export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const suite = loadSuite(opts.suiteDir, opts.answerKey);
+  const observedDriver = opts.driver as Driver & Partial<ObservedDriver>;
+  const nativeMode = typeof observedDriver.getObservation === 'function';
+  if (nativeMode && opts.maxTokens !== undefined &&
+      !(observedDriver.campaignBudgetCapabilities?.hardTokenCap === true &&
+        observedDriver.campaignBudgetCapabilities.authoritativeTokenTotal === true)) {
+    throw new Error('hard token cap unsupported: native driver must attest enforcement and authoritative tokenTotal');
+  }
+  if (opts.experiment !== undefined) {
+    const mapped = opts.experiment.caseAssignments;
+    if (suite.cases.length > 1 && mapped === undefined) {
+      throw new Error('campaign runSuite with multiple cases requires experiment.caseAssignments keyed by case ID');
+    }
+    if (mapped !== undefined) {
+      const caseIds = new Set(suite.cases.map((suiteCase) => suiteCase.id));
+      const missing = [...caseIds].filter((caseId) => mapped[caseId] === undefined);
+      const extra = Object.keys(mapped).filter((caseId) => !caseIds.has(caseId));
+      if (missing.length > 0 || extra.length > 0) {
+        throw new Error(`campaign assignment roster mismatch (missing: ${missing.join(',') || 'none'}; extra: ${extra.join(',') || 'none'})`);
+      }
+    }
+  }
   const needles = opts.sentinelNeedles ?? [];
   // W6.3: an eval-root run resolves each classifier case's label sidecar
   // from the answer key (the sidecars are excised from the root, and the key
@@ -565,7 +591,18 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const materializationDiagnostics: string[] = [];
   let materializationFailures = 0;
   let gatedByBudget = false;
+  let nativeTokenSpent = opts.preflightProbe === undefined ? 0 : PREFLIGHT_PROBE_RESERVE_TOKENS;
+  let nativeTokenBudgetBlocked = false;
   for (const c of suite.cases) {
+    if (nativeMode && opts.maxTokens !== undefined && (nativeTokenBudgetBlocked || nativeTokenSpent >= opts.maxTokens)) {
+      gatedByBudget = true;
+      const cause = nativeTokenBudgetBlocked
+        ? 'budget-stop: native authoritative tokenTotal unavailable; remaining hard-cap dispatch refused'
+        : 'budget-stop: native authoritative tokenTotal reached the hard cap';
+      absences.push({ case: c.id, role: suite.role, cause });
+      console.error(`  case ${c.id}: not dispatched — ${cause}`);
+      continue;
+    }
     const admission = governor.admit(c.id);
     if (admission.decision === 'reject') {
       // Never dispatched: NO row (rows exist only for work actually
@@ -614,6 +651,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     // job-finished:indeterminate journal event, a stderr + diagnostics
     // entry, and a materializationFailures increment.
     let workspace: string | undefined;
+    let workspaceBaseline: { commit: string; tree: string } | undefined;
     let sessionRef: string | undefined;
     let payload: string | undefined;
     if (isFixerCase(c)) {
@@ -629,7 +667,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // exactly the worker's diff. A baseline failure is NOT fatal — the
         // case still runs and scores — but the patch is then unavailable, and
         // that is recorded rather than silently lost.
-        if (!gitBaseline(workspace)) {
+        workspaceBaseline = gitBaseline(workspace);
+        if (workspaceBaseline === undefined) {
           const detail = `case ${c.id}: git baseline failed — patch not persisted`;
           caseDiagnostics.push(detail);
           console.error(`  ${detail}`);
@@ -683,11 +722,12 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       let invocation: OpInvocation | undefined;
       let worker: WorkerResult | undefined;
       let thrown: unknown;
+      const perCaseAssignment = opts.experiment?.caseAssignments?.[c.id];
       const invocationIdentity: InvocationIdentity = {
         invocationId: randomUUID(),
-        assignmentId: `${opts.experiment?.assignmentId ?? 'assignment'}-${randomUUID()}`,
-        stageId: opts.experiment?.stageId ?? 'stage-1',
-        attemptId: randomUUID(),
+        assignmentId: perCaseAssignment?.assignmentId ?? opts.experiment?.assignmentId ?? `assignment-${randomUUID()}`,
+        stageId: perCaseAssignment?.stageId ?? opts.experiment?.stageId ?? 'stage-1',
+        attemptId: perCaseAssignment?.attemptId ?? opts.experiment?.attemptId ?? randomUUID(),
       };
       const artifactContext: ExperimentContext = {
         campaignId: opts.experiment?.campaignId ?? 'ad-hoc-native',
@@ -703,6 +743,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         settingsId: opts.experiment?.settingsId ?? 'unassigned',
         budgetId: opts.experiment?.budgetId ?? 'unassigned',
         profileId: opts.experiment?.profileId ?? 'unassigned',
+        frozenWeight: opts.experiment?.frozenWeight ?? 1,
       };
       let nativeObservation: NativeObservation | undefined;
       try {
@@ -734,7 +775,6 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             budget: invocationBudget,
           };
         }
-        const observedDriver = opts.driver as Driver & Partial<ObservedDriver>;
         if (typeof observedDriver.getObservation === 'function') {
           if (typeof observedDriver.beginInvocation === 'function') {
             await observedDriver.beginInvocation(invocationIdentity);
@@ -744,14 +784,20 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             throw new Error('native observation driver must implement beginInvocation(identity) or setInvocationIdentity(identity)');
           }
         }
-        worker = await opts.driver.run(invocation);
+        const dispatchInvocation = nativeMode && opts.maxTokens !== undefined
+          ? {
+              ...invocation,
+              budget: { ...(invocation.budget ?? {}), maxTokens: Math.max(0, opts.maxTokens - nativeTokenSpent) },
+            }
+          : invocation;
+        worker = await opts.driver.run(dispatchInvocation);
       } catch (e) {
         // A pre-dispatch missing-credential throw is infrastructure
         // configuration, NOT an eval outcome — scoring it 0 would publish
         // zeros-while-green. The toolkit's requireKey fails uniformly with
         // "provider '<p>' requires <ENV> in the environment", so the predicate
         // matches every provider lane, not just zai.
-        if (e instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(e.message)) {
+        if (e instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(e.message) && !isFixerCase(c)) {
           await append({
             type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
             inputsHash: hashInputs(suite.role, invocation ?? { caseId: c.id, fixture: c.fixture, task: c.task }),
@@ -771,21 +817,48 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         }
         thrown = e;
       }
-      const observedDriver = opts.driver as Driver & Partial<ObservedDriver>;
+      // Capture the candidate before observation retrieval or any oracle
+      // operation. Native bridges may fail while returning telemetry, and a
+      // worker may commit its edit before throwing.
+      const fixerPatch = isFixerCase(c) && workspace !== undefined && workspaceBaseline !== undefined
+        ? gitPatch(workspace, workspaceBaseline)
+        : undefined;
+      if (thrown instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(thrown.message) && isFixerCase(c)) {
+        if (fixerPatch === undefined) {
+          await append({
+            type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,
+            inputsHash: hashInputs(suite.role, invocation ?? { caseId: c.id, fixture: c.fixture, task: c.task }),
+            result: { status: 'indeterminate', detail: `aborted: ${thrown.message}` },
+          });
+          throw thrown;
+        }
+      }
       if (typeof observedDriver.getObservation === 'function') {
-        nativeObservation = await observedDriver.getObservation(invocationIdentity.invocationId);
-        if (nativeObservation === undefined) {
+        try {
+          nativeObservation = await observedDriver.getObservation(invocationIdentity.invocationId);
+          if (nativeObservation !== undefined && nativeObservation.identity.invocationId !== invocationIdentity.invocationId) {
+            throw new Error(`native observation identity mismatch for invocation ${invocationIdentity.invocationId}`);
+          }
+          if (nativeObservation === undefined) nativeObservation = unavailableObservation(invocationIdentity, opts.driverName ?? 'native', worker ?? null);
+          if (worker === undefined && nativeObservation.workerResult !== null) worker = nativeObservation.workerResult;
+        } catch (error) {
+          const why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+          caseDiagnostics.push(`case ${c.id}: observation retrieval failed: ${boundDriverCause(why)}`);
           nativeObservation = unavailableObservation(invocationIdentity, opts.driverName ?? 'native', worker ?? null);
+          nativeObservation.terminal.transportException = thrown !== undefined
+            ? { name: thrown instanceof Error ? thrown.name : 'Error', message: boundDriverCause(String(thrown)) }
+            : { name: error instanceof Error ? error.name : 'Error', message: boundDriverCause(why) };
+          nativeObservation.terminal.cause = 'observation-retrieval-failure';
         }
-        if (nativeObservation.identity.invocationId !== invocationIdentity.invocationId) {
-          throw new Error(`native observation identity mismatch for invocation ${invocationIdentity.invocationId}`);
-        }
-        if (worker === undefined && nativeObservation.workerResult !== null) worker = nativeObservation.workerResult;
       }
       const wallTimeMs = Math.max(0, Date.now() - startedMs);
 
-      const nativeMode = typeof observedDriver.getObservation === 'function';
       const measuredUsage = nativeObservation === undefined ? undefined : campaignUsage(nativeObservation);
+      if (nativeMode && opts.maxTokens !== undefined) {
+        const authoritativeTotal = measuredUsage?.tokenTotal ?? null;
+        if (authoritativeTotal === null) nativeTokenBudgetBlocked = true;
+        else nativeTokenSpent += authoritativeTotal;
+      }
       const usage: Usage = worker?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
       // Observed served id wins (the served-id decision); the requested id is
       // the fallback a lane that cannot observe it leaves us.
@@ -824,31 +897,57 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // the judge mutates the workspace (restores pristine tests, scrubs
       // planted configs), so a post-scoring diff would be post-judge state,
       // not the worker's prediction. undefined = git unavailable or failed.
-      const fixerPatch =
-        isFixerCase(c) && workspace !== undefined ? gitPatch(workspace) : undefined;
       if (nativeObservation !== undefined) {
-        if (thrown !== undefined && nativeObservation.terminal.transportException === null) {
-          nativeObservation.terminal.transportException = { name: thrown instanceof Error ? thrown.name : 'Error', message: boundDriverCause(String(thrown)) };
+        try {
+          if (thrown !== undefined && nativeObservation.terminal.transportException === null) {
+            nativeObservation.terminal.transportException = { name: thrown instanceof Error ? thrown.name : 'Error', message: boundDriverCause(String(thrown)) };
+          }
+          const rules = loadDenylistRules(repoRoot);
+          let patchCaptureStatus = fixerPatch === undefined ? 'no-patch-or-capture-unavailable' : 'captured';
+          if (fixerPatch !== undefined) {
+            const match = findDenylistMatch(fixerPatch, 'candidate.patch', rules);
+            if (match !== undefined) {
+              patchCaptureStatus = `withheld:${match.id}`;
+              nativeObservation.withheldArtifacts.push({ kind: 'candidate-patch', reason: `denylist:${match.id}`, sha256: sha256(fixerPatch) });
+            }
+            else {
+              try { nativeObservation.artifacts.push({ kind: 'candidate-patch', ...artifactStore.write(artifactContext, 'candidate.patch', fixerPatch) }); }
+              catch (error) {
+                nativeObservation.withheldArtifacts.push({ kind: 'candidate-patch', reason: `persistence-failed:${boundDriverCause(error instanceof Error ? error.message : String(error))}`, sha256: sha256(fixerPatch) });
+                caseDiagnostics.push(`case ${c.id}: candidate patch persistence failed: ${boundDriverCause(error instanceof Error ? error.message : String(error))}`);
+              }
+            }
+          }
+          if (worker?.structuredOutput !== undefined) {
+            const output = `${JSON.stringify(worker.structuredOutput, null, 2)}\n`;
+            const match = findDenylistMatch(output, 'worker-output.json', rules);
+            if (match === undefined) {
+              try { nativeObservation.artifacts.push({ kind: 'worker-output', ...artifactStore.write(artifactContext, 'worker-output.json', output) }); }
+              catch (error) {
+                nativeObservation.withheldArtifacts.push({ kind: 'worker-output', reason: `persistence-failed:${boundDriverCause(error instanceof Error ? error.message : String(error))}`, sha256: sha256(output) });
+                caseDiagnostics.push(`case ${c.id}: worker output persistence failed: ${boundDriverCause(error instanceof Error ? error.message : String(error))}`);
+              }
+            }
+            else nativeObservation.withheldArtifacts.push({ kind: 'worker-output', reason: `denylist:${match.id}`, sha256: sha256(output) });
+          }
+          nativeObservation.capture = {
+            status: patchCaptureStatus,
+            baselineCommit: workspaceBaseline?.commit ?? null,
+            patchSha256: fixerPatch === undefined ? null : sha256(fixerPatch),
+            workspaceSha256: null,
+          };
+          const safeObservation = sanitizeNativeObservation(nativeObservation);
+          const artifact = artifactStore.writeObservation(artifactContext, safeObservation);
+          observations.push({ observation: safeObservation, artifact });
+        } catch (error) {
+          const why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+          caseDiagnostics.push(`case ${c.id}: evidence persistence failed: ${boundDriverCause(why)}`);
+          try {
+            const safeObservation = sanitizeNativeObservation(nativeObservation);
+            const artifact = artifactStore.writeObservation(artifactContext, safeObservation);
+            observations.push({ observation: safeObservation, artifact });
+          } catch { /* Preserve scoring even when the evidence store itself is unavailable. */ }
         }
-        const rules = loadDenylistRules(repoRoot);
-        let patchCaptureStatus = fixerPatch === undefined ? 'no-patch-or-capture-unavailable' : 'captured';
-        if (fixerPatch !== undefined) {
-          const match = findDenylistMatch(fixerPatch, 'candidate.patch', rules);
-          if (match !== undefined) patchCaptureStatus = `withheld:${match.id}`;
-          else nativeObservation.artifacts.push({ kind: 'candidate-patch', ...artifactStore.write(artifactContext, 'candidate.patch', fixerPatch) });
-        }
-        if (worker?.structuredOutput !== undefined) {
-          const output = `${JSON.stringify(worker.structuredOutput, null, 2)}\n`;
-          const match = findDenylistMatch(output, 'worker-output.json', rules);
-          if (match === undefined) nativeObservation.artifacts.push({ kind: 'worker-output', ...artifactStore.write(artifactContext, 'worker-output.json', output) });
-        }
-        nativeObservation.capture = {
-          status: patchCaptureStatus,
-          patchSha256: fixerPatch === undefined ? null : sha256(fixerPatch),
-          workspaceSha256: null,
-        };
-        const artifact = artifactStore.writeObservation(artifactContext, nativeObservation);
-        observations.push({ observation: nativeObservation, artifact });
       }
 
       // W6.3 dynamic sentinel (RS-9 §4.3 D): before anything is scored, scan
@@ -877,7 +976,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
 
       let outcome: { score: number; passed: number; total: number };
       let candidateCorrectness: boolean | null = null;
+      let formatConformance: boolean | null = null;
       let assignedStrategySuccess: boolean | null = null;
+      let taskJudgement: TaskOutcomeJudgement | undefined;
       let operationalStatus: NonNullable<ResultRow['outcomes']>['operationalStatus'] = 'operational-missingness';
       let journalResult: OpResult<unknown>;
       let diagnostics: string | undefined;
@@ -1012,7 +1113,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // Probe 2 — schema compliance (runner/dimensions/schemaCompliance.ts):
         // grades ONLY the structuredOutput's shape discipline, never the
         // fix's content, so the check's sweep-agnostic contract is intact.
-          const schema = scoreSchemaCompliance(scoringWorker);
+        const schema = scoreSchemaCompliance(scoringWorker);
+        formatConformance = schema.passed === 1;
         candidateCorrectness = check.correctness ?? null;
         assignedStrategySuccess = check.correctness ?? null;
         operationalStatus = check.operationalStatus === 'judge-failure'
@@ -1034,6 +1136,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       } else {
         const s = scoreReviewClassifier(c, worker!);
         outcome = { score: s.score, passed: s.passed, total: s.total };
+        formatConformance = s.formatConformance ?? null;
         candidateCorrectness = s.passed === 1;
         assignedStrategySuccess = s.passed === 1;
         operationalStatus = s.passed === 1 ? 'complete' : 'measured-failure';
@@ -1058,16 +1161,42 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         diagnostics = diagnostics === undefined ? cause : `${diagnostics}\n${cause}`;
         absences.push({ case: c.id, role: suite.role, cause });
       }
-      if (nativeObservation !== undefined && isFixerCase(c)) {
-        const candidate = nativeObservation.artifacts.find((artifact) => artifact.kind === 'candidate-patch');
-        if (candidate !== undefined) {
-          const judgePath = join(repoRoot, c.probe.check);
-          let judgePin = 'unavailable';
-          try { judgePin = sha256(readFileSync(judgePath)); } catch { /* the scorer already records judge failure */ }
-          judgements.push(artifactStore.writeJudgement(
-            artifactContext, randomUUID(), candidate.sha256, judgePin,
-            { candidateCorrectness, assignedStrategySuccess, operationalStatus, outcome },
-          ));
+      if (opts.experiment !== undefined && (fixerPatch !== undefined || worker?.structuredOutput !== undefined)) {
+        const isFixer = isFixerCase(c);
+        const candidateBytes = isFixer ? fixerPatch! : `${JSON.stringify(worker!.structuredOutput, null, 2)}\n`;
+        const candidateSha256 = sha256(candidateBytes);
+        const candidateName = isFixer ? 'candidate.patch' : 'candidate-output.json';
+        const artifactKind = isFixer ? 'candidate-patch' : 'worker-output';
+        let candidateRef = nativeObservation?.artifacts.find((artifact) => artifact.kind === artifactKind && artifact.sha256 === candidateSha256);
+        if (candidateRef === undefined) {
+          try {
+            const match = findDenylistMatch(candidateBytes, candidateName, loadDenylistRules(repoRoot));
+            if (match === undefined) candidateRef = { kind: artifactKind, ...artifactStore.write(artifactContext, candidateName, candidateBytes) };
+            else caseDiagnostics.push(`case ${c.id}: candidate withheld by denylist rule ${match.id}`);
+          } catch (error) {
+            const why = error instanceof Error ? error.message : String(error);
+            caseDiagnostics.push(`case ${c.id}: candidate persistence failed: ${boundDriverCause(why)}`);
+          }
+        }
+        let judgePin: string | undefined;
+        try {
+          if (isFixer) {
+            const judgePath = join(repoRoot, c.probe.check);
+            const checkSha256 = sha256(readFileSync(judgePath));
+            judgePin = sha256(JSON.stringify({ kind: 'fixer-check-v1', checkPath: c.probe.check, checkSha256, fixtureTree: workspaceBaseline?.tree ?? null }));
+          } else {
+            judgePin = sha256(readFileSync(join(repoRoot, 'runner', 'score', 'reviewClassifier.ts')));
+          }
+        } catch { /* a missing pin invalidates judgement evidence, never the independent candidate measurement */ }
+        if (candidateRef !== undefined && judgePin !== undefined && /^[a-f0-9]{64}$/.test(judgePin)) {
+          const judgementId = randomUUID();
+          const judgement = {
+            judgementId, version: 1, judgePin, candidateSha256,
+            candidateCorrectness, formatConformance, assignedStrategySuccess, operationalStatus,
+          };
+          const artifact = artifactStore.writeJudgement(artifactContext, judgementId, candidateSha256, judgePin, { ...judgement, outcome });
+          judgements.push(artifact);
+          taskJudgement = { ...judgement, artifact };
         }
       }
       if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);
@@ -1079,6 +1208,25 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         result: journalResult,
         ...(worker !== undefined ? { usage } : {}),
       });
+      const taskOutcome: TaskOutcome | undefined = opts.experiment === undefined ? undefined : {
+        identity: {
+          campaignId: artifactContext.campaignId, cohortId: artifactContext.cohortId,
+          experimentId: artifactContext.experimentId, taskId: artifactContext.taskId,
+          substrateId: c.id, track: artifactContext.track, repeatId: artifactContext.repeatId,
+          assignmentId: artifactContext.assignmentId, strategyId: artifactContext.strategyId,
+          role: suite.role, budgetId: artifactContext.budgetId, frozenWeight: artifactContext.frozenWeight,
+        },
+        candidateCorrectness, formatConformance, assignedStrategySuccess, operationalStatus,
+        stages: [{
+          stageId: invocationIdentity.stageId, attemptId: invocationIdentity.attemptId,
+          invocationId: invocationIdentity.invocationId,
+          artifacts: (nativeObservation?.artifacts ?? []).map(({ kind, path, sha256: digest }) => ({ kind, path, sha256: digest })),
+          ...(observations.find((item) => item.observation.identity.invocationId === invocationIdentity.invocationId) !== undefined
+            ? { observation: observations.find((item) => item.observation.identity.invocationId === invocationIdentity.invocationId)!.artifact }
+            : {}),
+        }],
+        judgements: taskJudgement === undefined ? [] : [taskJudgement],
+      };
       if (emitRow) rows.push({
         role: suite.role, suite: suite.name, case: c.id, model, driver: driverName,
         // F6/CQ-4: only a non-default variant rides the row, so the default
@@ -1097,6 +1245,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         wallTimeMs,
         tokens: tokensOf(usage),
         ...(opts.experiment !== undefined ? { experiment: artifactContext } : {}),
+        ...(taskOutcome !== undefined ? { taskOutcome } : {}),
         ...(nativeObservation !== undefined ? {
           observedUsage: measuredUsage!,
           modelIdentity: {
@@ -1104,9 +1253,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             requestedModel: nativeObservation.model.requested.value,
             servedModel: nativeObservation.model.observed.value,
           },
-          outcomes: { candidateCorrectness, assignedStrategySuccess, operationalStatus },
+          outcomes: { candidateCorrectness, formatConformance, assignedStrategySuccess, operationalStatus },
         } : opts.experiment !== undefined ? {
-          outcomes: { candidateCorrectness, assignedStrategySuccess, operationalStatus },
+          outcomes: { candidateCorrectness, formatConformance, assignedStrategySuccess, operationalStatus },
         } : {}),
         runId, timestamp: now(),
       });

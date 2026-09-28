@@ -1,0 +1,6 @@
+{
+  "colimaList": "PROFILE           STATUS     ARCH      CPUS    MEMORY    DISK     RUNTIME    ADDRESS\ndefault           Stopped    x86_64    4       24GiB     60GiB    docker     \ncq-boundary-s5    Running    x86_64    2       3GiB      12GiB    docker     \n",
+  "activeDockerContext": "default",
+  "existingDefaultModified": false,
+  "campaignProfileLeftRunning": true
+}

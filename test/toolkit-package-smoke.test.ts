@@ -1,7 +1,10 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   makeAgenticRemediation,
   type Cluster,
@@ -21,6 +24,11 @@ interface SourceManifest {
     version: string;
     tarball: string;
     tarballSha256: string;
+    packageContent: {
+      treeAlgorithm: string;
+      distTreeSha256: string;
+      distIndexSha256: string;
+    };
     packageLock: { resolved: string; integrity: string };
   };
 }
@@ -32,6 +40,26 @@ interface Lockfile {
 const manifest = JSON.parse(
   readFileSync(new URL('../campaign-source-manifest.json', import.meta.url), 'utf8'),
 ) as SourceManifest;
+
+function packageTreeIdentity(root: string): { treeSha256: string; files: Map<string, string> } {
+  const files = new Map<string, string>();
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolutePath = join(directory, entry.name);
+      if (entry.isDirectory()) visit(absolutePath);
+      else if (entry.isFile()) {
+        const path = relative(root, absolutePath).split('\\').join('/');
+        files.set(path, createHash('sha256').update(readFileSync(absolutePath)).digest('hex'));
+      }
+    }
+  };
+  visit(root);
+  const canonicalTree = [...files]
+    .sort(([left], [right]) => left.localeCompare(right, 'en'))
+    .map(([path, sha256]) => `${path}\0${sha256}\n`)
+    .join('');
+  return { treeSha256: createHash('sha256').update(canonicalTree).digest('hex'), files };
+}
 
 describe('selected toolkit package identity', () => {
   it('matches the selected tarball SHA256 and package-lock integrity', () => {
@@ -49,6 +77,33 @@ describe('selected toolkit package identity', () => {
       integrity,
     });
     expect(integrity).toBe(manifest.toolkitPackage.packageLock.integrity);
+  });
+
+  it('matches the extracted tarball dist tree byte-for-byte with installed package files', () => {
+    const temporaryDirectory = mkdtempSync(join(tmpdir(), 'cq-toolkit-package-'));
+    try {
+      execFileSync('tar', [
+        '-xzf',
+        resolve(fileURLToPath(new URL(`../${TARBALL_PATH}`, import.meta.url))),
+        '-C',
+        temporaryDirectory,
+      ]);
+      const extractedDist = join(temporaryDirectory, 'package', 'dist');
+      const installedEntry = require.resolve(PACKAGE_NAME);
+      const installedDist = dirname(installedEntry);
+      const extracted = packageTreeIdentity(extractedDist);
+      const installed = packageTreeIdentity(installedDist);
+      const indexPath = 'index.js';
+
+      expect(extracted.files.size).toBeGreaterThan(0);
+      expect(extracted.files).toEqual(installed.files);
+      expect(extracted.treeSha256).toBe(manifest.toolkitPackage.packageContent.distTreeSha256);
+      expect(installed.treeSha256).toBe(extracted.treeSha256);
+      expect(extracted.files.get(indexPath)).toBe(manifest.toolkitPackage.packageContent.distIndexSha256);
+      expect(installed.files.get(indexPath)).toBe(extracted.files.get(indexPath));
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 
   it('resolves and exercises an exported operation through the installed package and injected Driver', async () => {

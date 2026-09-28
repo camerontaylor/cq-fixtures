@@ -1,0 +1,96 @@
+{
+  "manifestVersion": 3,
+  "status": "visible-calibration-in-progress",
+  "scenarioCount": 14,
+  "integrationSubstrateCount": 5,
+  "verifiedTaskCount": 1,
+  "independentSubstrateCount": 1,
+  "modelRoleDiversityClaim": 0,
+  "verifiedTasks": [
+    {
+      "id": "review-loop-label-limit-01",
+      "taskFactory": "campaigns/cq-settings/corpus/review-loop-task.ts#createReviewLoopRepairTask",
+      "executor": "campaigns/cq-settings/corpus/review-loop-task.ts#executeReviewLoopRepairTask",
+      "family": "review-loop",
+      "modelRole": "review-fix-worker calibration task; deterministic injected Driver is used for acceptance",
+      "substrate": "fresh temporary Git repository seeded by the task factory",
+      "substrateFamily": "campaign-settings-module-v1",
+      "templateFamily": "review-anchored-limit-v1",
+      "faultFamily": "missing-unicode-length-bound-v1",
+      "oracle": "host-side exported judge checks immutable source/baseline/oracle IDs, baseline contents, Unicode semantics, display preservation, visible tests, and one-source-file scope; it hashes candidate patch bytes without requiring a reference solution; oracle is not in the task worktree",
+      "adequacyEvidence": "public regression test and independent host semantic checks are red on the known-buggy baseline and green on both reference and distinct alternative correct implementations; no-op claim, malformed output after edits, and throw after edits are independently judged; candidate commit identity and clean Git state are separate from workspace conformance",
+      "split": "calibration",
+      "pristineBaselineIntegrity": "fresh initial Git commit; grader compares candidate against its recorded base SHA and checks only src/settings.mjs changed; task factory's ModelSpec is caller supplied",
+      "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports a typed FixerSuiteCase adapter and bundle materializer; injected Driver pins the materialized baseline before delegation, preserves a worker-created candidate commit under a side ref, and the independent host probe passes",
+      "boundedOracle": "candidate module import and behavior child has a 5000ms wall limit; visible check is separately limited to 10000ms; process/host confinement is not claimed",
+      "oracleImplementation": "runner/workflow-corpus/review-loop-judge.ts#judgeReviewLoopRepairTask and #judgeReviewLoopWorkspace",
+      "candidateIdentity": "full commit SHA, recorded baseline ancestry, clean Git state, and SHA256 of actual binary patch are separately reported from semantic conformance"
+    }
+  ],
+  "operationIntegrationOnly": [
+    {
+      "family": "merge-pr-conflicts",
+      "scenario": "merge-conflict-local-repair",
+      "substrate": "fresh temporary Git repository",
+      "modelAction": "injected Driver edits and commits the conflict worktree source",
+      "oracle": "operation verifies local HEAD movement; host test checks exact changed path and resulting label cap",
+      "campaignTask": false,
+      "roleCall": false
+    },
+    {
+      "family": "fleet-sweep",
+      "scenario": "nested-package-changed-file-planning",
+      "substrate": "fresh temporary Git monorepo with changed test file and untouched CLI package",
+      "action": "exported planner consumes actual git diff evidence and selects the deepest package owner",
+      "oracle": "host assertions verify the selected unit, file set, and untouched sibling",
+      "campaignTask": false,
+      "roleCall": false
+    },
+    {
+      "family": "baseline-test-fix",
+      "scenario": "test-fix-plan-scope-leak-detection",
+      "substrate": "fresh temporary package tree with product source and test files",
+      "action": "exported test-fix plan builder emits a test-fix unit from test and product files",
+      "oracle": "host assertion reproduces the current broad package-prefix allowlist, which also admits product source; this is a toolkit limitation, not a passing test-only scope oracle",
+      "campaignTask": false,
+      "roleCall": false
+    },
+    {
+      "family": "analyze-remediate",
+      "scenario": "clustered-failure-exact-read-only-proposal",
+      "substrate": "host-authored failure set with repeated signature",
+      "modelAction": "injected Driver returns a concrete remediation proposal",
+      "oracle": "host assertion checks exact proposal and explicit no-tools/read-only policy",
+      "campaignTask": false,
+      "roleCall": false
+    },
+    {
+      "family": "monotonic-ratchets",
+      "scenario": "local-baseline-tighten-and-loosen",
+      "substrate": "fresh temporary workspace with an on-disk captured baseline",
+      "action": "exported capture/check ops compare live metric evidence; monotonic guard examines baseline diff",
+      "oracle": "host assertions require tighter metric pass and loosened metric fail",
+      "campaignTask": false,
+      "roleCall": false
+    }
+  ],
+  "heldoutReserve": {
+    "reservedBeforeTuning": true,
+    "completeSubstrateFamilies": ["campaign-settings-module-v2"],
+    "completeTemplateFamilies": ["review-anchored-limit-v2"],
+    "completeFaultFamilies": ["missing-grapheme-bound-v2"],
+    "heldoutSubstratesMaterialized": 0,
+    "heldoutOracleContentIncluded": false,
+    "isolationClaim": false,
+    "note": "reservation metadata only; no held-out task or oracle is delivered or claimed isolated"
+  },
+  "evidence": {
+    "redGreen": "test/campaign-workflows.test.ts: original review-task seed fails executable checks; reference and distinct alternative committed repairs pass; the other five are integration scenarios only",
+    "independentOracle": "exported host judge; expected behavior and scope assertions are absent from the task worktree; candidate patch hash identifies captured bytes but is not compared with a reference solution",
+    "outputFormatIndependence": "valid no-op claim grades incorrect; malformed/throwing Drivers with correct committed edits grade correct",
+    "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
+    "scenarioCountMeaning": "14 named Vitest workflow cases including review output-fault cases, bounded arbitrary-module execution, and runSuite adaptation; this count is not 14 independent repair tasks",
+    "independentSubstrates": "five fresh local filesystem substrates across review, merge, fleet, test-fix and ratchet integration; only the review substrate has an independent task correctness oracle",
+    "scopeLimit": "one independently judged review-loop task; test-fix integration exposes a current broad-scope allowlist gap; remaining families have operation-level integration evidence only and need independently judged task corpora before role adequacy or campaign claims"
+  }
+}

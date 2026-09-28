@@ -1,0 +1,33 @@
+{
+  "profile": "cq-boundary-s5",
+  "exitCode": 0,
+  "elapsedSeconds": 132.53,
+  "timeout": false,
+  "command": [
+    "colima",
+    "start",
+    "cq-boundary-s5",
+    "--activate=false",
+    "--template=false",
+    "--cpu",
+    "2",
+    "--memory",
+    "3",
+    "--disk",
+    "12",
+    "--root-disk",
+    "8",
+    "--mount",
+    "none",
+    "--ssh-agent=false",
+    "--ssh-config=false",
+    "--port-forwarder",
+    "none",
+    "--runtime",
+    "docker",
+    "--vm-type",
+    "vz",
+    "--arch",
+    "x86_64"
+  ]
+}

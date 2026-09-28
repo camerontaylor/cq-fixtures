@@ -1,0 +1,40 @@
+{
+  "g2": "not-established",
+  "modelCalls": 0,
+  "authenticationStaged": false,
+  "routesTested": false,
+  "piDistributionHash": "3b26483deae0e9f0471d67e7b30034653f2af4b425a358b34338fa50a3241eff",
+  "piDistributionFiles": 152,
+  "buildExitCode": 0,
+  "imageId": "sha256:2a9422f0de75079fd81da5a5b68bf9936e72ce22e30d1a22ddd91bc77201de4e",
+  "probes": {
+    "codex": {
+      "exitCode": 0,
+      "elapsedSeconds": 0.24,
+      "version": "0.155.1",
+      "helpUsageObserved": false,
+      "errorCodes": [],
+      "network": "none",
+      "auth": "absent"
+    },
+    "pi": {
+      "exitCode": 0,
+      "elapsedSeconds": 0.99,
+      "version": "0.0.0-overshrim",
+      "helpUsageObserved": false,
+      "errorCodes": [],
+      "network": "none",
+      "auth": "absent"
+    },
+    "zcode": {
+      "exitCode": 0,
+      "elapsedSeconds": 0.77,
+      "version": null,
+      "helpUsageObserved": true,
+      "errorCodes": [],
+      "network": "none",
+      "auth": "absent"
+    }
+  },
+  "elapsedSeconds": 99.01
+}

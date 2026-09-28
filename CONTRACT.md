@@ -12,6 +12,7 @@ import type {
 } from './runner/experiment.ts';
 
 interface NativeObservationDriver {
+  campaignBudgetCapabilities?: { hardTokenCap: boolean; authoritativeTokenTotal: boolean };
   beginInvocation?(identity: InvocationIdentity): void | Promise<void>;
   setInvocationIdentity?(identity: InvocationIdentity): void | Promise<void>;
   getObservation(invocationId: string): Promise<NativeObservation | undefined>
@@ -40,6 +41,7 @@ interface NativeObservation {
   transport: string;
   executable: { path: string; version: string | null; profile: string };
   artifacts: Array<{ kind: string; path: string; sha256: string }>;
+  withheldArtifacts: Array<{ kind: string; reason: string; sha256: string | null }>;
   model: {
     configuredTarget: string;
     requested: { value: string | null; source: string; status: string };
@@ -48,7 +50,7 @@ interface NativeObservation {
   };
   usage: {
     counters: Record<'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'reasoning', UsageCounter>;
-    tokenTotal: { value: number | null; availability: string; source: string | null };
+    tokenTotal: { value: number | null; availability: string; source: string | null; semantics: 'authoritative-total' | 'unknown' };
     inclusion: { input: string | null; output: string | null; cache: string | null; reasoning: string | null };
   };
   terminal: {
@@ -57,7 +59,7 @@ interface NativeObservation {
     transportException: { name: string; message: string } | null;
     observedAt: string;
   };
-  capture: { status: string; patchSha256: string | null; workspaceSha256: string | null };
+  capture: { status: string; baselineCommit: string | null; patchSha256: string | null; workspaceSha256: string | null };
   timing: { startedAt: string; endedAt: string | null; stages: Record<string, number | null> };
   workerResult: WorkerResult | null;
 }
@@ -66,8 +68,8 @@ interface NativeObservation {
 `TaskOutcome`, `TaskAssignmentIdentity`, `TaskOutcomeJudgement`, and
 `StageAttemptEvidenceRef` are the canonical exported join types in
 `runner/experiment.ts`. One task assignment freezes campaign, cohort,
-experiment, suite-plus-substrate task, repeat, assignment, strategy, role,
-budget and analysis weight. Every stage and retry joins to that same frozen
+experiment, suite-plus-substrate task and explicit substrate ID, track,
+repeat, assignment, strategy, role, budget and analysis weight. Every stage and retry joins to that same frozen
 identity; a retry keeps its stage ID and gets a new attempt ID. `stages[]`
 retains every attempt's invocation, observation and artifact references.
 `judgements[]` is append-only: each version pins an independent judge and the
@@ -106,7 +108,7 @@ Retrieval happens after both returned and thrown `run()` outcomes.
 Missing counters use `null`; numeric compatibility values on `WorkerResult`
 are projections only and never count as measurements. Every observed counter,
 including `tokenTotal`, must be a finite nonnegative number. The runner does
-not recompute `tokenTotal` by summing counters. `inclusion` records source
+not recompute `tokenTotal` by summing counters. The token total counts as authoritative only with `semantics: 'authoritative-total'`; otherwise it remains unknown and cannot enforce a hard cap. `inclusion` records source
 semantics and overlap (including whether reasoning is already included in
 output), so consumers must not double-count overlapping counters. The runner
 may pass native counters into the toolkit governor or derive cost only when
@@ -114,6 +116,11 @@ input, output, cacheRead, and cacheWrite are all observed and the bridge sets
 `inclusion.cache` to the exact value `disjoint-from-input`. Otherwise native
 usage remains reportable but does not drive a folded governor total or modeled
 cost. `tokenTotal` remains the bridge-reported authoritative total.
+When `maxTokens` is a hard campaign cap, the native bridge must expose
+`campaignBudgetCapabilities: { hardTokenCap: true, authoritativeTokenTotal: true }`.
+The runner passes the remaining cap to each invocation and refuses later
+assignments after missing authoritative totals; an unsupported native route
+fails before dispatch instead of silently admitting an unbounded suite.
 
 The runner persists the observation before scoring and before workspace cleanup.
 The native bridge owns transport/process evidence and raw event artifacts; the

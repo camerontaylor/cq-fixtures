@@ -162,6 +162,8 @@ const EXPERIMENT_CONTEXT_SCHEMA = z.object({
   taskId: z.string().min(1), repeatId: z.string().min(1), assignmentId: z.string().min(1),
   stageId: z.string().min(1), attemptId: z.string().min(1), track: z.string().min(1),
   strategyId: z.string().min(1), settingsId: z.string().min(1), budgetId: z.string().min(1), profileId: z.string().min(1),
+  frozenWeight: z.number().finite().positive(),
+  caseAssignments: z.record(z.string(), z.object({ assignmentId: z.string().min(1), stageId: z.string().min(1), attemptId: z.string().min(1) }).strict()).optional(),
 }).strict();
 
 function parseArgs(argv: readonly string[]): CliOptions {

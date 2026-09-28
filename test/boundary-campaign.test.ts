@@ -10,6 +10,9 @@ import { compileBoundary } from '../runner/boundary/policy.ts';
 import type { BoundarySpec } from '../runner/boundary/policy.ts';
 import { probeHostBoundary } from '../runner/boundary/probes.ts';
 import { spawnBoundary } from '../runner/boundary/spawn.ts';
+import { compileBroker, createEgressBroker } from '../runner/boundary/egress-broker.ts';
+import { compileContainerBoundary, spawnContainerBoundary } from '../runner/boundary/container.ts';
+import type { ContainerBoundarySpec } from '../runner/boundary/container.ts';
 
 const roots: string[] = [];
 function fixture(): BoundarySpec {
@@ -26,6 +29,63 @@ function fixture(): BoundarySpec {
     endpoints: [], extensions: { mode: 'disabled', launchEvidence: null } };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+describe('container fallback admission and egress', () => {
+  function containerSpec(): ContainerBoundarySpec {
+    return { profile: 'cq-boundary-s5', daemonId: 'synthetic-daemon', vmConfigHash: 'a'.repeat(64),
+      image: 'node@sha256:' + 'b'.repeat(64), taskVolume: 'cq-s5-task-test', contextVolume: 'cq-s5-context-test',
+      stagingEvidence: 'synthetic-staging', authenticationFiles: [], namespaceEvidence: 'synthetic-acl', nativeControlEvidence: null,
+      network: { name: 'cq-s5-test', workerIP: '172.28.250.3', brokerIP: '172.28.250.2', port: 8080, brokerIdentity: 'c'.repeat(64), productionEligible: false } };
+  }
+  it('binds namespace, toolchain, mounts and broker identity without host mount escape options', () => {
+    const spec = containerSpec();
+    const policy = compileContainerBoundary(spec);
+    expect(policy.createArgs).toContain('1000:1000');
+    expect(policy.createArgs).toContain('--read-only');
+    expect(policy.createArgs).toContain('ALL');
+    expect(policy.createArgs).not.toContain('--privileged');
+    expect(policy.createArgs.join(' ')).not.toContain('type=bind');
+    expect(policy.heldOutEligible).toBe(false);
+    expect(compileContainerBoundary({ ...spec, network: { ...spec.network, port: 8081 } }).identity).not.toBe(policy.identity);
+    expect(() => compileContainerBoundary({ ...spec, image: 'node:latest' })).toThrow();
+    expect(() => compileContainerBoundary({ ...spec, taskVolume: '/Users/ctaylor' })).toThrow();
+    expect(() => compileContainerBoundary({ ...spec, network: { ...spec.network, brokerIP: '1.1.1.1' } })).toThrow();
+  });
+  it('refuses held-out, missing native admission and unbound live ACL receipts before exec', async () => {
+    const boundary = compileContainerBoundary(containerSpec());
+    let prepared = 0;
+    const prepare = async () => { prepared++; return { containerId: 'd'.repeat(64), identity: 'wrong', aclVerified: true, dispose: async () => {} }; };
+    const request = { boundary, executable: '/usr/local/bin/node', args: ['--version'], heldOut: false, purpose: 'no-model-probe' as const, prepare };
+    await expect(spawnContainerBoundary({ ...request, heldOut: true })).rejects.toThrow(/G2/);
+    await expect(spawnContainerBoundary({ ...request, purpose: 'actual-route' })).rejects.toThrow(/admission/);
+    expect(prepared).toBe(0);
+    await expect(spawnContainerBoundary(request)).rejects.toThrow(/ACL receipt/);
+    expect(prepared).toBe(1);
+  });
+  it('rejects ambiguous TLS upstream inventory and makes synthetic trust ineligible', () => {
+    const config = { timeoutMs: 1000, maxBodyBytes: 1024, routes: [{ id: 'declared', hostname: 'api.example.test',
+      port: 443, pathPrefix: '/v1', methods: ['POST'], addresses: ['8.8.8.8'], requestHeaders: ['authorization', 'content-type'] }] };
+    expect(compileBroker(config).productionEligible).toBe(true);
+    expect(() => compileBroker({ ...config, routes: [{ ...config.routes[0], hostname: '*' }] })).toThrow();
+    expect(() => compileBroker({ ...config, routes: [{ ...config.routes[0], addresses: ['127.0.0.1'] }] })).toThrow();
+    expect(() => compileBroker({ ...config, routes: [{ ...config.routes[0], requestHeaders: ['host'] }] })).toThrow();
+    expect(compileBroker({ ...config, synthetic: { ca: 'synthetic-only' } }).productionEligible).toBe(false);
+  });
+  it('rejects arbitrary CONNECT and absolute URLs through a real broker socket', async () => {
+    const { server } = createEgressBroker({ routes: [], timeoutMs: 1000, maxBodyBytes: 1024 });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing port');
+    try {
+      for (const line of ['CONNECT undeclared.test:443 HTTP/1.1', 'GET https://undeclared.test/ HTTP/1.1']) {
+        const socket = (await import('node:net')).connect(address.port, '127.0.0.1');
+        await once(socket, 'connect');
+        const reply = new Promise<string>((resolve) => socket.once('data', (data) => resolve(data.toString())));
+        socket.write(line + '\r\nHost: undeclared.test\r\nConnection: close\r\n\r\n');
+        expect(await reply).toContain('403'); socket.destroy();
+      }
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
+});
 
 describe('campaign boundary policy', () => {
   it('rejects blanket and overlapping read grants, including resolved symlinks', () => {
@@ -156,4 +216,63 @@ int main(int argc,char **argv){int mib[]={CTL_KERN,KERN_PROCARGS2,atoi(argv[1])}
       finally { clearTimeout(timer); }
     } finally { hiddenProcess.kill('SIGKILL'); await once(hiddenProcess, 'close'); }
   }, 45_000);
+});
+
+// Staging/export operates on full private clones, never a diff through host paths.
+describe('private task inventory and cleanup contract', () => {
+  it('rejects hidden symlink targets and linked Git metadata before export writes', async () => {
+    const { validateTaskEntries, materializeTask } = await import('../runner/boundary/task-tree.ts');
+    const root = mkdtempSync(join(tmpdir(), 'cq-tree-test-')); roots.push(root);
+    for (const target of ['/hidden/judge', '../sibling', '../../solution']) {
+      expect(() => validateTaskEntries([{ path: 'escape', kind: 'symlink', mode: 0o777, target }], false, false)).toThrow(/symlink/);
+    }
+    expect(() => validateTaskEntries([{ path: '.git', kind: 'file', mode: 0o644, data: Buffer.from('gitdir: /hidden').toString('base64') }])).toThrow(/independent clone/);
+    expect(() => materializeTask({ entries: [{ path: 'escape', kind: 'symlink', mode: 0o777, target: '/hidden' }], inventoryHash: '0'.repeat(64) }, root, false)).toThrow();
+    expect((await import('node:fs')).readdirSync(root)).toEqual([]);
+    expect(() => validateTaskEntries([{ path: 'mode', kind: 'file', mode: 0o4755, data: '' }], false, false)).toThrow(/unsafe task/);
+    expect(() => validateTaskEntries([
+      { path: 'a', kind: 'symlink', mode: 0o777, target: 'd/up/../hidden' },
+      { path: 'd', kind: 'directory', mode: 0o755 },
+      { path: 'd/up', kind: 'symlink', mode: 0o777, target: '..' },
+    ], false, false)).toThrow(/chain escapes/);
+  });
+  it('preserves deletions, commits, untracked files and executable modes in a fresh clone', async () => {
+    const { snapshotTask, materializeTask } = await import('../runner/boundary/task-tree.ts');
+    const { verifyGitBaseline } = await import('../runner/boundary/task-staging.ts');
+    const fs = await import('node:fs');
+    const root = mkdtempSync(join(tmpdir(), 'cq-clone-test-')); roots.push(root);
+    const source = join(root, 'source'); const destination = join(root, 'export'); mkdirSync(source); mkdirSync(destination);
+    const git = (args: string[]) => { const r = spawnSync('/usr/bin/git', args, { cwd: source, encoding: 'utf8', timeout: 10_000, env: { PATH: '/usr/bin:/bin', HOME: root, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }); expect(r.status, r.stderr).toBe(0); return r.stdout.trim(); };
+    git(['init', '-q']); writeFileSync(join(source, 'deleted'), 'old'); git(['add', '.']);
+    const commit = () => git(['-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@invalid', 'commit', '-qm', 'synthetic']);
+    commit(); const baseline = git(['rev-parse', 'HEAD']); fs.unlinkSync(join(source, 'deleted'));
+    writeFileSync(join(source, 'executable'), 'candidate'); fs.chmodSync(join(source, 'executable'), 0o755); git(['add', '-A']); commit();
+    writeFileSync(join(source, '.untracked'), 'partial'); symlinkSync('executable', join(source, 'safe-link'));
+    const tree = snapshotTask(source, true); const audit = verifyGitBaseline(tree, baseline);
+    expect(audit.head).not.toBe(baseline); materializeTask(tree, destination);
+    expect(fs.existsSync(join(destination, 'deleted'))).toBe(false);
+    expect(fs.readFileSync(join(destination, '.untracked'), 'utf8')).toBe('partial');
+    expect(fs.lstatSync(join(destination, 'executable')).mode & 0o777).toBe(0o755);
+    expect(fs.lstatSync(join(destination, 'safe-link')).isSymbolicLink()).toBe(true);
+    expect(snapshotTask(destination).inventoryHash).toBe(tree.inventoryHash);
+  }, 30_000);
+  it('isolates Docker config and endpoint from ambient overrides', async () => {
+    const { DockerControl } = await import('../runner/boundary/docker-control.ts');
+    const { readFileSync } = await import('node:fs');
+    const control = new DockerControl();
+    try {
+      expect(control.prefix).toEqual(['--config', control.configDirectory, '--host', `unix://${join(homedir(), '.colima/cq-boundary-s5/docker.sock')}`]);
+      expect(readFileSync(join(control.configDirectory, 'config.json'), 'utf8').trim()).toBe('{}');
+      expect(Object.keys(control.environment).sort()).toEqual(['HOME', 'LANG', 'PATH']);
+      expect(control.configDirectory).not.toBe(join(homedir(), '.docker'));
+    } finally { control.close(); }
+  });
+  it('rejects labels without private content inventory before preparing a worker', async () => {
+    const { containerPreparer } = await import('../runner/boundary/container-prepare.ts');
+    const specification: ContainerBoundarySpec = { profile: 'cq-boundary-s5', daemonId: 'dedicated', vmConfigHash: '0'.repeat(64), image: 'sha256:' + '1'.repeat(64), taskVolume: 'cq-s5-task-test', contextVolume: 'cq-s5-context-test', stagingEvidence: 'label-only', authenticationFiles: [], nativeControlEvidence: null, network: { name: 'cq-s5-net', workerIP: '172.30.5.3', brokerIP: '172.30.5.2', port: 8080, brokerIdentity: '2'.repeat(64), productionEligible: false }, namespaceEvidence: 'synthetic' };
+    const policy = compileContainerBoundary(specification);
+    await expect(containerPreparer(specification)(policy.createArgs, policy.identity)).rejects.toThrow(/private staging inventory/);
+    for (const image of ['node:latest', '--config=/hidden', 'sha256:bad']) expect(() => compileContainerBoundary({ ...specification, image })).toThrow();
+    expect(() => compileContainerBoundary({ ...specification, profile: 'other' as 'cq-boundary-s5' })).toThrow();
+  });
 });

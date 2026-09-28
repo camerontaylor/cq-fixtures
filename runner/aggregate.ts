@@ -1,7 +1,7 @@
 // Per-role aggregation of result rows into comparison tables
 // (schema/comparison-table.schema.json). Pure: rows in, tables out — no I/O.
 
-import { canonicalJson } from './experiment.ts';
+import { canonicalJson, type TaskOutcome } from './experiment.ts';
 
 export type SuiteRole = 'fixer-worker' | 'review-classifier';
 
@@ -82,11 +82,12 @@ export interface ResultRow {
   experiment?: {
     campaignId: string; cohortId: string; experimentId: string; taskId: string;
     repeatId: string; assignmentId: string; stageId: string; attemptId: string;
-    track: string; strategyId: string; settingsId: string; budgetId: string; profileId: string;
+    track: string; strategyId: string; settingsId: string; budgetId: string; profileId: string; frozenWeight: number;
   };
   /** Authoritative accounting. Null means unavailable, never zero imputation. */
   observedUsage?: { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; reasoning: number | null; tokenTotal: number | null; complete: boolean };
-  outcomes?: { candidateCorrectness: boolean | null; assignedStrategySuccess: boolean | null; operationalStatus: 'complete' | 'measured-failure' | 'measured-transport-failure' | 'operational-missingness' | 'judge-failure' | 'interrupted' | 'integrity-violation' };
+  outcomes?: { candidateCorrectness: boolean | null; formatConformance: boolean | null; assignedStrategySuccess: boolean | null; operationalStatus: 'complete' | 'measured-failure' | 'measured-transport-failure' | 'operational-missingness' | 'judge-failure' | 'interrupted' | 'integrity-violation' };
+  taskOutcome?: TaskOutcome;
   modelIdentity?: { configuredTarget: string; requestedModel: string | null; servedModel: string | null };
   runId: string;
   timestamp: string;
@@ -444,11 +445,11 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       acc.hasReasoning = true;
       acc.tokens.reasoning += row.tokens.reasoning;
     }
-    const observed = row.observedUsage ?? {
+    const observed = row.observedUsage ?? (row.experiment === undefined ? {
       input: row.tokens.input ?? 0, output: row.tokens.output ?? 0, cacheRead: row.tokens.cacheRead ?? 0,
       cacheWrite: row.tokens.cacheWrite ?? 0, reasoning: row.tokens.reasoning ?? 0,
       tokenTotal: (row.tokens.input ?? 0) + (row.tokens.output ?? 0) + (row.tokens.cacheRead ?? 0) + (row.tokens.cacheWrite ?? 0), complete: true,
-    };
+    } : { input: null, output: null, cacheRead: null, cacheWrite: null, reasoning: null, tokenTotal: null, complete: false });
     for (const name of ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'tokenTotal'] as const) {
       const value = observed[name];
       if (value === null) { acc.observedUsage[name] = null; acc.usageComplete = false; }

@@ -27,6 +27,9 @@ export interface ExperimentContext {
   settingsId: string;
   budgetId: string;
   profileId: string;
+  frozenWeight: number;
+  /** Required for multi-case runSuite dispatch; keys are suite case IDs. */
+  caseAssignments?: Record<string, { assignmentId: string; stageId: string; attemptId: string }>;
 }
 
 /** Frozen assignment identity shared by every retry and stage for one task. */
@@ -36,6 +39,8 @@ export interface TaskAssignmentIdentity {
   experimentId: string;
   /** Hash of suite plus substrate identity. */
   taskId: string;
+  substrateId: string;
+  track: string;
   repeatId: string;
   assignmentId: string;
   strategyId: string;

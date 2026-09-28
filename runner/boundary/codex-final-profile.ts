@@ -12,6 +12,7 @@ import type { TaskStageReceipt } from './task-staging.ts';
 
 export const FINAL_CODEX_CONFIG_HASH = '8451e107ce3833b01bd6e96f748c783ec7021a9b6b857a4a1325ab9d339a5c03';
 export const FINAL_BROKER_IDENTITY = 'c6d8d0b3dba5ac98779663e4cc75b92107fddb14430fc42180f4ec675c0f99b0';
+export const FINAL_NATIVE_IMAGE = 'sha256:2a9422f0de75079fd81da5a5b68bf9936e72ce22e30d1a22ddd91bc77201de4e';
 export const FINAL_BROKER_IMAGE = 'sha256:a0af04214c67a25e4c5ab01b20f6e6deea98fc664b65ae5532576949234adfe3';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -102,13 +103,18 @@ export function createFinalCodexSpawnAdapter(input: {
   broker: { containerId: string; imageId: string; configPath: string };
   hostTaskRoot: string; exportRoot: string; budgetSeconds: number;
   stage: FinalProfileAdmission['stage'];
+  /** REQUIRED authoritative parent service: independently preregister source/assignment,
+   * boundary and invocation identities; consume an exclusive wx replay ledger before
+   * returning. Never implement as a passthrough echo. Provision failures consume it.
+   * Native owner enforces a whole-provision deadline in addition to runtime budget. */
   admit: (request: { stage: FinalProfileAdmission['stage']; boundaryIdentity: string; invocationIdentity: string }) => Promise<FinalProfileAdmission>;
 }) {
   const spec = structuredClone(input.specification), staging = structuredClone(input.staging), broker = structuredClone(input.broker);
+  if (spec.image !== FINAL_NATIVE_IMAGE) throw new Error('hard-pinned final native worker image required');
   validateStageReceipt(staging);
   const policy = compileContainerBoundary(spec);
   if (!['final-profile-G1', 'actual-route-G2'].includes(input.stage) || spec.network.brokerIdentity !== FINAL_BROKER_IDENTITY ||
-      broker.imageId !== FINAL_BROKER_IMAGE || !spec.network.productionEligible || spec.network.brokerIP !== '172.29.249.2' ||
+      spec.image !== FINAL_NATIVE_IMAGE || broker.imageId !== FINAL_BROKER_IMAGE || !spec.network.productionEligible || spec.network.brokerIP !== '172.29.249.2' ||
       spec.network.workerIP !== '172.29.249.3' || spec.network.port !== 8080 || spec.authenticationFiles.join(',') !== 'auth.json') throw new Error('frozen HTTP-only profile required');
   const files = staging.context.entries;
   if (files.length !== 2 || files.some((e) => e.kind !== 'file' || e.mode !== 0o600 || !['auth.json', 'config.toml'].includes(e.path))) throw new Error('only exact private auth/config context permitted');
@@ -135,18 +141,52 @@ export function createFinalCodexSpawnAdapter(input: {
         catch (error) { await prepared.dispose(); throw error; }
       } });
     const session = containerTaskSession(staging, launched.containerId);
-    let stop: Promise<void> | undefined, final: Promise<{ inventoryHash: string; head: string }> | undefined;
-    let deadlineFailure = false;
-    const terminate = () => stop ??= (async () => { clearTimeout(timer); await session.terminate(); await launched.dispose(); })();
-    const timer = setTimeout(() => { void terminate().catch(() => { deadlineFailure = true; }); }, budget * 1000);
-    // Defensive disposal also covers a dead Docker client; native still MUST await.
-    const stopOnClose = () => { void terminate().catch(() => { deadlineFailure = true; }); };
-    launched.child.once('close', stopOnClose); launched.child.once('error', stopOnClose);
+    const lifecycle = finalContainerLifecycle({ child: launched.child, budgetSeconds: budget,
+      terminate: async () => {
+        let first: unknown; let failed = false;
+        try { await session.terminate(); } catch (error) { first = error; failed = true; }
+        try { await launched.dispose(); } catch (error) { if (!failed) { first = error; failed = true; } }
+        if (failed) throw first;
+      },
+      exportTask: () => session.finalize(exportRoot), cleanup: () => session.cleanup(), closeControl: session.closeControl,
+    });
     return { child: launched.child, boundaryIdentity: launched.boundaryIdentity, launchIdentity: launched.launchIdentity, admissionId: receipt.admissionId,
       environmentNames: ['HOME', 'CODEX_HOME', 'PATH', 'TMPDIR', 'LANG', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL'],
       scope: 'boundary' as const, isolation: 'unverified' as const, heldOut: false as const,
-      terminate,
-      finalize: () => final ??= (async () => { await terminate(); if (deadlineFailure) throw new Error('deadline disposal failed'); const result = await session.finalize(exportRoot); await session.cleanup(); return result; })(),
+      terminate: lifecycle.terminate, finalize: lifecycle.finalize,
     };
+  };
+}
+
+/** Awaited lifecycle seam, exported for bounded synthetic race/failure checks.
+ * It closes only the trusted Docker client config on failure, never recovery volumes.
+ */
+export function finalContainerLifecycle<T>(input: {
+  child: { once: (event: 'close' | 'error', listener: () => void) => unknown; exitCode: number | null; signalCode: NodeJS.Signals | null };
+  budgetSeconds: number; terminate: () => Promise<void>; exportTask: () => Promise<T>;
+  cleanup: () => Promise<void>; closeControl: () => void;
+}) {
+  let stop: Promise<void> | undefined, final: Promise<T> | undefined;
+  let firstTerminationError: unknown; let terminationFailed = false;
+  const terminate = () => stop ??= (async () => {
+    clearTimeout(timer);
+    try { await input.terminate(); }
+    catch (error) { firstTerminationError = error; terminationFailed = true; throw firstTerminationError; }
+  })();
+  const stopOnClose = () => { void terminate().catch(() => { /* retained original failure; awaited terminate/finalize rethrows */ }); };
+  const timer = setTimeout(stopOnClose, input.budgetSeconds * 1000);
+  input.child.once('close', stopOnClose); input.child.once('error', stopOnClose);
+  // Listener installation alone misses children that exited before receipt creation.
+  if (input.child.exitCode !== null || input.child.signalCode !== null) stopOnClose();
+  return {
+    terminate,
+    finalize: () => final ??= (async () => {
+      let failed = false;
+      try {
+        await terminate(); if (terminationFailed) throw firstTerminationError;
+        const result = await input.exportTask(); await input.cleanup(); return result;
+      } catch (error) { failed = true; throw error; }
+      finally { try { input.closeControl(); } catch (error) { if (!failed) throw error; } }
+    })(),
   };
 }

@@ -1,0 +1,17 @@
+{
+  "observedAt": "2026-09-28T20:46:38.256Z",
+  "g2": "blocked",
+  "heldOutEligible": false,
+  "paidModelCalls": 0,
+  "hostFileReadProbesPassed": true,
+  "seededOtherProcessArgvReadable": true,
+  "seededOtherProcessEnvironmentReadable": true,
+  "processProbe": "test/boundary-campaign.test.ts: process argument isolation",
+  "localEndpointRestrictionProven": true,
+  "externalEndpointBroker": "not-implemented-or-validated",
+  "nativeRouteCalls": "not-admitted-not-run",
+  "nativeExtensionControls": "unverified",
+  "realSubscriptionAuthentication": "unverified-not-read",
+  "fallbackRuntime": "Docker server unavailable; Colima stopped; no running Lima instance discovered",
+  "zcode": "zcode CLI not found on PATH; native worker owns actual ACP discovery"
+}

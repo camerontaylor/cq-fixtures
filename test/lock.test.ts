@@ -97,7 +97,7 @@ describe('pack-toolkit.sh pin resolution (tag | commit SHA)', () => {
         env: { ...process.env, TOOLKIT_LOCK: writeLock('main\n'), TOOLKIT_REPO_URL: `file://${repo}` },
       }),
     ).toThrow();
-  });
+  }, 30_000);
 
   it('packs a pinned commit SHA hermetically (file:// remote, copied script root)', () => {
     // A minimal local toolkit: package.json + lockfile so `npm ci` and

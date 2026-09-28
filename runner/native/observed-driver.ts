@@ -60,9 +60,11 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
 
   protected abstract runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult>;
 
-  /** Replace operation scaffolding defaults with the selected native route identity before dispatch. */
-  protected invocationForTarget(invocation: OpInvocation, model: string, provider: string): OpInvocation {
-    return { ...invocation, modelSpec: { model, provider } };
+  /** Refuse silently relabeling an operation request as the configured native route. */
+  protected assertRequestedModel(invocation: OpInvocation, configuredModel: string): void {
+    if (invocation.modelSpec.model.toLowerCase() !== configuredModel.toLowerCase()) {
+      throw new Error(`native route model mismatch: operation requested '${invocation.modelSpec.model}', configured profile is '${configuredModel}'`);
+    }
   }
 
   protected newObservation(identity: InvocationIdentity, invocation: OpInvocation, startedAt: string): NativeObservation {
@@ -84,6 +86,7 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
           effort: { value: null, source: 'local-profile-inventory', status: 'requested-unobservable' },
           permissions: { value: invocation.toolPolicy.mode ?? 'allowlist', source: 'OpInvocation.toolPolicy', status: 'requested' },
           sandbox: { value: invocation.sandboxPolicy.level, source: 'OpInvocation.sandboxPolicy', status: 'requested' },
+          requestedProvider: { value: invocation.modelSpec.provider, source: 'OpInvocation.modelSpec', status: 'requested' },
         },
       },
       usage: {
@@ -128,7 +131,7 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
 export function createWorkerResult(
   usage: WorkerResult['usage'],
   stopReason: WorkerResult['stopReason'],
-  fields: Partial<Pick<WorkerResult, 'model' | 'structuredOutput' | 'denials'>> & { error?: string } = {},
+  fields: Partial<Pick<WorkerResult, 'model' | 'structuredOutput' | 'denials' | 'sessionId'>> & { error?: string } = {},
 ): WorkerResult {
   return {
     usage,
@@ -136,6 +139,7 @@ export function createWorkerResult(
     denials: fields.denials ?? [],
     ...(fields.model === undefined ? {} : { model: fields.model }),
     ...(fields.structuredOutput === undefined ? {} : { structuredOutput: fields.structuredOutput }),
+    ...(fields.sessionId === undefined ? {} : { sessionId: fields.sessionId }),
     ...(fields.error === undefined ? {} : { error: fields.error }),
   };
 }

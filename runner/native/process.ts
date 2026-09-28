@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { spawnBoundary } from '../boundary/spawn.ts';
 import type { BoundaryLaunch } from '../boundary/spawn.ts';
@@ -14,6 +15,7 @@ export interface SupervisedProcessResult {
   code: number | null;
   signal: NodeJS.Signals | null;
   terminal: ProcessTerminal;
+  treeStopped: boolean;
   startedAt: string;
   endedAt: string;
   launch?: NativeLaunchEvidence;
@@ -25,6 +27,9 @@ export interface NativeLaunchEvidence {
   launchIdentity: string;
   admissionId: string;
   environmentNames: string[];
+  scope: 'visible-calibration' | 'boundary';
+  isolation: 'disabled' | 'unverified';
+  heldOut: false;
 }
 
 export interface NativeSpawnReceipt {
@@ -33,8 +38,48 @@ export interface NativeSpawnReceipt {
   launchIdentity: string;
   admissionId: string;
   environmentNames: string[];
+  scope: 'visible-calibration';
+  isolation: 'disabled';
+  heldOut: false;
 }
 export type NativeSpawnAdapter = (command: string, args: readonly string[], options: { cwd: string }) => Promise<NativeSpawnReceipt>;
+
+export interface VisibleCalibrationAdmission {
+  admissionId: string;
+  scope: 'visible-calibration';
+  isolation: 'disabled';
+  heldOut: false;
+  environmentNames: string[];
+}
+
+export function launchEvidenceStatus(evidence: NativeLaunchEvidence): string {
+  return evidence.isolation === 'disabled' ? 'visible-only-unconfined' : 'visible-boundary-isolation-unverified';
+}
+
+/** Explicit, auditable direct launch for visible calibration only; never held-out eligible. */
+export function visibleCalibrationSpawnAdapter(admission: VisibleCalibrationAdmission): NativeSpawnAdapter {
+  if (!admission.admissionId.trim() || admission.scope !== 'visible-calibration' ||
+      admission.isolation !== 'disabled' || admission.heldOut !== false) {
+    throw new Error('visible calibration launch requires a non-empty parent admission and heldOut=false');
+  }
+  if (admission.environmentNames.some((name) => /(?:proxy|base.?url|endpoint)/iu.test(name))) {
+    throw new Error('visible calibration cannot override provider or proxy endpoints');
+  }
+  const environmentNames = [...new Set(admission.environmentNames)].sort();
+  return async (command, args, { cwd }) => {
+    const env = Object.fromEntries(environmentNames.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
+    const child = spawn(command, [...args], {
+      cwd, env, stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32', windowsHide: true,
+    });
+    const launchIdentity = createHash('sha256').update(JSON.stringify({ command, args, cwd, admissionId: admission.admissionId })).digest('hex');
+    return {
+      child, boundaryIdentity: 'visible-only-unconfined', launchIdentity,
+      admissionId: admission.admissionId, environmentNames: environmentNames.filter((name) => process.env[name] !== undefined),
+      scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
+    };
+  };
+}
 
 export interface SupervisedProcessOptions {
   cwd: string;
@@ -73,6 +118,7 @@ export async function runSupervised(
   let spawnError: Error | undefined;
   let child: ChildProcess;
   let launch: SupervisedProcessResult['launch'];
+  let treeStopped = false;
 
   try {
     if (options.boundary) {
@@ -87,13 +133,19 @@ export async function runSupervised(
       launch = {
         boundaryIdentity: receipt.boundaryIdentity, launchIdentity: receipt.launchIdentity,
         admissionId: receipt.admissionId ?? '', environmentNames: receipt.environmentNames,
+        scope: 'boundary', isolation: 'unverified', heldOut: false,
       };
     } else if (options.spawnAdapter) {
       const receipt = await options.spawnAdapter(command, args, { cwd: options.cwd });
+      if (!receipt.admissionId.trim() || receipt.scope !== 'visible-calibration' ||
+          receipt.isolation !== 'disabled' || receipt.heldOut !== false) {
+        throw new Error('native spawn adapter receipt is not admitted visible-only calibration evidence');
+      }
       child = receipt.child;
       launch = {
         boundaryIdentity: receipt.boundaryIdentity, launchIdentity: receipt.launchIdentity,
         admissionId: receipt.admissionId, environmentNames: receipt.environmentNames,
+        scope: receipt.scope, isolation: receipt.isolation, heldOut: receipt.heldOut,
       };
     } else if (options.allowUnconfinedTestProcess) {
       child = spawn(command, [...args], {
@@ -125,9 +177,10 @@ export async function runSupervised(
 
   let timedOut = false;
   let cancelled = options.signal?.aborted ?? false;
-  const snapshot = (code: number | null, signal: NodeJS.Signals | null): SupervisedProcessResult => ({
+  const snapshot = (code: number | null, signal: NodeJS.Signals | null, stopped = treeStopped): SupervisedProcessResult => ({
     command, args: [...args], cwd: options.cwd,
     stdout: stdoutParts.join(''), stderr: stderrParts.join(''), code, signal,
+    treeStopped: stopped,
     terminal: spawnError ? 'spawn-error' : timedOut ? 'timeout' : cancelled ? 'cancelled' : terminal,
     startedAt, endedAt: new Date().toISOString(),
     ...(launch ? { launch } : {}),
@@ -141,10 +194,12 @@ export async function runSupervised(
     });
     child.once('close', (code, signal) => {
       // A leader can exit while a detached descendant remains in its process
-      // group. Once stdout/stderr have drained, no group member is required by
-      // this invocation; reap anything left even after a nominal completion.
-      killTree(child, 'SIGTERM');
-      resolve(snapshot(code, signal));
+      // group. Prove the complete group is gone before resolving so callers
+      // cannot capture a workspace while a late descendant can still edit it.
+      void stopAndWait(child, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS).then((stopped) => {
+        treeStopped = stopped;
+        resolve(snapshot(code, signal, stopped));
+      });
     });
   });
 
@@ -162,8 +217,10 @@ export async function runSupervised(
   const forceResolveMs = options.timeoutMs + (options.killGraceMs ?? DEFAULT_KILL_GRACE_MS) + 2000;
   const forced = new Promise<SupervisedProcessResult>((resolve) => {
     fallbackTimer = setTimeout(() => {
-      killTree(child, 'SIGKILL');
-      resolve(snapshot(null, 'SIGKILL'));
+      void stopAndWait(child, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS).then((stopped) => {
+        treeStopped = stopped;
+        resolve(snapshot(null, 'SIGKILL', stopped));
+      });
     }, forceResolveMs);
   });
   try {
@@ -178,6 +235,29 @@ export async function runSupervised(
 
 function terminateTree(child: ChildProcess): void {
   killTree(child, 'SIGTERM');
+}
+
+async function stopAndWait(child: ChildProcess, graceMs: number): Promise<boolean> {
+  if (!child.pid) return true;
+  terminateTree(child);
+  if (await waitForGroupExit(child.pid, Math.max(50, graceMs))) return true;
+  killTree(child, 'SIGKILL');
+  return waitForGroupExit(child.pid, Math.max(500, graceMs * 4));
+}
+
+async function waitForGroupExit(pid: number, timeoutMs: number): Promise<boolean> {
+  if (process.platform === 'win32') return false;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    try { process.kill(-pid, 0); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
+      if ((error as NodeJS.ErrnoException).code !== 'EPERM') return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  try { process.kill(-pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
 }
 
 function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -201,7 +281,7 @@ function spawnFailure(
   const error = value instanceof Error ? value : new Error(String(value));
   return {
     command, args: [...args], cwd, stdout: '', stderr: '', code: null,
-    signal: null, terminal: 'spawn-error', startedAt,
+    signal: null, terminal: 'spawn-error', treeStopped: true, startedAt,
     endedAt: new Date().toISOString(),
     error: { name: error.name, message: error.message },
   };

@@ -531,10 +531,18 @@ describe('writable workspace (fixer fixture round-trip)', () => {
     const markers = ['fsmonitor', 'clean-filter', 'textconv'].map((name) => join(root, `${name}.marker`));
     const [fsmonitorMarker, cleanMarker, textconvMarker] = markers as [string, string, string];
     const tripwire = (marker: string) => `printf hit > '${marker}'`;
+    let workerBaselineCommit: string | undefined;
+    let hostBaselinePin: string | undefined;
     const hostileWorkspace: Driver = {
       async run(invocation: OpInvocation): Promise<WorkerResult> {
         const workspace = /workspace: (.+)$/m.exec(invocation.prompt)?.[1];
         if (workspace === undefined) throw new Error('test workspace missing');
+        const dotGit = join(workspace, '.git');
+        const head = readFileSync(join(dotGit, 'HEAD'), 'utf8').trim();
+        if (!head.startsWith('ref:')) throw new Error('worker .git is not an ordinary in-workspace repository');
+        const baseline = spawnSync('git', ['-C', workspace, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+        if (baseline.status !== 0) throw new Error('worker baseline commit missing');
+        workerBaselineCommit = baseline.stdout.trim();
         writeFileSync(join(workspace, 'state.txt'), 'fixed\n');
         const committed = spawnSync('git', [
           '-C', workspace, '-c', 'user.name=test', '-c', 'user.email=test@localhost', 'commit', '-am', 'worker edit',
@@ -543,9 +551,6 @@ describe('writable workspace (fixer fixture round-trip)', () => {
         // Model-controlled files attempt Git's fsmonitor, clean-filter, and
         // textconv hooks. The only possible effects are these temp markers.
         writeFileSync(join(workspace, '.gitattributes'), 'state.txt filter=tripwire diff=tripwire\n');
-        const dotGit = join(workspace, '.git');
-        rmSync(dotGit, { recursive: true, force: true });
-        mkdirSync(dotGit, { recursive: true });
         writeFileSync(join(dotGit, 'config'), [
           '[core]',
           `\tfsmonitor = ${tripwire(fsmonitorMarker)}`,
@@ -555,6 +560,7 @@ describe('writable workspace (fixer fixture round-trip)', () => {
           `\ttextconv = ${tripwire(textconvMarker)}`,
           '',
         ].join('\n'));
+        writeFileSync(join(dotGit, 'info', 'attributes'), '* filter=tripwire diff=tripwire\n');
         return {
           model: invocation.modelSpec.model,
           structuredOutput: { fixed: true, notes: 'updated state.txt' },
@@ -565,11 +571,20 @@ describe('writable workspace (fixer fixture round-trip)', () => {
       },
     };
 
-    const result = await runSuite(opts(dir, { driver: hostileWorkspace }));
+    const result = await runSuite({
+      ...opts(dir, { driver: hostileWorkspace }),
+      hostCheckScoringEnvironment: (_workspace, pinnedBaselineCommit) => {
+        hostBaselinePin = pinnedBaselineCommit;
+        return {};
+      },
+    });
     const patchArtifact = result.artifacts.find((artifact) => artifact.kind === 'patch');
     expect(patchArtifact?.content).toMatch(/\+fixed/);
+    expect(patchArtifact?.content).not.toContain('.git/');
     expect(markers.map((marker) => existsSync(marker))).toEqual([false, false, false]);
     expect(result.rows[0]).toMatchObject({ case: 'fix-git-boundary', outcome: { passed: 2 } });
+    expect(workerBaselineCommit).toBeDefined();
+    expect(hostBaselinePin).toBe(workerBaselineCommit);
   }, 20_000);
 
   it('materializes relative symlinks verbatim — the copied link still points inside the workspace', async () => {

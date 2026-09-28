@@ -1,0 +1,31 @@
+Default-concurrency full run: completed exit 1
+ FAIL  test/lock.test.ts > pack-toolkit.sh pin resolution (tag | commit SHA) > resolves a tag name from the lock
+Error: Test timed out in 5000ms.
+ FAIL  test/lock.test.ts > pack-toolkit.sh pin resolution (tag | commit SHA) > refuses a multi-line lock
+Error: Test timed out in 5000ms.
+ FAIL  test/runner.test.ts > fixer-worker scoring (re-run the seeded check) > check exit 0 scores 1, check exit 1 scores 0
+Error: Test timed out in 15000ms.
+ FAIL  test/runner.test.ts > fixer-worker scoring (re-run the seeded check) > the probe ceiling is --check-timeout-ms through the run path, independent of wallClockMs
+Error: Test timed out in 15000ms.
+ FAIL  test/runner.test.ts > fixer-worker scoring (re-run the seeded check) > a driver missing-credential throw aborts the run instead of scoring zeros
+Error: Test timed out in 15000ms.
+ FAIL  test/runner.test.ts > schema-compliance dimension (DD-4: structured-output fidelity as a scored probe) > a worker that fixes the fixture AND holds the shape scores both probes (2/2) end to end
+Error: Test timed out in 15000ms.
+ FAIL  test/runner.test.ts > writable workspace (fixer fixture round-trip) > the driver writes its workspace copy and the check probe grades THAT copy — the fix round-trips
+Error: Test timed out in 15000ms.
+ FAIL  test/runner.test.ts > writable workspace (fixer fixture round-trip) > materializes relative symlinks verbatim — the copied link still points inside the workspace
+Error: Test timed out in 15000ms.
+ FAIL  test/snapshot-regrade.test.ts > committed WB-1 regrade replay > is deterministic, leaves the checked-in snapshot unchanged, and succeeds check while reporting absent sidecars
+Error: Test timed out in 120000ms.
+ Test Files  3 failed | 23 passed (26)
+      Tests  9 failed | 529 passed (538)
+   Duration  579.89s (tests 99%, import 1%)
+
+Two-worker full run: incomplete; no final summary in retained log
+ ❯ test/runner.test.ts (61 tests | 2 failed) 138072ms
+     × check exit 0 scores 1, check exit 1 scores 0 19109ms
+     × the probe ceiling is --check-timeout-ms through the run path, independent of wallClockMs 17359ms
+
+Final focused run: 3 files / 15 tests passed in 3.71s.
+Final typecheck and lint passed. Both full-run build phases passed.
+No further full-suite rerun after overseer steer.

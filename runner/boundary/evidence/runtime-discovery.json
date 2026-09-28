@@ -1,0 +1,146 @@
+{
+  "observedAt": "2026-09-28T20:42:53.802Z",
+  "host": {
+    "platform": "darwin",
+    "release": "24.6.0",
+    "arch": "x64",
+    "node": "24.21.0"
+  },
+  "versions": [
+    {
+      "label": "Codex native executable offline version",
+      "observedAt": "2026-09-28T20:42:53.260Z",
+      "viable": true,
+      "version": "0.155.1",
+      "exitCode": 0,
+      "signal": null,
+      "failureCode": null,
+      "timedOut": false,
+      "policy": {
+        "version": 1,
+        "backend": "macos-sandbox-exec",
+        "identity": "293c4b7b056d70db2ee330e1b4b4ad9d0e6d4743095596287d3125fc97008ac7",
+        "profile": "(version 1)\n(deny default)\n(allow process-fork)\n(allow process-exec (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin/codex\"))\n(allow sysctl-read)\n(allow file-read* (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/task\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/context\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/home\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/tmp\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin/codex\") (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath \"/private/var/db/dyld\") (literal \"/\") (literal \"/dev/null\") (literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/private/var/select/sh\"))\n(allow file-read-metadata (literal \"/System\") (literal \"/Users\") (literal \"/Users/ctaylor\") (literal \"/Users/ctaylor/.local\") (literal \"/Users/ctaylor/.local/share\") (literal \"/Users/ctaylor/.local/share/mise\") (literal \"/Users/ctaylor/.local/share/mise/installs\") (literal \"/Users/ctaylor/.local/share/mise/installs/node\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules/@openai\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-x64\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-x64/vendor\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin\") (literal \"/Users/ctaylor/.tmp\") (literal \"/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR\") (literal \"/dev\") (literal \"/private\") (literal \"/private/var\") (literal \"/private/var/db\") (literal \"/private/var/select\") (literal \"/usr\"))\n(allow file-write* (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/task\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/home\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/tmp\") (literal \"/dev/null\"))\n",
+        "resolved": {
+          "bundle": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR",
+          "task": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/task",
+          "context": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/context",
+          "home": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/home",
+          "temporary": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/tmp",
+          "toolchain": [],
+          "authentication": [],
+          "executables": [
+            "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin/codex"
+          ],
+          "forbidden": [
+            "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/hidden"
+          ],
+          "endpoints": [],
+          "extensions": {
+            "mode": "disabled",
+            "launchEvidence": null
+          }
+        },
+        "environment": {
+          "HOME": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/home",
+          "TMPDIR": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/tmp/",
+          "XDG_CONFIG_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/home",
+          "XDG_CACHE_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/tmp",
+          "XDG_DATA_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/home",
+          "XDG_STATE_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-rf3GNR/home",
+          "PATH": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin",
+          "LANG": "en_US.UTF-8",
+          "LC_ALL": "en_US.UTF-8"
+        },
+        "heldOutEligible": false,
+        "nativeControlsAttested": false
+      },
+      "g2": "not-established"
+    },
+    {
+      "label": "Pi bundled executable offline version",
+      "observedAt": "2026-09-28T20:42:53.315Z",
+      "viable": false,
+      "version": null,
+      "exitCode": 1,
+      "signal": null,
+      "failureCode": "ERR_MODULE_NOT_FOUND",
+      "timedOut": false,
+      "policy": {
+        "version": 1,
+        "backend": "macos-sandbox-exec",
+        "identity": "c2a2aa4c2dfb5a1197dd0e4b65598822168f621840b05696cf6b9abd320c29fd",
+        "profile": "(version 1)\n(deny default)\n(allow process-fork)\n(allow process-exec (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin/node\"))\n(allow sysctl-read)\n(allow file-read* (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/task\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/context\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/home\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/tmp\") (subpath \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/package.json\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin/node\") (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath \"/private/var/db/dyld\") (literal \"/\") (literal \"/dev/null\") (literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/private/var/select/sh\"))\n(allow file-read-metadata (literal \"/System\") (literal \"/Users\") (literal \"/Users/ctaylor\") (literal \"/Users/ctaylor/.local\") (literal \"/Users/ctaylor/.local/share\") (literal \"/Users/ctaylor/.local/share/mise\") (literal \"/Users/ctaylor/.local/share/mise/installs\") (literal \"/Users/ctaylor/.local/share/mise/installs/node\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle\") (literal \"/Users/ctaylor/.tmp\") (literal \"/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY\") (literal \"/dev\") (literal \"/private\") (literal \"/private/var\") (literal \"/private/var/db\") (literal \"/private/var/select\") (literal \"/usr\"))\n(allow file-write* (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/task\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/home\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/tmp\") (literal \"/dev/null\"))\n",
+        "resolved": {
+          "bundle": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY",
+          "task": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/task",
+          "context": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/context",
+          "home": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/home",
+          "temporary": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/tmp",
+          "toolchain": [
+            {
+              "path": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle",
+              "kind": "tree",
+              "reason": "offline --version runtime code distribution"
+            },
+            {
+              "path": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+              "kind": "file",
+              "reason": "offline --version startup dependency"
+            },
+            {
+              "path": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/package.json",
+              "kind": "file",
+              "reason": "offline --version startup dependency"
+            }
+          ],
+          "authentication": [],
+          "executables": [
+            "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin/node"
+          ],
+          "forbidden": [
+            "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/hidden"
+          ],
+          "endpoints": [],
+          "extensions": {
+            "mode": "disabled",
+            "launchEvidence": null
+          }
+        },
+        "environment": {
+          "HOME": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/home",
+          "TMPDIR": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/tmp/",
+          "XDG_CONFIG_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/home",
+          "XDG_CACHE_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/tmp",
+          "XDG_DATA_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/home",
+          "XDG_STATE_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-7OmtAY/home",
+          "PATH": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin",
+          "LANG": "en_US.UTF-8",
+          "LC_ALL": "en_US.UTF-8"
+        },
+        "heldOutEligible": false,
+        "nativeControlsAttested": false
+      },
+      "g2": "not-established"
+    }
+  ],
+  "fallbacks": [
+    {
+      "backend": "docker",
+      "state": "unavailable",
+      "exitCode": 1
+    },
+    {
+      "backend": "colima",
+      "state": "unavailable",
+      "exitCode": 1
+    },
+    {
+      "backend": "lima",
+      "state": "unavailable",
+      "exitCode": 0
+    }
+  ],
+  "g2": "not-established",
+  "paidModelCalls": 0
+}

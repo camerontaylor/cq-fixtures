@@ -1,0 +1,71 @@
+{
+  "label": "Pi minimal bundle and chord distribution",
+  "observedAt": "2026-09-28T20:46:34.069Z",
+  "viable": true,
+  "version": "0.0.0-overshrim",
+  "exitCode": 0,
+  "signal": null,
+  "failureCode": null,
+  "timedOut": false,
+  "policy": {
+    "version": 1,
+    "backend": "macos-sandbox-exec",
+    "identity": "9d7a29eee1c24aacbcb793239c36427631e37e547dfb0221dd2e6561d967173f",
+    "profile": "(version 1)\n(deny default)\n(allow process-fork)\n(allow process-exec (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin/node\"))\n(allow sysctl-read)\n(allow file-read* (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/task\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/context\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/home\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/tmp\") (subpath \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js\") (subpath \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/chord\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/package.json\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin/node\") (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath \"/private/var/db/dyld\") (literal \"/\") (literal \"/dev/null\") (literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/private/var/select/sh\"))\n(allow file-read-metadata (literal \"/System\") (literal \"/Users\") (literal \"/Users/ctaylor\") (literal \"/Users/ctaylor/.local\") (literal \"/Users/ctaylor/.local/share\") (literal \"/Users/ctaylor/.local/share/mise\") (literal \"/Users/ctaylor/.local/share/mise/installs\") (literal \"/Users/ctaylor/.local/share/mise/installs/node\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works\") (literal \"/Users/ctaylor/.tmp\") (literal \"/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG\") (literal \"/dev\") (literal \"/private\") (literal \"/private/var\") (literal \"/private/var/db\") (literal \"/private/var/select\") (literal \"/usr\"))\n(allow file-write* (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/task\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/home\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/tmp\") (literal \"/dev/null\"))\n",
+    "resolved": {
+      "bundle": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG",
+      "task": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/task",
+      "context": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/context",
+      "home": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/home",
+      "temporary": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/tmp",
+      "toolchain": [
+        {
+          "path": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle",
+          "kind": "tree",
+          "reason": "offline --version runtime code distribution"
+        },
+        {
+          "path": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "kind": "file",
+          "reason": "offline --version startup dependency"
+        },
+        {
+          "path": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/chord",
+          "kind": "tree",
+          "reason": "offline --version runtime code distribution"
+        },
+        {
+          "path": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/package.json",
+          "kind": "file",
+          "reason": "offline --version startup dependency"
+        }
+      ],
+      "authentication": [],
+      "executables": [
+        "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin/node"
+      ],
+      "forbidden": [
+        "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/hidden"
+      ],
+      "endpoints": [],
+      "extensions": {
+        "mode": "disabled",
+        "launchEvidence": null
+      }
+    },
+    "environment": {
+      "HOME": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/home",
+      "TMPDIR": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/tmp/",
+      "XDG_CONFIG_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/home",
+      "XDG_CACHE_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/tmp",
+      "XDG_DATA_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/home",
+      "XDG_STATE_HOME": "/Users/ctaylor/.tmp/cq-boundary-version-FdNWNG/home",
+      "PATH": "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin",
+      "LANG": "en_US.UTF-8",
+      "LC_ALL": "en_US.UTF-8"
+    },
+    "heldOutEligible": false,
+    "nativeControlsAttested": false
+  },
+  "g2": "not-established"
+}

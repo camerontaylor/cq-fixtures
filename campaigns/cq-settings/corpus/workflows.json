@@ -117,7 +117,7 @@
       "pristineBaselineIntegrity": "full local Git baseline commit SHA captured before the operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "cf9fcc18f899bb63546c0e4e0c2954f838ceeaa5e56c3afa0058cf3be0749d9e"
+      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
     },
     {
       "id": "merge-reserved-prefix-01",
@@ -135,7 +135,7 @@
       "pristineBaselineIntegrity": "full local Git baseline commit SHA captured before the operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "cf9fcc18f899bb63546c0e4e0c2954f838ceeaa5e56c3afa0058cf3be0749d9e"
+      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
     },
     {
       "id": "fleet-nested-test-unit-01",
@@ -153,7 +153,7 @@
       "pristineBaselineIntegrity": "baseline commit captured before changed-file commit",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeFleetSweepPlan",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "cf9fcc18f899bb63546c0e4e0c2954f838ceeaa5e56c3afa0058cf3be0749d9e"
+      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
     },
     {
       "id": "fleet-service-leaf-test-01",
@@ -171,7 +171,7 @@
       "pristineBaselineIntegrity": "baseline commit captured before changed-file commit",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeFleetSweepPlan",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "cf9fcc18f899bb63546c0e4e0c2954f838ceeaa5e56c3afa0058cf3be0749d9e"
+      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
     }
   ],
   "operationIntegrationOnly": [

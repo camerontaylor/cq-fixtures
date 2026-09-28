@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "path": "campaigns/cq-settings/corpus/integration-tasks.ts",
-      "sha256": "63508aa9360dab2c2e30bc3142affdb218b3597a62b7ccbff832cf005e44b76e"
+      "sha256": "68325d527a367f84d68c6ad22492fd8a237c953d754702fae3e86b6e815b55c4"
     },
     {
       "path": "runner/workflow-corpus/operation-workflow-judges.ts",

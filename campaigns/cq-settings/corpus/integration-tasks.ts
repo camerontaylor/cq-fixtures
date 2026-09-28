@@ -93,11 +93,20 @@ export async function createMergeConflictTask(
   const repoRoot = join(root, 'repo');
   const settingsPath = join(repoRoot, 'src/settings.mjs');
   await mkdir(join(repoRoot, 'src'), { recursive: true });
+  await mkdir(join(repoRoot, 'branch-intentions'), { recursive: true });
   await writeFile(settingsPath, `export function campaignLabel(value) { return typeof value === 'string' ? value.trim() : ''; }\n`);
+  const mainIntent = variant === 'unicodeLabelLimit'
+    ? 'Main branch: preserve display trimming for campaign labels.\n'
+    : 'Main branch: preserve trimming and ordinary campaign labels.\n';
+  const featureIntent = variant === 'unicodeLabelLimit'
+    ? 'Feature branch: reject labels longer than 40 Unicode code points.\n'
+    : 'Feature branch: reject labels in the reserved sys: namespace.\n';
+  await writeFile(join(repoRoot, 'branch-intentions/main.md'), mainIntent);
+  await writeFile(join(repoRoot, 'branch-intentions/feature.md'), featureIntent);
   git(repoRoot, ['init', '-q']);
   git(repoRoot, ['config', 'user.name', 'CQ Local Corpus']);
   git(repoRoot, ['config', 'user.email', 'cq-local-corpus@example.invalid']);
-  git(repoRoot, ['add', 'src/settings.mjs']);
+  git(repoRoot, ['add', 'src/settings.mjs', 'branch-intentions/main.md', 'branch-intentions/feature.md']);
   git(repoRoot, ['commit', '-q', '-m', `Seed ${definition.id}`]);
   const baselineCommit = git(repoRoot, ['rev-parse', 'HEAD']);
   return {
@@ -125,7 +134,7 @@ export async function executeMergeConflictTask(task: MergeConflictTask, driver: 
   };
   const operation = makeResolveConflictOp({
     effects, driver, createSession: async () => `local-${task.id}`,
-    loadPrompt: async () => 'Resolve {{pr}} conflict in {{conflictFiles}} against {{baseBranch}} at {{worktree}}. Preserve both branch requirements.',
+    loadPrompt: async () => `Resolve {{pr}} conflict in {{conflictFiles}} against {{baseBranch}} at {{worktree}}. Read branch-intentions/main.md and branch-intentions/feature.md; preserve both intentions. ${task.variant === 'unicodeLabelLimit' ? 'Count Unicode code points after trimming.' : 'Reject the reserved sys: prefix.'}`,
   });
   return operation({
     pr: 23, repoRoot: task.repoRoot, headBranch: 'feature/settings', baseBranch: 'main',

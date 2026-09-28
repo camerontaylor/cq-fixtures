@@ -17,6 +17,16 @@
     "runId",
     "timestamp"
   ],
+  "$defs": {
+    "artifactRef": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+      "properties": { "path": { "type": "string", "minLength": 1 }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+    },
+    "stageArtifactRef": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "path", "sha256"],
+      "properties": { "kind": { "type": "string", "minLength": 1 }, "path": { "type": "string", "minLength": 1 }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+    }
+  },
   "properties": {
     "role": {
       "type": "string",
@@ -111,14 +121,15 @@
     },
     "experiment": {
       "type": "object", "additionalProperties": false,
-      "required": ["campaignId", "cohortId", "experimentId", "taskId", "repeatId", "assignmentId", "stageId", "attemptId", "track", "strategyId", "settingsId", "budgetId", "profileId"],
+      "required": ["campaignId", "cohortId", "experimentId", "taskId", "repeatId", "assignmentId", "stageId", "attemptId", "track", "strategyId", "settingsId", "budgetId", "profileId", "frozenWeight"],
       "properties": {
         "campaignId": { "type": "string", "minLength": 1 }, "cohortId": { "type": "string", "minLength": 1 },
         "experimentId": { "type": "string", "minLength": 1 }, "taskId": { "type": "string", "minLength": 1 },
         "repeatId": { "type": "string", "minLength": 1 }, "assignmentId": { "type": "string", "minLength": 1 },
         "stageId": { "type": "string", "minLength": 1 }, "attemptId": { "type": "string", "minLength": 1 },
         "track": { "type": "string", "minLength": 1 }, "strategyId": { "type": "string", "minLength": 1 },
-        "settingsId": { "type": "string", "minLength": 1 }, "budgetId": { "type": "string", "minLength": 1 }, "profileId": { "type": "string", "minLength": 1 }
+        "settingsId": { "type": "string", "minLength": 1 }, "budgetId": { "type": "string", "minLength": 1 }, "profileId": { "type": "string", "minLength": 1 },
+        "frozenWeight": { "type": "number", "exclusiveMinimum": 0 }
       }
     },
     "observedUsage": {
@@ -133,10 +144,51 @@
     },
     "outcomes": {
       "type": "object", "additionalProperties": false,
-      "required": ["candidateCorrectness", "assignedStrategySuccess", "operationalStatus"],
+      "required": ["candidateCorrectness", "formatConformance", "assignedStrategySuccess", "operationalStatus"],
       "properties": {
-        "candidateCorrectness": { "type": ["boolean", "null"] }, "assignedStrategySuccess": { "type": ["boolean", "null"] },
+        "candidateCorrectness": { "type": ["boolean", "null"] }, "formatConformance": { "type": ["boolean", "null"] }, "assignedStrategySuccess": { "type": ["boolean", "null"] },
         "operationalStatus": { "enum": ["complete", "measured-failure", "measured-transport-failure", "operational-missingness", "judge-failure", "interrupted", "integrity-violation"] }
+      }
+    },
+    "taskOutcome": {
+      "type": "object", "additionalProperties": false,
+      "required": ["identity", "candidateCorrectness", "formatConformance", "assignedStrategySuccess", "operationalStatus", "stages", "judgements"],
+      "properties": {
+        "identity": {
+          "type": "object", "additionalProperties": false,
+          "required": ["campaignId", "cohortId", "experimentId", "taskId", "substrateId", "track", "repeatId", "assignmentId", "strategyId", "role", "budgetId", "frozenWeight"],
+          "properties": {
+            "campaignId": { "type": "string", "minLength": 1 }, "cohortId": { "type": "string", "minLength": 1 },
+            "experimentId": { "type": "string", "minLength": 1 }, "taskId": { "type": "string", "minLength": 1 },
+            "substrateId": { "type": "string", "minLength": 1 }, "track": { "type": "string", "minLength": 1 },
+            "repeatId": { "type": "string", "minLength": 1 }, "assignmentId": { "type": "string", "minLength": 1 },
+            "strategyId": { "type": "string", "minLength": 1 }, "role": { "enum": ["fixer-worker", "review-classifier"] },
+            "budgetId": { "type": "string", "minLength": 1 }, "frozenWeight": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "candidateCorrectness": { "type": ["boolean", "null"] }, "formatConformance": { "type": ["boolean", "null"] },
+        "assignedStrategySuccess": { "type": ["boolean", "null"] },
+        "operationalStatus": { "enum": ["complete", "measured-failure", "measured-transport-failure", "operational-missingness", "judge-failure", "interrupted", "integrity-violation"] },
+        "stages": { "type": "array", "items": { "type": "object", "additionalProperties": false,
+          "required": ["stageId", "attemptId", "invocationId", "artifacts"],
+          "properties": {
+            "stageId": { "type": "string", "minLength": 1 }, "attemptId": { "type": "string", "minLength": 1 },
+            "invocationId": { "type": "string", "minLength": 1 },
+            "artifacts": { "type": "array", "items": { "$ref": "#/$defs/stageArtifactRef" } },
+            "observation": { "$ref": "#/$defs/artifactRef" }
+          }
+        } },
+        "judgements": { "type": "array", "items": { "type": "object", "additionalProperties": false,
+          "required": ["judgementId", "version", "judgePin", "candidateSha256", "candidateCorrectness", "formatConformance", "assignedStrategySuccess", "operationalStatus", "artifact"],
+          "properties": {
+            "judgementId": { "type": "string", "minLength": 1 }, "version": { "type": "integer", "minimum": 1 },
+            "judgePin": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "candidateSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "candidateCorrectness": { "type": ["boolean", "null"] }, "formatConformance": { "type": ["boolean", "null"] },
+            "assignedStrategySuccess": { "type": ["boolean", "null"] },
+            "operationalStatus": { "enum": ["complete", "measured-failure", "measured-transport-failure", "operational-missingness", "judge-failure", "interrupted", "integrity-violation"] },
+            "artifact": { "$ref": "#/$defs/artifactRef" }
+          }
+        } }
       }
     },
     "modelIdentity": {

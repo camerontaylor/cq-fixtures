@@ -1,14 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ArtifactStore } from '../runner/artifacts/index.ts';
+import { ArtifactStore, sha256 } from '../runner/artifacts/index.ts';
 import { nativeGovernorUsage } from '../runner/budget.ts';
 import { experimentId, suiteTaskId, type ExperimentContext } from '../runner/experiment.ts';
 import { runSuite } from '../runner/index.ts';
-import { campaignUsage, type NativeObservation, type InvocationIdentity } from '../runner/native/observation.ts';
+import { campaignUsage, sanitizeNativeObservation, type NativeObservation, type InvocationIdentity } from '../runner/native/observation.ts';
 import { regradeCampaignCandidate } from '../runner/regrade.ts';
 
 let root = '';
@@ -20,7 +20,7 @@ function fixtureObservation(identity: InvocationIdentity, workerResult: WorkerRe
   });
   return {
     schemaVersion: 1, identity, transport: 'codex-exec',
-    executable: { path: '/usr/bin/codex', version: 'test', profile: 'native' }, artifacts: [],
+    executable: { path: '/usr/bin/codex', version: 'test', profile: 'native' }, artifacts: [], withheldArtifacts: [],
     model: {
       configuredTarget: 'luna-subscription',
       requested: { value: 'gpt-6-luna', source: 'test', status: 'verified' },
@@ -31,7 +31,7 @@ function fixtureObservation(identity: InvocationIdentity, workerResult: WorkerRe
         input: counter('input'), output: counter('output'), cacheRead: counter('cacheRead'),
         cacheWrite: counter('cacheWrite'), reasoning: counter('reasoning'),
       },
-      tokenTotal: { value: null, availability: 'unavailable', source: null },
+      tokenTotal: { value: null, availability: 'unavailable', source: null, semantics: 'unknown' },
       inclusion: { input: null, output: null, cache: null, reasoning: 'unknown' },
     },
     terminal: { cause: 'transport-throw', cancelled: false, transportException: null, observedAt: new Date().toISOString() },
@@ -63,7 +63,7 @@ function experiment(): ExperimentContext {
     campaignId: 'campaign-test', cohortId: 'cohort-1', experimentId: 'exp-test', taskId: 'task-test',
     repeatId: 'repeat-1', assignmentId: 'assign-base', stageId: 'stage-1', attemptId: 'attempt-base',
     track: 'native-primary', strategyId: 'codex-one-shot', settingsId: 'settings-default',
-    budgetId: 'budget-small', profileId: 'codex-profile-v1',
+    budgetId: 'budget-small', profileId: 'codex-profile-v1', frozenWeight: 1,
   };
 }
 
@@ -72,10 +72,10 @@ describe('campaign envelope', () => {
     const observation = fixtureObservation({ invocationId: 'i', assignmentId: 'a', stageId: 's', attemptId: 't' });
     observation.usage.counters.input = { value: 7, availability: 'observed', source: 'event', semantics: 'input' };
     observation.usage.counters.output = { value: 3, availability: 'observed', source: 'event', semantics: 'output' };
-    observation.usage.tokenTotal = { value: Number.POSITIVE_INFINITY, availability: 'observed', source: 'event' };
+    observation.usage.tokenTotal = { value: Number.POSITIVE_INFINITY, availability: 'observed', source: 'event', semantics: 'authoritative-total' };
     observation.usage.inclusion.reasoning = 'included in output';
     expect(campaignUsage(observation)).toMatchObject({ input: 7, output: 3, cacheRead: null, tokenTotal: null, complete: false });
-    observation.usage.tokenTotal = { value: 25, availability: 'observed', source: 'event' };
+    observation.usage.tokenTotal = { value: 25, availability: 'observed', source: 'event', semantics: 'authoritative-total' };
     expect(campaignUsage(observation).tokenTotal).toBe(25);
   });
 
@@ -100,6 +100,42 @@ describe('campaign envelope', () => {
     expect(artifact.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(() => store.write(context, 'events.jsonl', '{"event":2}\n')).toThrow(/already exists/);
     expect(existsSync(join(root, artifact.path))).toBe(true);
+  });
+
+  it('contains artifact paths across symlinks, quarantines stale temp files, and publishes manifests', async () => {
+    root = mkdtempSync(join(tmpdir(), 'cq-artifacts-'));
+    const outside = mkdtempSync(join(tmpdir(), 'cq-artifacts-outside-'));
+    const store = new ArtifactStore(root);
+    const context = experiment();
+    const namespace = store.attemptDirectory(context);
+    mkdirSync(namespace, { recursive: true });
+    const campaignDir = join(root, 'campaign');
+    rmSync(campaignDir, { recursive: true });
+    symlinkSync(outside, campaignDir, 'dir');
+    expect(() => store.write(context, 'candidate.patch', 'patch')).toThrow(/symlink|escaped root/);
+    rmSync(campaignDir);
+    const artifact = store.write(context, 'events.jsonl', '{}\n');
+    expect(existsSync(join(root, '.manifests', `${sha256(artifact.path)}.json`))).toBe(true);
+    const stale = join(namespace, '.cq-tmp-crash');
+    writeFileSync(stale, 'partial');
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(stale, old, old);
+    store.write(context, 'another.json', '{}');
+    const quarantine = join(root, '.quarantine');
+    const names = (await import('node:fs/promises')).readdir(quarantine);
+    expect((await names).some((name) => name.endsWith('.orphan'))).toBe(true);
+    expect((await names).some((name) => name.endsWith('.orphan.json'))).toBe(true);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('redacts secret values without erasing usage contract field names', () => {
+    const observation = fixtureObservation({ invocationId: 'i', assignmentId: 'a', stageId: 's', attemptId: 't' });
+    observation.usage.tokenTotal = { value: 42, availability: 'observed', source: 'event', semantics: 'authoritative-total' };
+    observation.terminal.transportException = { name: 'Error', message: 'request failed API_KEY=sk-12345678901234567890' };
+    const safe = sanitizeNativeObservation(observation);
+    expect(safe.usage.tokenTotal).toMatchObject({ value: 42, semantics: 'authoritative-total' });
+    expect(JSON.stringify(safe)).not.toContain('sk-12345678901234567890');
+    expect(safe.terminal.transportException?.message).toContain('[redacted]');
   });
 
   it('keeps overlapping usage out of governor/cost folding and regrades only hash-pinned candidate bytes', async () => {
@@ -139,10 +175,14 @@ describe('campaign envelope', () => {
       name: 'native-fixer', role: 'fixer-worker', provenance: { origin: 'hand-seeded' },
       cases: [{ id: 'case-1', fixture: 'fixture', task: { prompt: 'Fix the file.' }, probe: { kind: 'check-rerun', check: 'fixture/check.mjs' } }],
     }));
+    const driver = new ThrowsAfterEditing();
+    await expect(runSuite({
+      suiteDir, driver, model: 'gpt-6-luna', provider: 'openai', driverName: 'codex-exec',
+      repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: experiment(), maxTokens: 1,
+    })).rejects.toThrow(/hard token cap unsupported/);
     const result = await runSuite({
-      suiteDir, driver: new ThrowsAfterEditing(), model: 'gpt-6-luna', provider: 'openai',
+      suiteDir, driver, model: 'gpt-6-luna', provider: 'openai',
       driverName: 'codex-exec', repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: experiment(),
-      maxTokens: 1, maxUsd: 0,
     });
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({
@@ -151,10 +191,16 @@ describe('campaign envelope', () => {
       outcomes: { candidateCorrectness: true, assignedStrategySuccess: true, operationalStatus: 'measured-transport-failure' },
     });
     expect(result.rows[0]?.outcome).toMatchObject({ passed: 1, total: 2 });
+    expect(result.rows[0]?.taskOutcome).toMatchObject({
+      identity: { assignmentId: 'assign-base', substrateId: 'case-1', track: 'native-primary', frozenWeight: 1 },
+      candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: true,
+      operationalStatus: 'measured-transport-failure',
+    });
     expect(result.gatedByBudget).toBe(false);
     expect(result.observations).toHaveLength(1);
     expect(result.observations[0]?.observation.terminal.transportException?.message).toContain('transport broke');
     expect(result.judgements).toHaveLength(1);
+    expect(result.tables).toHaveLength(1);
     const attemptDir = join(root, 'artifacts', 'campaign', 'campaign-test', 'cohort', 'cohort-1', 'experiment', 'exp-test', 'task', suiteTaskId('native-fixer', 'case-1'));
     const candidates = (await import('node:fs/promises')).readdir(join(attemptDir, 'repeat', 'repeat-1', 'assignment'));
     const assignments = await candidates;

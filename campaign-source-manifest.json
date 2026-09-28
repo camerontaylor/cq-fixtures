@@ -49,7 +49,7 @@
     "oracleDependencyManifest": "campaigns/cq-settings/corpus/review-loop-oracle-pin.json",
     "oracleDependencyManifestSha256": "c1453d325645fa9881551e553f9b98b9a905a4c0cd7bf8b7882e5092fe1c33f0",
     "operationOracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts",
-    "operationOracleImplementationSha256": "3fa6aa65849e43152024c075333360944206577735b0758be6d66c8344309047",
+    "operationOracleImplementationSha256": "70153d5c00d2d3aa1a88a252e447faea37f43e02869047d28680848cdc9978d1",
     "scenarioCount": 15,
     "integrationSubstrateCount": 5,
     "verifiedTaskCount": 1,

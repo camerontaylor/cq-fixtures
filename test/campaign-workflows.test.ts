@@ -439,8 +439,11 @@ describe('cq-settings bounded workflow corpus', () => {
     };
     try {
       const report = expectOk(await planner(input));
-
-      expect(judgeFleetSweepPlan(report, ['packages/core/test/settings.test.ts']).passed).toBe(true);
+      const changedPaths = execFileSync('git', ['diff', '--name-only', `${baseline}..HEAD`], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      }).trim().split('\n').filter(Boolean);
+      expect(judgeFleetSweepPlan(report, changedPaths).passed).toBe(true);
 
       expect(report.units).toEqual([{
         package: 'core-tests',
@@ -599,8 +602,8 @@ describe('cq-settings bounded workflow corpus', () => {
       expect(judgeRatchetOutcomes({
         tightened,
         regressed,
-        tighteningDiff: JSON.stringify(tightening),
-        looseningDiff: JSON.stringify(loosening),
+        tighteningAccepted: tightening.ok,
+        looseningAccepted: loosening.ok,
       })).toMatchObject({ passed: true, oracleId: 'cq-settings.ratchet-monotonicity.oracle.v1' });
       expect(loosening).toMatchObject({ ok: false });
       expect(tightening).toMatchObject({ ok: true });

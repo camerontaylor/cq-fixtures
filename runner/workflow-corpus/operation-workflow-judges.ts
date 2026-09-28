@@ -110,14 +110,14 @@ if (!check || check('') !== false || check('   ') !== false || check('setting') 
 export function judgeRatchetOutcomes(input: {
   readonly tightened: string;
   readonly regressed: string;
-  readonly tighteningDiff: string;
-  readonly looseningDiff: string;
+  readonly tighteningAccepted: boolean;
+  readonly looseningAccepted: boolean;
 }): WorkflowOracleReport {
   const failures: string[] = [];
   if (input.tightened !== 'pass') failures.push('a lower error count did not pass the lower-is-better ratchet');
   if (input.regressed !== 'fail') failures.push('a higher error count did not fail the lower-is-better ratchet');
-  if (!input.tighteningDiff.includes('ok: true')) failures.push('tightening baseline diff was not accepted');
-  if (!input.looseningDiff.includes('ok: false')) failures.push('loosening baseline diff was not rejected');
+  if (!input.tighteningAccepted) failures.push('tightening baseline diff was not accepted');
+  if (input.looseningAccepted) failures.push('loosening baseline diff was accepted');
   const identity = OPERATION_WORKFLOW_IDENTITIES.ratchet;
   return { ...identity, passed: failures.length === 0, failures };
 }

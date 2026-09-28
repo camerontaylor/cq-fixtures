@@ -1,85 +1,118 @@
 # S6 inference reconciliation
 
-This adds a standalone fixed-sample inference module at `runner/statistics/` and
-the focused test at `test/campaign-statistics.test.ts`. It does not change or
-duplicate `runner/aggregate.ts`: that module remains the existing descriptive
-row/table aggregator. Inspection found no paired task/substrate inference
-implementation to reuse.
+This adds standalone fixed-sample inference under `runner/statistics/` and a
+focused test at `test/campaign-statistics.test.ts`. It reuses no shared
+aggregate schema: inspection found the existing aggregate is descriptive and
+has no paired task/substrate inferential pipeline. The explicit observation
+interface prevents accidental reinterpretation of shared aggregate rows.
 
-## Method and guardrails
+## Method and guards
 
-- Every analysis consumes an immutable `frozen: true` preregistration with a
-  cohort, track, role, budget, assignment seed, expected repeats, exact task /
-  substrate / repeat identities, positive frozen task weights, contrast family,
-  bootstrap seed/count and analysis version.
-- Repeated binary outcomes are averaged inside task first. Frozen task weights
-  are then used within substrate, and the paired substrate means are resampled
-  together for each contrast. Tracks and cohorts cannot be pooled.
-- Pairing checks compare exact assignment identities and exact weights. A
-  missing assignment or outcome, including two equal-sized but different
-  missing subsets, makes the result descriptive. This interface has no
-  unregistered missing-at-random correction.
-- A launched budget exhaustion/no-candidate is supplied as `status: measured,
-  success: false, cause: 'budget-exhausted'`; it stays in the outcome. An
-  operational absence uses `status: operational-missing, success: null` and is
-  retained in coverage diagnostics.
-- Marginal intervals use paired substrate bootstrap quantiles expanded to a
-  bounded-cluster Hoeffding envelope. Simultaneous intervals use the bootstrap
-  maximum statistic and a familywise Hoeffding envelope. The envelope is
-  deliberately conservative and can be wide, especially near 20 substrates.
-- Inferential labels and family adjustment require at least 20 nondegenerate
-  independent substrates, complete paired coverage, and passing validation
-  evidence matching the track / repeat / contrast-count recipe. Otherwise the
-  output is descriptive or inconclusive and the max-statistic adjustment is
-  withheld. A zero-width interval is never a dominance/equivalence claim.
+- Each cohort is analyzed from a frozen roster with exact task, substrate,
+  repeat, strategy, track and frozen task weight identities. Cohorts and tracks
+  cannot be pooled. Repeats are averaged within task before the weighted task
+  means are combined within substrate.
+- Pairing requires exact assignment and weight parity. Missing or unknown
+  statuses, absent assignments, unregistered strategies, empty rosters,
+  malformed numeric evidence and incomplete paired coverage fail closed or
+  suppress inference. Launched exhaustion remains a measured failure;
+  operational absence remains null and descriptive.
+- The bootstrap resamples paired substrates and is diagnostic for the chosen
+  interval. Its marginal and max-statistic intervals are expanded by a
+  weighted Hoeffding radius for bounded substrate differences. The radius uses
+  the actual normalized frozen cluster weights, so its coverage argument does
+  not depend on equal weights, task counts per substrate, or a particular
+  bootstrap resample count. Resamples must be at least 199; changing their
+  number cannot shrink the analytic envelope. Counts are bounded from 199 to
+  10,000 for runtime control. This is why the validation recipe hash pins the
+  envelope and resample range instead of the
+  simulation's unit task weights. Bootstrap-only results are separately
+  measured and never enable claims.
+- The fixed validation recipe covers 24 substrates, three repeats, three
+  contrasts and ten declared scenario classes. More or fewer repeats or
+  contrasts do not match its validation hash. The analytic envelope remains
+  conservative under arbitrary positive frozen task weights and task-count
+  distributions for the supported binary complete-pair estimand. This does
+  not extend validation to different outcome types, sample selection, or
+  missingness assumptions.
+- Inferential labels and the max-statistic adjustment require at least 20
+  independent, nondegenerate substrates, complete pairs, matching evidence,
+  and passing gates. Few clusters, parity failures, degeneracy and missingness
+  return descriptive or inconclusive results. No five-point resolution or
+  campaign quota is promised.
 
-## Validation envelope
+## Coverage validation
 
-The simulation exercises 2,000 fixed datasets per track, 24 substrates, three
-repeats per task and a three-contrast family. Its ten scenario classes vary
-baseline saturation, ICC, task imbalance, repeat noise, effects of zero or two
-percentage points, symmetric operational missingness and asymmetric missingness
-fallback stress. It reports Wilson confidence bounds for marginal coverage and
-global-null familywise error. The automatic gates are lower 95% coverage bound
-at least .93 and upper 95% FWER bound at most .07. Seeded results are recorded
-in [validation-evidence.json](runner/statistics/validation-evidence.json); the
-run log was `/tmp/cq-campaign-statistics-evidence.log`. Each track passed the
-marginal gate on 6,000 contrast intervals (coverage 1.000; lower bound
-0.99936). The familywise gate passed on 600 adjustment-eligible global-null
-datasets (zero rejections; upper bound 0.00636). Missingness scenarios exercised
-the descriptive/fallback path and were excluded from adjustment eligibility.
+Validation uses 2,000 datasets per track, not 6,000 independent intervals.
+Every contrast has a 2,000-dataset coverage denominator and a Bonferroni
+simultaneous one-sided Wilson lower bound across the three contrasts. The
+report also records the fraction of datasets where all three contrasts are
+covered and its Wilson lower bound. The coverage gate uses the minimum of the
+joint lower bound and all simultaneous per-contrast lower bounds. FWER uses
+dataset-level rejection and its 95% Wilson upper bound on complete-coverage
+global-null eligible datasets only. Missingness scenarios verify suppression
+and are not counted as max-statistic eligible. The gates remain lower coverage
+bound >= .93 and FWER upper bound <= .07.
 
-Supported claims are limited to the track whose simulation evidence passes,
-with the frozen recipe, binary task outcomes, at least 20 independent
-substrates, no degenerate contrast variance, exact paired assignment/weight
-parity, and complete operational coverage. This validation does not establish
-adequate power or five-point resolution; the report makes no such claim.
-It does not validate other contrast-family sizes, confidence levels, repeat
-counts, selection rules, missingness models, continuous metrics, post-hoc
-cohort pooling, or outcome-dependent sample extension. Native and diagnostic
-tracks need separate evidence and remain separate results.
+Scenario generation has separate substrate probability shifts, task-level
+probability shifts shared across repeats, and repeat-specific probability
+jitter shared by paired strategies. The reported substrate ICC is a propensity
+ICC estimate, not an outcome ICC target: across each dataset it is the variance
+of substrate mean baseline success probabilities divided by `mean(p) *
+(1 - mean(p))`; the evidence reports its average by scenario. Those scenarios
+cover baseline saturation, task imbalance, effects of zero or two percentage
+points, and symmetric/asymmetric operational missingness. They do not claim
+to calibrate a particular campaign's ICC.
 
-## Required S1 integration adapter
+The candidate bootstrap-only intervals are empirically checked against the
+same dataset-level coverage and eligible global-null FWER gates. They are not
+selected for inference if either bound fails; the current supported procedure
+continues to use the analytic expansion. In this run, the candidate fails:
+joint coverage was .815 native / .783 diagnostic and its FWER upper bound was
+.0933 on 600 eligible datasets per track. The analytic expansion covered all
+2,000 datasets per track; its simultaneous marginal lower bound was .9977 and
+FWER upper bound .00636. Its mean marginal interval width was about 1.14 on a
+[-1, 1] scale, so this passes coverage but is not practically precise for a
+five-point effect. Deterministic seeded evidence is stored in
+[validation-evidence.json](runner/statistics/validation-evidence.json).
 
-S1 owns the shared observation envelope and aggregate/schema changes. Its
-adapter must map the authoritative persisted observations to `Observation`
-without converting unknown outcomes to failures or synthetic counters to
-measurements. It must emit one row per preregistered strategy assignment,
-preserve launched budget failures as measured false outcomes, mark operational
-absence as null, preserve cohort/track/task/substrate/repeat IDs, and carry the
-exact preregistered weight. No adapter is included here by scope.
+## Five-point planning forecast
 
-Before each fixed cohort launches, persist the frozen `Preregistration` and
-analysis version. Final analysis reads only that roster; additional quota can
-start a separately preregistered cohort and cannot enlarge this one. Do not
-publish inferential claims from calibration data or failed simulation gates.
+`power.ts` gives each role a deterministic 162-scenario planning grid for a
+five-percentage-point paired contrast, at 80% approximate power and a five-
+point half-width target. It varies baseline success (.2/.5/.8), discordance
+(.08/.25/.45, clipped to feasible Bernoulli margins), paired-difference ICC
+(0/.3/.6), tasks per substrate (1/2/4), and repeats (1/3). The power component
+uses a normal approximation to paired Bernoulli variance with the specified
+cluster design effect. Its required-substrate count ranges from 4,000 to
+5,351 across the grid (median 4,432). The precision component uses the familywise weighted
+Hoeffding radius for three contrasts, so it can dominate the power count and
+require thousands of independent substrates. Forecasts are assumptions for
+planning, not role-calibrated data or promises of feasible runtime/quota;
+unequal weights and missingness can increase requirements. The generated
+forecasts identify both `fixer-worker` and `review-classifier`, with no
+quota/runtime estimate.
 
-## Verification command
+## S1 adapter boundary
 
-```sh
-npx vitest run test/campaign-statistics.test.ts test/toolkit-package-smoke.test.ts
-```
+The read-only S1 contract at
+`/Users/ctaylor/.paseo/worktrees/2q79f86l/cq-settings-contracts/CONTRACT.md`
+defines the invocation-level `NativeObservation`, native identity handoff, raw
+usage/model/artifact/capture/timing evidence, and worker result. It does not
+define the task-level independent binary outcome or its judgement mapping,
+strategy-to-assignment mapping, repeat and frozen-weight roster, or the
+cohort/track/role/budget preregistration mapping. Those mappings are necessary
+to produce the explicit `Observation` safely. The S1 integration adapter is
+therefore waiting on that task-outcome and assignment mapping contract; no S1
+files were edited here.
 
-The simulation is deterministic from its declared seeds and is bounded by the
-test's 180-second timeout. The checked-in evidence records this run's metrics;
-an empty or failed future log is not evidence that validation gates passed.
+Before launch, persist the frozen registration and analysis version. Final
+analysis consumes only that roster. Additional work starts a separately
+preregistered cohort and never enlarges a completed cohort. Do not publish
+inferential claims from calibration data or failed simulation gates.
+
+The prior full-suite run stalled in existing `test/runner.test.ts` during a
+workspace-write case and was stopped; it is not evidence for this module. A
+full-suite rerun is deferred to later integration with bounded runner-specific
+logs. This change uses only the bounded focused statistics and toolkit smoke
+tests plus the build.

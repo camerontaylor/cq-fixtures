@@ -37,12 +37,20 @@ export function judgeMergeConflictWorkspace(repoRoot: string, baselineCommit: st
     const probe = `const m = await import(${JSON.stringify(moduleUrl)} + '?judge=' + Date.now());
 const values = [null, 7, '', '  ', '😀'.repeat(40), '😀'.repeat(41), 'x'.repeat(39)];
 const expected = ['', '', '', '', '😀'.repeat(40), '', 'x'.repeat(39)];
-for (let i = 0; i < values.length; i++) if (m.campaignLabel(values[i]) !== expected[i]) process.exitCode = 1;`;
+const actual = values.map((value) => m.campaignLabel(value));
+if (actual.some((value, index) => value !== expected[index])) {
+  console.error(JSON.stringify({ actual, expected }));
+  process.exitCode = 1;
+}`;
     execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
       cwd: repoRoot, stdio: 'pipe', timeout: 5_000, maxBuffer: 64 * 1024,
     });
   } catch (error) {
-    failures.push(`merge candidate check failed: ${error instanceof Error ? error.message : String(error)}`);
+    const detail = error instanceof Error ? error.message : String(error);
+    const stderr = error !== null && typeof error === 'object' && 'stderr' in error
+      ? String((error as { stderr?: unknown }).stderr ?? '').trim()
+      : '';
+    failures.push(`merge candidate check failed: ${detail}${stderr.length > 0 ? `; stderr: ${stderr}` : ''}`);
   }
   const identity = OPERATION_WORKFLOW_IDENTITIES.merge;
   return { ...identity, passed: failures.length === 0, failures };

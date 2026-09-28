@@ -372,7 +372,7 @@ describe('cq-settings bounded workflow corpus', () => {
     execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'add', '.'], { cwd: repoRoot });
     execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', 'Seed conflict task'], { cwd: repoRoot });
     const baseline = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
-    const replacement = `export function campaignLabel(label) {\n  if (typeof label !== 'string') return '';\n  return Array.from(label.trim()).slice(0, 40).join('');\n}\n`;
+    const replacement = `export function campaignLabel(label) {\n  if (typeof label !== 'string') return '';\n  const trimmed = label.trim();\n  if (trimmed.length === 0 || Array.from(trimmed).length > 40) return '';\n  return trimmed;\n}\n`;
     let validations = 0;
     let pushedCommit = '';
     const effects: MergeEffects = {
@@ -422,7 +422,9 @@ describe('cq-settings bounded workflow corpus', () => {
       });
 
       expect(expectOk(result).decision).toBe('acted');
-      expect(judgeMergeConflictWorkspace(repoRoot, baseline)).toMatchObject({
+      const mergeReport = judgeMergeConflictWorkspace(repoRoot, baseline);
+      expect(mergeReport.failures, JSON.stringify(mergeReport)).toEqual([]);
+      expect(mergeReport).toMatchObject({
         passed: true,
         sourceId: 'cq-settings.merge-worktree-seed.v1',
         baselineId: 'cq-settings.merge-conflict.baseline.v1',
@@ -432,7 +434,8 @@ describe('cq-settings bounded workflow corpus', () => {
       expect(pushedCommit).not.toBe(baseline);
       expect(execFileSync('git', ['diff', '--name-only', baseline, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()).toBe('src/settings.mjs');
       const candidate = await import(`${pathToFileURL(settingsPath).href}?fresh=${Date.now()}`) as { campaignLabel(label: unknown): string };
-      expect(candidate.campaignLabel('x'.repeat(41))).toHaveLength(40);
+      expect(candidate.campaignLabel('😀'.repeat(40))).toBe('😀'.repeat(40));
+      expect(candidate.campaignLabel('😀'.repeat(41))).toBe('');
       expect(invocations[0]?.prompt).toContain('src/settings.mjs');
       expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'none' });
     } finally {

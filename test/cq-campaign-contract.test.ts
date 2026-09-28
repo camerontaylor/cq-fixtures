@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ArtifactStore } from '../runner/artifacts/index.ts';
@@ -34,7 +35,7 @@ function fixtureObservation(identity: InvocationIdentity, workerResult: WorkerRe
       inclusion: { input: null, output: null, cache: null, reasoning: 'unknown' },
     },
     terminal: { cause: 'transport-throw', cancelled: false, transportException: null, observedAt: new Date().toISOString() },
-    capture: { status: 'pending', patchSha256: null, workspaceSha256: null },
+    capture: { status: 'pending', baselineCommit: null, patchSha256: null, workspaceSha256: null },
     timing: { startedAt: new Date().toISOString(), endedAt: null, stages: {} }, workerResult,
   };
 }
@@ -46,11 +47,14 @@ class ThrowsAfterEditing implements Driver {
     const workspace = /workspace: (.+)$/.exec(invocation.prompt)?.[1];
     if (workspace === undefined) throw new Error('test could not locate workspace');
     writeFileSync(join(workspace, 'fix.txt'), 'fixed\n');
+    const add = spawnSync('git', ['-C', workspace, '-c', 'user.name=Worker', '-c', 'user.email=worker@test', 'add', '-A']);
+    const commit = spawnSync('git', ['-C', workspace, '-c', 'user.name=Worker', '-c', 'user.email=worker@test', 'commit', '-m', 'worker edit']);
+    if (add.status !== 0 || commit.status !== 0) throw new Error('test worker could not commit fixture edit');
     throw new Error('transport broke after edit');
   }
   getObservation(invocationId: string): NativeObservation | undefined {
     if (this.identity?.invocationId !== invocationId) return undefined;
-    return fixtureObservation(this.identity);
+    throw new Error('observation retrieval crashed');
   }
 }
 
@@ -154,9 +158,10 @@ describe('campaign envelope', () => {
     const attemptDir = join(root, 'artifacts', 'campaign', 'campaign-test', 'cohort', 'cohort-1', 'experiment', 'exp-test', 'task', suiteTaskId('native-fixer', 'case-1'));
     const candidates = (await import('node:fs/promises')).readdir(join(attemptDir, 'repeat', 'repeat-1', 'assignment'));
     const assignments = await candidates;
-    expect(assignments).toHaveLength(1);
+    expect(assignments).toEqual(['assign-base']);
     const stagePath = join(attemptDir, 'repeat', 'repeat-1', 'assignment', assignments[0]!, 'stage', 'stage-1', 'attempt');
     const attemptId = (await (await import('node:fs/promises')).readdir(stagePath))[0]!;
+    expect(attemptId).toBe('attempt-base');
     const attemptPath = join(stagePath, attemptId);
     const attemptNames = await (await import('node:fs/promises')).readdir(attemptPath);
     expect(attemptNames).toContain('candidate.patch');

@@ -22,6 +22,29 @@ import { DEFAULT_CHECK_TIMEOUT_MS, FIXER_PROBE_COUNT, scoreFixerWorker } from '.
 import { scoreReviewClassifier } from './score/reviewClassifier.ts';
 import { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
 import { isSafeCaseSegment, isTruncated, type RunManifestEntry } from './persist.ts';
+import { ArtifactStore, sha256, type ImmutableArtifactRef } from './artifacts/index.ts';
+import type { ExperimentContext } from './experiment.ts';
+
+/** Rejudge exact immutable candidate bytes and append a new pinned judgement. */
+export function regradeCampaignCandidate(args: {
+  store: ArtifactStore;
+  context: ExperimentContext;
+  candidatePath: string;
+  candidateSha256: string;
+  judgementId: string;
+  judgePin: string;
+  judge(candidate: Buffer): unknown | Promise<unknown>;
+}): Promise<ImmutableArtifactRef> {
+  if (!/^[a-f0-9]{64}$/.test(args.candidateSha256)) throw new Error('regrade: candidate SHA-256 must be lowercase hex');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(args.judgementId)) throw new Error('regrade: unsafe judgement id');
+  const candidate = readFileSync(args.candidatePath);
+  const actualSha256 = sha256(candidate);
+  if (actualSha256 !== args.candidateSha256) {
+    throw new Error(`regrade: candidate hash mismatch (expected ${args.candidateSha256}, got ${actualSha256})`);
+  }
+  return Promise.resolve(args.judge(candidate)).then((judgement) =>
+    args.store.writeJudgement(args.context, args.judgementId, actualSha256, args.judgePin, judgement));
+}
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 

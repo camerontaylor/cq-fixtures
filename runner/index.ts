@@ -40,13 +40,17 @@ import {
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
 import { aggregate, type ComparisonTable, type ResultRow } from './aggregate.ts';
-import { perSuiteUsdCap } from './budget.ts';
+import { nativeGovernorUsage, perSuiteUsdCap } from './budget.ts';
 import { answerKeyCase, findSentinel, type AnswerKey, type SentinelSource } from './answerKey.ts';
 import { scoreSchemaCompliance } from './dimensions/schemaCompliance.ts';
 import type { CaseArtifact } from './persist.ts';
 import { scoreFixerWorker, FIXER_PROBE_COUNT } from './score/fixerWorker.ts';
 import { scoreReviewClassifier } from './score/reviewClassifier.ts';
 import { isFixerCase, loadSuite, suiteVariant } from './suite.ts';
+import { ArtifactStore, sha256, type ImmutableArtifactRef } from './artifacts/index.ts';
+import { findDenylistMatch, loadDenylistRules } from './denylist.ts';
+import { suiteTaskId, type ExperimentContext } from './experiment.ts';
+import { campaignUsage, unavailableObservation, type InvocationIdentity, type NativeObservation, type ObservedDriver } from './native/observation.ts';
 
 // Public library surface: the suite loader rides along with the runner.
 export { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
@@ -190,6 +194,10 @@ export interface RunSuiteOptions {
    * `contaminations`. Empty/absent = the check is off.
    */
   sentinelNeedles?: readonly string[];
+  /** Campaign assignment context; omitted for legacy-only runs. */
+  experiment?: ExperimentContext;
+  /** Immutable observation root. Defaults to the runner's private temp artifact store. */
+  artifactRoot?: string;
 }
 
 /** F1b (WB-1): a driver failure caused by something other than the model's
@@ -233,6 +241,10 @@ export interface RunSuiteResult {
    * must record its identity (the journal's `runId` and the manifest entry's
    * `runId`), never a `'unknown'` placeholder. */
   runId: string;
+  /** Persisted native observations, including observations from thrown transports. */
+  observations: Array<{ observation: NativeObservation; artifact: ImmutableArtifactRef }>;
+  /** New immutable judgements, each pinned to its exact candidate and judge. */
+  judgements: ImmutableArtifactRef[];
 }
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -544,6 +556,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
 
   const rows: ResultRow[] = [];
   const artifacts: CaseArtifact[] = [];
+  const observations: RunSuiteResult['observations'] = [];
+  const judgements: ImmutableArtifactRef[] = [];
+  const artifactStore = new ArtifactStore(opts.artifactRoot ?? join(tmpdir(), 'cq-harness', 'artifacts'));
   const absences: DriverAbsence[] = [];
   const contaminations: Array<{ case: string; where: string }> = [];
   const caseDiagnostics: string[] = [];
@@ -668,6 +683,28 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       let invocation: OpInvocation | undefined;
       let worker: WorkerResult | undefined;
       let thrown: unknown;
+      const invocationIdentity: InvocationIdentity = {
+        invocationId: randomUUID(),
+        assignmentId: `${opts.experiment?.assignmentId ?? 'assignment'}-${randomUUID()}`,
+        stageId: opts.experiment?.stageId ?? 'stage-1',
+        attemptId: randomUUID(),
+      };
+      const artifactContext: ExperimentContext = {
+        campaignId: opts.experiment?.campaignId ?? 'ad-hoc-native',
+        cohortId: opts.experiment?.cohortId ?? 'unassigned',
+        experimentId: opts.experiment?.experimentId ?? 'unassigned',
+        taskId: suiteTaskId(suite.name, c.id),
+        repeatId: opts.experiment?.repeatId ?? runId,
+        assignmentId: invocationIdentity.assignmentId,
+        stageId: invocationIdentity.stageId,
+        attemptId: invocationIdentity.attemptId,
+        track: opts.experiment?.track ?? 'unassigned',
+        strategyId: opts.experiment?.strategyId ?? 'unassigned',
+        settingsId: opts.experiment?.settingsId ?? 'unassigned',
+        budgetId: opts.experiment?.budgetId ?? 'unassigned',
+        profileId: opts.experiment?.profileId ?? 'unassigned',
+      };
+      let nativeObservation: NativeObservation | undefined;
       try {
         if (isFixerCase(c)) {
           invocation = {
@@ -697,6 +734,16 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             budget: invocationBudget,
           };
         }
+        const observedDriver = opts.driver as Driver & Partial<ObservedDriver>;
+        if (typeof observedDriver.getObservation === 'function') {
+          if (typeof observedDriver.beginInvocation === 'function') {
+            await observedDriver.beginInvocation(invocationIdentity);
+          } else if (typeof observedDriver.setInvocationIdentity === 'function') {
+            await observedDriver.setInvocationIdentity(invocationIdentity);
+          } else {
+            throw new Error('native observation driver must implement beginInvocation(identity) or setInvocationIdentity(identity)');
+          }
+        }
         worker = await opts.driver.run(invocation);
       } catch (e) {
         // A pre-dispatch missing-credential throw is infrastructure
@@ -724,17 +771,41 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         }
         thrown = e;
       }
+      const observedDriver = opts.driver as Driver & Partial<ObservedDriver>;
+      if (typeof observedDriver.getObservation === 'function') {
+        nativeObservation = await observedDriver.getObservation(invocationIdentity.invocationId);
+        if (nativeObservation === undefined) {
+          nativeObservation = unavailableObservation(invocationIdentity, opts.driverName ?? 'native', worker ?? null);
+        }
+        if (nativeObservation.identity.invocationId !== invocationIdentity.invocationId) {
+          throw new Error(`native observation identity mismatch for invocation ${invocationIdentity.invocationId}`);
+        }
+        if (worker === undefined && nativeObservation.workerResult !== null) worker = nativeObservation.workerResult;
+      }
       const wallTimeMs = Math.max(0, Date.now() - startedMs);
 
+      const nativeMode = typeof observedDriver.getObservation === 'function';
+      const measuredUsage = nativeObservation === undefined ? undefined : campaignUsage(nativeObservation);
       const usage: Usage = worker?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
       // Observed served id wins (the served-id decision); the requested id is
       // the fallback a lane that cannot observe it leaves us.
-      const model = worker?.model ?? opts.model;
+      const model = nativeMode
+        ? nativeObservation?.model.observed.value ?? worker?.model ?? opts.model
+        : worker?.model ?? opts.model;
       // DD-9: cost is derived ONLY via the toolkit price map over usage —
       // never invented; null when the (observed) model has no price. The
       // driver's own costUSD is not used: the runner owns derivation.
-      const cost = computeCostUSD({ model, provider: opts.provider }, usage);
-      governor.observeResult(c.id, { usage, costUSD: cost });
+      const costUsage = nativeMode && nativeObservation !== undefined
+        ? nativeGovernorUsage(nativeObservation)
+        : undefined;
+      const cost = nativeMode
+        ? costUsage === undefined ? undefined : computeCostUSD({ model, provider: opts.provider }, costUsage)
+        : computeCostUSD({ model, provider: opts.provider }, usage);
+      // Native compatibility projections never enter the governor. Native
+      // counters enter only when fully observed and explicitly disjoint;
+      // unknown or overlapping counters never become zero or double-counted.
+      if (!nativeMode) governor.observeResult(c.id, { usage, costUSD: cost });
+      else if (costUsage !== undefined) governor.observeResult(c.id, { usage: costUsage, costUSD: cost });
       // W6.4: the per-case USD ceiling binds at the case grain ONLY on lanes
       // whose driver honours Budget.maxUsd (claude-agent, subprocess). The
       // ai-sdk and acp drivers ignore that field, so the run governor's
@@ -754,7 +825,31 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // planted configs), so a post-scoring diff would be post-judge state,
       // not the worker's prediction. undefined = git unavailable or failed.
       const fixerPatch =
-        isFixerCase(c) && workspace !== undefined && worker !== undefined ? gitPatch(workspace) : undefined;
+        isFixerCase(c) && workspace !== undefined ? gitPatch(workspace) : undefined;
+      if (nativeObservation !== undefined) {
+        if (thrown !== undefined && nativeObservation.terminal.transportException === null) {
+          nativeObservation.terminal.transportException = { name: thrown instanceof Error ? thrown.name : 'Error', message: boundDriverCause(String(thrown)) };
+        }
+        const rules = loadDenylistRules(repoRoot);
+        let patchCaptureStatus = fixerPatch === undefined ? 'no-patch-or-capture-unavailable' : 'captured';
+        if (fixerPatch !== undefined) {
+          const match = findDenylistMatch(fixerPatch, 'candidate.patch', rules);
+          if (match !== undefined) patchCaptureStatus = `withheld:${match.id}`;
+          else nativeObservation.artifacts.push({ kind: 'candidate-patch', ...artifactStore.write(artifactContext, 'candidate.patch', fixerPatch) });
+        }
+        if (worker?.structuredOutput !== undefined) {
+          const output = `${JSON.stringify(worker.structuredOutput, null, 2)}\n`;
+          const match = findDenylistMatch(output, 'worker-output.json', rules);
+          if (match === undefined) nativeObservation.artifacts.push({ kind: 'worker-output', ...artifactStore.write(artifactContext, 'worker-output.json', output) });
+        }
+        nativeObservation.capture = {
+          status: patchCaptureStatus,
+          patchSha256: fixerPatch === undefined ? null : sha256(fixerPatch),
+          workspaceSha256: null,
+        };
+        const artifact = artifactStore.writeObservation(artifactContext, nativeObservation);
+        observations.push({ observation: nativeObservation, artifact });
+      }
 
       // W6.3 dynamic sentinel (RS-9 §4.3 D): before anything is scored, scan
       // every surface the worker produced — structured output, error, tool
@@ -781,6 +876,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       const contaminatedAt = findSentinel(needles, caseSources());
 
       let outcome: { score: number; passed: number; total: number };
+      let candidateCorrectness: boolean | null = null;
+      let assignedStrategySuccess: boolean | null = null;
+      let operationalStatus: NonNullable<ResultRow['outcomes']>['operationalStatus'] = 'operational-missingness';
       let journalResult: OpResult<unknown>;
       let diagnostics: string | undefined;
       // W6.2: the cause a dispatched case's row is incomplete (the row-level
@@ -811,7 +909,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         emitRow = false;
         absences.push({ case: c.id, role: suite.role, cause });
         contaminations.push({ case: c.id, where: contaminatedAt });
-      } else if (worker === undefined) {
+      } else if (worker === undefined && !(isFixerCase(c) && fixerPatch !== undefined)) {
         outcome = zeroOutcome(probeCount);
         // Same bound/redaction as the stopReason:error path — a driver that
         // THROWS must not persist an unbounded or secret-bearing message.
@@ -825,8 +923,11 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // handled earlier and aborts the run entirely.)
         emitRow = false;
         absences.push({ case: c.id, role: suite.role, cause: thrownCause });
-      } else if (worker.stopReason === 'budget') {
+      } else if (worker?.stopReason === 'budget' && !isFixerCase(c)) {
         outcome = zeroOutcome(probeCount); // honest budget-exhausted: no fabricated credit
+        candidateCorrectness = false;
+        assignedStrategySuccess = false;
+        operationalStatus = 'measured-failure';
         journalResult = { status: 'budget-exhausted' };
         diagnostics = 'driver stopped on budget';
         // W6.2: the row stays (the case ran — its partial spend and its
@@ -834,7 +935,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // marks it incomplete so coverage parity sees the stop (the cell
         // counts it in budgetStops, not in coveredCases).
         stopCause = 'budget';
-      } else if (worker.stopReason === 'error') {
+      } else if (worker?.stopReason === 'error' && !isFixerCase(c)) {
         // Post-v1.0.0 toolkit (cq-toolkit #206/#210/#212, pinned 1.0.1)
         // carries the driver's own cause in `WorkerResult.error` (bounded and
         // secret-redacted by the toolkit) with a class token as its second
@@ -871,8 +972,14 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // Either way the worker produced no gradeable result, so every
         // configured probe failed (passed 0 of the full ceiling).
         outcome = zeroOutcome(probeCount);
-      } else if (worker.stopReason === 'aborted') {
+        if (isStructuredOutputMissCause(cause)) {
+          candidateCorrectness = false;
+          assignedStrategySuccess = false;
+          operationalStatus = 'measured-failure';
+        }
+      } else if (worker?.stopReason === 'aborted' && !(isFixerCase(c) && fixerPatch !== undefined)) {
         outcome = zeroOutcome(probeCount);
+        operationalStatus = 'interrupted';
         journalResult = { status: 'indeterminate', detail: 'driver stopReason: aborted' };
         diagnostics = 'driver stopReason: aborted';
       } else if (isFixerCase(c)) {
@@ -883,20 +990,53 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // the fixer path (materialized above, before the driver ran) — it is
         // what the probe grades. The probe ceiling is checkTimeoutMs, an
         // independent knob from the run's budget caps.
-        const check = scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.checkTimeoutMs);
+        const structuredMiss = worker?.stopReason === 'error' && worker.error !== undefined && isStructuredOutputMissCause(boundDriverCause(worker.error));
+        if (worker?.stopReason === 'error' && !structuredMiss && fixerPatch === undefined && thrown === undefined) {
+          const cause = worker.error !== undefined ? boundDriverCause(worker.error) : 'fixer driver failed without recoverable candidate';
+          outcome = zeroOutcome(probeCount);
+          journalResult = { status: 'failed', error: cause };
+          diagnostics = cause;
+          emitRow = false;
+          absences.push({ case: c.id, role: suite.role, cause });
+        } else if (worker?.stopReason === 'aborted' && fixerPatch === undefined) {
+          outcome = zeroOutcome(probeCount);
+          journalResult = { status: 'indeterminate', detail: 'driver stopped before a recoverable candidate was captured' };
+          diagnostics = 'driver cancelled before candidate capture';
+          emitRow = false;
+        } else {
+        if (worker?.stopReason === 'budget') stopCause = 'budget';
+        const scoringWorker: WorkerResult = worker ?? {
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'error',
+        };
+          const check = scoreFixerWorker(c, scoringWorker, repoRoot, workspace as string, opts.checkTimeoutMs);
         // Probe 2 — schema compliance (runner/dimensions/schemaCompliance.ts):
         // grades ONLY the structuredOutput's shape discipline, never the
         // fix's content, so the check's sweep-agnostic contract is intact.
-        const schema = scoreSchemaCompliance(worker);
+          const schema = scoreSchemaCompliance(scoringWorker);
+        candidateCorrectness = check.correctness ?? null;
+        assignedStrategySuccess = check.correctness ?? null;
+        operationalStatus = check.operationalStatus === 'judge-failure'
+          ? 'judge-failure'
+          : thrown !== undefined ? 'measured-transport-failure'
+          : check.correctness === true ? 'complete' : 'measured-failure';
         const passed = check.passed + schema.passed;
         outcome = { score: passed / FIXER_PROBE_COUNT, passed, total: FIXER_PROBE_COUNT };
-        journalResult = { status: 'ok', value: outcome };
+        journalResult = worker?.stopReason === 'budget'
+          ? { status: 'budget-exhausted' }
+          : thrown === undefined ? { status: 'ok', value: outcome } : { status: 'failed', error: boundDriverCause(String(thrown)) };
         // Both probes' complaints surface; the CLI prints the first line.
         const complaints = [check.diagnostics, schema.diagnostics].filter((d): d is string => d !== undefined);
-        diagnostics = complaints.length > 0 ? complaints.join('\n') : undefined;
+        diagnostics = [
+          ...complaints,
+          ...(thrown === undefined ? [] : [`driver threw after candidate capture: ${boundDriverCause(String(thrown))}`]),
+        ].join('\n') || undefined;
+        }
       } else {
-        const s = scoreReviewClassifier(c, worker);
+        const s = scoreReviewClassifier(c, worker!);
         outcome = { score: s.score, passed: s.passed, total: s.total };
+        candidateCorrectness = s.passed === 1;
+        assignedStrategySuccess = s.passed === 1;
+        operationalStatus = s.passed === 1 ? 'complete' : 'measured-failure';
         journalResult = { status: 'ok', value: outcome };
         diagnostics = s.diagnostics;
         // F4: capture the observed verdict per case into the row's probes[]
@@ -917,6 +1057,18 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           `$${opts.maxUsdPerCase} per-case ceiling — evidence recorded, coverage excluded (W6.4)`;
         diagnostics = diagnostics === undefined ? cause : `${diagnostics}\n${cause}`;
         absences.push({ case: c.id, role: suite.role, cause });
+      }
+      if (nativeObservation !== undefined && isFixerCase(c)) {
+        const candidate = nativeObservation.artifacts.find((artifact) => artifact.kind === 'candidate-patch');
+        if (candidate !== undefined) {
+          const judgePath = join(repoRoot, c.probe.check);
+          let judgePin = 'unavailable';
+          try { judgePin = sha256(readFileSync(judgePath)); } catch { /* the scorer already records judge failure */ }
+          judgements.push(artifactStore.writeJudgement(
+            artifactContext, randomUUID(), candidate.sha256, judgePin,
+            { candidateCorrectness, assignedStrategySuccess, operationalStatus, outcome },
+          ));
+        }
       }
       if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);
       await append({
@@ -942,7 +1094,21 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         ...(cost !== undefined ? { costBasis: 'modeled' as const } : {}),
         ...(rowProbes !== undefined ? { probes: rowProbes } : {}),
         ...(sidecarFlag === 'flagged' ? { suspiciousBenign: true } : {}),
-        wallTimeMs, tokens: tokensOf(usage), runId, timestamp: now(),
+        wallTimeMs,
+        tokens: tokensOf(usage),
+        ...(opts.experiment !== undefined ? { experiment: artifactContext } : {}),
+        ...(nativeObservation !== undefined ? {
+          observedUsage: measuredUsage!,
+          modelIdentity: {
+            configuredTarget: nativeObservation.model.configuredTarget,
+            requestedModel: nativeObservation.model.requested.value,
+            servedModel: nativeObservation.model.observed.value,
+          },
+          outcomes: { candidateCorrectness, assignedStrategySuccess, operationalStatus },
+        } : opts.experiment !== undefined ? {
+          outcomes: { candidateCorrectness, assignedStrategySuccess, operationalStatus },
+        } : {}),
+        runId, timestamp: now(),
       });
       // F6 (WB-5.2a): persist the prediction. Only a DISPATCHED case has one
       // (worker !== undefined); the raw artifact is size-bounded and
@@ -1035,6 +1201,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     absences,
     contaminations,
     runId,
+    observations,
+    judgements,
   };
 }
 

@@ -4,9 +4,11 @@
 // artifact is size-bounded and denylist-scanned BEFORE it is written — a
 // withheld artifact is diagnosable, never silently published.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { findDenylistMatch, loadDenylistRules } from './denylist.ts';
+import type { ExperimentContext } from './experiment.ts';
 
 /** Per-artifact size caps (bytes) — a worker must not publish unbounded output. */
 export const MAX_PATCH_BYTES = 262144; // 256 KiB
@@ -142,6 +144,10 @@ export interface RunManifestEntry {
    * expectedCases cannot, there being no rows).
    */
   expectedCases: number;
+  /** Additive experiment identity; old run manifests remain valid without it. */
+  experiment?: ExperimentContext;
+  /** Native observation refs written independently of projected worker rows. */
+  observations?: Array<{ path: string; sha256: string }>;
   /**
    * W6.2: the per-case USD budget that bound this run's cases, with its
    * basis — 'd9-default' when the accepted D9 envelope's cap for the cell
@@ -166,8 +172,37 @@ export interface RunManifest {
   runs: RunManifestEntry[];
 }
 
+export interface ImmutableWriteResult { path: string; sha256: string; reused: boolean; }
+
+/** Create once; an identical retry reuses the exact bytes, a conflict fails. */
+export function writeImmutableFile(path: string, content: string | Buffer): ImmutableWriteResult {
+  mkdirSync(dirname(path), { recursive: true });
+  const digest = createHash('sha256').update(content).digest('hex');
+  try {
+    writeFileSync(path, content, { flag: 'wx' });
+    return { path, sha256: digest, reused: false };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    const existing = readFileSync(path);
+    const existingDigest = createHash('sha256').update(existing).digest('hex');
+    if (existingDigest !== digest) throw new Error(`immutable artifact collision at ${path}: existing hash ${existingDigest}, requested ${digest}`);
+    return { path, sha256: digest, reused: true };
+  }
+}
+
+/** Immutable cohort report namespace, keyed by experiment identity and report version. */
+export function writeCohortReport(outDir: string, context: ExperimentContext, reportVersion: string, name: string, content: string | Buffer): ImmutableWriteResult {
+  const safe = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
+  if (![context.campaignId, context.cohortId, context.experimentId, reportVersion, name].every(safe)) {
+    throw new Error('cohort report identity contains an unsafe path segment');
+  }
+  return writeImmutableFile(join(outDir, 'campaign', context.campaignId, 'cohort', context.cohortId,
+    'reports', reportVersion, context.experimentId, name), content);
+}
+
 /** Write `<outDir>/run.json` — one entry per suite run (a process may run several). */
 export function writeRunManifest(outDir: string, entries: readonly RunManifestEntry[]): void {
   mkdirSync(outDir, { recursive: true });
-  writeFileSync(join(outDir, 'run.json'), JSON.stringify({ runs: entries }, null, 2) + '\n');
+  const content = JSON.stringify({ runs: entries }, null, 2) + '\n';
+  writeFileSync(join(outDir, 'run.json'), content);
 }

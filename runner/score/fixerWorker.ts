@@ -17,6 +17,9 @@ export interface ScoreOutcome {
    * it unset (the check probe grades workspace state, not worker output).
    */
   observed?: string | null;
+  /** Correctness is unknown when the independent judge did not run reliably. */
+  correctness?: boolean | null;
+  operationalStatus?: 'measured' | 'judge-failure';
 }
 
 /** Structural shape of a check-rerun case (suite.schema.json, narrowed by loadSuite). */
@@ -81,6 +84,8 @@ export function scoreFixerWorker(
       score: 0,
       passed: 0,
       total: 1,
+      correctness: null,
+      operationalStatus: 'judge-failure',
       diagnostics: `check probe timed out after ${timeoutMs}ms (${suiteCase.probe.check})`,
     };
   }
@@ -89,11 +94,13 @@ export function scoreFixerWorker(
       score: 0,
       passed: 0,
       total: 1,
+      correctness: null,
+      operationalStatus: 'judge-failure',
       diagnostics: `check probe could not execute (${suiteCase.probe.check}): ${res.error.message}`,
     };
   }
   const passed = res.status === 0;
-  if (passed) return { score: 1, passed: 1, total: 1 };
+  if (passed) return { score: 1, passed: 1, total: 1, correctness: true, operationalStatus: 'measured' };
   const why =
     res.status === null
       ? `killed by signal ${res.signal ?? 'unknown'}`
@@ -103,6 +110,8 @@ export function scoreFixerWorker(
     score: 0,
     passed: 0,
     total: 1,
+    correctness: false,
+    operationalStatus: 'measured',
     diagnostics: `check probe failed (${why})${output ? `:\n${output}` : ''}`,
   };
 }

@@ -21,10 +21,11 @@ import { d9PerCaseUsd, D9_PER_CASE_USD, perSuiteTokenCap } from './budget.ts';
 import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
 import { loadSuite, suiteVariant, type Suite } from './suite.ts';
 import { EVAL_ROOT_MARKER, loadAnswerKey, sentinelNeedles, type AnswerKey } from './answerKey.ts';
-import { publishArtifacts, writeRunManifest, type CaseArtifact, type RunManifestEntry } from './persist.ts';
+import { publishArtifacts, writeCohortReport, writeImmutableFile, writeRunManifest, type CaseArtifact, type RunManifestEntry } from './persist.ts';
 import { regrade } from './regrade.ts';
 import { DEFAULT_CHECK_TIMEOUT_MS } from './score/fixerWorker.ts';
 import { FakeDriver } from './fake-driver.ts';
+import type { ExperimentContext } from './experiment.ts';
 // DD-4: the fixer-worker's structured-output shape — the classifier's
 // verdict schema is mirrored locally below, the fixer's lives on the
 // dimensions module it is graded against, so both probes target one source
@@ -47,7 +48,7 @@ const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
   '--driver fake|ai-sdk|claude-agent|subprocess|acp --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
   '(--driver-name is required with --driver fake — a fake run must name the lane it stands in for) ' +
-  '[--max-usd <n>] [--max-usd-per-case <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>] [--answer-key <path>]\n' +
+  '[--experiment <context.json>] [--max-usd <n>] [--max-usd-per-case <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>] [--answer-key <path>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
   'eval root (W6.3): a runner inside a built eval root requires an answer key outside the root — --answer-key <path> or CQ_ANSWER_KEY (the env form keeps the key path out of the process argv a host-reach lane can read); a sentinel hit exits 2\n' +
   "caps: --max-tokens caps ONE suite run (each runSuite owns its governor); --max-tokens-per-case is multiplied by that suite's case count (WB-1.6) — pass one, never both\n" +
@@ -153,7 +154,15 @@ interface CliOptions {
   suiteSha?: string;
   /** W6.3: the eval root's runner-only answer key (expected verdicts + sentinel). */
   answerKey?: string;
+  experiment?: ExperimentContext;
 }
+
+const EXPERIMENT_CONTEXT_SCHEMA = z.object({
+  campaignId: z.string().min(1), cohortId: z.string().min(1), experimentId: z.string().min(1),
+  taskId: z.string().min(1), repeatId: z.string().min(1), assignmentId: z.string().min(1),
+  stageId: z.string().min(1), attemptId: z.string().min(1), track: z.string().min(1),
+  strategyId: z.string().min(1), settingsId: z.string().min(1), budgetId: z.string().min(1), profileId: z.string().min(1),
+}).strict();
 
 function parseArgs(argv: readonly string[]): CliOptions {
   // No cap default-injection: absent --max-usd/--max-tokens mean ABSENT
@@ -175,6 +184,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let probeRecord: string | undefined;
   let suiteSha: string | undefined;
   let answerKey: string | undefined;
+  let experiment: ExperimentContext | undefined;
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]!;
     switch (flag) {
@@ -194,6 +204,12 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--probe-record': probeRecord = nextValue(argv, i, flag); i++; break;
       case '--suite-sha': suiteSha = nextValue(argv, i, flag); i++; break;
       case '--answer-key': answerKey = nextValue(argv, i, flag); i++; break;
+      case '--experiment': {
+        const path = nextValue(argv, i, flag);
+        try { experiment = EXPERIMENT_CONTEXT_SCHEMA.parse(JSON.parse(readFileSync(path, 'utf8'))); }
+        catch (error) { throw new UsageError(`--experiment '${path}' is not a valid experiment context: ${error instanceof Error ? error.message : String(error)}`); }
+        i++; break;
+      }
       case '--max-usd': case '--max-usd-per-case': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
@@ -307,7 +323,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     // the dynamic check — this only removes the free pointer.
     answerKey = process.env.CQ_ANSWER_KEY;
   }
-  return { suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey };
+  return { suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey, experiment };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -446,6 +462,8 @@ async function main(argv: readonly string[]): Promise<number> {
         journalPath: opts.journal, driverName: opts.driverName,
         preflightProbe,
         ...(answerKey !== undefined ? { answerKey, sentinelNeedles: needles } : {}),
+        ...(opts.experiment !== undefined ? { experiment: opts.experiment } : {}),
+        ...(opts.out !== undefined ? { artifactRoot: opts.out } : {}),
       });
       for (const hit of result.contaminations) {
         contaminations.push(`${suite.role}/${suite.name} case ${hit.case}: ${hit.where}`);
@@ -477,6 +495,7 @@ async function main(argv: readonly string[]): Promise<number> {
         // suite, which publishes no rows to carry it) and the per-case USD
         // budget + its basis, so a snapshot states the cap that bound it.
         expectedCases: suite.cases.length,
+        ...(opts.experiment !== undefined ? { experiment: opts.experiment } : {}),
         ...(opts.maxUsdPerCase !== undefined
           ? { maxUsdPerCase: opts.maxUsdPerCase, maxUsdPerCaseBasis: opts.maxUsdPerCaseBasis }
           : {}),
@@ -486,6 +505,9 @@ async function main(argv: readonly string[]): Promise<number> {
         // non-empty list, so a clean run's run.json bytes are unchanged.
         ...(result.absences.length > 0
           ? { absences: result.absences.map((a) => ({ case: a.case, cause: a.cause })) }
+          : {}),
+        ...(result.observations.length > 0
+          ? { observations: result.observations.map(({ artifact }) => artifact) }
           : {}),
       });
       // X2 inputs arrive STRUCTURED from the runner (round 3): the runner
@@ -539,19 +561,32 @@ async function main(argv: readonly string[]): Promise<number> {
   // I/O, out-dir creation, writeFileSync. Infrastructure errors here are
   // exit 2, never a benign scored-zero warning.
   try {
-    if (opts.out !== undefined) {
-      mkdirSync(opts.out, { recursive: true });
+      if (opts.out !== undefined) {
+        mkdirSync(opts.out, { recursive: true });
       // Same-role collisions were refused before any dispatch (see above).
+      const immutableReports: Array<{ path: string; sha256: string }> = [];
       for (const t of tables) {
-        writeFileSync(join(opts.out, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');
+        const content = JSON.stringify(t, null, 2) + '\n';
+        if (opts.experiment !== undefined) {
+          writeImmutableFile(join(opts.out, `${t.role}.table.json`), content);
+          immutableReports.push(writeCohortReport(opts.out, opts.experiment, 'v1', `${t.role}.table.json`, content));
+        } else writeFileSync(join(opts.out, `${t.role}.table.json`), content);
       }
-      writeFileSync(join(opts.out, 'rows.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length > 0 ? '\n' : ''));
+      const rowsContent = rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length > 0 ? '\n' : '');
+      if (opts.experiment !== undefined) {
+        writeImmutableFile(join(opts.out, 'rows.jsonl'), rowsContent);
+        immutableReports.push(writeCohortReport(opts.out, opts.experiment, 'v1', 'rows.jsonl', rowsContent));
+      } else writeFileSync(join(opts.out, 'rows.jsonl'), rowsContent);
       // F6 (WB-5.2a): persist the prediction + the run manifest. Each artifact
       // is size-bounded and denylist-scanned before it is written; a withheld
       // artifact is diagnosed, never silently dropped.
       const published = publishArtifacts(opts.out, artifactList, repoRoot);
       for (const d of published.diagnostics) console.error(`  ${d}`);
       writeRunManifest(opts.out, manifestEntries);
+      if (opts.experiment !== undefined) {
+        const manifestContent = `${JSON.stringify({ schemaVersion: 1, experiment: opts.experiment, reports: immutableReports, runs: manifestEntries }, null, 2)}\n`;
+        writeCohortReport(opts.out, opts.experiment, 'v1', 'manifest.json', manifestContent);
+      }
       console.log(`wrote ${opts.out}/rows.jsonl, ${tables.length} table(s), ${published.published.length} prediction artifact(s) and run.json`);
     }
   } catch (e) {

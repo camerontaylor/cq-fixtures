@@ -120,3 +120,25 @@ export function perSuiteUsdCap(perCaseUsd: number, caseCount: number): number {
   }
   return Math.round(perCaseUsd * caseCount * 1e6) / 1e6;
 }
+
+/**
+ * Native usage may enter the toolkit governor only when its folded counters
+ * are all observed and the bridge explicitly says cache counters are
+ * disjoint from input. The governor folds input + output + cache read/write;
+ * unknown inclusion would otherwise turn an overlap into invented spend.
+ */
+export function nativeGovernorUsage(observation: NativeObservation): Usage | undefined {
+  const counters = observation.usage.counters;
+  const names = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
+  if (observation.usage.inclusion.cache !== 'disjoint-from-input') return undefined;
+  const values = Object.fromEntries(names.map((name) => {
+    const counter = counters[name];
+    if (counter.availability !== 'observed' || typeof counter.value !== 'number' ||
+        !Number.isFinite(counter.value) || counter.value < 0) return [name, undefined];
+    return [name, counter.value];
+  })) as Partial<Usage>;
+  if (names.some((name) => values[name] === undefined)) return undefined;
+  return values as Usage;
+}
+import type { Usage } from '@camerontaylor/cq-toolkit';
+import type { NativeObservation } from './native/observation.ts';

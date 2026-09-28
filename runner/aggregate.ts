@@ -1,6 +1,8 @@
 // Per-role aggregation of result rows into comparison tables
 // (schema/comparison-table.schema.json). Pure: rows in, tables out — no I/O.
 
+import { canonicalJson } from './experiment.ts';
+
 export type SuiteRole = 'fixer-worker' | 'review-classifier';
 
 /**
@@ -8,6 +10,13 @@ export type SuiteRole = 'fixer-worker' | 'review-classifier';
  * from schema/suite.schema.json (the toolkit does not export it).
  */
 export type Verdict = 'actionable' | 'responded' | 'resolved' | 'blocked' | 'skip';
+type ExperimentCellIdentity = Pick<NonNullable<ResultRow['experiment']>, 'campaignId' | 'cohortId' | 'experimentId' | 'track' | 'strategyId' | 'settingsId' | 'budgetId' | 'profileId'>;
+
+function cellExperiment(row: ResultRow): ExperimentCellIdentity | undefined {
+  if (row.experiment === undefined) return undefined;
+  const { campaignId, cohortId, experimentId, track, strategyId, settingsId, budgetId, profileId } = row.experiment;
+  return { campaignId, cohortId, experimentId, track, strategyId, settingsId, budgetId, profileId };
+}
 
 /** Iteration order for the verdict vocabulary (stable cell output). */
 const VERDICTS: readonly Verdict[] = ['actionable', 'responded', 'resolved', 'blocked', 'skip'];
@@ -69,6 +78,16 @@ export interface ResultRow {
     cacheWrite?: number;
     reasoning?: number;
   };
+  /** Versioned campaign identity; absent means a legacy row. */
+  experiment?: {
+    campaignId: string; cohortId: string; experimentId: string; taskId: string;
+    repeatId: string; assignmentId: string; stageId: string; attemptId: string;
+    track: string; strategyId: string; settingsId: string; budgetId: string; profileId: string;
+  };
+  /** Authoritative accounting. Null means unavailable, never zero imputation. */
+  observedUsage?: { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; reasoning: number | null; tokenTotal: number | null; complete: boolean };
+  outcomes?: { candidateCorrectness: boolean | null; assignedStrategySuccess: boolean | null; operationalStatus: 'complete' | 'measured-failure' | 'measured-transport-failure' | 'operational-missingness' | 'judge-failure' | 'interrupted' | 'integrity-violation' };
+  modelIdentity?: { configuredTarget: string; requestedModel: string | null; servedModel: string | null };
   runId: string;
   timestamp: string;
 }
@@ -137,6 +156,14 @@ export interface ComparisonTableCell {
   costBasis?: 'billed' | 'modeled';
   wallTimeMs: number;
   tokens: ResultRow['tokens'];
+  experiment?: ExperimentCellIdentity;
+  observedUsage?: NonNullable<ResultRow['observedUsage']>;
+  assignmentCount?: number;
+  launchCount?: number;
+  validOutcomeCount?: number;
+  operationalCompletionRate?: number;
+  conditionalCorrectness?: number | null;
+  assignedStrategySuccess?: number | null;
 }
 
 /** Mirror of schema/comparison-table.schema.json (one table per role). */
@@ -176,6 +203,15 @@ interface CellAccumulator {
   covered: Set<string>;
   /** W6.2: contributing rows stopped on the case budget. */
   budgetStops: number;
+  experiment?: ExperimentCellIdentity;
+  observedUsage: NonNullable<ComparisonTableCell['observedUsage']>;
+  usageComplete: boolean;
+  candidateKnown: number;
+  candidateCorrect: number;
+  assignedKnown: number;
+  assignedSuccess: number;
+  launches: number;
+  operationalCompletions: number;
 }
 
 /** Cost sums are rounded to 6 decimals — finer precision is price-map noise. */
@@ -300,7 +336,8 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
     // F6/CQ-4: the variant is part of the cell identity — two variants of one
     // suite on the same (model, driver) must land as DISTINCT cells, never
     // collide. Absent variant = the default posture.
-    const key = `${row.model}\n${row.driver}\n${row.variant ?? 'default'}`;
+    const cellIdentity = cellExperiment(row);
+    const key = `${row.model}\n${row.driver}\n${row.variant ?? 'default'}\n${canonicalJson(cellIdentity ?? null)}`;
     let acc = cells.get(key);
     if (acc === undefined) {
       acc = {
@@ -322,10 +359,20 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         fpWrong: 0,
         covered: new Set<string>(),
         budgetStops: 0,
+        ...(cellIdentity !== undefined ? { experiment: cellIdentity } : {}),
+        observedUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, tokenTotal: 0, complete: true },
+        usageComplete: true, candidateKnown: 0, candidateCorrect: 0, assignedKnown: 0,
+        assignedSuccess: 0, launches: 0, operationalCompletions: 0,
       };
       cells.set(key, acc);
     }
     acc.runs += 1;
+    if (row.outcomes !== undefined) {
+      acc.launches += 1;
+      if (row.outcomes.operationalStatus === 'complete' || row.outcomes.operationalStatus === 'measured-failure') acc.operationalCompletions += 1;
+      if (row.outcomes.candidateCorrectness !== null) { acc.candidateKnown += 1; if (row.outcomes.candidateCorrectness) acc.candidateCorrect += 1; }
+      if (row.outcomes.assignedStrategySuccess !== null) { acc.assignedKnown += 1; if (row.outcomes.assignedStrategySuccess) acc.assignedSuccess += 1; }
+    }
     if (row.invalid !== undefined) acc.invalid = row.invalid;
     acc.passed += row.outcome.passed;
     acc.total += row.outcome.total;
@@ -397,6 +444,16 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       acc.hasReasoning = true;
       acc.tokens.reasoning += row.tokens.reasoning;
     }
+    const observed = row.observedUsage ?? {
+      input: row.tokens.input ?? 0, output: row.tokens.output ?? 0, cacheRead: row.tokens.cacheRead ?? 0,
+      cacheWrite: row.tokens.cacheWrite ?? 0, reasoning: row.tokens.reasoning ?? 0,
+      tokenTotal: (row.tokens.input ?? 0) + (row.tokens.output ?? 0) + (row.tokens.cacheRead ?? 0) + (row.tokens.cacheWrite ?? 0), complete: true,
+    };
+    for (const name of ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'tokenTotal'] as const) {
+      const value = observed[name];
+      if (value === null) { acc.observedUsage[name] = null; acc.usageComplete = false; }
+      else if (acc.observedUsage[name] !== null) acc.observedUsage[name] = acc.observedUsage[name]! + value;
+    }
   }
   const out: ComparisonTableCell[] = [];
   for (const acc of cells.values()) {
@@ -457,6 +514,20 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         ...(acc.hasCacheWrite ? { cacheWrite: acc.tokens.cacheWrite } : {}),
         ...(acc.hasReasoning ? { reasoning: acc.tokens.reasoning } : {}),
       },
+      ...(acc.experiment !== undefined ? { experiment: acc.experiment } : {}),
+      ...((acc.experiment !== undefined || !acc.usageComplete)
+        ? { observedUsage: { ...acc.observedUsage, complete: acc.usageComplete } } : {}),
+      ...(acc.experiment !== undefined ? {
+        // The declared suite size is the assigned denominator; rows may be
+        // absent when the governor refuses dispatch, so runs is not a valid
+        // denominator for assigned-strategy success.
+        assignmentCount: acc.expectedCases ?? acc.runs,
+        launchCount: acc.launches,
+        validOutcomeCount: acc.assignedKnown,
+        operationalCompletionRate: acc.launches === 0 ? 0 : acc.operationalCompletions / acc.launches,
+        conditionalCorrectness: acc.candidateKnown === 0 ? null : acc.candidateCorrect / acc.candidateKnown,
+        assignedStrategySuccess: acc.assignedKnown === 0 ? null : acc.assignedSuccess / acc.assignedKnown,
+      } : {}),
     });
   }
   return { role, suite, generatedAt: new Date().toISOString(), cells: out };

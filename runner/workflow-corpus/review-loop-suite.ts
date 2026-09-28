@@ -30,7 +30,7 @@ export interface ReviewLoopRunSuiteBundle {
   /** Fields S1 must merge into the host-side check process environment. */
   hostCheckScoringEnvironment(workspacePath: string, pinnedBaselineCommit: string): Readonly<Record<string, string>>;
   /** Wrap the runner's injected Driver to pin the actual copied-workspace baseline before dispatch. */
-  wrapDriver(driver: Driver): Driver;
+  wrapDriver<T extends Driver>(driver: T): T;
   pinnedBaselineCommit(workspacePath: string): string | undefined;
   pinnedCandidateCommit(workspacePath: string): string | undefined;
   cleanup(): Promise<void>;
@@ -156,9 +156,8 @@ if (!report.passed) {
       }
       return reviewLoopHostCheckEnvironment({ baselineCommit: pinnedBaselineCommit, oraclePin: oraclePin.sha256 });
     },
-    wrapDriver(driver: Driver): Driver {
-      return {
-        async run(invocation: OpInvocation): Promise<WorkerResult> {
+    wrapDriver<T extends Driver>(driver: T): T {
+      const run = async (invocation: OpInvocation): Promise<WorkerResult> => {
           const workspacePath = invocation.prompt.match(/^workspace: (.+)$/m)?.[1];
           if (workspacePath === undefined) throw new Error('runSuite invocation omitted workspace path');
           const workspace = resolve(workspacePath);
@@ -196,10 +195,9 @@ if (!report.passed) {
             thrown = error;
           }
 
-          // Preserve the model-created commit under a host-namespaced ref,
-          // then restore the runner's original HEAD while leaving its working
-          // tree intact. runSuite's existing patch capture diffs against HEAD;
-          // this keeps a valid model commit and makes that patch regradeable.
+          // Preserve a host-namespaced reference to the candidate commit, but
+          // leave the observed workspace's HEAD and index untouched. S1
+          // captures and judges against its immutable workspaceBaseline.
           let candidateCommit: string | null = null;
           try {
             candidateCommit = execFileSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
@@ -210,10 +208,6 @@ if (!report.passed) {
             if (candidateCommit !== baselineCommit) {
               const candidateRef = `${baselineRefNamespace}/candidate-${workspaceKey}`;
               execFileSync('git', ['update-ref', candidateRef, candidateCommit], {
-                cwd: workspace,
-                stdio: ['ignore', 'pipe', 'pipe'],
-              });
-              execFileSync('git', ['reset', '--mixed', baselineCommit], {
                 cwd: workspace,
                 stdio: ['ignore', 'pipe', 'pipe'],
               });
@@ -235,8 +229,14 @@ if (!report.passed) {
           if (thrown !== undefined) throw thrown;
           if (result === undefined) throw new Error('wrapped Driver returned no WorkerResult');
           return result;
-        },
       };
+      return new Proxy(driver, {
+        get(target, property) {
+          if (property === 'run') return run;
+          const value = Reflect.get(target, property, target) as unknown;
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
     },
     pinnedBaselineCommit(workspacePath: string): string | undefined {
       return baselinePins.get(resolve(workspacePath));

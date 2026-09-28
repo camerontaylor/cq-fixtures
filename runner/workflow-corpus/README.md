@@ -24,12 +24,14 @@ outside the copied fixture and routes the supplied model spec into runSuite.
 Use the bundle's `wrapDriver()` with native bridges: before delegation it
 captures the copied workspace's pristine full commit SHA, installs a
 task-scoped Git ref and writes a host-side pin record. If the worker commits,
-the wrapper preserves that commit under a separate task-scoped ref and resets
-only `HEAD` and the index to the captured baseline, leaving candidate files
-intact so runSuite's existing patch capture remains relative to pristine. The
-check reads the host pin and uses its full SHA; it never interprets the
-worker's current `HEAD` as baseline or substitutes the parent task repo's
-commit. The bundle exposes both recorded SHAs for audit.
+the wrapper preserves that commit under a separate task-scoped ref and leaves
+the candidate `HEAD`, index, and files untouched. S1 uses its immutable
+`workspaceBaseline.commit` captured before dispatch for patch capture and host
+judgement. The check reads the host pin and uses its full SHA; it never
+interprets the worker's current `HEAD` as baseline or substitutes the parent
+task repo's commit. The wrapper preserves the Driver's native observation,
+identity handoff, cancellation, and capability seams while intercepting only
+`run()`. The bundle exposes both recorded SHAs for audit.
 
 The host check also carries an explicit oracle dependency manifest. The
 exported `createReviewLoopOraclePin()` hashes the full bytes of

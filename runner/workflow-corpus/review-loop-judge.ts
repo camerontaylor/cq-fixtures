@@ -11,6 +11,8 @@ import {
 } from '../../campaigns/cq-settings/corpus/review-loop-task.ts';
 
 export const REVIEW_LOOP_JUDGE_VERSION = REVIEW_LOOP_ORACLE_ID;
+export const REVIEW_LOOP_MODULE_PROBE_TIMEOUT_MS = 5_000;
+export const REVIEW_LOOP_VISIBLE_TEST_TIMEOUT_MS = 10_000;
 
 export interface ReviewLoopWorkspaceOptions {
   readonly baselineRef: string;
@@ -154,50 +156,68 @@ export async function judgeReviewLoopWorkspace(
   const baselineFailures = checkBaselineIdentity(worktreePath, options);
   behaviorFailures.push(...baselineFailures);
 
-  let settings: { isValidCampaignLabel(value: unknown): boolean } | undefined;
-  let display: { displayCampaignLabel(value: string): string } | undefined;
+  const cases: ReadonlyArray<{ label: unknown; expected: boolean; name: string }> = [
+    { label: null, expected: false, name: 'non-string null' },
+    { label: 7, expected: false, name: 'non-string number' },
+    { label: '', expected: false, name: 'empty string' },
+    { label: ' \t\n', expected: false, name: 'whitespace-only string' },
+    { label: 'Campaign A', expected: true, name: 'ordinary valid label' },
+    { label: '\u2003Campaign\u2003', expected: true, name: 'unicode-trimmed valid label' },
+    { label: 'x'.repeat(40), expected: true, name: '40 ASCII code points' },
+    { label: 'x'.repeat(41), expected: false, name: '41 ASCII code points' },
+    { label: '😀'.repeat(40), expected: true, name: '40 astral Unicode code points' },
+    { label: '😀'.repeat(41), expected: false, name: '41 astral Unicode code points' },
+    { label: 'e\u0301'.repeat(20), expected: true, name: '40 combining-sequence code points' },
+    { label: 'e\u0301'.repeat(21), expected: false, name: '42 combining-sequence code points' },
+  ];
+  const candidateSettingsUrl = pathToFileURL(join(worktreePath, 'src/settings.mjs')).href;
+  const candidateDisplayUrl = pathToFileURL(join(worktreePath, 'src/display.mjs')).href;
+  const moduleProbe = `
+const behaviorFailures = [];
+const displayFailures = [];
+let settings;
+let display;
+try {
+  const nonce = 'judge=' + Date.now() + '-' + Math.random();
+  settings = await import(${JSON.stringify(candidateSettingsUrl)} + '?' + nonce);
+  display = await import(${JSON.stringify(candidateDisplayUrl)} + '?' + nonce);
+} catch (error) {
+  behaviorFailures.push('candidate modules could not be loaded: ' + String(error?.message ?? error));
+}
+if (settings !== undefined) {
+  for (const testCase of ${JSON.stringify(cases)}) {
+    try {
+      if (settings.isValidCampaignLabel(testCase.label) !== testCase.expected) behaviorFailures.push('semantic case failed: ' + testCase.name);
+    } catch (error) {
+      behaviorFailures.push('semantic case threw (' + testCase.name + '): ' + String(error?.message ?? error));
+    }
+  }
+}
+if (display !== undefined) {
+  for (const label of ['  Campaign A  ', '\\u2003😀 label  ']) {
+    try {
+      if (display.displayCampaignLabel(label) !== label) displayFailures.push('display changed original label ' + JSON.stringify(label));
+    } catch (error) {
+      displayFailures.push('display threw for ' + JSON.stringify(label) + ': ' + String(error?.message ?? error));
+    }
+  }
+}
+process.stdout.write(JSON.stringify({ behaviorFailures, displayFailures }));
+`;
   try {
-    const nonce = `judge=${Date.now()}-${Math.random()}`;
-    settings = await import(`${pathToFileURL(join(worktreePath, 'src/settings.mjs')).href}?${nonce}`);
-    display = await import(`${pathToFileURL(join(worktreePath, 'src/display.mjs')).href}?${nonce}`);
+    const probeOutput = execFileSync(process.execPath, ['--input-type=module', '-e', moduleProbe], {
+      cwd: worktreePath,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: REVIEW_LOOP_MODULE_PROBE_TIMEOUT_MS,
+      maxBuffer: 64 * 1024,
+    });
+    const probe = JSON.parse(probeOutput) as { behaviorFailures: string[]; displayFailures: string[] };
+    behaviorFailures.push(...probe.behaviorFailures);
+    displayFailures.push(...probe.displayFailures);
   } catch (error) {
-    behaviorFailures.push(`candidate modules could not be loaded: ${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  if (settings !== undefined) {
-    const cases: ReadonlyArray<{ label: unknown; expected: boolean; name: string }> = [
-      { label: null, expected: false, name: 'non-string null' },
-      { label: 7, expected: false, name: 'non-string number' },
-      { label: '', expected: false, name: 'empty string' },
-      { label: ' \t\n', expected: false, name: 'whitespace-only string' },
-      { label: 'Campaign A', expected: true, name: 'ordinary valid label' },
-      { label: '\u2003Campaign\u2003', expected: true, name: 'unicode-trimmed valid label' },
-      { label: 'x'.repeat(40), expected: true, name: '40 ASCII code points' },
-      { label: 'x'.repeat(41), expected: false, name: '41 ASCII code points' },
-      { label: '😀'.repeat(40), expected: true, name: '40 astral Unicode code points' },
-      { label: '😀'.repeat(41), expected: false, name: '41 astral Unicode code points' },
-      { label: 'e\u0301'.repeat(20), expected: true, name: '40 combining-sequence code points' },
-      { label: 'e\u0301'.repeat(21), expected: false, name: '42 combining-sequence code points' },
-    ];
-    for (const testCase of cases) {
-      try {
-        if (settings.isValidCampaignLabel(testCase.label) !== testCase.expected) {
-          behaviorFailures.push(`semantic case failed: ${testCase.name}`);
-        }
-      } catch (error) {
-        behaviorFailures.push(`semantic case threw (${testCase.name}): ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  }
-
-  if (display !== undefined) {
-    for (const label of ['  Campaign A  ', '\u2003😀 label  ']) {
-      try {
-        if (display.displayCampaignLabel(label) !== label) displayFailures.push(`display changed original label ${JSON.stringify(label)}`);
-      } catch (error) {
-        displayFailures.push(`display threw for ${JSON.stringify(label)}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
+    const detail = error instanceof Error ? error.message : String(error);
+    behaviorFailures.push(`bounded candidate module probe failed: ${detail.slice(0, 500)}`);
   }
 
   let visibleTests: ReviewLoopConformance['visibleTests'];
@@ -205,7 +225,7 @@ export async function judgeReviewLoopWorkspace(
     execFileSync(process.execPath, ['test/public-settings.test.mjs'], {
       cwd: worktreePath,
       stdio: 'pipe',
-      timeout: 10_000,
+      timeout: REVIEW_LOOP_VISIBLE_TEST_TIMEOUT_MS,
     });
     visibleTests = { passed: true };
   } catch (error) {

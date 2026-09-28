@@ -1,7 +1,7 @@
 {
   "manifestVersion": 3,
   "status": "visible-calibration-in-progress",
-  "scenarioCount": 13,
+  "scenarioCount": 14,
   "integrationSubstrateCount": 5,
   "verifiedTaskCount": 1,
   "independentSubstrateCount": 1,
@@ -21,7 +21,8 @@
       "adequacyEvidence": "public regression test and independent host semantic checks are red on the known-buggy baseline and green on both reference and distinct alternative correct implementations; no-op claim, malformed output after edits, and throw after edits are independently judged; candidate commit identity and clean Git state are separate from workspace conformance",
       "split": "calibration",
       "pristineBaselineIntegrity": "fresh initial Git commit; grader compares candidate against its recorded base SHA and checks only src/settings.mjs changed; task factory's ModelSpec is caller supplied",
-      "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports a typed FixerSuiteCase adapter and bundle materializer; local injected Driver run passes the independent host probe",
+      "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports a typed FixerSuiteCase adapter and bundle materializer; injected Driver pins the materialized baseline before delegation, preserves a worker-created candidate commit under a side ref, and the independent host probe passes",
+      "boundedOracle": "candidate module import and behavior child has a 5000ms wall limit; visible check is separately limited to 10000ms; process/host confinement is not claimed",
       "oracleImplementation": "runner/workflow-corpus/review-loop-judge.ts#judgeReviewLoopRepairTask and #judgeReviewLoopWorkspace",
       "candidateIdentity": "full commit SHA, recorded baseline ancestry, clean Git state, and SHA256 of actual binary patch are separately reported from semantic conformance"
     }
@@ -88,7 +89,7 @@
     "independentOracle": "exported host judge; expected behavior and scope assertions are absent from the task worktree; candidate patch hash identifies captured bytes but is not compared with a reference solution",
     "outputFormatIndependence": "valid no-op claim grades incorrect; malformed/throwing Drivers with correct committed edits grade correct",
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
-    "scenarioCountMeaning": "13 named Vitest workflow cases including review outcome-fault cases and runSuite adaptation; this count is not 13 independent repair tasks",
+    "scenarioCountMeaning": "14 named Vitest workflow cases including review output-fault cases, bounded arbitrary-module execution, and runSuite adaptation; this count is not 14 independent repair tasks",
     "independentSubstrates": "five fresh local filesystem substrates across review, merge, fleet, test-fix and ratchet integration; only the review substrate has an independent task correctness oracle",
     "scopeLimit": "one independently judged review-loop task; test-fix integration exposes a current broad-scope allowlist gap; remaining families have operation-level integration evidence only and need independently judged task corpora before role adequacy or campaign claims"
   }

@@ -166,14 +166,41 @@ describe('cq-settings bounded workflow corpus', () => {
     }
   }, 120_000);
 
+  it('bounds arbitrary candidate-module execution in the host judge', async () => {
+    const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
+    try {
+      await writeFile(join(task.worktreePath, 'src/settings.mjs'), 'while (true) {}\n');
+      const report = await judgeReviewLoopWorkspace(task.worktreePath, {
+        baselineRef: task.baselineCommit,
+        sourceId: task.sourceId,
+        baselineId: task.baselineId,
+        oracleId: task.oracleId,
+      });
+      expect(report.passed).toBe(false);
+      expect(report.behavior.failures.some((failure) => failure.includes('bounded candidate module probe failed'))).toBe(true);
+      expect(report.visibleTests.passed).toBe(false);
+    } finally {
+      await task.cleanup();
+    }
+  }, 30_000);
+
   it('adapts the typed operation task to runSuite with the task model route and host oracle', async () => {
     const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
     const bundle = await createReviewLoopRunSuiteBundle(task);
+    let workerWorkspace = '';
     const driver: Driver = {
       async run(invocation) {
         const workspace = invocation.prompt.match(/^workspace: (.+)$/m)?.[1];
         if (!workspace) throw new Error('runSuite invocation omitted workspace path');
+        workerWorkspace = workspace;
         await writeFile(join(workspace, 'src/settings.mjs'), ALTERNATIVE_SETTINGS_SOURCE);
+        execFileSync('git', ['-C', workspace, 'add', 'src/settings.mjs']);
+        execFileSync('git', [
+          '-C', workspace,
+          '-c', 'user.name=CQ Corpus',
+          '-c', 'user.email=corpus@example.invalid',
+          'commit', '-q', '-m', 'Model-created valid candidate commit',
+        ]);
         return {
           ...completedWorker({
             fixed: true,
@@ -191,7 +218,7 @@ describe('cq-settings bounded workflow corpus', () => {
       const result = await runSuite({
         suiteDir: bundle.suiteDir,
         repoRoot: bundle.repoRoot,
-        driver,
+        driver: bundle.wrapDriver(driver),
         model: bundle.modelSpec.model,
         provider: bundle.modelSpec.provider,
         driverName: 'subprocess',
@@ -202,6 +229,12 @@ describe('cq-settings bounded workflow corpus', () => {
       expect(result.rows[0]).toMatchObject({ case: task.id, role: 'fixer-worker', model: 'glm-5.3-flash' });
       expect(result.rows[0]?.outcome).toMatchObject({ score: 1 });
       expect(result.tables).toHaveLength(1);
+      const baselineCommit = bundle.pinnedBaselineCommit(workerWorkspace);
+      const candidateCommit = bundle.pinnedCandidateCommit(workerWorkspace);
+      expect(baselineCommit).toMatch(/^[a-f0-9]{40}$/);
+      expect(candidateCommit).toMatch(/^[a-f0-9]{40}$/);
+      expect(candidateCommit).not.toBe(baselineCommit);
+      expect(result.artifacts.find((artifact) => artifact.kind === 'patch')?.content).toContain('Array.from');
     } finally {
       await bundle.cleanup();
       await task.cleanup();

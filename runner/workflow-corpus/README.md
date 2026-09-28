@@ -21,6 +21,23 @@ can therefore pass conformance while failing candidate identity.
 `createReviewLoopRunSuiteBundle()`, adapting the task to the current runner's
 typed `FixerSuiteCase`/`Suite` contract. The adapter keeps the host oracle
 outside the copied fixture and routes the supplied model spec into runSuite.
+Use the bundle's `wrapDriver()` with native bridges: before delegation it
+captures the copied workspace's pristine full commit SHA, installs a
+task-scoped Git ref and writes a host-side pin record. If the worker commits,
+the wrapper preserves that commit under a separate task-scoped ref and resets
+only `HEAD` and the index to the captured baseline, leaving candidate files
+intact so runSuite's existing patch capture remains relative to pristine. The
+check reads the host pin and uses its full SHA; it never interprets the
+worker's current `HEAD` as baseline or substitutes the parent task repo's
+commit. The bundle exposes both recorded SHAs for audit.
+
+Candidate module imports and behavior calls run in a child Node process with a
+five-second wall timeout; the visible task check has a separate ten-second
+timeout. This bounds the direct judge child and prevents a synchronous infinite
+loop in candidate code from hanging the host judge. It is not an OS isolation
+boundary and does not guarantee termination of malicious detached descendants.
+No native-route read isolation is claimed: this remains visible calibration
+until the S5 boundary is enforced and verified.
 
 ## Selected toolkit test-fix scope finding
 

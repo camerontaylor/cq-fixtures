@@ -1,5 +1,6 @@
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join as pathJoin } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadPrecisionValidation, loadPrecisionForecast } from '../runner/statistics/evidence-loader.js';
@@ -311,6 +312,25 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
   it('refuses unpinned and failed base evidence before CLI or function simulations', () => {
     const dir = mkdtempSync(pathJoin(tmpdir(), 's6-pins-'));
     try {
+      // Compile only these CLI entry points and their statistics dependencies.
+      // The fresh fixture cannot use stale/missing dist or unrelated runner builds.
+      const statisticsRoot = fileURLToPath(new URL('../runner/statistics/', import.meta.url));
+      const config = pathJoin(dir, 'tsconfig.json'), emitted = pathJoin(dir, 'compiled');
+      writeFileSync(pathJoin(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+      writeFileSync(config, JSON.stringify({
+        extends: fileURLToPath(new URL('../tsconfig.json', import.meta.url)),
+        compilerOptions: { noEmit: false, noEmitOnError: true, allowImportingTsExtensions: false,
+          declaration: false, sourceMap: false, rootDir: statisticsRoot, outDir: emitted,
+          types: ['node'], typeRoots: [fileURLToPath(new URL('../node_modules/@types/', import.meta.url))] },
+        files: ['power', 'missingness'].map(cli => pathJoin(statisticsRoot, `run-precision-${cli}.ts`)),
+        include: [],
+      }));
+      const compiled = spawnSync(process.execPath,
+        [fileURLToPath(new URL('../node_modules/typescript/bin/tsc', import.meta.url)), '--project', config],
+        { encoding: 'utf8', cwd: dir, timeout: 20000 });
+      expect(compiled.error).toBeUndefined();
+      expect(compiled.status, compiled.stdout + compiled.stderr).toBe(0);
+      for (const cli of ['power', 'missingness']) expect(existsSync(pathJoin(emitted, `run-precision-${cli}.js`))).toBe(true);
       for (const failed of [false, true]) {
         const v = validation();
         if (failed) { v.allCorePassed = false; v.core[0]!.jointCovered = 1800; }
@@ -322,14 +342,14 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
         expect(() => simulatePrecisionMissingness(v, v.seed + 400000000)).toThrow(/failed or unpinned/);
         for (const cli of ['power', 'missingness']) {
           const output = pathJoin(dir, cli + '.json');
-          const result = spawnSync(process.execPath, [`dist/statistics/run-precision-${cli}.js`, input, output], { encoding: 'utf8', timeout: 10000 });
+          const result = spawnSync(process.execPath, [pathJoin(emitted, `run-precision-${cli}.js`), input, output], { encoding: 'utf8', cwd: dir, timeout: 10000 });
           expect(result.status).toBe(1);
           expect(result.stderr).toMatch(/unpinned validation archive/);
           expect(existsSync(output)).toBe(false);
         }
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
+  }, 30000);
 
   it('reports simultaneous Monte Carlo coverage per contrast with dataset denominators', () => {
     const v = validation(), report = precisionMonteCarloReport(v);

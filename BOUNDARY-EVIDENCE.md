@@ -257,3 +257,5 @@ synthetic TLS incremental SSE tests. Focused19tests pass3.42s; no full-suite rer
 G2 still blocked until native G1/final hooks/config/auth control and parent admission
 plus actual-route tool/sentinel evidence. Configured Pi Go auth unavailable in the
 checked exact stores; no alternate-provider substitution or blanket home search.
+
+Final HTTP-only candidate handoff: `runner/boundary/CODEX-HTTP-HANDOFF.md` and frozen broker receipt `runner/boundary/evidence/fallback/codex-http-frozen.json`. Exact endpoint-method ACL now separates GET models from POST Responses; no refresh route. Access-only external-token context excludes original ID/refresh tokens and API keys, with 900s scheduling budget+120s expiry margin. Native supervisor must recheck launch expiry and enforce deadline. Synthetic tests cover wrong methods, undeclared paths/routes, encoded paths, forbidden redirects and incremental TLS SSE chunks. No model turns or shared-token refresh; G2 pending, final-profile G1 required. Previously recorded full-suite runner-test timeouts remain unresolved by this bounded lane and were not rerun.

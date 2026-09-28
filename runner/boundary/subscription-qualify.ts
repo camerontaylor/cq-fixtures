@@ -21,7 +21,7 @@ const evidence: Record<string, unknown> = { modelTurns: 0, generationRoutes: 0, 
 const begin = Date.now();
 try {
   evidence.phase = 'minimal-auth-context';
-  const privateContext = privateCodexAuthContext();
+  const privateContext = privateCodexAuthContext(HTTP_ONLY);
   // Auth hash and content stay in private parent context, never this public result.
   evidence.privateContextStaged = true; evidence.privateContextDirectory = privateContext.directory; evidence.authFileMode = '0600';
   await control.run(['volume', 'create', '--label', 'cq.boundary.subscription=private', volume]); createdVolume = true;

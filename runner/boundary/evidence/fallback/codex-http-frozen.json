@@ -1,0 +1,18 @@
+{
+  "image": "sha256:a0af04214c67a25e4c5ab01b20f6e6deea98fc664b65ae5532576949234adfe3",
+  "runtime": "sha256:2a9422f0de75079fd81da5a5b68bf9936e72ce22e30d1a22ddd91bc77201de4e",
+  "brokerIdentity": "c6d8d0b3dba5ac98779663e4cc75b92107fddb14430fc42180f4ec675c0f99b0",
+  "assets": {
+    "config.json": "c6d8d0b3dba5ac98779663e4cc75b92107fddb14430fc42180f4ec675c0f99b0",
+    "broker.js": "f20f5e3e74b8a3c545f417a03f12b144254bf1f27b57293e5419164d80c2fc6d",
+    "config.toml": "8451e107ce3833b01bd6e96f748c783ec7021a9b6b857a4a1325ab9d339a5c03",
+    "Dockerfile": "6186ad12aa9c29f1b3bf814230d105e30965698ea2f305005c35d2b019f74c9c"
+  },
+  "addresses": [
+    "104.18.32.47",
+    "172.64.155.209"
+  ],
+  "parentAdmissionRequired": true,
+  "G2": "pending",
+  "authIncluded": false
+}

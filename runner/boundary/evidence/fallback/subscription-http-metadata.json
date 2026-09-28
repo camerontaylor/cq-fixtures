@@ -1,0 +1,50 @@
+{
+  "modelTurns": 0,
+  "generationRoutes": 0,
+  "actualRefreshExchangePerformed": false,
+  "refreshEndpointAllowed": false,
+  "httpOnlyCustomProvider": true,
+  "g2": "blocked",
+  "runtimeImage": "sha256:2a9422f0de75079fd81da5a5b68bf9936e72ce22e30d1a22ddd91bc77201de4e",
+  "phase": "complete",
+  "privateContextStaged": true,
+  "authFileMode": "0600",
+  "authInventoryVerified": true,
+  "offlineLogin": {
+    "exitCode": 0,
+    "subscriptionRecognized": true,
+    "apiKeyRecognized": false
+  },
+  "brokerIdentity": "19b1205f5c0833f1d63b766352e109500b316d59fb264c5502922d165841f7a6",
+  "dnsPinned": true,
+  "brokerImage": "sha256:43f35de8c2fb6d339ae30dc8354b3b1b731def01d4914519f0377aa1e29f3eec",
+  "workerDNSDenied": true,
+  "workerEgressBrokerOnly": true,
+  "metadataCommand": {
+    "exitCode": 0,
+    "jsonCatalog": true,
+    "timedOut": false,
+    "diagnostics": {
+      "config": false,
+      "unknownField": false,
+      "permissions": false,
+      "network": false,
+      "auth": false,
+      "invalidValue": false
+    },
+    "diagnosticFlags": [],
+    "safeUnknownFields": []
+  },
+  "brokerEvents": [
+    {
+      "event": "metadata",
+      "allowedPath": true,
+      "method": "GET",
+      "bearerAttached": true,
+      "accountHeaderAttached": true,
+      "status": 200
+    }
+  ],
+  "authenticatedMetadataAccepted": true,
+  "seconds": 12.079
+}

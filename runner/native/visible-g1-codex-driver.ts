@@ -43,5 +43,6 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
       heldOut: false as const,
       evidenceRef: `parent-visible-admission:${admissionId}`,
     },
+    launchInventory: inventory,
   };
 }

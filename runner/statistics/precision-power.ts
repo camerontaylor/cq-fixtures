@@ -1,5 +1,5 @@
 import { clusterWeights, generateClusters, simulatePrecisionStratum } from './precision-simulation.js';
-import { weightedClusterT, type GeneratorPoint, type PrecisionValidation, precisionValidationPasses, PRECISION_RECIPE } from './precision.js';
+import { weightedClusterT, type GeneratorPoint, type PrecisionValidation, precisionValidationPasses, precisionRecipeHash, PRECISION_RECIPE } from './precision.js';
 import { persistentClusterVariance } from './power.js';
 import { studentTCritical } from './student-t.js';
 import { wilsonBounds } from './inference.js';
@@ -26,10 +26,12 @@ export interface PrecisionPowerCell {
  * Power is for a specified single contender clearing its family lower bound.
  */
 export function simulatePrecisionPower(validation: PrecisionValidation, seed: number, progress?: (n: number) => void): {
-  recipe: string; track: string; roles: string[]; seed: number; datasetsPerCell: number;
+  recipe: string; recipeHash: string; track: string; roles: string[]; seed: number; datasetsPerCell: number;
   coreProcedureValidated: boolean; roleCalibrated: false; quotaOrRuntimeEstimate: null;
   cells: PrecisionPowerCell[];
 } {
+  if (!precisionValidationPasses(validation, validation.track)) throw new Error('failed or unpinned base validation');
+  if (seed !== validation.seed + 300000000) throw new Error('power seed must match preregistration');
   const datasets = 2000, cells: PrecisionPowerCell[] = [];
   let serial = 0;
   for (const discordance of [.15, .35]) for (const icc of [0, .3, .6]) for (const weights of ['equal', 'cycle-1-2-3'] as const) {
@@ -57,7 +59,7 @@ export function simulatePrecisionPower(validation: PrecisionValidation, seed: nu
       serial++; progress?.(serial);
     }
   }
-  return { recipe: PRECISION_RECIPE, track: validation.track, roles: ['fixer-worker', 'review-classifier'], seed, datasetsPerCell: datasets,
+  return { recipe: PRECISION_RECIPE, recipeHash: precisionRecipeHash, track: validation.track, roles: ['fixer-worker', 'review-classifier'], seed, datasetsPerCell: datasets,
     coreProcedureValidated: precisionValidationPasses(validation, validation.track), roleCalibrated: false,
     quotaOrRuntimeEstimate: null, cells };
 }

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { analyzeFixedSample, designHash, wilsonBounds, type AnalysisResult, type Observation, type Preregistration } from './inference.js';
+import { EVIDENCE_PINS } from './evidence-pins.js';
 import { studentTCritical } from './student-t.js';
 
 export const PRECISION_RECIPE = 'weighted-cluster-hc3-t-bonferroni-v1';
@@ -36,6 +37,21 @@ export const precisionRecipeHash = createHash('sha256').update(JSON.stringify({
   generator: 'substrate-mixture-paired-Bernoulli-v1',
 })).digest('hex');
 
+/** Canonical content hash: formatting and object insertion order are irrelevant. */
+export function evidenceContentHash(value: unknown): string {
+  const canonical = (v: unknown): string => {
+    if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+    if (v !== null && typeof v === 'object') {
+      const r = v as Record<string, unknown>;
+      return `{${Object.keys(r).sort().map(k => `${JSON.stringify(k)}:${canonical(r[k])}`).join(',')}}`;
+    }
+    return JSON.stringify(v);
+  };
+  return createHash('sha256').update(canonical(value)).digest('hex');
+}
+function trackPin(track: string, kind: 'validation' | 'forecast') {
+  return track === 'native' || track === 'diagnostic' ? EVIDENCE_PINS[kind][track] : null;
+}
 export interface PrecisionInterval {
   estimate: number;
   standardError: number;
@@ -88,6 +104,8 @@ export interface PrecisionValidation {
 
 /** Recompute gates from counts; do not trust an outcome-dependent aggregate flag. */
 export function precisionValidationPasses(v: PrecisionValidation, track: string): boolean {
+  const pin = trackPin(track, 'validation');
+  if (!pin || v.seed !== pin.seed || evidenceContentHash(v) !== pin.contentSha256) return false;
   if (v.recipe !== PRECISION_RECIPE || v.recipeHash !== precisionRecipeHash || v.track !== track
     || v.core.length !== VALIDATION_POINTS.length || !Number.isSafeInteger(v.seed)) return false;
   const ids = new Set<string>();
@@ -119,11 +137,15 @@ export const FORECAST_POINTS: readonly GeneratorPoint[] = [.15, .35].flatMap(dis
     ({ clusters, baseline: .5, discordance, icc, effect: .05, tasks: 3, repeats: 3, weights })))));
 export interface PrecisionForecastEvidence {
   recipe: string;
+  recipeHash: string;
+  seed: number;
   track: string;
   coreProcedureValidated: boolean;
   cells: Array<{ point: GeneratorPoint; datasets: number; conditionalPointGatesPassed: boolean; coverage: PrecisionStratum[] }>;
 }
 export function precisionForecastPasses(v: PrecisionForecastEvidence, track: string): boolean {
+  const pin = trackPin(track, 'forecast');
+  if (!pin || v.seed !== pin.seed || v.recipeHash !== precisionRecipeHash || evidenceContentHash(v) !== pin.contentSha256) return false;
   if (v.recipe !== PRECISION_RECIPE || v.track !== track || v.coreProcedureValidated !== true || v.cells.length !== FORECAST_POINTS.length) return false;
   const ids = new Set<string>();
   for (const cell of v.cells) {
@@ -165,8 +187,8 @@ export function analyzePrecisionSample(reg: Preregistration, rows: readonly Obse
   const finish = (applied: boolean): PrecisionAnalysis => {
     result.maxStatisticAdjustment = 'withheld';
     return { ...result, precision: { recipe: PRECISION_RECIPE, applied, reasons,
-      recipeHash: precisionRecipeHash, forecastValidationHash: forecastEvidence ? createHash('sha256').update(JSON.stringify(forecastEvidence)).digest('hex') : null,
-      validationHash: validation ? createHash('sha256').update(JSON.stringify(validation)).digest('hex') : null,
+      recipeHash: precisionRecipeHash, forecastValidationHash: forecastEvidence ? evidenceContentHash(forecastEvidence) : null,
+      validationHash: validation ? evidenceContentHash(validation) : null,
       extensionHash: createHash('sha256').update(JSON.stringify(extension)).digest('hex') } };
   };
   if (extension.frozen !== true || extension.recipe !== PRECISION_RECIPE || extension.recipeHash !== precisionRecipeHash

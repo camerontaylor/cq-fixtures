@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "derivation": "Reporting-only supplement from frozen v1 counts; no simulation or gate change",
+  "files": {
+    "precision-monte-carlo-native-v1.json": {
+      "sha256": "33d4d7863b3e11b482ad9d5de8e79bc02ffb441ca37fba746b78375c79ec8a2b",
+      "sourceArchiveSha256": "0f9f39761f978e4f6e047a8f0c038a3be8d88deb7ca93f3b9dbb72a7b16ecc9b",
+      "validationContentSha256": "f175e10b4c31c5190884da9c4385e1f2288b5703646aede5524d3e4c7b1a1d8d"
+    },
+    "precision-monte-carlo-diagnostic-v1.json": {
+      "sha256": "64d45b3881a132a1654246d8fb554916ba561c5dc4074e12b05f37e5ecff0d98",
+      "sourceArchiveSha256": "2b875fb27177f6760e8f01ecdc746b3635de344417e8c35682d56bea5e59bd6d",
+      "validationContentSha256": "e2af1dbec4f5a5461751fef42c8108b5fbe609021fd6ebbcb08f24bc068d8cac"
+    }
+  }
+}

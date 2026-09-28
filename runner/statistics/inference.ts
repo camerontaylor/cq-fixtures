@@ -26,6 +26,8 @@ export interface Observation extends Assignment {
   status: OutcomeStatus;
   success: boolean | null;
   cause?: string;
+  /** Adapter-owned assignment-level provenance; absent preserves legacy cause handling. */
+  launchedBudgetFailure?: boolean | null;
 }
 
 export interface ContrastRegistration {
@@ -81,7 +83,8 @@ export interface ContrastResult {
   substrates: number;
   tasks: number;
   pairedTasks: number;
-  launchedBudgetFailures: number;
+  launchedBudgetFailures: number | null;
+  knownLaunchedBudgetFailures: number;
   operationalMissing: number;
   bootstrapResamples: number;
 }
@@ -125,7 +128,7 @@ export function validationDesignHash(reg: Preregistration): string {
     'bootstrap-resamples-199..10000-diagnostic-only', 'weighted-hoeffding-envelope-v1'].join('|');
 }
 
-function validateRegistration(reg: Preregistration): void {
+export function validateRegistration(reg: Preregistration): void {
   if (reg.version !== 1 || reg.frozen !== true || reg.analysisVersion !== 'cq-fixed-sample-v1') throw new Error('registration must be frozen version 1');
   if (reg.track !== 'native' && reg.track !== 'diagnostic') throw new Error('track must be native or diagnostic');
   if (!reg.cohortId || !reg.role || !reg.budgetId || !reg.assignmentSeed) throw new Error('cohort, role, budget, and assignment seed are required');
@@ -235,7 +238,8 @@ interface Prepared {
   clusterWeights: number[];
   tasks: number;
   pairedTasks: number;
-  failures: number;
+  failures: number | null;
+  knownFailures: number;
   missing: number;
   reasons: string[];
 }
@@ -257,7 +261,7 @@ function prepare(reg: Preregistration, rows: readonly Observation[], c: Contrast
     selected.set(pk, row);
   }
   const taskSide = new Map<string, Map<string, { substrate: string; weight: number; outcomes: Record<string, Array<boolean | null>> }>>();
-  let failures = 0, missing = 0;
+  let failures = 0, unknownFailures = false, missing = 0;
   for (const a of reg.assignments) {
     const rec = taskSide.get(a.taskId) ?? new Map();
     for (const s of [c.strategyId, c.baselineId]) {
@@ -266,7 +270,10 @@ function prepare(reg: Preregistration, rows: readonly Observation[], c: Contrast
       else if (row.status === 'operational-missing') { reasons.push(`operational missingness ${s}/${a.taskId}/${a.repeatId}`); missing++; }
       else {
         const outcome = row.success!;
-        if (!outcome && /budget|exhaust/i.test(row.cause ?? '')) failures++;
+        if (!outcome) {
+          if (row.launchedBudgetFailure === null) unknownFailures = true;
+          else if (row.launchedBudgetFailure === true || (row.launchedBudgetFailure === undefined && /budget|exhaust/i.test(row.cause ?? ''))) failures++;
+        }
         const sr = rec.get(s) ?? { substrate: a.substrateId, weight: a.weight, outcomes: {} };
         (sr.outcomes[a.repeatId] ??= []).push(outcome);
         rec.set(s, sr);
@@ -293,7 +300,7 @@ function prepare(reg: Preregistration, rows: readonly Observation[], c: Contrast
     return ts.reduce((s, x) => s + x.diff * x.weight, 0) / w;
   });
   if (missing > 0) reasons.push('paired operational coverage is incomplete; no inferential missingness assumption was preregistered');
-  return { clusterIds: ids, differences: clusterDiffs, clusterWeights, tasks: reg.assignments.length / reg.expectedRepeats, pairedTasks: taskValues.size, failures, missing, reasons: [...new Set(reasons)] };
+  return { clusterIds: ids, differences: clusterDiffs, clusterWeights, tasks: reg.assignments.length / reg.expectedRepeats, pairedTasks: taskValues.size, failures: unknownFailures ? null : failures, knownFailures: failures, missing, reasons: [...new Set(reasons)] };
 }
 
 /**
@@ -383,7 +390,7 @@ export function analyzeFixedSample(
     return { id: reg.contrasts[i]!.id, estimate, marginal95: marginal, familywise95: inferential ? family : null,
       bootstrapOnlyMarginal95: bootstrapOnlyMarginal, bootstrapOnlyFamilywise95: bootstrapOnlyFamily,
       status: inferential ? 'inferential' : n === 0 ? 'inconclusive' : 'descriptive', reasons: [...new Set(reasons)],
-      substrates: n, tasks: p.tasks, pairedTasks: p.pairedTasks, launchedBudgetFailures: p.failures,
+      substrates: n, tasks: p.tasks, pairedTasks: p.pairedTasks, launchedBudgetFailures: p.failures, knownLaunchedBudgetFailures: p.knownFailures,
       operationalMissing: p.missing, bootstrapResamples: resamples };
   });
   return { version: 'cq-fixed-sample-v1', cohortId: reg.cohortId, track: reg.track, role: reg.role, budgetId: reg.budgetId,

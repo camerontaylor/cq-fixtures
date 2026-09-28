@@ -121,10 +121,7 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
         inclusion: { input: null, output: null, cache: null, reasoning: null },
       },
       terminal: { cause: null, cancelled: false, transportException: null, observedAt: startedAt },
-      capture: {
-        status: 'pending-runner-capture', baselineCommit: null, patchSha256: null, workspaceSha256: null,
-        ...({ baselineTree: null } as { baselineTree: string | null }),
-      } as NativeObservation['capture'],
+      capture: { status: 'pending-runner-capture', baselineCommit: null, baselineTree: null, patchSha256: null, workspaceSha256: null },
       timing: { startedAt, endedAt: null, stages: {} },
       workerResult: null,
     };

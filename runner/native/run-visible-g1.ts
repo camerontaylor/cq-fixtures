@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** One-route, visible-only G1 calibration through the verified runSuite corpus. */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile } from 'node:fs/promises';
+import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -130,6 +130,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
   const modelSpec = { model: spec.model, provider: spec.taskProvider };
   const task = await createReviewLoopRepairTask(modelSpec);
   const bundle = await createReviewLoopRunSuiteBundle(task);
+  await stageJudgeManifest(bundle.repoRoot, bundle.oraclePin);
   const runDirectory = join(resolve(options.outputRoot), options.route, runKey);
   const artifactRoot = join(runDirectory, 'artifacts');
   const queueDirectory = join(runDirectory, 'queue');
@@ -225,7 +226,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
     } },
     substrateId: `${task.sourceId}:${task.baselineId}:${task.substrateFamily}`,
     judgeManifest: { sourcePin: bundle.oraclePin.sha256, dependencies: bundle.oraclePin.dependencies },
-  } as unknown as ExperimentContext;
+  };
 
   // The corpus adapter must retain the S1 identity and retrieval seam. It also
   // establishes the pinned baseline/oracle host environment before scoring.
@@ -242,9 +243,9 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
       if (property === 'run') return async (invocation: OpInvocation): Promise<WorkerResult> => {
       const workspacePath = invocation.prompt.match(/^workspace: (.+)$/mu)?.[1];
       if (!workspacePath) throw new Error('runSuite did not bind the case workspace to its native invocation');
+      const result = await target.run(invocation);
       const baselineCommit = bundle.pinnedBaselineCommit(workspacePath);
       if (!baselineCommit) throw new Error('runSuite corpus wrapper did not pin a pristine baseline before native dispatch');
-      const result = await target.run(invocation);
       workspaceEvidence.set(workspacePath, {
         baselineCommit,
         candidateCommit: bundle.pinnedCandidateCommit(workspacePath) ?? null,
@@ -366,6 +367,21 @@ async function hashSourcePins(): Promise<Record<string, string>> {
   const pins: Record<string, string> = {};
   for (const relative of SOURCE_PINS) pins[relative] = sha256(await readFile(join(REPO_ROOT, relative)));
   return pins;
+}
+
+/** Stage only hash-verified judge dependencies where runSuite validates its manifest. */
+async function stageJudgeManifest(
+  bundleRepoRoot: string,
+  manifest: { dependencies: ReadonlyArray<{ path: string; sha256: string }> },
+): Promise<void> {
+  for (const dependency of manifest.dependencies) {
+    const source = join(REPO_ROOT, dependency.path);
+    const contents = await readFile(source);
+    if (sha256(contents) !== dependency.sha256) throw new Error(`review-loop judge dependency changed after pinning: ${dependency.path}`);
+    const destination = join(bundleRepoRoot, dependency.path);
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    await writeFile(destination, contents, { flag: 'wx', mode: 0o600 });
+  }
 }
 
 function quotaDiagnostic(snapshot: QuotaSnapshot | null) {

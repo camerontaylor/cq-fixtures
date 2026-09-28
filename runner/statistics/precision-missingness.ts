@@ -1,9 +1,11 @@
-import { analyzePrecisionSample, precisionRecipeHash, CORE_POINTS, PRECISION_RECIPE, type PrecisionValidation } from './precision.js';
+import { analyzePrecisionSample, precisionValidationPasses, precisionRecipeHash, CORE_POINTS, PRECISION_RECIPE, type PrecisionValidation } from './precision.js';
 import { designHash, type Assignment, type Observation, type Preregistration } from './inference.js';
 /** Suppression checks are operational assertions, never treated as coverage. */
 export function simulatePrecisionMissingness(validation: PrecisionValidation, seed: number): Array<{
   clusters: number; mode: string; datasets: number; suppressed: number; gate: boolean;
 }> {
+  if (!precisionValidationPasses(validation, validation.track)) throw new Error('failed or unpinned base validation');
+  if (seed !== validation.seed + 400000000) throw new Error('missingness seed must match preregistration');
   let x = seed | 0;
   const random = () => { x = (x + 0x6D2B79F5) | 0; let t = Math.imul(x ^ (x >>> 15), 1 | x); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   return [40, 80].flatMap(clusters => ['paired-5-percent', 'strategy-only-15-percent'].map(mode => {

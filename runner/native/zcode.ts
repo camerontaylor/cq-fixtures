@@ -1,0 +1,140 @@
+import { resolve } from 'node:path';
+import { AcpDriver, currentJobContext, runLadder, SessionStore, type Driver, type OpInvocation, type WorkerResult } from '@camerontaylor/cq-toolkit';
+import type { InvocationIdentity } from './observation.ts';
+import type { NativeLaunchEvidence } from './process.ts';
+import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
+import { ObservedNativeDriver, type NativeDriverOptions } from './observed-driver.ts';
+
+export interface ZcodeAcpOptions {
+  executable?: string;
+  version?: string | null;
+  profile?: string;
+  sessionsDirectory?: string;
+  workspaceForInvocation?: (identity: InvocationIdentity, invocation: OpInvocation) => string;
+  artifactDirectory?: string;
+  hardWallClockMs?: number;
+  abortGraceMs?: number;
+  killGraceMs?: number;
+  driver?: Pick<Driver, 'run'>;
+  /** Must be created from parent admission and enforce the supplied native boundary at spawn. */
+  spawn?: NonNullable<ConstructorParameters<typeof AcpDriver>[0]>['spawn'];
+  launchEvidence?: NativeLaunchEvidence;
+}
+
+/** ZCode's configured native ACP server, supervised by the toolkit process ladder. */
+export class ZcodeAcpDriver extends ObservedNativeDriver {
+  private readonly acp: Pick<Driver, 'run'>;
+  private readonly sessions: SessionStore;
+  private readonly workspaceForInvocation: NonNullable<ZcodeAcpOptions['workspaceForInvocation']>;
+  private readonly hardWallClockMs: number;
+  private readonly abortGraceMs: number;
+  private readonly killGraceMs: number;
+  private readonly admittedSpawnConfigured: boolean;
+  private readonly launchEvidence: NativeLaunchEvidence | undefined;
+
+  constructor(options: ZcodeAcpOptions = {}) {
+    const executable = options.executable ?? 'zcode-acp';
+    const version = options.version ?? null;
+    super({
+      configuredTarget: 'zcode/GLM-5.3-Flash', transport: 'zcode-acp',
+      executable: resolveLaunchExecutable(executable),
+      executableVersion: version ?? readExecutableVersion(resolveLaunchExecutable(executable)),
+      profile: options.profile ?? 'GLM-5.3-Flash (ZCode)',
+      artifactDirectory: options.artifactDirectory,
+    } satisfies NativeDriverOptions);
+    this.acp = options.driver ?? new AcpDriver({
+      command: [executable, 'server'], termGraceMs: 300, killGraceMs: options.killGraceMs ?? 1_000,
+      ...(options.spawn ? { spawn: options.spawn } : {}),
+    });
+    this.admittedSpawnConfigured = Boolean(options.driver || (options.spawn && options.launchEvidence?.admissionId.trim()));
+    this.launchEvidence = options.launchEvidence;
+    this.sessions = new SessionStore(options.sessionsDirectory ?? `${process.env.TMPDIR ?? '/tmp'}/cq-native-sessions`);
+    this.workspaceForInvocation = options.workspaceForInvocation ?? (() => process.cwd());
+    this.hardWallClockMs = options.hardWallClockMs ?? 120_000;
+    this.abortGraceMs = options.abortGraceMs ?? 300;
+    this.killGraceMs = options.killGraceMs ?? 1_000;
+  }
+
+  protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
+    invocation = this.invocationForTarget(invocation, 'GLM-5.3-Flash', 'zcode');
+    const startedAt = new Date().toISOString();
+    const observation = this.newObservation(identity, invocation, startedAt);
+    observation.model.configuredTarget = 'zcode/GLM-5.3-Flash';
+    observation.model.settings.effort = { value: 'high', source: 'Paseo ZCode GLM-5.3-Flash profile', status: 'requested-unobservable' };
+    observation.model.settings.permissionMode = { value: 'yolo', source: 'Paseo ZCode profile', status: 'requested-unobservable' };
+    this.observations.set(identity.invocationId, observation);
+    try {
+      if (!this.admittedSpawnConfigured) {
+        throw new Error('ZCode ACP requires a parent-admitted boundary spawn adapter');
+      }
+      if (this.launchEvidence) {
+        observation.model.settings.launch = { value: this.launchEvidence, source: 'parent-admitted ACP spawn', status: 'admitted-visible-route' };
+      }
+      assertOutsideGlmBlackout();
+      const workspace = resolve(this.workspaceForInvocation(identity, invocation));
+      const session = await this.sessions.create(workspace);
+      const boundedInvocation: OpInvocation = {
+        ...invocation,
+        sessionRef: session.sessionId,
+        budget: { ...invocation.budget, wallClockMs: invocation.budget.wallClockMs ?? this.hardWallClockMs },
+      };
+      const parent = currentJobContext();
+      let worker: WorkerResult;
+      if (parent) {
+        if (parent.info.wallClockMs === undefined) {
+          throw new Error('ZCode ACP requires a governed wall-clock bound when called inside a toolkit job');
+        }
+        // The toolkit ACP driver registers its process-group SIGTERM/SIGKILL
+        // port against this runner-owned context, preserving operator cancel.
+        const begin = Date.now();
+        worker = await this.acp.run(boundedInvocation);
+        observation.timing.stages.transportMs = Date.now() - begin;
+      } else {
+        const ladder = await runLadder(
+          () => this.acp.run(boundedInvocation),
+          {
+            wallClockMs: boundedInvocation.budget.wallClockMs,
+            abortGraceMs: this.abortGraceMs,
+            killGraceMs: this.killGraceMs,
+          },
+          { op: 'zcode-acp', jobKey: identity.assignmentId, attempt: 1 },
+        );
+        if (ladder.outcome === 'threw') throw ladder.error;
+        if (ladder.outcome === 'killed') {
+          observation.terminal.cause = 'hard-timeout-killed';
+          observation.terminal.cancelled = true;
+          observation.timing.stages.killLadderMs = ladder.elapsedMs;
+          throw new Error(`ZCode ACP exceeded hard wall bound (${ladder.elapsedMs}ms)`);
+        }
+        worker = ladder.value;
+        observation.timing.stages.transportMs = ladder.elapsedMs;
+      }
+      observation.model.observed = worker.model
+        ? { value: worker.model, source: 'ACP config_option_update', status: 'observed' }
+        : { value: null, source: null, status: 'not-reported' };
+      // The selected ACP package returns compatibility zeros when the server
+      // omits usage. Without a per-counter presence bit those values are not
+      // measurements, so this bridge leaves all campaign counters unknown.
+      observation.terminal.cause = worker.stopReason === 'complete' ? null : worker.stopReason;
+      observation.terminal.cancelled = worker.stopReason === 'aborted';
+      this.finishObservation(observation, worker);
+      return worker;
+    } catch (error) {
+      if (!observation.timing.endedAt) this.failObservation(observation, error);
+      throw error;
+    }
+  }
+}
+
+/** ZCode's configured Coding Plan is unavailable on weekdays 14:00–18:00 Singapore time. */
+export function assertOutsideGlmBlackout(now = new Date()): void {
+  const parts = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Asia/Singapore', weekday: 'short', hour: '2-digit', hourCycle: 'h23',
+  }).formatToParts(now);
+  const field = (name: string) => parts.find((part) => part.type === name)?.value ?? '';
+  const weekday = field('weekday');
+  const hour = Number(field('hour'));
+  if (['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(weekday) && hour >= 14 && hour < 18) {
+    throw new Error('ZCode/GLM transport is closed during the weekday 14:00–18:00 Asia/Singapore blackout');
+  }
+}

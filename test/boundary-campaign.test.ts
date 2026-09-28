@@ -217,3 +217,62 @@ int main(int argc,char **argv){int mib[]={CTL_KERN,KERN_PROCARGS2,atoi(argv[1])}
     } finally { hiddenProcess.kill('SIGKILL'); await once(hiddenProcess, 'close'); }
   }, 45_000);
 });
+
+// Staging/export operates on full private clones, never a diff through host paths.
+describe('private task inventory and cleanup contract', () => {
+  it('rejects hidden symlink targets and linked Git metadata before export writes', async () => {
+    const { validateTaskEntries, materializeTask } = await import('../runner/boundary/task-tree.ts');
+    const root = mkdtempSync(join(tmpdir(), 'cq-tree-test-')); roots.push(root);
+    for (const target of ['/hidden/judge', '../sibling', '../../solution']) {
+      expect(() => validateTaskEntries([{ path: 'escape', kind: 'symlink', mode: 0o777, target }], false, false)).toThrow(/symlink/);
+    }
+    expect(() => validateTaskEntries([{ path: '.git', kind: 'file', mode: 0o644, data: Buffer.from('gitdir: /hidden').toString('base64') }])).toThrow(/independent clone/);
+    expect(() => materializeTask({ entries: [{ path: 'escape', kind: 'symlink', mode: 0o777, target: '/hidden' }], inventoryHash: '0'.repeat(64) }, root, false)).toThrow();
+    expect((await import('node:fs')).readdirSync(root)).toEqual([]);
+    expect(() => validateTaskEntries([{ path: 'mode', kind: 'file', mode: 0o4755, data: '' }], false, false)).toThrow(/unsafe task/);
+    expect(() => validateTaskEntries([
+      { path: 'a', kind: 'symlink', mode: 0o777, target: 'd/up/../hidden' },
+      { path: 'd', kind: 'directory', mode: 0o755 },
+      { path: 'd/up', kind: 'symlink', mode: 0o777, target: '..' },
+    ], false, false)).toThrow(/chain escapes/);
+  });
+  it('preserves deletions, commits, untracked files and executable modes in a fresh clone', async () => {
+    const { snapshotTask, materializeTask } = await import('../runner/boundary/task-tree.ts');
+    const { verifyGitBaseline } = await import('../runner/boundary/task-staging.ts');
+    const fs = await import('node:fs');
+    const root = mkdtempSync(join(tmpdir(), 'cq-clone-test-')); roots.push(root);
+    const source = join(root, 'source'); const destination = join(root, 'export'); mkdirSync(source); mkdirSync(destination);
+    const git = (args: string[]) => { const r = spawnSync('/usr/bin/git', args, { cwd: source, encoding: 'utf8', timeout: 10_000, env: { PATH: '/usr/bin:/bin', HOME: root, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }); expect(r.status, r.stderr).toBe(0); return r.stdout.trim(); };
+    git(['init', '-q']); writeFileSync(join(source, 'deleted'), 'old'); git(['add', '.']);
+    const commit = () => git(['-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@invalid', 'commit', '-qm', 'synthetic']);
+    commit(); const baseline = git(['rev-parse', 'HEAD']); fs.unlinkSync(join(source, 'deleted'));
+    writeFileSync(join(source, 'executable'), 'candidate'); fs.chmodSync(join(source, 'executable'), 0o755); git(['add', '-A']); commit();
+    writeFileSync(join(source, '.untracked'), 'partial'); symlinkSync('executable', join(source, 'safe-link'));
+    const tree = snapshotTask(source, true); const audit = verifyGitBaseline(tree, baseline);
+    expect(audit.head).not.toBe(baseline); materializeTask(tree, destination);
+    expect(fs.existsSync(join(destination, 'deleted'))).toBe(false);
+    expect(fs.readFileSync(join(destination, '.untracked'), 'utf8')).toBe('partial');
+    expect(fs.lstatSync(join(destination, 'executable')).mode & 0o777).toBe(0o755);
+    expect(fs.lstatSync(join(destination, 'safe-link')).isSymbolicLink()).toBe(true);
+    expect(snapshotTask(destination).inventoryHash).toBe(tree.inventoryHash);
+  }, 30_000);
+  it('isolates Docker config and endpoint from ambient overrides', async () => {
+    const { DockerControl } = await import('../runner/boundary/docker-control.ts');
+    const { readFileSync } = await import('node:fs');
+    const control = new DockerControl();
+    try {
+      expect(control.prefix).toEqual(['--config', control.configDirectory, '--host', `unix://${join(homedir(), '.colima/cq-boundary-s5/docker.sock')}`]);
+      expect(readFileSync(join(control.configDirectory, 'config.json'), 'utf8').trim()).toBe('{}');
+      expect(Object.keys(control.environment).sort()).toEqual(['HOME', 'LANG', 'PATH']);
+      expect(control.configDirectory).not.toBe(join(homedir(), '.docker'));
+    } finally { control.close(); }
+  });
+  it('rejects labels without private content inventory before preparing a worker', async () => {
+    const { containerPreparer } = await import('../runner/boundary/container-prepare.ts');
+    const specification: ContainerBoundarySpec = { profile: 'cq-boundary-s5', daemonId: 'dedicated', vmConfigHash: '0'.repeat(64), image: 'sha256:' + '1'.repeat(64), taskVolume: 'cq-s5-task-test', contextVolume: 'cq-s5-context-test', stagingEvidence: 'label-only', authenticationFiles: [], nativeControlEvidence: null, network: { name: 'cq-s5-net', workerIP: '172.30.5.3', brokerIP: '172.30.5.2', port: 8080, brokerIdentity: '2'.repeat(64), productionEligible: false }, namespaceEvidence: 'synthetic' };
+    const policy = compileContainerBoundary(specification);
+    await expect(containerPreparer(specification)(policy.createArgs, policy.identity)).rejects.toThrow(/private staging inventory/);
+    for (const image of ['node:latest', '--config=/hidden', 'sha256:bad']) expect(() => compileContainerBoundary({ ...specification, image })).toThrow();
+    expect(() => compileContainerBoundary({ ...specification, profile: 'other' as 'cq-boundary-s5' })).toThrow();
+  });
+});

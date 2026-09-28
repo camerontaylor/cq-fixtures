@@ -1,0 +1,33 @@
+{
+  "enabled": false,
+  "admission": "blocked-native-G1-auth-compatibility-and-parent-admission",
+  "credentialsRead": false,
+  "externalWildcards": false,
+  "policy": "Exact upstream TLS hostname, pinned public address inventory, narrow paths/methods/header names; redirects and CONNECT denied. Native owner resolves refresh/control endpoints before enabling any route.",
+  "codex": {
+    "source": "https://learn.chatgpt.com/docs/config-file/config-reference",
+    "configKeys": ["openai_base_url", "chatgpt_base_url", "model_providers.<id>.base_url", "model_providers.<id>.requires_openai_auth", "model_providers.<id>.wire_api"],
+    "scope": "dedicated user-level config; project config cannot override provider routing",
+    "subscriptionRoute": null,
+    "blocker": "Current docs are not installed 0.155.1 schema evidence. Native owner must verify endpoint semantics and refresh with its exact runtime. chatgpt_base_url alone does not configure every destination. No external access granted."
+  },
+  "pi": {
+    "source": "installed declared pi bundle chunks/openai-codex-responses-QDSOTBBO.js",
+    "sourceSha256": "cec5815a36e82be42749ba6691e0b3d444bed940776b484f2fa26da22abe979b",
+    "configField": "model.baseUrl",
+    "upstreamHostname": "chatgpt.com",
+    "upstreamPort": 443,
+    "inferencePath": "/backend-api/codex/responses",
+    "methods": ["POST"],
+    "addresses": [],
+    "requestHeaders": [],
+    "blocker": "Installed source attempts WebSocket then HTTP. Current reverse broker rejects Upgrade. Native owner must pin HTTP-only behavior or implement separately reviewed fixed-host WebSocket route; subscription refresh/control routes and header inventory unresolved. No inferred OAuth claim URL is an endpoint grant."
+  },
+  "zcode": {
+    "source": "declared Linux zcode-acp-server 0.37.3 dist/quota/client.js",
+    "sourceSha256": "2578c55b27bbcab347ab2a3aa946070948f102b97e4ad92692f67cd089eea66b",
+    "observedHostname": "api.z.ai",
+    "inferencePath": null,
+    "blocker": "Quota hostname is not inference endpoint evidence. Native runtime/provider source and schema need exact inference/auth paths, base-URL override and native auth compatibility; no hostname-wide grant."
+  }
+}

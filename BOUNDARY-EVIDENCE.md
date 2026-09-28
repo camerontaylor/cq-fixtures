@@ -204,3 +204,38 @@ Final follow-up build, typecheck and lint pass. Focused campaign/package-smoke/
 existing-boundary verification passes 3 files / 19 tests in 1.96s. No full-suite
 rerun was performed; the earlier 9 timeout failures and incomplete two-worker
 rerun remain recorded above and in the bounded validation log.
+
+2026-09-29 trusted staging/export follow-up (no model calls):
+`stageTaskClone` binds exact independent clone HEAD, sanitized Git metadata and full
+private task/context inventory to exclusive labeled volumes. Labels without bytes
+are rejected. `containerTaskSession` requires awaited container teardown and absence
+read-back before reading only task volume. Fresh export preserves candidate commits,
+baseline ancestry, deletions, executable modes, safe links and untracked partial files.
+Receipts include file contents and remain private; do not serialize real receipts into
+logs. Independent read-only review and fixes are recorded in
+`runner/boundary/evidence/fallback/staging-review.md`.
+
+Real dedicated-VM synthetic lifecycle passes in 4.746 seconds using utility image
+`sha256:4a14ba40f65117679e6f60d0f7f7bfa5eb44ff9be79e96137966a1ba9675f9b0`:
+valid labels with altered bytes rejected; timed Docker exec client kill followed by
+container removal; partial candidate export retains commit/modes/deletion/untracked
+state; hidden-path symlink rejected. Private probe volumes/containers removed. VM
+bounds unchanged at 2 CPU / 3 GiB, no others' configuration changed. Utility build
+(node pinned base plus git/CA packages) took 19.23s; image content ID is qualification
+identity, not a promise of reproducible apt package resolution.
+
+G2 remains blocked. Native owner must first finish visible G1, then extend honest
+boundary-unverified spawn receipts and async termination/finalization hooks in
+runSupervised. Its Docker-client process-group kill alone cannot stop Linux children.
+After native image/config/auth inventory and HTTP/WS/refresh compatibility are pinned,
+freeze exact broker host/IP/TLS/path/header identities; obtain parent admission;
+run actual native tool/shell/symlink/process/config/endpoint sentinels through that
+final route. No shell-only result establishes G2. Disabled credential-free endpoint
+source/schema notes are in `runner/boundary/provider-route-templates.json`.
+
+No full-suite rerun: earlier 529 passes / 9 runner-test timeouts and incomplete
+2-worker run remain the prior bounded evidence, investigated separately by parent.
+Final focused boundary suite: 16/16 tests pass in 1.73s. Build/typecheck/owned-file
+lint pass. An initial new Git preservation test exceeded Vitest's default5s during
+host contention (12.132s); only that bounded test now has a30s ceiling and subsequent
+runs pass. Full-suite timeouts were not rerun or reclassified as passing.

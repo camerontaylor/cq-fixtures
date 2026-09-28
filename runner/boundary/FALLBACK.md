@@ -87,7 +87,7 @@ reference the trusted owner's private content inventory, not a content audit.
 
 ## Native contract and admission
 
-Use `spawnContainerBoundary` with `prepare:containerPreparer(spec)` in the existing
+Use `spawnContainerBoundary` with `prepare:containerPreparer(spec, privateStageReceipt, liveBrokerReceipt)` in the existing
 native supervisor. Actual routes require native-control evidence, production
 broker, `heldOut:false` and parent admission. Probe purpose refuses staged auth
 and production broker. Returned Docker exec pipes retain native stdin/protocol/
@@ -95,7 +95,8 @@ event/timeout ownership. Supplied evidence references are attestations, not G2.
 
 **Killing the Docker client does not kill exec descendants.** Native owner must
 call returned `dispose()` on timeout/cancel/error/finally to remove the dedicated
-container and all children. Capture events and task patch/workspace first.
+container and all children, then read back its absence BEFORE candidate inspection/export.
+Events already captured through pipes may be retained; task files must wait for teardown.
 Task volume survives removal for trusted bounded export to the runner's assigned
 workspace. Export only `/task`; do not grade the probe image's synthetic seed.
 Auth/config are explicit staged context files, never inherited host environment.
@@ -119,3 +120,31 @@ Next steps:
 
 The historical host `g2-blockers.json` is unchanged. The remaining fallback
 blocker is native-route/auth/profile conformance, rather than missing VM runtime.
+
+
+Trusted lifecycle seam (synthetic-qualified; actual native integration pending):
+
+- `stageTaskClone({taskRoot,contextRoot,baselineCommit,utilityImage})` requires a plain
+  independent clone and exact baseline HEAD. It normalizes only local Git config,
+  inventories every file byte/mode/link, rejects external Git storage and unsafe
+  link chains, and creates private receipt-labeled task/context volumes. Receipt
+  includes task bytes and must stay private; never log or commit it for real tasks.
+- `containerPreparer(spec, receipt, {containerId,imageId,configPath:'/opt/config.json'})`
+  rejects label-only staging, attached volumes and live contents differing from
+  receipt. Broker image ID, exact network attachment, label and compiled live
+  config identity must match. Workers use empty private Docker client config.
+- `containerTaskSession(receipt, containerId)` exposes `terminate`, `finalize`,
+  `cleanup` and `closeControl`. Native `runSupervised` must await termination on
+  timeout/cancellation/error/normal close in an async finally, then finalize to a
+  newly created empty private directory. Export preserves complete Git objects,
+  candidate commits descending from baseline, deletions, modes and untracked files.
+  It reads only task volume through a network-none nonprivileged utility. Failed
+  export retains volumes for private diagnosis; cleanup requires successful export.
+- Native owner must extend its visible-only receipt/lifecycle types honestly to
+  `boundary-unverified`; never return `isolation:disabled` for this seam. This lane
+  does not modify native transport or pretend its existing process-group kill can
+  stop Linux exec descendants.
+- Pin utility image to the qualified ID in task-lifecycle evidence; source checkout
+  supplies volume-io.mjs and namespace-acl.sh beside modules. Do not deploy bare dist
+  without these trusted assets. Prior generic seed/preparer replay now intentionally
+  fails closed until supplied with private Git inventory and live broker receipt.

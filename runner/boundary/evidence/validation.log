@@ -35,3 +35,14 @@ Focused verification: 3 files / 19 tests passed in 1.96s.
 No new full-suite run; previous full-suite timeouts unchanged.
 Synthetic qualification: 59 checks passed; live TypeScript preparer passed.
 Linux startup: Codex/Pi --version and ZCode --help exit 0 without network/auth.
+
+S5 private task lifecycle follow-up:
+- Dedicated VM no-model task-lifecycle probe passed, 4.746s (receipt/content tamper,
+  timed client kill + verified container teardown, partial full-clone export).
+- Build/typecheck and focused ESLint pass.
+- Focused boundary suite initially 14 pass / 1 new Git test timeout at default5s
+  during host contention (12.132s observed); that bounded Git test now explicitly
+  permits30s. No product timeout widened. Subsequent15tests pass1.62s and2.17s.
+- Final additional empty Docker config test recorded below after verification.
+- No full-suite rerun; prior runner-test timeout evidence retained above.
+- Final focused boundary suite:16/16 pass in1.73s, including empty Docker client config.

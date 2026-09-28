@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { DockerControl } from './docker-control.ts';
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -42,7 +43,7 @@ export function compileContainerBoundary(input: ContainerBoundarySpec) {
     throw new Error('dedicated content-pinned namespace, staging and broker inventory required');
   }
   const identity = createHash('sha256').update(JSON.stringify(spec)).digest('hex');
-  const createArgs = ['--host', `unix://${join(homedir(), '.colima/cq-boundary-s5/docker.sock')}`, 'create', '--label', `cq.boundary.identity=${identity}`,
+  const createArgs = ['--host', `unix://${join(homedir(), '.colima/cq-boundary-s5/docker.sock')}`, 'create', '--pull=never', '--label', `cq.boundary.identity=${identity}`,
     '--user', '1000:1000', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--pids-limit', '128', '--memory', '768m', '--memory-swap', '768m', '--cpus', '1',
     '--cgroupns', 'private', '--ipc', 'private', '--network', spec.network.name, '--ip', spec.network.workerIP,
@@ -80,7 +81,7 @@ export async function spawnContainerBoundary(request: ContainerLaunch): Promise<
 }> {
   const policy = compileContainerBoundary(request.boundary.spec);
   if (policy.identity !== request.boundary.identity) throw new Error('container identity changed');
-  if (request.heldOut) throw new Error('actual-route G2 and native auth/tool controls remain unverified');
+  if (request.heldOut !== false) throw new Error('actual-route G2 and native auth/tool controls remain unverified');
   if (!/^\/(?:usr\/local\/bin|usr\/bin|bin)\/[a-zA-Z0-9._-]+$/.test(request.executable)) throw new Error('absolute inventoried image executable required');
   const args = [...request.args];
   const executable = request.executable;
@@ -102,12 +103,15 @@ export async function spawnContainerBoundary(request: ContainerLaunch): Promise<
     throw new Error('specific live container namespace ACL receipt required');
   }
   const launchIdentity = createHash('sha256').update(JSON.stringify({ boundary: policy.identity, container: prepared.containerId, executable, args })).digest('hex');
-  const child = spawn('/usr/local/bin/docker', ['--host', `unix://${join(homedir(), '.colima/cq-boundary-s5/docker.sock')}`, 'exec', '-i', '--user', '1000:1000',
+  const control = new DockerControl();
+  const child = spawn('/usr/local/bin/docker', [...control.prefix, 'exec', '-i', '--user', '1000:1000',
     '--workdir', '/task', prepared.containerId, executable, ...args], {
     stdio: ['pipe', 'pipe', 'pipe'], detached: true,
     // Do not inherit Docker endpoint, plugin or telemetry overrides. The host daemon
     // socket is used by the trusted supervisor only, and never mounted in workers.
-    env: { HOME: homedir(), PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' },
+    env: control.environment,
   });
+  child.once('close', () => control.close());
+  child.once('error', () => control.close());
   return { child, containerId: prepared.containerId, boundaryIdentity: policy.identity, launchIdentity, admissionId, dispose: prepared.dispose };
 }

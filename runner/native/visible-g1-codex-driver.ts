@@ -17,13 +17,13 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
   const configPath = process.env.CQ_PASEO_CONFIG ?? join(homedir(), '.paseo', 'config.json');
   const inventory = resolveNativeLaunchInventory(configPath, { environmentNames: { codex: ENVIRONMENT_NAMES } });
   const profile = inventory.configuredProfiles.find((candidate) => candidate.providerRoute.split(' ')[0] === 'codex'
-    && candidate.requestedModel?.toLowerCase() === 'gpt-6-luna');
-  if (!profile) throw new Error('configured Codex Sol gpt-6-luna profile was not found in the safe Paseo inventory');
+    && candidate.requestedModel?.toLowerCase() === 'gpt-6-sol');
+  if (!profile) throw new Error('configured Codex Sol gpt-6-sol profile was not found in the safe Paseo inventory');
   const driver = new CodexExecDriver({
     executable: profile.executable,
     version: profile.version,
     profile: profile.label,
-    model: 'gpt-6-luna',
+    model: 'gpt-6-sol',
     effort: 'low',
     artifactDirectory: join(input.outputRoot, 'native-events'),
     hardWallClockMs: 120_000,

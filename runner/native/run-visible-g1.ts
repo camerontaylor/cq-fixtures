@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** One-route, visible-only G1 calibration through the verified runSuite corpus. */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -70,7 +70,7 @@ interface RouteSpec {
 
 const ROUTES: Readonly<Record<VisibleG1Route, RouteSpec>> = {
   codex: {
-    transport: 'codex-exec', provider: 'codex', model: 'gpt-6-luna', taskProvider: 'codex',
+    transport: 'codex-exec', provider: 'codex', model: 'gpt-6-sol', taskProvider: 'codex',
     rowDriver: 'codex-exec', strategy: 'codex-exec-visible-g1', profileRoute: 'codex', bridgeLabel: 'Codex native exec bridge',
   },
   'pi-json': {
@@ -160,7 +160,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
     profile.providerRoute.split(' ')[0] === spec.profileRoute &&
     (spec.profileRoute !== 'pi-opencode' || profile.requestedModel?.toLowerCase().includes('space-bunny-free')) &&
     (spec.profileRoute !== 'zcode' || /glm-5\.3-flash/iu.test(profile.requestedModel ?? '')) &&
-    (spec.profileRoute !== 'codex' || /gpt-6-luna/iu.test(profile.requestedModel ?? '')),
+    (spec.profileRoute !== 'codex' || /gpt-6-sol/iu.test(profile.requestedModel ?? '')),
   );
   if (!bridgeProfile || !configuredProfile) throw new Error(`launch inventory could not resolve both selected profiles for ${options.route}`);
 
@@ -176,7 +176,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
     profileComparison: comparison.comparison,
     boundary: options.boundary,
   };
-  const budget = { wallClockMs: 120_000, maxAttempts: 1, maxTokens: null, hardTokenCap: false };
+  const budget = { wallClockMs: 240_000, totalWallClockEnforced: false, modelWallClockMs: 120_000, judgeWallClockMs: 60_000, setupAndFinalizationAllowanceMs: 60_000, maxAttempts: 1, maxTokens: null, hardTokenCap: false };
   const identity = experimentId({
     track: 'visible-g1-calibration', sourcePins,
     corpusPin: `${task.sourceId}:${task.baselineId}:${task.baselineCommit}:${bundle.oraclePin.sha256}`,
@@ -204,15 +204,15 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
     clock: { now },
     config: {
       maxConcurrentPerProvider: 1,
-      reservationTtlMs: 150_000,
+      reservationTtlMs: 240_000,
       maxTelemetryAgeMs: 60_000,
       diagnostic: { maxAttempts: 1, maxEstimatedUnits: 0, usedAttempts: 0, usedEstimatedUnits: 0, allowUnknownUsage: true },
     },
   });
   await scheduler.enqueue({
     id: assignmentId, provider: spec.provider, kind: 'validity', state: 'queued', dependencies: [],
-    estimatedRuntimeMs: 120_000, estimatedUsageUnits: null, estimatedUsageConfidence: null,
-    createdAt: new Date(now()).toISOString(), deadlineAt: new Date(now() + 125_000).toISOString(),
+    estimatedRuntimeMs: 180_000, estimatedUsageUnits: null, estimatedUsageConfidence: null,
+    createdAt: new Date(now()).toISOString(), deadlineAt: new Date(now() + 240_000).toISOString(),
     stageId, attemptId, attemptIds: [attemptId],
   });
   const admission = await scheduler.admitNext();
@@ -339,8 +339,9 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
       absences: result.absences,
       diagnostics: result.diagnostics,
     };
-    await writeCreateOnly(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-    await scheduler.complete(assignmentId, `${reportPath}#sha256=${sha256(JSON.stringify(report))}`);
+    const reportBytes = `${JSON.stringify(report, null, 2)}\n`;
+    await writeCreateOnly(reportPath, reportBytes);
+    await scheduler.complete(assignmentId, `${reportPath}#sha256=${sha256(reportBytes)}`);
     runFinished = true;
     return { experimentId: identity, route: options.route, runDirectory, reportPath, queueDirectory, rows: result.rows, tables: result.tables };
   } catch (error) {
@@ -465,12 +466,12 @@ export function visibleG1TestInventory(profile: LaunchProfile): NativeLaunchInve
   const bridge = {
     ...profile,
     label: 'Codex native exec bridge',
-    requestedModel: 'gpt-6-luna',
+    requestedModel: 'gpt-6-sol',
     effort: 'low',
     permissionPolicy: 'OpInvocation fixer allowlist',
     sandboxPolicy: 'per-invocation workspace-write',
     cwdBehavior: 'runner SessionStore workspace; Codex turn ephemeral',
-    args: ['exec', '--json', '--ephemeral', '-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"'],
+    args: ['exec', '--json', '--ephemeral', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="low"'],
   };
   return {
     generatedAt: new Date(0).toISOString(), configuredProfiles: [profile], proposedBridges: [bridge],

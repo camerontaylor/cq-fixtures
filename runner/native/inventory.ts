@@ -67,8 +67,8 @@ export function resolveNativeLaunchInventory(
   const proposedBridges: LaunchProfile[] = [
     profile('codex', 'Codex native exec bridge', 'codex', [
       'exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', '<invocation sandbox>',
-      '-C', '<SessionStore workspace>', '-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-',
-    ], 'runner SessionStore workspace; Codex turn ephemeral', 'gpt-6-luna', 'low requested; CLI does not report effective effort',
+      '-C', '<SessionStore workspace>', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="low"', '-',
+    ], 'runner SessionStore workspace; Codex turn ephemeral', 'gpt-6-sol', 'low requested; CLI does not report effective effort',
     'OpInvocation tool policy requested; codex exec flags do not enforce it', 'per-invocation --sandbox', 'ephemeral', []),
     ...(['json', 'rpc'] as const).map((mode) => profile('pi-opencode', `Pi ${mode.toUpperCase()} bridge`, 'pi', [
       '--mode', mode, '--provider', 'opencode-go', '--model', 'opencode-go/space-bunny-free:high',

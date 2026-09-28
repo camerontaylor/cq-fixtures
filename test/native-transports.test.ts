@@ -254,20 +254,20 @@ describe('visible G1 runSuite entrypoint', () => {
     const root = tempRoot();
     class SimulatedCodexDriver extends ObservedNativeDriver {
       constructor() {
-        super({ configuredTarget: 'codex/gpt-6-luna', transport: 'codex-exec', executable: 'simulated-codex', executableVersion: 'test', profile: 'visible-test' });
+        super({ configuredTarget: 'codex/gpt-6-sol', transport: 'codex-exec', executable: 'simulated-codex', executableVersion: 'test', profile: 'visible-test' });
       }
       protected async runObserved(input: OpInvocation, invocationIdentity: InvocationIdentity): Promise<WorkerResult> {
         const workspace = input.prompt.match(/^workspace: (.+)$/mu)?.[1];
         if (!workspace) throw new Error('simulated runSuite invocation omitted workspace');
         writeFileSync(join(workspace, 'src/settings.mjs'), `export function isValidCampaignLabel(label) {\n  const value = typeof label === 'string' ? label.trim() : '';\n  return value.length > 0 && Array.from(value).length <= 40;\n}\n`);
         const observation = this.newObservation(invocationIdentity, input, new Date().toISOString());
-        observation.model.observed = { value: 'gpt-6-luna', source: 'simulated native event', status: 'observed' };
+        observation.model.observed = { value: 'gpt-6-sol', source: 'simulated native event', status: 'observed' };
         observation.model.settings.launch = {
           value: { scope: 'visible-calibration', isolation: 'disabled', heldOut: false },
           source: 'simulated parent admission receipt', status: 'observed',
         };
         const result = createWorkerResult({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, 'complete', {
-          model: 'gpt-6-luna', structuredOutput: { fixed: true, notes: 'bounded Unicode length validation' },
+          model: 'gpt-6-sol', structuredOutput: { fixed: true, notes: 'bounded Unicode length validation' },
         });
         this.finishObservation(observation, result);
         return result;
@@ -275,7 +275,7 @@ describe('visible G1 runSuite entrypoint', () => {
     }
     const configured: LaunchProfile = {
       label: 'Codex Sol fullaccess', executable: process.execPath, version: 'test', args: [], envKeys: [],
-      cwdBehavior: 'runner workspace', providerRoute: 'codex', requestedModel: 'gpt-6-luna', authClass: 'subscription',
+      cwdBehavior: 'runner workspace', providerRoute: 'codex', requestedModel: 'gpt-6-sol', authClass: 'subscription',
       effort: 'low', permissionPolicy: 'fullaccess', sandboxPolicy: 'none', systemContext: [], tools: [], extensions: [],
       assistance: [], sessionBehavior: 'ephemeral', feedbackBehavior: null,
     };

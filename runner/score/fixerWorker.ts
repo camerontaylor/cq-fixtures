@@ -19,6 +19,8 @@ export interface ScoreOutcome {
   observed?: string | null;
   /** Correctness is unknown when the independent judge did not run reliably. */
   correctness?: boolean | null;
+  /** Structured output format conformance is independent of candidate correctness. */
+  formatConformance?: boolean | null;
   operationalStatus?: 'measured' | 'judge-failure';
 }
 
@@ -86,6 +88,7 @@ export function scoreFixerWorker(
       total: 1,
       correctness: null,
       operationalStatus: 'judge-failure',
+      formatConformance: null,
       diagnostics: `check probe timed out after ${timeoutMs}ms (${suiteCase.probe.check})`,
     };
   }
@@ -96,6 +99,7 @@ export function scoreFixerWorker(
       total: 1,
       correctness: null,
       operationalStatus: 'judge-failure',
+      formatConformance: null,
       diagnostics: `check probe could not execute (${suiteCase.probe.check}): ${res.error.message}`,
     };
   }

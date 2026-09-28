@@ -27,6 +27,7 @@ export interface ExperimentContext {
   settingsId: string;
   budgetId: string;
   profileId: string;
+  frozenWeight: number;
   /** Required for multi-case runSuite dispatch; keys are suite case IDs. */
   caseAssignments?: Record<string, { assignmentId: string; stageId: string; attemptId: string }>;
 }

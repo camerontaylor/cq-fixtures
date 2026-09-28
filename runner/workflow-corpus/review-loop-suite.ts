@@ -28,7 +28,7 @@ export interface ReviewLoopRunSuiteBundle {
   readonly modelSpec: ReviewLoopRepairTask['modelSpec'];
   readonly oraclePin: ReviewLoopOraclePin;
   /** Fields S1 must merge into the host-side check process environment. */
-  hostCheckScoringEnvironment(workspacePath: string): Readonly<Record<string, string>>;
+  hostCheckScoringEnvironment(workspacePath: string, pinnedBaselineCommit: string): Readonly<Record<string, string>>;
   /** Wrap the runner's injected Driver to pin the actual copied-workspace baseline before dispatch. */
   wrapDriver(driver: Driver): Driver;
   pinnedBaselineCommit(workspacePath: string): string | undefined;
@@ -148,10 +148,13 @@ if (!report.passed) {
     fixturePath,
     modelSpec: { ...task.modelSpec },
     oraclePin,
-    hostCheckScoringEnvironment(workspacePath: string) {
-      const baselineCommit = baselinePins.get(resolve(workspacePath));
-      if (baselineCommit === undefined) throw new Error('runSuite has not captured this workspace baseline yet');
-      return reviewLoopHostCheckEnvironment({ baselineCommit, oraclePin: oraclePin.sha256 });
+    hostCheckScoringEnvironment(workspacePath: string, pinnedBaselineCommit: string) {
+      const capturedBaseline = baselinePins.get(resolve(workspacePath));
+      if (capturedBaseline === undefined) throw new Error('runSuite has not captured this workspace baseline yet');
+      if (capturedBaseline !== pinnedBaselineCommit) {
+        throw new Error('runner and corpus workspace baseline pins do not match');
+      }
+      return reviewLoopHostCheckEnvironment({ baselineCommit: pinnedBaselineCommit, oraclePin: oraclePin.sha256 });
     },
     wrapDriver(driver: Driver): Driver {
       return {

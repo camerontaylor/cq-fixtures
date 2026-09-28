@@ -255,7 +255,7 @@ describe('cq-settings bounded workflow corpus', () => {
         'utf8',
       )) as typeof bundle.oraclePin;
       expect(bundle.oraclePin).toEqual(committedOraclePin);
-      expect(bundle.hostCheckScoringEnvironment(workerWorkspace)).toEqual({
+      expect(bundle.hostCheckScoringEnvironment(workerWorkspace, baselineCommit)).toEqual({
         CQ_REVIEW_LOOP_BASELINE_SHA: baselineCommit,
         CQ_REVIEW_LOOP_ORACLE_PIN: bundle.oraclePin.sha256,
       });

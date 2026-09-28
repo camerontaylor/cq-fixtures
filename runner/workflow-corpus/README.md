@@ -37,7 +37,8 @@ exported `createReviewLoopOraclePin()` hashes the full bytes of
 immutable source/baseline/oracle constants. The generated check recomputes
 that pin before calling the judge. `bundle.oraclePin` exposes the dependency
 paths, their SHA256 values, and a canonical manifest SHA256.
-`bundle.hostCheckScoringEnvironment(workspacePath)` returns
+`bundle.hostCheckScoringEnvironment(workspacePath, pinnedBaselineCommit)` verifies S1's
+`workspaceBaseline.commit` against the pre-delegation capture and returns
 `CQ_REVIEW_LOOP_BASELINE_SHA` and `CQ_REVIEW_LOOP_ORACLE_PIN` after the
 decorated Driver has captured that exact workspace. S1 should pass those
 host-only values to the check subprocess and use the supplied oracle pin as

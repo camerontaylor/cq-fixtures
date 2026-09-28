@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ArtifactStore } from '../../cq-settings-integration/runner/artifacts/index.ts';
+import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
 import {
   defineBudgetTiers,
   observedZeroUsage,
   runStrategy,
   runStrategyTiers,
+  strategyInvocationIdentity,
   unknownUsage,
   type Candidate,
   type ExecutorResult,
@@ -86,6 +92,84 @@ describe('bounded campaign strategy engine', () => {
     expect(results.map((entry) => entry.tierId)).toEqual(['small', 'medium', 'large']);
     expect(results.every((entry) => entry.assignedStrategySuccess === true)).toBe(true);
     expect(new Set(results.map((entry) => entry.recipeHash)).size).toBe(3);
+  });
+
+  it('uses S1-safe immutable stage and attempt IDs and keeps the stage ID on retry', () => {
+    const first = strategyInvocationIdentity('assignment-fixed-01', 'a'.repeat(64), 'draft-primary', 1);
+    const retry = strategyInvocationIdentity('assignment-fixed-01', 'a'.repeat(64), 'draft-primary', 2);
+    expect(first.stageId).toBe(retry.stageId);
+    expect(first.attemptId).not.toBe(retry.attemptId);
+    const root = mkdtempSync(join(tmpdir(), 'strategy-artifact-id-'));
+    try {
+      const store = new ArtifactStore(root);
+      const context = {
+        campaignId: 'campaign-approved', cohortId: 'cohort-visible', experimentId: 'exp-fixed',
+        taskId: 'task-review-loop', repeatId: 'repeat-01', assignmentId: 'assignment-fixed-01',
+        stageId: retry.stageId, attemptId: retry.attemptId, track: 'native', strategyId: 'repair',
+        settingsId: 'settings-fixed', budgetId: 'medium', profileId: 'profile-native',
+      };
+      const ref = store.write(context, 'candidate.patch', 'captured edits');
+      expect(ref.sha256).toBe(createHash('sha256').update('captured edits').digest('hex'));
+      expect(() => store.write({ ...context, stageId: 'bad:stage' }, 'candidate.patch', 'x')).toThrow(/unsafe path segment/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retrieves authoritative S1 usage and captures workspace edits after a native operation throws', async () => {
+    let handedOff: NativeInvocationIdentity | undefined;
+    const counter = (name: string, value: number) => ({ value, availability: 'observed' as const, source: `native-${name}`, semantics: name });
+    const nativeDriver = {
+      beginInvocation(identity: NativeInvocationIdentity) { handedOff = identity; },
+      getObservation(invocationId: string): NativeStrategyObservation | undefined {
+        if (!handedOff || handedOff.invocationId !== invocationId) return undefined;
+        return {
+          schemaVersion: 1,
+          identity: handedOff,
+          usage: {
+            counters: {
+              input: counter('input', 3), output: counter('output', 5), cacheRead: counter('cacheRead', 2),
+              cacheWrite: counter('cacheWrite', 1), reasoning: counter('reasoning', 4),
+            },
+            tokenTotal: { value: 17, availability: 'observed', source: 'native-token-total' },
+            inclusion: { input: 'disjoint', output: 'reasoning-in-output', cache: 'disjoint-from-input', reasoning: 'included-in-output' },
+          },
+          terminal: { cause: 'transport-exception', cancelled: false, transportException: { name: 'Error', message: 'after edit' } },
+          timing: { startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), stages: { run: 11 } },
+        };
+      },
+    };
+    const executor = createNativeStrategyExecutor(nativeDriver, {
+      async runStage(request) {
+        if (request.kind === 'draft') throw new Error('native transport failed after edit');
+        return result({ judgement: { status: 'valid', correctness: true } });
+      },
+      captureCandidate(request, state) {
+        expect(state.error).toBeInstanceOf(Error);
+        return candidate('native-partial-edit', request.workspaceId);
+      },
+      createCandidateWorkspace(_request, _index, stableWorkspaceId) {
+        return { id: stableWorkspaceId, handle: { id: stableWorkspaceId } };
+      },
+      supervisor: {
+        async cancelInvocationAndWait({ identity }) {
+          return { invocationId: identity.invocationId, stageId: identity.stageId, attemptId: identity.attemptId,
+            processTree: 'stopped-and-reaped', invocation: 'settled' };
+        },
+      },
+    });
+
+    const outcome = await runStrategy(task, { kind: 'one-shot', route: codex }, tier, executor, {
+      assignmentId: 'assignment-fixed-01', ids: fixedIds(),
+    });
+    const draft = outcome.stages.find((stage) => stage.kind === 'draft');
+    expect(draft?.status).toBe('failed');
+    expect(draft?.stageId).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+    expect(draft?.usage.tokenTotal.value).toBe(17);
+    expect(draft?.usage.tokenTotal.source).toBe('native-token-total');
+    expect(outcome.finalCandidate?.id).toBe('native-partial-edit');
+    expect(outcome.candidateCorrectness).toBe(true);
+    expect(outcome.assignedStrategySuccess).toBe(false);
   });
 
   it('charges draft, every verification and repair, and final independent judging', async () => {

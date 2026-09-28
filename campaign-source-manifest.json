@@ -45,22 +45,22 @@
   },
   "workflowCorpus": {
     "manifest": "campaigns/cq-settings/corpus/workflows.json",
-    "sha256": "a9f197d99d1b246b840b4b189c8a55862fe4b30d3c564035bfd6f650c59b3052",
-    "scenarioCount": 6,
-    "substrateCount": 6,
+    "sha256": "f43031767b8e85cec4b35ad4d4d27e13a839f370eae6e638a8d437f7d691f1d9",
+    "verifiedTaskCount": 1,
+    "independentSubstrateCount": 1,
     "modelRoleDiversityClaim": 0,
-    "families": [
-      "review-loop",
+    "verifiedTaskFamilies": ["review-loop"],
+    "operationSmokeOnlyFamilies": [
       "merge-pr-conflicts",
       "fleet-sweep",
       "baseline-test-fix",
       "analyze-remediate",
       "monotonic-ratchets"
     ],
-    "split": "all six scenarios are visible calibration; no held-out task or oracle is included",
-    "heldoutReservation": "whole template and fault-family identities reserved before tuning in the corpus manifest; reservation metadata does not enforce a read boundary",
-    "redGreenAndAdequacyEvidence": "test/campaign-workflows.test.ts; six synthetic red/green oracle pairs plus six local/mocked exported-operation integrations; not role-task adequacy evidence",
-    "coverageLimit": "operation-level integrations exercise selected exported APIs; they do not claim full end-to-end coverage of review-loop, runPrs, sweep cleanup/salvage, test-fix execution, analysis apply/verification/restoration, or model-role scoring",
+    "split": "one verified task is visible calibration; no held-out task or oracle is included",
+    "heldoutReservation": "whole substrate/template/fault-family identities reserved before tuning in the corpus manifest; metadata only, no isolation claim",
+    "redGreenAndAdequacyEvidence": "test/campaign-workflows.test.ts: one real seeded repair with independent executable red/green oracle; five remaining families are operation smoke evidence, not tasks",
+    "coverageLimit": "one review-loop repair substrate; no role adequacy claim; other five families still need real repair tasks and independent oracles",
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
     "pristineBaselineIntegrity": "synthetic task vectors are versioned by this manifest and SHA256; no toolkit or existing substrate fixture changed"
   },

@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,7 +9,6 @@ import {
   createCaptureBaseline,
   createCheckRatchet,
   makeAgenticRemediation,
-  makeFixReviewItem,
   makePlanSweep,
   makeResolveConflictOp,
   registerAdapter,
@@ -19,44 +19,11 @@ import {
   type WorkerResult,
 } from '@camerontaylor/cq-toolkit';
 import { describe, expect, it } from 'vitest';
-
-interface Scenario {
-  id: string;
-  family: string;
-  red: Record<string, unknown>;
-  green: Record<string, unknown>;
-}
-
-const corpus = JSON.parse(
-  await (await import('node:fs/promises')).readFile(
-    new URL('../campaigns/cq-settings/corpus/workflows.json', import.meta.url),
-    'utf8',
-  ),
-) as { scenarios: Scenario[] };
-
-function oracle(scenario: Scenario, candidate: Record<string, unknown>): boolean {
-  switch (scenario.family) {
-    case 'review-loop':
-      return candidate.changed === true &&
-        Array.isArray(candidate.commits) &&
-        candidate.commits.length > 0;
-    case 'merge-pr-conflicts':
-      return candidate.baselineSha !== candidate.headShaAfter && candidate.expected === 'ok';
-    case 'fleet-sweep':
-      return JSON.stringify(candidate.selected) === JSON.stringify(candidate.expected);
-    case 'baseline-test-fix':
-      return JSON.stringify(candidate.fixers) === JSON.stringify(['test-fix']) && candidate.testOnly === true;
-    case 'analyze-remediate':
-      return candidate.clusterCount === 1 && candidate.toolMode === 'none' && candidate.sandbox === 'read-only';
-    case 'monotonic-ratchets':
-      return typeof candidate.baseline === 'number' &&
-        typeof candidate.current === 'number' &&
-        candidate.current <= candidate.baseline &&
-        candidate.expected === 'pass';
-    default:
-      return false;
-  }
-}
+import {
+  createReviewLoopRepairTask,
+  executeReviewLoopRepairTask,
+  type ReviewLoopRepairTask,
+} from '../campaigns/cq-settings/corpus/review-loop-task.js';
 
 function expectOk<T>(result: OpResult<T>): T {
   if (result.status !== 'ok') {
@@ -74,25 +41,143 @@ const completedWorker = (structuredOutput: unknown): WorkerResult => ({
   stopReason: 'complete',
 });
 
+const REFERENCE_SETTINGS_SOURCE = `export function isValidCampaignLabel(label) {
+  if (typeof label !== 'string') return false;
+  const normalized = label.trim();
+  return normalized.length > 0 && [...normalized].length <= 40;
+}
+`;
+
+const HIDDEN_REVIEW_JUDGE = `
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const root = process.argv[1];
+const baseline = process.argv[2];
+const sourcePath = join(root, 'src/settings.mjs');
+const expectedSource = ${JSON.stringify(REFERENCE_SETTINGS_SOURCE)};
+assert.equal(readFileSync(sourcePath, 'utf8'), expectedSource, 'implementation must match the exact reference patch');
+const settings = await import(pathToFileURL(sourcePath).href);
+const display = await import(pathToFileURL(join(root, 'src/display.mjs')).href);
+assert.equal(settings.isValidCampaignLabel(null), false);
+assert.equal(settings.isValidCampaignLabel(''), false);
+assert.equal(settings.isValidCampaignLabel('   '), false);
+assert.equal(settings.isValidCampaignLabel('Campaign A'), true);
+assert.equal(settings.isValidCampaignLabel('x'.repeat(40)), true);
+assert.equal(settings.isValidCampaignLabel('x'.repeat(41)), false);
+assert.equal(settings.isValidCampaignLabel('😀'.repeat(40)), true);
+assert.equal(settings.isValidCampaignLabel('😀'.repeat(41)), false);
+assert.equal(display.displayCampaignLabel('  Campaign A  '), '  Campaign A  ');
+assert.deepEqual(execFileSync('git', ['diff', '--name-only', baseline, 'HEAD'], { cwd: root, encoding: 'utf8' }).trim().split('\\n'), ['src/settings.mjs']);
+assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim(), '', 'candidate must be committed');
+assert.equal(execFileSync('git', ['show', baseline + ':test/public-settings.test.mjs'], { cwd: root, encoding: 'utf8' }), readFileSync(join(root, 'test/public-settings.test.mjs'), 'utf8'), 'visible tests must remain pristine');
+`;
+
+function runHiddenReviewJudge(task: ReviewLoopRepairTask): { passed: boolean; exactPatch: boolean } {
+  try {
+    execFileSync(process.execPath, [
+      '--input-type=module',
+      '-e',
+      HIDDEN_REVIEW_JUDGE,
+      task.worktreePath,
+      task.baselineCommit,
+    ], { cwd: task.worktreePath, stdio: 'pipe' });
+    return { passed: true, exactPatch: true };
+  } catch {
+    return { passed: false, exactPatch: false };
+  }
+}
+
+function runVisibleTaskTests(task: ReviewLoopRepairTask): boolean {
+  try {
+    execFileSync(process.execPath, ['test/public-settings.test.mjs'], {
+      cwd: task.worktreePath,
+      stdio: 'pipe',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type ReviewDriverMode = 'reference-patch' | 'no-op-claim' | 'bad-json-with-edits' | 'throw-with-edits';
+
+function scriptedReviewDriver(task: ReviewLoopRepairTask, mode: ReviewDriverMode): Driver {
+  return {
+    async run(invocation) {
+      let commits: string[] = ['f'.repeat(40)];
+      if (mode !== 'no-op-claim') {
+        await writeFile(join(task.worktreePath, 'src/settings.mjs'), REFERENCE_SETTINGS_SOURCE);
+        execFileSync('git', ['add', 'src/settings.mjs'], { cwd: task.worktreePath });
+        execFileSync('git', ['commit', '-q', '-m', `Candidate patch: ${mode}`], { cwd: task.worktreePath });
+        commits = [execFileSync('git', ['rev-parse', 'HEAD'], { cwd: task.worktreePath, encoding: 'utf8' }).trim()];
+      }
+      if (mode === 'throw-with-edits') throw new Error('local driver transport ended after commit');
+      const structuredOutput = mode === 'bad-json-with-edits'
+        ? { changed: 'yes', summary: 'malformed fix contract', commits }
+        : { changed: true, summary: 'Enforce the 40 code point campaign label limit.', commits };
+      return {
+        ...completedWorker(structuredOutput),
+        model: invocation.modelSpec.model,
+      };
+    },
+  };
+}
+
 describe('cq-settings bounded workflow corpus', () => {
-  it('discovers exactly the six declared calibration workflow families', () => {
-    expect(corpus.scenarios.map(({ family }) => family)).toEqual([
-      'review-loop',
-      'merge-pr-conflicts',
-      'fleet-sweep',
-      'baseline-test-fix',
-      'analyze-remediate',
-      'monotonic-ratchets',
-    ]);
-    expect(new Set(corpus.scenarios.map(({ id }) => id)).size).toBe(6);
-  });
+  it('judges the original bug red and an exact committed repair green', async () => {
+    const task = await createReviewLoopRepairTask();
+    try {
+      expect(runHiddenReviewJudge(task).passed).toBe(false);
+      expect(runVisibleTaskTests(task)).toBe(false);
+      const driver = scriptedReviewDriver(task, 'reference-patch');
+      const operationResult = await executeReviewLoopRepairTask(task, driver);
 
-  it.each(corpus.scenarios)('$id reproduces its buggy red and fixed green oracle vectors', (scenario) => {
-    expect(oracle(scenario, scenario.red)).toBe(false);
-    expect(oracle(scenario, scenario.green)).toBe(true);
-  });
+      expect(expectOk(operationResult).changed).toBe(true);
+      expect(runHiddenReviewJudge(task)).toMatchObject({ passed: true, exactPatch: true });
+      expect(runVisibleTaskTests(task)).toBe(true);
+    } finally {
+      await task.cleanup();
+    }
+  }, 30_000);
 
-  it('runs the review fix operation with a constrained anchor and injected Driver', async () => {
+  it('grades a claimed no-op as incorrect even when the operation contract says changed', async () => {
+    const task = await createReviewLoopRepairTask();
+    try {
+      const result = await executeReviewLoopRepairTask(task, scriptedReviewDriver(task, 'no-op-claim'));
+      expect(expectOk(result)).toMatchObject({ changed: true, commits: ['f'.repeat(40)] });
+      expect(runHiddenReviewJudge(task).passed).toBe(false);
+    } finally {
+      await task.cleanup();
+    }
+  }, 30_000);
+
+  it('grades a correct committed patch independently when structured output is invalid', async () => {
+    const task = await createReviewLoopRepairTask();
+    try {
+      const result = await executeReviewLoopRepairTask(task, scriptedReviewDriver(task, 'bad-json-with-edits'));
+      expect(result.status).toBe('failed');
+      expect(runHiddenReviewJudge(task)).toMatchObject({ passed: true, exactPatch: true });
+    } finally {
+      await task.cleanup();
+    }
+  }, 30_000);
+
+  it('grades a correct committed patch independently when the Driver throws after editing', async () => {
+    const task = await createReviewLoopRepairTask();
+    try {
+      const result = await executeReviewLoopRepairTask(task, scriptedReviewDriver(task, 'throw-with-edits'));
+      expect(result.status).toBe('needs-human');
+      expect(runHiddenReviewJudge(task)).toMatchObject({ passed: true, exactPatch: true });
+    } finally {
+      await task.cleanup();
+    }
+  }, 30_000);
+
+  it('exposes the review task through its typed factory and injected Driver executor', async () => {
     const invocations: Parameters<Driver['run']>[0][] = [];
     const driver: Driver = {
       async run(invocation) {
@@ -104,27 +189,24 @@ describe('cq-settings bounded workflow corpus', () => {
         }), model: invocation.modelSpec.model };
       },
     };
-    const fix = makeFixReviewItem({ driver });
-    const result = await fix({
-      repo: 'local/cq-settings',
-      pr: 17,
-      item: {
-        id: 'thread-local-17',
-        path: 'src/settings.ts',
-        line: 42,
-        body: 'Reject an empty campaign setting before saving.',
-        comments: [],
-      },
-      worktree: { path: '/tmp/cq-settings-review-fixture', branch: 'fix/settings' },
+    const task = await createReviewLoopRepairTask();
+    const operationInput: ReviewLoopRepairTask['operationInput'] = {
+      ...task.operationInput,
       driver: { model: 'offline-review', provider: 'fake' },
-    });
+    };
+    const injectedTask: ReviewLoopRepairTask = { ...task, operationInput };
+    try {
+      const result = await executeReviewLoopRepairTask(injectedTask, driver);
 
-    expect(expectOk(result).changed).toBe(true);
-    expect(invocations).toHaveLength(1);
-    expect(invocations[0]?.prompt).toContain('src/settings.ts');
-    expect(invocations[0]?.prompt).toContain('empty campaign setting');
-    expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'workspace-write' });
-  });
+      expect(expectOk(result).changed).toBe(true);
+      expect(invocations).toHaveLength(1);
+      expect(invocations[0]?.prompt).toContain('src/settings.mjs');
+      expect(invocations[0]?.prompt).toContain('40 Unicode code points');
+      expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'workspace-write' });
+    } finally {
+      await task.cleanup();
+    }
+  }, 30_000);
 
   it('runs conflict resolution against local effects and verifies the reported head movement', async () => {
     let validations = 0;
@@ -311,5 +393,5 @@ describe('cq-settings bounded workflow corpus', () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

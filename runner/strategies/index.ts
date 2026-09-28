@@ -264,6 +264,8 @@ export interface StageObservation {
   usage: UsageObservations;
   launched: boolean | null;
   serviceTimeMs: number | null;
+  /** Native baseline pin for captured patches, when the S1 workspace supplies it. */
+  baselineCommit?: string | null;
   inclusion?: Readonly<Record<'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'reasoning' | 'tokenTotal', string | null>>;
 }
 
@@ -287,6 +289,7 @@ export interface StageRecord extends InvocationIdentity {
   endedAtMs: number;
   elapsedMs: number;
   serviceTimeMs: number | null;
+  baselineCommit: string | null;
   usage: UsageObservations;
   candidateId: string | null;
   candidateSha256: string | null;
@@ -660,6 +663,7 @@ export async function runStrategy(
       launched: normalizedResult.launched ?? (route === null ? false : normalizedResult.status === 'completed' ? true : null),
       startedAtMs: stageStart, endedAtMs: stageEnd,
       elapsedMs: Math.max(0, stageEnd - stageStart), serviceTimeMs: normalizedResult.serviceTimeMs,
+      baselineCommit: observation?.baselineCommit ?? null,
       usage: safeUsage, candidateId: captured?.id ?? normalizedResult.candidate?.id ?? null,
       candidateSha256: captured?.sha256 ?? normalizedResult.candidate?.sha256 ?? null,
       tokenCapMode: capMode, operationalError: normalizedResult.operationalError ?? null,

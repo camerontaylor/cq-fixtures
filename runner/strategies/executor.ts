@@ -30,10 +30,11 @@ export interface NativeStrategyObservation {
   identity: NativeInvocationIdentity;
   usage: {
     counters: Record<'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'reasoning', NativeCounter>;
-    tokenTotal: Omit<NativeCounter, 'semantics'>;
+    tokenTotal: Omit<NativeCounter, 'semantics'> & { semantics: 'authoritative-total' | 'unknown' };
     inclusion: { input: string | null; output: string | null; cache: string | null; reasoning: string | null };
   };
   terminal: { cause: string | null; cancelled: boolean; transportException: { name: string; message: string } | null };
+  capture: { status: string; baselineCommit: string | null; patchSha256: string | null; workspaceSha256: string | null };
   timing: { startedAt: string; endedAt: string | null; stages: Record<string, number | null> };
 }
 
@@ -104,7 +105,15 @@ function observationUsage(observation: NativeStrategyObservation): UsageObservat
     cacheRead: toCounter(counters.cacheRead, 'cacheRead', inclusion.cache),
     cacheWrite: toCounter(counters.cacheWrite, 'cacheWrite', inclusion.cache),
     reasoning: toCounter(counters.reasoning, 'reasoning', inclusion.reasoning),
-    tokenTotal: toCounter(observation.usage.tokenTotal, 'tokenTotal', null),
+    tokenTotal: toCounter({
+      ...observation.usage.tokenTotal,
+      availability: observation.usage.tokenTotal.semantics === 'authoritative-total'
+        ? observation.usage.tokenTotal.availability
+        : 'unavailable',
+      value: observation.usage.tokenTotal.semantics === 'authoritative-total'
+        ? observation.usage.tokenTotal.value
+        : null,
+    }, 'tokenTotal', null),
   });
 }
 
@@ -117,6 +126,7 @@ function stageObservation(observation: NativeStrategyObservation): StageObservat
     // operation result remains authoritative where it can report this.
     launched: null,
     serviceTimeMs,
+    baselineCommit: observation.capture.baselineCommit,
     inclusion: {
       input: observation.usage.inclusion.input,
       output: observation.usage.inclusion.output,

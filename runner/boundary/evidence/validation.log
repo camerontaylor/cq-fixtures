@@ -46,3 +46,17 @@ S5 private task lifecycle follow-up:
 - Final additional empty Docker config test recorded below after verification.
 - No full-suite rerun; prior runner-test timeout evidence retained above.
 - Final focused boundary suite:16/16 pass in1.73s, including empty Docker client config.
+
+S5 subscription no-generation follow-up:
+- Codex0.155.1 exact primary-source tag/config/auth code inventoried (public hashes).
+- Linux managed-auth offline login recognized, API-key absent, private0600 inventory verified.
+- Built-in override authenticated catalog GET200 via TLS broker:22.393s.
+- HTTP-only custom managed-auth provider catalog GET200:12.079s.
+- Initial3strict-config startup attempts sent no requests; installed binary rejects
+  strict-config for debug models. Resolved by using supported metadata command.
+- Worker namespace DNS/default egress denied except broker; exact paths enforced.
+- Focused19tests pass3.42s incl synthetic TLS SSE + denied undeclared subpath.
+- Build/typecheck/owned lint pass. No full-suite rerun. Zero model turns,
+  zero generation routes and no external/live refresh exchange.
+- Qualification volumes/networks cleaned; VM config hash unchanged. Private parent
+  context remains0700 with0600 auth + inventory, never committed or credential-logged.

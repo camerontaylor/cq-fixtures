@@ -11,6 +11,8 @@ export interface BrokerRoute {
   hostname: string;
   port: number;
   pathPrefix: string;
+  /** Optional exact pathname set, required for production native route templates. */
+  exactPaths?: string[];
   methods: string[];
   /** Fixed destinations, never supplied by a worker request. */
   addresses: string[];
@@ -45,6 +47,7 @@ export function compileBroker(config: BrokerConfig): { config: BrokerConfig; ide
         !/^(?=.{1,253}$)[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(route.hostname) || isIP(route.hostname) ||
         !Number.isInteger(route.port) || route.port < 1 || route.port > 65535 ||
         !/^\/[a-zA-Z0-9/_-]*$/.test(route.pathPrefix) || route.pathPrefix.includes('//') ||
+        (route.exactPaths !== undefined && (!route.exactPaths.length || new Set(route.exactPaths).size !== route.exactPaths.length || route.exactPaths.some((p) => !/^\/[a-zA-Z0-9/_-]*$/.test(p) || p.includes('//') || !(p === route.pathPrefix || p.startsWith(route.pathPrefix.endsWith('/') ? route.pathPrefix : route.pathPrefix + '/'))))) ||
         !route.methods.length || route.methods.some((m) => !['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(m)) ||
         !route.addresses.length || route.addresses.some((a) => isIP(a) !== 4 || (!copy.synthetic && !publicIPv4(a))) ||
         route.requestHeaders.some((h) => !/^[a-z][a-z0-9-]*$/.test(h) ||
@@ -70,7 +73,7 @@ export function createEgressBroker(input: BrokerConfig) {
     const route = policy.config.routes.find((r) => r.id === match[1]);
     const path = match[2];
     const pathname = path.split('?')[0];
-    if (!route || !route.methods.includes(req.method ?? '') || pathname.includes('//') ||
+    if (!route || !route.methods.includes(req.method ?? '') || (route.exactPaths && !route.exactPaths.includes(pathname)) || pathname.includes('//') ||
         pathname.split('/').some((p) => p === '.' || p === '..') ||
         !(pathname === route.pathPrefix || pathname.startsWith(route.pathPrefix.endsWith('/') ? route.pathPrefix : route.pathPrefix + '/'))) return reject(403);
     if (req.headers.upgrade || req.headers['proxy-authorization']) return reject(403);

@@ -239,3 +239,21 @@ Final focused boundary suite: 16/16 tests pass in 1.73s. Build/typecheck/owned-f
 lint pass. An initial new Git preservation test exceeded Vitest's default5s during
 host contention (12.132s); only that bounded test now has a30s ceiling and subsequent
 runs pass. Full-suite timeouts were not rerun or reclassified as passing.
+
+2026-09-29 subscription compatibility follow-up: exact Codex0.155.1 primary source
+and actual dedicated-VM managed-auth catalog qualify reverse-baseURL semantics.
+Built-in override and explicit HTTP-only custom provider both return authenticated
+catalog GET200 with bearer/account header presence, API-key auth absent, worker DNS
+blocked and broker-only namespace egress. Zero generation routes/model turns; no live
+refresh exchange. Minimal auth0600 and private hash inventory remain parent-owned,
+never emitted/committed. Public JSON records only sanitized status/booleans/identity.
+
+See `runner/boundary/SUBSCRIPTION-COMPATIBILITY.md` for source refs, runtime/profile
+identity effects, refresh override, streaming limits and gated next steps. HTTP-only
+provider metadata passes12.079s; built-in passes22.393s. Initial strict-config failures
+sent no network request: installed CLI explicitly rejects that flag for debug models.
+Broker now supports exact pathname allowlists, with adversarial subpath rejection and
+synthetic TLS incremental SSE tests. Focused19tests pass3.42s; no full-suite rerun.
+G2 still blocked until native G1/final hooks/config/auth control and parent admission
+plus actual-route tool/sentinel evidence. Configured Pi Go auth unavailable in the
+checked exact stores; no alternate-provider substitution or blanket home search.

@@ -136,6 +136,32 @@ native adapter does not need to parse effort out of a string ID. Keep
 `profile-requested` Space Bunny distinct from verified model effort, and do
 not send a token cap for these unsupported routes.
 
+## Visible review-loop strategy runner
+
+`runner/strategies/visible-screening.ts` wires the bounded same-model
+verify/repair recipe to the real review-loop `runSuite` path. The final
+independent S1 run produces the `TaskOutcome`, row, tables, and artifact; model
+stage observations remain in the S4 stage ledger and count toward full
+pipeline usage.
+
+Each draft starts from an isolated worktree with the exact pinned seed commit
+and tree. Repair and verification also start from that seed, with the captured,
+content-hash checked candidate patch applied. The runner freezes three finite
+tiers, a 120-second model stage limit, and the S1 60-second host-check limit.
+Whole-pipeline wall time, whole-judge time, and token hard caps remain
+unenforced pending native supervisor support, so this runner makes no hard
+total-bound claim. Caller configuration must attest route effort and supply
+the already admitted driver and native supervisor. The runner performs no
+credential resolution or public calls, and it has no held-out cohort input.
+
+The focused test uses a fake model driver while exercising the real artifact
+store and S1 `runSuite`/host oracle. The corpus expansion currently has nine
+substrates across five families, but only five model-call task types:
+review-loop (one), analyze (two), and merge (two). Ratchet and fleet are
+deterministic operation samples and do not increase that model-call count.
+This runner intentionally screens review-loop only; expand task coverage after
+parent verification.
+
 ## Bounds and outcome fields
 
 Every stage, including selector, verifier, repair, escalation, and oracle, is

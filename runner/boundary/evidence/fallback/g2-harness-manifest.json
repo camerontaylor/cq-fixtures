@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "modelCalls": 0,
+  "actualRouteG2": "pending-distinct-parent-admission",
+  "wholeWorkflowG2": "blocked-on-native-traces-and-protected-oracle-caller-integration",
+  "finalProfilePublicInputs": "final-profile-public-inputs.json",
+  "finalProfilePublicInputsSha256": "57eb7d11da57645ca2d59df2956bfe3d96a6bda7f82757fdefbab75407a1617d",
+  "sourceSha256": {
+    "g2-harness.ts": "87e718a172b5d704163acb19b02cf092641e3e0d41081bf5dab636d0cfa7e24f",
+    "g2-harness-cli.ts": "c9833ee7d7459def2daafdd79b7172a3ba72cabcb400619357cb11e8385d5d2e",
+    "judge-child.ts": "62a4c5a49122add1bce86531dfd4e47592db5efe4912b99ecde95ddbe7847d6a",
+    "volume-io.mjs": "324ff955dfc89c774232f16d763376b225a4ba866477c5e6adfe4a7a3abe88bd"
+  },
+  "channels": [
+    "native-read",
+    "native-search",
+    "shell",
+    "shell-child",
+    "symlink-child",
+    "process-argv",
+    "process-env",
+    "native-config",
+    "shell-network",
+    "native-network"
+  ],
+  "rawEvidence": "private-only",
+  "offlineJsonQualification": false
+}

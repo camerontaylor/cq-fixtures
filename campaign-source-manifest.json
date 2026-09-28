@@ -1,0 +1,48 @@
+{
+  "manifestVersion": 1,
+  "campaign": "cq-settings-comparison",
+  "sourceSnapshot": {
+    "fixturesCommit": "746a100cd6a6e29e66499147793a8a1d398b18ec",
+    "fixturesBranchAtSelection": "campaign/cq-settings-integration",
+    "toolkitCommit": "dd247ca059f7bb183a74d7a3ed17cb17cebd2bef",
+    "toolkitLock": "toolkit.lock",
+    "upstreamMainObservedAt": "2026-09-28T20:21:20Z",
+    "upstreamMainAtSelection": {
+      "cq-fixtures": "746a100cd6a6e29e66499147793a8a1d398b18ec",
+      "cq-toolkit": "dd247ca059f7bb183a74d7a3ed17cb17cebd2bef"
+    }
+  },
+  "toolkitPackage": {
+    "name": "@camerontaylor/cq-toolkit",
+    "version": "1.0.1",
+    "source": "selected local checkout at the immutable toolkitCommit; packaged with scripts/pack-toolkit.sh",
+    "tarball": "vendor/cq-toolkit-1.0.1.tgz",
+    "tarballSha256": "90cc17ea030f96c83d6f77f35fbf0af1f6df7c893b65853928b7e2a60d176c9c",
+    "packageLock": {
+      "resolved": "file:vendor/cq-toolkit-1.0.1.tgz",
+      "integrity": "sha512-tNZBhcGB0NQAFWrjivXv1OuAM4wOUUzkYRHuF+nZYdEV3k5EgWAObiVOJW6czyDmf/lcLLDM5kjJ2zGMBHlEGw=="
+    },
+    "verifiedInstalledIdentity": "test/toolkit-package-smoke.test.ts"
+  },
+  "corpus": {
+    "sourceCommit": "746a100cd6a6e29e66499147793a8a1d398b18ec",
+    "versioningBasis": "fixtures source commit",
+    "suiteFiles": [
+      "suites/fixer-worker/canary/suite.json",
+      "suites/fixer-worker/micro/suite.json",
+      "suites/fixer-worker/breadth-verified/suite.json",
+      "suites/fixer-worker/breadth-tail/suite.json",
+      "suites/review-classifier/micro/suite.json",
+      "suites/review-classifier/breadth-verified/suite.json",
+      "suites/review-classifier/breadth-tail/suite.json"
+    ]
+  },
+  "scope": {
+    "stage": "S0 bounded dependency reconciliation",
+    "campaignCallsMade": false,
+    "paidCallsMade": false,
+    "webfrontAccessed": false,
+    "publicExternalEffects": false,
+    "runnerContractsChanged": false
+  }
+}

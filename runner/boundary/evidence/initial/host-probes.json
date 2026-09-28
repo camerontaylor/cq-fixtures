@@ -1,0 +1,55 @@
+{
+  "kind": "no-model-executable-probes",
+  "observedAt": "2026-09-28T20:34:34.455Z",
+  "available": true,
+  "viable": true,
+  "boundaryIdentity": "cfda722bed450d19f984c35a9ad48e189d670cb6fd971c5d6b304a1cb4b27dc6",
+  "profile": "(version 1)\n(deny default)\n(allow process-fork)\n(allow process-exec (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin/node\") (literal \"/bin/bash\") (literal \"/bin/cat\") (literal \"/bin/sh\"))\n(allow sysctl-read)\n(allow file-read* (subpath \"/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/task\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/context\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/home\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/tmp\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin/node\") (literal \"/bin/bash\") (literal \"/bin/cat\") (literal \"/bin/sh\") (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath \"/private/var/db/dyld\") (literal \"/\") (literal \"/dev/null\") (literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/private/var/select/sh\"))\n(allow file-read-metadata (literal \"/System\") (literal \"/Users\") (literal \"/Users/ctaylor\") (literal \"/Users/ctaylor/.local\") (literal \"/Users/ctaylor/.local/share\") (literal \"/Users/ctaylor/.local/share/mise\") (literal \"/Users/ctaylor/.local/share/mise/installs\") (literal \"/Users/ctaylor/.local/share/mise/installs/node\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0\") (literal \"/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin\") (literal \"/Users/ctaylor/.tmp\") (literal \"/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX\") (literal \"/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle\") (literal \"/bin\") (literal \"/dev\") (literal \"/private\") (literal \"/private/var\") (literal \"/private/var/db\") (literal \"/private/var/select\") (literal \"/usr\"))\n(allow file-write* (subpath \"/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/task\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/home\") (subpath \"/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/tmp\") (literal \"/dev/null\"))\n",
+  "resolved": {
+    "bundle": "/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle",
+    "task": "/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/task",
+    "context": "/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/context",
+    "home": "/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/home",
+    "temporary": "/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/bundle/tmp",
+    "toolchain": [],
+    "authentication": [],
+    "executables": [
+      "/Users/ctaylor/.local/share/mise/installs/node/24.21.0/bin/node",
+      "/bin/bash",
+      "/bin/cat",
+      "/bin/sh"
+    ],
+    "forbidden": [
+      "/Users/ctaylor/.tmp/cq-boundary-probe-P1FCzX/hidden"
+    ],
+    "endpoints": [],
+    "extensions": {
+      "mode": "disabled",
+      "launchEvidence": null
+    }
+  },
+  "checks": {
+    "taskRead": true,
+    "contextRead": true,
+    "syntheticAuthRead": true,
+    "taskWrite": true,
+    "contextReadOnly": true,
+    "judgeDenied": true,
+    "solutionDenied": true,
+    "siblingDenied": true,
+    "ambient-configDenied": true,
+    "symlinkDenied": true,
+    "ambientConfigDenied": true,
+    "cleanEnvironment": true,
+    "shellAllowed": true,
+    "shellDenied": true,
+    "shellSymlinkDenied": true,
+    "nodeToolDenied": true,
+    "extensionLoadDenied": true,
+    "networkDenied": true
+  },
+  "exitCode": 0,
+  "signal": null,
+  "blocker": null,
+  "g2": "not-established"
+}

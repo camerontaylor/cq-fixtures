@@ -29,13 +29,10 @@ export async function runNativeConformanceSuite(options: NativeConformanceOption
   if (expectedInvocations.length === 0) throw new Error('native conformance requires at least one frozen expected invocation identity');
   const expectedDriver = TRANSPORT_DRIVER[expectedTransport];
   if (!expectedDriver) throw new Error(`unsupported native transport for runSuite conformance: ${expectedTransport}`);
-  // S1 adds this callback to RunSuiteOptions; keep this adapter source
-  // compatible with the pinned runner while allowing the additive seam to
-  // typecheck before the dependency handoff is merged.
   const result = await runSuite({
     ...suiteOptions,
     ...(hostCheckScoringEnvironment ? { hostCheckScoringEnvironment } : {}),
-  } as RunSuiteOptions);
+  });
   if (result.observations.length === 0) throw new Error('runSuite produced no native observations');
   const foundCases = new Set(result.rows.map((row) => row.case));
   const missingCases = expectedCaseIds.filter((caseId) => !foundCases.has(caseId));

@@ -1164,6 +1164,10 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             hostCheckEnv = workspaceBaseline?.commit === undefined
               ? undefined
               : opts.hostCheckScoringEnvironment?.(workspace as string, workspaceBaseline.commit);
+            const hostBaselinePin = hostCheckEnv?.CQ_REVIEW_LOOP_BASELINE_SHA;
+            if (hostBaselinePin !== undefined && hostBaselinePin !== workspaceBaseline?.commit) {
+              throw new Error('host scoring baseline pin does not match the runner workspace baseline');
+            }
             const hostOraclePin = hostCheckEnv?.CQ_REVIEW_LOOP_ORACLE_PIN;
             if (hostOraclePin !== undefined) {
               if (!/^[a-f0-9]{64}$/.test(hostOraclePin)) throw new Error('host scoring oracle pin must be a SHA256');

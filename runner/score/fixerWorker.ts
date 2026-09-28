@@ -80,8 +80,8 @@ export function scoreFixerWorker(
     ...(baselineRef !== undefined || hostCheckEnvironment !== undefined
       ? { env: {
           ...process.env,
-          ...(baselineRef !== undefined ? { CQ_BASELINE_REF: baselineRef } : {}),
           ...hostCheckEnvironment,
+          ...(baselineRef !== undefined ? { CQ_BASELINE_REF: baselineRef } : {}),
         } }
       : {}),
   });

@@ -1,6 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { analyzeFixedSample, designHash, validationDesignHash, type Assignment, type Observation, type Preregistration, type ValidationEvidence } from '../runner/statistics/inference.js';
+import { analyzeFixedSample, designHash, validationDesignHash, type Assignment, type Observation, type Preregistration, type ValidationEvidence, wilsonBounds } from '../runner/statistics/inference.js';
 import { simulateProcedure } from '../runner/statistics/simulation.js';
+import { studentTCdf, studentTCritical } from '../runner/statistics/student-t.js';
+import { CORE_POINTS, VALIDATION_POINTS, FORECAST_POINTS, precisionForecastPasses, pointEffects, PRECISION_RECIPE, precisionRecipeHash, weightedClusterT, precisionValidationPasses, analyzePrecisionSample, type PrecisionValidation, type PrecisionForecastEvidence } from '../runner/statistics/precision.js';
+import { adaptTaskOutcomes, type TaskOutcomeInput, type OutcomeJoinRegistration } from '../runner/statistics/task-outcome-adapter.js';
 import { forecastFivePointDesign } from '../runner/statistics/power.js';
 
 function fixture(substrates = 24): { reg: Preregistration; rows: Observation[] } {
@@ -149,5 +153,136 @@ describe('fixed-sample campaign inference', () => {
     expect(fixer.targetDifference).toBe(0.05);
     expect(fixer.maxRequiredSubstrates).toBeGreaterThan(1000);
     expect(fixer.quotaOrRuntimeEstimate).toBeNull();
+  });
+});
+
+
+describe('bounded precision candidate and S1 outcome adapter', () => {
+  it('computes Student t tails against published quantiles including small df', () => {
+    expect(studentTCritical(1)).toBeCloseTo(12.7062047364, 8);
+    expect(studentTCritical(10)).toBeCloseTo(2.228138852, 8);
+    expect(studentTCdf(0, 4.5)).toBeCloseTo(.5, 12);
+    expect(studentTCdf(-2, 7)).toBeCloseTo(1 - studentTCdf(2, 7), 12);
+  });
+
+  it('retains weighted task estimand, persistent variance and leverage correction', () => {
+    const result = weightedClusterT([-.5, .5, 1], [1, 2, 3]);
+    expect(result.estimate).toBeCloseTo(3.5 / 6);
+    expect(result.effectiveClusters).toBeCloseTo(36 / 14);
+    expect(result.standardError).toBeGreaterThan(0);
+    expect(weightedClusterT([0, 0], [1, 1]).degenerate).toBe(true);
+    const scenario = forecastFivePointDesign('fixer-worker').scenarios;
+    const one = scenario.find(s => s.pairedDifferenceIcc === .6 && s.tasksPerSubstrate === 1 && s.repeatsPerTask === 1)!;
+    const three = scenario.find(s => s.pairedDifferenceIcc === .6 && s.tasksPerSubstrate === 1 && s.repeatsPerTask === 3)!;
+    expect(three.clusterDifferenceVariance / one.clusterDifferenceVariance).toBeCloseTo(.6 + .4 / 3);
+  });
+
+  function validation(): PrecisionValidation {
+    return { recipe: PRECISION_RECIPE, recipeHash: precisionRecipeHash, track: 'native', seed: 7, allCorePassed: true,
+      core: VALIDATION_POINTS.map(point => ({ point, datasets: 2000, jointCovered: 1980, perContrastCovered: [1980, 1980, 1980],
+        nullDatasets: pointEffects(point).includes(0) ? 2000 : 0, anyNullRejected: 0, degenerateDatasets: 0,
+        meanWidth: .2, coverageLower95: wilsonBounds(1980, 2000)[0], fwerUpper95: pointEffects(point).includes(0) ? wilsonBounds(0, 2000)[1] : null, passes: true })) };
+  }
+
+  it('checks every stratum and exact track rather than trusting a pooled pass flag', () => {
+    const v = validation();
+    expect(precisionValidationPasses(v, 'native')).toBe(true);
+    expect(precisionValidationPasses(v, 'diagnostic')).toBe(false);
+    v.core[0]!.jointCovered = 1800;
+    expect(precisionValidationPasses(v, 'native')).toBe(false);
+    expect(precisionValidationPasses({ ...validation(), core: validation().core.slice(1) }, 'native')).toBe(false);
+  });
+
+  it('uses narrow intervals only for the frozen validated envelope and suppresses missingness family', () => {
+    const { reg, rows } = fixture(40);
+    reg.expectedRepeats = 1;
+    reg.assignments = reg.assignments.filter(a => a.repeatId === 'r1' && a.taskId.endsWith('-0'));
+    reg.contrasts = [1, 2, 3].map(n => ({ id: `c${n}`, strategyId: `candidate${n}`, baselineId: 'baseline' }));
+    const selected = rows.filter(r => r.repeatId === 'r1' && r.taskId.endsWith('-0'));
+    const adapted = selected.flatMap(r => r.strategyId === 'baseline' ? [r] : [1, 2, 3].map(n => ({ ...r, strategyId: `candidate${n}` })));
+    const extension = { frozen: true as const, recipe: PRECISION_RECIPE, recipeHash: precisionRecipeHash, calibrationSha256: 'a'.repeat(64), model: CORE_POINTS[0]!, calibrationArtifact: 'calibration/immutable-model.json', baseDesignHash: designHash(reg) } as const;
+    const out = analyzePrecisionSample(reg, adapted, extension, validation());
+    expect(out.precision.applied).toBe(true);
+    expect(out.maxStatisticAdjustment).toBe('withheld');
+    const missing = adapted[0]!;
+    missing.status = 'operational-missing'; missing.success = null;
+    expect(analyzePrecisionSample(reg, adapted, extension, validation()).precision.applied).toBe(false);
+    expect(analyzePrecisionSample(reg, adapted, extension, null).contrasts.every(c => c.status !== 'inferential')).toBe(true);
+    missing.status = 'measured'; missing.success = true;
+    for (const a of reg.assignments) if (a.substrateId === 'sub-0') a.weight = 1e12;
+    for (const row of adapted) if (row.substrateId === 'sub-0') row.weight = 1e12;
+    expect(analyzePrecisionSample(reg, adapted, { ...extension, baseDesignHash: designHash(reg) }, validation()).precision.applied).toBe(false);
+  });
+
+  it('requires all forecast point gates before extending to larger calibrated designs', () => {
+    const evidence = JSON.parse(readFileSync(new URL('../runner/statistics/precision-power-native-v1.json', import.meta.url), 'utf8')) as PrecisionForecastEvidence;
+    expect(precisionForecastPasses(evidence, 'native')).toBe(true);
+    expect(precisionForecastPasses(evidence, 'diagnostic')).toBe(false);
+    const model = FORECAST_POINTS.find(p => p.clusters === 1280 && p.weights === 'cycle-1-2-3' && p.icc === .6 && p.discordance === .35)!;
+    const assignments: Assignment[] = [];
+    for (let g = 0; g < 1280; g++) for (let t = 0; t < 3; t++) for (let r = 0; r < 3; r++) assignments.push({ taskId: `g${g}-t${t}`, substrateId: `g${g}`, repeatId: `r${r}`, weight: 1 + g % 3 });
+    const reg = fixture().reg;
+    reg.expectedRepeats = 3; reg.assignments = assignments; reg.bootstrapResamples = 199;
+    reg.contrasts = [1, 2, 3].map(n => ({ id: `c${n}`, strategyId: `m${n}`, baselineId: 'base' }));
+    const rows: Observation[] = assignments.flatMap(a => ['base', 'm1', 'm2', 'm3'].map(strategyId => ({ ...a,
+      strategyId, track: reg.track, cohortId: reg.cohortId, status: 'measured' as const,
+      success: strategyId === 'base' ? Number(a.substrateId.slice(1)) % 3 !== 0 : true })));
+    const extension = { frozen: true as const, recipe: PRECISION_RECIPE, recipeHash: precisionRecipeHash,
+      calibrationSha256: 'a'.repeat(64), model, calibrationArtifact: 'visible-calibration', baseDesignHash: designHash(reg) } as const;
+    expect(analyzePrecisionSample(reg, rows, extension, validation()).precision.applied).toBe(false);
+    expect(analyzePrecisionSample(reg, rows, extension, validation(), evidence).precision.applied).toBe(true);
+    evidence.cells[0]!.coverage[0]!.jointCovered = 1800;
+    expect(precisionForecastPasses(evidence, 'native')).toBe(false);
+  });
+
+  function outcomeFixture() {
+    const { reg } = fixture();
+    const join: OutcomeJoinRegistration = { frozen: true, baseDesignHash: designHash(reg), campaignId: 'campaign', assignments: [] };
+    const assignments = reg.assignments.flatMap(a => ['candidate', 'baseline'].map(strategyId => ({ assignmentId: `${strategyId}/${a.taskId}/${a.repeatId}`,
+      experimentId: `exp-${strategyId}`, strategyId, taskId: a.taskId, repeatId: a.repeatId, substrateId: a.substrateId,
+      frozenWeight: a.weight, judgementId: `judge-${strategyId}/${a.taskId}/${a.repeatId}`, judgementVersion: 1, judgePin: 'pin' })));
+    join.assignments = assignments;
+    const hash = 'a'.repeat(64);
+    const outcomes: TaskOutcomeInput[] = assignments.map(a => ({ identity: { campaignId: 'campaign', cohortId: reg.cohortId,
+      experimentId: a.experimentId, taskId: a.taskId, repeatId: a.repeatId, assignmentId: a.assignmentId,
+      strategyId: a.strategyId, role: reg.role, budgetId: reg.budgetId, frozenWeight: a.frozenWeight },
+      candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: false, operationalStatus: 'measured-failure',
+      stages: [1, 2].map(n => ({ stageId: 'generate', attemptId: `retry${n}`, invocationId: `${a.assignmentId}/invoke${n}`, artifacts: [{ kind: 'patch', path: 'patch', sha256: hash }] })),
+      judgements: [{ judgementId: a.judgementId, version: 1, judgePin: 'pin', candidateSha256: hash,
+        candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: false, operationalStatus: 'measured-failure', artifact: { path: 'judgement', sha256: hash } }] }));
+    return { reg, join, outcomes };
+  }
+
+  it('maps authoritative assigned success once per assignment and retains every retry reference', () => {
+    const { reg, join, outcomes } = outcomeFixture();
+    const mapped = adaptTaskOutcomes(reg, join, outcomes);
+    expect(mapped.observations).toHaveLength(join.assignments.length);
+    expect(mapped.observations.every(o => o.success === false)).toBe(true);
+    expect(mapped.audit[0]!.stages).toHaveLength(2);
+    const interrupted = outcomes[0]!;
+    interrupted.assignedStrategySuccess = null; interrupted.operationalStatus = 'interrupted';
+    interrupted.judgements[0]!.assignedStrategySuccess = null; interrupted.judgements[0]!.operationalStatus = 'interrupted';
+    const row = adaptTaskOutcomes(reg, join, outcomes).observations[0]!;
+    expect(row.status).toBe('operational-missing');
+    expect(row.success).toBeNull();
+    interrupted.judgements = [];
+    expect(adaptTaskOutcomes(reg, join, outcomes).audit[0]!.judgementArtifact).toBeNull();
+    interrupted.candidateCorrectness = null; interrupted.assignedStrategySuccess = false; interrupted.operationalStatus = 'measured-failure';
+    const budgetStop = adaptTaskOutcomes(reg, join, outcomes).observations[0]!;
+    expect(budgetStop.status).toBe('measured');
+    expect(budgetStop.success).toBe(false);
+    expect(() => adaptTaskOutcomes(reg, join, [...outcomes, outcomes[0]!])).toThrow(/duplicate retry/);
+    outcomes[1]!.identity.frozenWeight = 2;
+    expect(() => adaptTaskOutcomes(reg, join, outcomes)).toThrow(/parity/);
+  });
+
+  it('requires frozen judge version and full assigned roster, without best-retry selection', () => {
+    const { reg, join, outcomes } = outcomeFixture();
+    join.assignments[0]!.judgementVersion = 2;
+    expect(() => adaptTaskOutcomes(reg, join, outcomes)).toThrow(/selection is absent/);
+    outcomes[0]!.identity.track = 'diagnostic';
+    expect(() => adaptTaskOutcomes(reg, { ...join, assignments: join.assignments.map((a, i) => i === 0 ? { ...a, judgementVersion: 1 } : a) }, outcomes)).toThrow(/parity/);
+    join.assignments = join.assignments.slice(1);
+    expect(() => adaptTaskOutcomes(reg, join, outcomes)).toThrow(/full assigned/);
   });
 });

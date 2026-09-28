@@ -135,7 +135,6 @@ export function simulateProcedure(scenarios = 2000, seed = 0xC0FFEE, track: Trac
       const truth = expectedEffectTotal / assignments.length;
       const rows: Observation[] = [];
       for (const a of assignments) {
-        const s = Number(a.substrateId.slice(1));
         const sharedMissing = rng() < spec.symmetricMissingRate;
         for (const strategyId of ['base', ...strategies]) {
           const asymmetricMissing = strategyId !== 'base' && rng() < spec.asymmetricMissingRate;

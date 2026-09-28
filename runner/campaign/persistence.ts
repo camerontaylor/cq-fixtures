@@ -248,7 +248,9 @@ export class FileResetJournal implements ResetJournal {
   }
 
   async create(entry: ResetJournalEntry): Promise<void> {
-    if (entry.state !== 'prepared' || entry.result) throw new Error('Reset journal entries must begin prepared');
+    if (entry.state !== 'prepared' || entry.result || !entry.creditId || !entry.beforeQuota || !entry.preparedAt) {
+      throw new Error('Reset journal preparation must pin an authenticated credit ID and its fresh quota snapshot');
+    }
     await this.mutex.run(async () => {
       const entries = await readLines<ResetJournalEntry>(this.journalPath);
       if (entries.some((prior) => prior.idempotencyKey === entry.idempotencyKey)) {
@@ -262,7 +264,9 @@ export class FileResetJournal implements ResetJournal {
     await this.mutex.run(async () => {
       const entries = await readLines<ResetJournalEntry>(this.journalPath);
       const prior = entries.filter((entry) => entry.idempotencyKey === idempotencyKey).at(-1);
-      if (!prior || prior.state !== 'prepared') throw new Error(`No prepared reset journal entry for ${idempotencyKey}`);
+      if (!prior || prior.state !== 'prepared' || !prior.creditId || !prior.beforeQuota || !prior.preparedAt) {
+        throw new Error(`No pinned prepared reset journal entry for ${idempotencyKey}`);
+      }
       await appendDurable(this.journalPath, { ...prior, state: 'action-executed/evidence-pending', actionOutcome: outcome, beforeQuota });
     });
   }
@@ -271,9 +275,14 @@ export class FileResetJournal implements ResetJournal {
     await this.mutex.run(async () => {
       const entries = await readLines<ResetJournalEntry>(this.journalPath);
       const prior = entries.filter((entry) => entry.idempotencyKey === idempotencyKey).at(-1);
-      if (!prior || !['prepared', 'action-executed/evidence-pending'].includes(prior.state)) throw new Error(`No incomplete reset journal entry for ${idempotencyKey}`);
+      if (!prior || prior.state !== 'action-executed/evidence-pending') throw new Error(`No evidence-pending reset journal entry for ${idempotencyKey}`);
       if (result.resetType !== prior.resetType || (prior.creditId !== undefined && result.creditId !== prior.creditId)) {
         throw new Error('Reset result does not match its prepared journal request');
+      }
+      if (prior.actionOutcome !== result.outcome) throw new Error('Reset outcome does not match its journaled provider response');
+      if ((result.outcome === 'reset' || result.outcome === 'alreadyRedeemed')
+        && (!result.allowanceChangeVerified || !result.beforeQuota || !result.refreshedQuota || !prior.beforeQuota)) {
+        throw new Error('Successful reset cannot complete without fresh verified window evidence');
       }
       await appendDurable(this.journalPath, { ...prior, state: 'completed', result });
     });

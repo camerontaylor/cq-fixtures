@@ -96,7 +96,7 @@ export interface ResetCreditConsumeResult {
 /** Narrow adapter for the documented account/rateLimitResetCredit/consume route. */
 export interface SupportedResetCreditConsumer {
   readonly route: 'account/rateLimitResetCredit/consume';
-  consume(request: ResetCreditConsumeRequest): Promise<ResetCreditConsumeResult>;
+  consume(request: ResetCreditConsumeRequest, options?: { replayPrepared: boolean }): Promise<ResetCreditConsumeResult>;
   readRateLimits(): Promise<QuotaSnapshot>;
 }
 
@@ -106,9 +106,11 @@ export interface ResetJournalEntry {
   /** Exact caller input; distinguishes omitted ID from an explicit selected ID on replay. */
   requestedCreditId?: string;
   creditId?: string;
+  /** Fresh authenticated snapshot that selected and pinned the physical credit before action. */
+  beforeQuota?: QuotaSnapshot;
+  preparedAt?: string;
   state: 'prepared' | 'action-executed/evidence-pending' | 'completed';
   actionOutcome?: ResetCreditConsumeOutcome;
-  beforeQuota?: QuotaSnapshot;
   result?: ResetCreditConsumeResult;
 }
 
@@ -118,7 +120,7 @@ export interface ResetJournal {
   create(entry: ResetJournalEntry): Promise<void>;
   /** Record the provider response before attempting a post-action read. */
   recordAction(idempotencyKey: string, outcome: ResetCreditConsumeOutcome, beforeQuota: QuotaSnapshot): Promise<void>;
-  /** Must only complete the matching prepared or evidence-pending entry. */
+  /** Must only complete the matching evidence-pending entry with verified evidence for successful resets. */
   complete(idempotencyKey: string, result: ResetCreditConsumeResult): Promise<void>;
 }
 
@@ -151,45 +153,44 @@ export async function consumeResetCreditOnce(
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_TELEMETRY_AGE_MS;
   let beforeQuota: QuotaSnapshot;
   let outcome: ResetCreditConsumeOutcome;
-  let creditId = request.creditId;
+  let creditId = prior?.creditId ?? request.creditId;
   if (prior?.state === 'action-executed/evidence-pending') {
-    beforeQuota = prior.beforeQuota!;
+    beforeQuota = requirePreparedQuota(prior);
     outcome = prior.actionOutcome!;
-    creditId = prior.creditId;
+  } else if (prior?.state === 'prepared') {
+    beforeQuota = requirePreparedQuota(prior);
+    if (!creditId) throw new Error('Prepared reset journal omitted its pinned physical credit ID');
+    const boundCredit = beforeQuota.providers.find((provider) => provider.provider === 'codex')?.resetCredits
+      .find((credit) => credit.id === creditId && credit.resetType === request.resetType && credit.status === 'available');
+    if (!boundCredit) throw new Error('Prepared reset journal lacks the original authenticated available-credit binding');
+    // The consumer performs a new fresh read, but must send this same physical
+    // ID and UUID even when current telemetry now marks the credit redeemed.
+    outcome = await consumePinnedCredit(consumer, journal, request, creditId, beforeQuota, true);
   } else {
     beforeQuota = await consumer.readRateLimits();
-    const beforeFreshness = inspectQuotaFreshness(beforeQuota, now(), maxAgeMs);
-    if (!beforeFreshness.fresh) throw new Error(`Reset redemption requires fresh rate-limit telemetry (${beforeFreshness.reason})`);
-    const eligible = beforeQuota.providers.flatMap((provider) => provider.resetCredits)
+    const beforeFreshness = resetSnapshotFreshness(beforeQuota, now(), maxAgeMs, 'codex');
+    if (!beforeFreshness.fresh) throw new Error(`Reset redemption requires fresh authenticated binding windows (${beforeFreshness.reason})`);
+    const eligible = beforeQuota.providers.find((provider) => provider.provider === 'codex')?.resetCredits
       .find((credit) => credit.status === 'available' && credit.resetType === request.resetType
         && (request.creditId === undefined || credit.id === request.creditId));
     if (!eligible?.id) throw new Error('Fresh authenticated telemetry has no eligible credit for the exact native reset type and credit ID');
     creditId = eligible.id;
-    if (!prior) {
-      prior = { idempotencyKey: request.idempotencyKey, resetType: request.resetType,
-        ...(request.creditId === undefined ? {} : { requestedCreditId: request.creditId }),
-        creditId, state: 'prepared' };
-      await journal.create(prior);
-    } else if (prior.creditId !== creditId) {
-      throw new Error('Prepared reset journal credit does not match the currently eligible authenticated credit');
-    }
-    const consumed = await consumer.consume({ ...request, creditId });
-    if (!['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'].includes(consumed.outcome)) {
-      throw new Error('Provider returned an unsupported reset-credit outcome');
-    }
-    if (consumed.resetType !== request.resetType || consumed.creditId !== creditId) {
-      throw new Error('Consumer result does not match the locally authenticated reset type and selected credit');
-    }
-    outcome = consumed.outcome;
-    await journal.recordAction(request.idempotencyKey, outcome, beforeQuota);
+    prior = { idempotencyKey: request.idempotencyKey, resetType: request.resetType,
+      ...(request.creditId === undefined ? {} : { requestedCreditId: request.creditId }),
+      creditId, beforeQuota, preparedAt: new Date(now()).toISOString(), state: 'prepared' };
+    await journal.create(prior);
+    outcome = await consumePinnedCredit(consumer, journal, request, creditId, beforeQuota, false);
   }
   const refreshedQuota = await consumer.readRateLimits();
-  const refreshedFreshness = inspectQuotaFreshness(refreshedQuota, now(), maxAgeMs);
+  const refreshedFreshness = resetSnapshotFreshness(refreshedQuota, now(), maxAgeMs, 'codex');
   if (!refreshedFreshness.fresh) {
     throw new Error(`Reset action is recorded as evidence-pending; fresh post-action telemetry unavailable (${refreshedFreshness.reason})`);
   }
-  const allowanceChangeVerified = hasObservedAllowanceIncrease(beforeQuota, refreshedQuota)
-    || (outcome === 'reset' || outcome === 'alreadyRedeemed') && creditNoLongerAvailable(beforeQuota, refreshedQuota, creditId);
+  const windowEvidence = compareResetWindows(beforeQuota, refreshedQuota, 'codex');
+  if (!windowEvidence.compatible) {
+    throw new Error('Reset action remains evidence-pending: post-action binding-window identity set changed');
+  }
+  const allowanceChangeVerified = windowEvidence.changed;
   if ((outcome === 'reset' || outcome === 'alreadyRedeemed') && !allowanceChangeVerified) {
     throw new Error('Reset action remains evidence-pending: post-action read did not verify an allowance or credit-state change');
   }
@@ -202,28 +203,70 @@ export async function consumeResetCreditOnce(
   return result;
 }
 
-function creditNoLongerAvailable(before: QuotaSnapshot, after: QuotaSnapshot, creditId: string | undefined): boolean {
-  if (!creditId) return false;
-  const beforeCredit = before.providers.flatMap((provider) => provider.resetCredits).find((credit) => credit.id === creditId);
-  const afterCredit = after.providers.flatMap((provider) => provider.resetCredits).find((credit) => credit.id === creditId);
-  return !!beforeCredit && beforeCredit.status === 'available' && (!afterCredit || afterCredit.status !== 'available');
+async function consumePinnedCredit(
+  consumer: SupportedResetCreditConsumer,
+  journal: ResetJournal,
+  request: ResetCreditConsumeRequest,
+  creditId: string,
+  beforeQuota: QuotaSnapshot,
+  replayPrepared: boolean,
+): Promise<ResetCreditConsumeOutcome> {
+  const consumed = await consumer.consume({ ...request, creditId }, { replayPrepared });
+  if (!['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'].includes(consumed.outcome)) {
+    throw new Error('Provider returned an unsupported reset-credit outcome');
+  }
+  if (consumed.resetType !== request.resetType || consumed.creditId !== creditId) {
+    throw new Error('Consumer result does not match the locally authenticated reset type and pinned credit ID');
+  }
+  await journal.recordAction(request.idempotencyKey, consumed.outcome, beforeQuota);
+  return consumed.outcome;
 }
 
-function hasObservedAllowanceIncrease(before: QuotaSnapshot, after: QuotaSnapshot): boolean {
-  for (const afterProvider of after.providers) {
-    const beforeProvider = before.providers.find((provider) => provider.provider === afterProvider.provider);
-    if (!beforeProvider) continue;
-    for (const afterWindow of afterProvider.windows) {
-      const beforeWindow = beforeProvider.windows.find((window) => window.id === afterWindow.id);
-      if (!beforeWindow) continue;
-      if (afterWindow.remainingUnits !== null && beforeWindow.remainingUnits !== null
-        && afterWindow.remainingUnits > beforeWindow.remainingUnits) return true;
-      if (afterWindow.remainingFraction !== null && beforeWindow.remainingFraction !== null
-        && afterWindow.remainingFraction > beforeWindow.remainingFraction) return true;
-      if (afterWindow.resetsAt && beforeWindow.resetsAt && Date.parse(afterWindow.resetsAt) > Date.parse(beforeWindow.resetsAt)) return true;
-    }
+function requirePreparedQuota(entry: ResetJournalEntry): QuotaSnapshot {
+  if (!entry.beforeQuota || !entry.creditId || !entry.preparedAt) {
+    throw new Error('Reset journal recovery lacks its durable pre-action credit binding');
   }
-  return false;
+  return entry.beforeQuota;
+}
+
+function resetSnapshotFreshness(
+  snapshot: QuotaSnapshot,
+  nowMs: number,
+  maxAgeMs: number,
+  providerId: string,
+): { fresh: boolean; reason: string } {
+  const aggregate = inspectQuotaFreshness(snapshot, nowMs, maxAgeMs);
+  if (!aggregate.fresh) return { fresh: false, reason: aggregate.reason };
+  const provider = snapshot.providers.find((candidate) => candidate.provider === providerId);
+  if (!provider || !provider.telemetryAvailable) return { fresh: false, reason: 'provider-unavailable' };
+  const providerFresh = inspectQuotaFreshness({ fetchedAt: provider.observedAt, providers: [] }, nowMs, maxAgeMs);
+  if (!providerFresh.fresh) return { fresh: false, reason: `provider-${providerFresh.reason}` };
+  const binding = provider.windows.filter((window) => window.binding);
+  if (!binding.length) return { fresh: false, reason: 'binding-windows-missing' };
+  for (const window of binding) {
+    const freshness = inspectQuotaFreshness({ fetchedAt: window.observedAt, providers: [] }, nowMs, maxAgeMs);
+    if (!freshness.fresh) return { fresh: false, reason: `binding-window-${window.id}-${freshness.reason}` };
+  }
+  return { fresh: true, reason: 'fresh' };
+}
+
+function compareResetWindows(before: QuotaSnapshot, after: QuotaSnapshot, providerId: string): { compatible: boolean; changed: boolean } {
+  const beforeProvider = before.providers.find((provider) => provider.provider === providerId);
+  const afterProvider = after.providers.find((provider) => provider.provider === providerId);
+  if (!beforeProvider || !afterProvider) return { compatible: false, changed: false };
+  const beforeWindows = beforeProvider.windows.filter((window) => window.binding);
+  const afterWindows = afterProvider.windows.filter((window) => window.binding);
+  const beforeIds = beforeWindows.map((window) => window.id).sort();
+  const afterIds = afterWindows.map((window) => window.id).sort();
+  if (JSON.stringify(beforeIds) !== JSON.stringify(afterIds)) return { compatible: false, changed: false };
+  const changed = beforeWindows.some((prior) => {
+    const current = afterWindows.find((window) => window.id === prior.id);
+    if (!current) return false;
+    return current.remainingUnits !== null && prior.remainingUnits !== null && current.remainingUnits > prior.remainingUnits
+      || current.remainingFraction !== null && prior.remainingFraction !== null && current.remainingFraction > prior.remainingFraction
+      || !!current.resetsAt && !!prior.resetsAt && Date.parse(current.resetsAt) > Date.parse(prior.resetsAt);
+  });
+  return { compatible: true, changed };
 }
 
 export interface BoundedDiagnosticPolicy {
@@ -231,14 +274,18 @@ export interface BoundedDiagnosticPolicy {
   maxEstimatedUnits: number;
   usedAttempts: number;
   usedEstimatedUnits: number;
+  /** Permit a bounded one-attempt probe with unknown spend and no capacity claim. */
+  allowUnknownUsage?: boolean;
 }
 
-export function diagnosticProbeAllowed(policy: BoundedDiagnosticPolicy, estimatedUnits: number): boolean {
+export function diagnosticProbeAllowed(policy: BoundedDiagnosticPolicy, estimatedUnits: number | null): boolean {
+  const unknownUsageAllowed = estimatedUnits === null && policy.allowUnknownUsage === true && policy.maxEstimatedUnits === 0;
+  const requestedUnits = estimatedUnits ?? 0;
   return Number.isSafeInteger(policy.maxAttempts) && policy.maxAttempts > 0
     && Number.isFinite(policy.maxEstimatedUnits) && policy.maxEstimatedUnits >= 0
     && Number.isSafeInteger(policy.usedAttempts) && policy.usedAttempts >= 0
     && Number.isFinite(policy.usedEstimatedUnits) && policy.usedEstimatedUnits >= 0
-    && Number.isFinite(estimatedUnits) && estimatedUnits >= 0
+    && (unknownUsageAllowed || Number.isFinite(estimatedUnits) && estimatedUnits! >= 0)
     && policy.usedAttempts < policy.maxAttempts
-    && policy.usedEstimatedUnits + estimatedUnits <= policy.maxEstimatedUnits;
+    && (unknownUsageAllowed || policy.usedEstimatedUnits + requestedUnits <= policy.maxEstimatedUnits);
 }

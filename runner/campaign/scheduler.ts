@@ -296,14 +296,10 @@ function estimateForWindow(assignment: CampaignAssignment, window: ProviderQuota
 
 export class CampaignScheduler {
   private readonly maxAgeMs: number;
-  private diagnosticAttempts: number;
-  private diagnosticUsageUnits: number;
   private admissionTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: SchedulerDependencies) {
     this.maxAgeMs = deps.config.maxTelemetryAgeMs ?? DEFAULT_MAX_TELEMETRY_AGE_MS;
-    this.diagnosticAttempts = deps.config.diagnostic?.usedAttempts ?? 0;
-    this.diagnosticUsageUnits = deps.config.diagnostic?.usedEstimatedUnits ?? 0;
     if (!Number.isInteger(deps.config.maxConcurrentPerProvider) || deps.config.maxConcurrentPerProvider < 1) {
       throw new RangeError('maxConcurrentPerProvider must be a positive integer');
     }
@@ -364,12 +360,6 @@ export class CampaignScheduler {
             && member.dependencies.every((dependency) => dependency.requiredState === 'completed'
               && this.logicalAssignmentCompleted(dependency.assignmentId, assignments));
         }))));
-      this.diagnosticAttempts = Math.max(this.diagnosticAttempts, assignments.reduce((sum, item) =>
-        sum + (item.reservationHistory ?? (item.reservation ? [item.reservation] : [])).filter((reservation) => reservation.diagnostic).length, 0));
-      this.diagnosticUsageUnits = Math.max(this.diagnosticUsageUnits, assignments.reduce((sum, item) =>
-        sum + (item.reservationHistory ?? (item.reservation ? [item.reservation] : []))
-          .filter((reservation) => reservation.diagnostic)
-          .reduce((total, reservation) => total + (reservation.estimatedUsageUnits ?? 0), 0), 0));
       const usefulExpiryCapacity = (assignment: CampaignAssignment) => snapshot !== null && freshness.fresh
         && providerQuotaIsFresh(snapshot, assignment.provider, now, this.maxAgeMs)
         && (this.deps.config.hasUsefulExpiringCapacity?.(assignment, snapshot, now) ?? false);
@@ -468,18 +458,23 @@ export class CampaignScheduler {
     if (!telemetryUsable || !calibratedEstimateAvailable || claims.length !== binding.length) {
       const policy = this.deps.config.diagnostic ? {
         ...this.deps.config.diagnostic,
-        usedAttempts: this.diagnosticAttempts,
-        usedEstimatedUnits: this.diagnosticUsageUnits,
+        usedAttempts: Math.max(this.deps.config.diagnostic.usedAttempts, assignments
+          .flatMap((item) => item.reservationHistory ?? (item.reservation ? [item.reservation] : []))
+          .filter((reservation) => reservation.quotaProvider === quotaProviderId && reservation.diagnostic).length),
+        usedEstimatedUnits: Math.max(this.deps.config.diagnostic.usedEstimatedUnits, assignments
+          .flatMap((item) => item.reservationHistory ?? (item.reservation ? [item.reservation] : []))
+          .filter((reservation) => reservation.quotaProvider === quotaProviderId && reservation.diagnostic)
+          .reduce((sum, reservation) => sum + (reservation.estimatedUsageUnits ?? 0), 0)),
       } : undefined;
       if (assignment.kind !== 'validity' && assignment.kind !== 'development') return deny(`quota-telemetry-${snapshot ? 'stale-or-provider-unavailable' : 'missing'}`);
-      if (!policy || assignment.estimatedUsageUnits === null || !diagnosticProbeAllowed(policy, assignment.estimatedUsageUnits)) {
+      if (!policy || !diagnosticProbeAllowed(policy, assignment.estimatedUsageUnits)) {
         return deny('bounded-diagnostic-limit-or-usage-unavailable');
       }
       const reservation = this.makeReservation(assignment, snapshot, now, [], true);
-      this.diagnosticAttempts += 1;
-      this.diagnosticUsageUnits += assignment.estimatedUsageUnits;
-      return { admitted: true, assignmentId: assignment.id, reason: telemetryUsable
-        ? 'bounded-calibration-diagnostic-no-capacity-claim' : 'bounded-diagnostic-only-no-capacity-claim',
+      const reason = assignment.estimatedUsageUnits === null
+        ? 'bounded-unknown-usage-diagnostic-no-capacity-claim'
+        : telemetryUsable ? 'bounded-calibration-diagnostic-no-capacity-claim' : 'bounded-diagnostic-only-no-capacity-claim';
+      return { admitted: true, assignmentId: assignment.id, reason,
         reservation, telemetryFresh, telemetryAgeMs, bindingCapacityLimits: [] };
     }
     const reservation = this.makeReservation(assignment, snapshot, now, claims, false);

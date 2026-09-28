@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ArtifactStore } from '../../cq-settings-integration/runner/artifacts/index.ts';
+import { NativeSupervisorControl } from '../../cq-settings-integration/runner/native/process.ts';
 import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
 import {
   defineBudgetTiers,
@@ -106,7 +107,7 @@ describe('bounded campaign strategy engine', () => {
         campaignId: 'campaign-approved', cohortId: 'cohort-visible', experimentId: 'exp-fixed',
         taskId: 'task-review-loop', repeatId: 'repeat-01', assignmentId: 'assignment-fixed-01',
         stageId: retry.stageId, attemptId: retry.attemptId, track: 'native', strategyId: 'repair',
-        settingsId: 'settings-fixed', budgetId: 'medium', profileId: 'profile-native',
+        settingsId: 'settings-fixed', budgetId: 'medium', profileId: 'profile-native', frozenWeight: 1,
       };
       const ref = store.write(context, 'candidate.patch', 'captured edits');
       expect(ref.sha256).toBe(createHash('sha256').update('captured edits').digest('hex'));
@@ -131,10 +132,11 @@ describe('bounded campaign strategy engine', () => {
               input: counter('input', 3), output: counter('output', 5), cacheRead: counter('cacheRead', 2),
               cacheWrite: counter('cacheWrite', 1), reasoning: counter('reasoning', 4),
             },
-            tokenTotal: { value: 17, availability: 'observed', source: 'native-token-total' },
+            tokenTotal: { value: 17, availability: 'observed', source: 'native-token-total', semantics: 'authoritative-total' },
             inclusion: { input: 'disjoint', output: 'reasoning-in-output', cache: 'disjoint-from-input', reasoning: 'included-in-output' },
           },
           terminal: { cause: 'transport-exception', cancelled: false, transportException: { name: 'Error', message: 'after edit' } },
+          capture: { status: 'captured', baselineCommit: 'a'.repeat(40), patchSha256: 'b'.repeat(64), workspaceSha256: null },
           timing: { startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), stages: { run: 11 } },
         };
       },
@@ -167,9 +169,47 @@ describe('bounded campaign strategy engine', () => {
     expect(draft?.stageId).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
     expect(draft?.usage.tokenTotal.value).toBe(17);
     expect(draft?.usage.tokenTotal.source).toBe('native-token-total');
+    expect(draft?.baselineCommit).toBe('a'.repeat(40));
     expect(outcome.finalCandidate?.id).toBe('native-partial-edit');
     expect(outcome.candidateCorrectness).toBe(true);
     expect(outcome.assignedStrategySuccess).toBe(false);
+  });
+
+  it('uses the integrated native supervisor stop proof before candidate capture', async () => {
+    const supervisor = new NativeSupervisorControl();
+    let handedOff: NativeInvocationIdentity | undefined;
+    const nativeDriver = {
+      beginInvocation(identity: NativeInvocationIdentity) {
+        handedOff = identity;
+        supervisor.beginInvocation(identity);
+      },
+      getObservation() { return undefined; },
+    };
+    let captured = false;
+    const executor = createNativeStrategyExecutor(nativeDriver, {
+      async runStage(request) {
+        const identity = handedOff!;
+        await new Promise<void>((resolve) => {
+          if (request.signal.aborted) resolve();
+          else request.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        supervisor.settleInvocation(identity);
+        return result({ status: 'cancelled' });
+      },
+      captureCandidate() { captured = true; return null; },
+      createCandidateWorkspace(_request, _index, stableWorkspaceId) { return { id: stableWorkspaceId, handle: {} }; },
+      supervisor,
+    });
+    const shortTier = {
+      ...tier, wallClockMs: 500, judgementAllowanceMs: 100, shutdownAllowanceMs: 60,
+      observationAllowanceMs: 30, captureAllowanceMs: 30,
+    };
+    const outcome = await runStrategy(task, { kind: 'one-shot', route: codex }, shortTier, executor, {
+      assignmentId: 'assignment-native-stop', ids: fixedIds(),
+    });
+    expect(outcome.operationalStatus).toBe('timed-out');
+    expect(outcome.stages[0]?.quarantined).toBe(false);
+    expect(captured).toBe(true);
   });
 
   it('charges draft, every verification and repair, and final independent judging', async () => {

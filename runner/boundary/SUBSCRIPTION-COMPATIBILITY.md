@@ -1,3 +1,5 @@
+> Final parent-selected profile and access-only lifecycle supersede the earlier refresh-bearing context described below: see [CODEX-HTTP-HANDOFF.md](./CODEX-HTTP-HANDOFF.md). No shared refresh token may be staged for this candidate.
+
 # Subscription reverse-broker qualification (no generation)
 
 Codex 0.155.1 is compatible with the reverse broker for authenticated model-catalog

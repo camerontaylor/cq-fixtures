@@ -310,6 +310,7 @@ describe('production broker exact endpoint contract', () => {
     expect(generated.status).toBe(0);
     let finishUpstream: (() => void) | undefined;
     const upstream = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (_req, response) => {
+      if (_req.url === '/responses?redirect=1') { response.writeHead(302, { location: 'https://unauthorized.invalid/secret' }); response.end(); return; }
       response.writeHead(200, { 'content-type': 'text/event-stream' }); response.write('data: synthetic-first\n\n');
       finishUpstream = () => response.end('data: synthetic-last\n\n');
     });
@@ -326,6 +327,33 @@ describe('production broker exact endpoint contract', () => {
         }).once('error', reject);
       });
       expect(body).toContain('synthetic-first'); expect(body).toContain('synthetic-last');
+      const redirectStatus = await new Promise<number>((resolve, reject) => { http.get(`http://127.0.0.1:${address.port}/route/synthetic/responses?redirect=1`, (res) => { res.resume(); resolve(res.statusCode!); }).on('error', reject); });
+      expect(redirectStatus).toBe(502);
     } finally { finishUpstream?.(); await Promise.all([new Promise<void>((resolve) => server.close(() => resolve())), new Promise<void>((resolve) => upstream.close(() => resolve()))]); }
   }, 30_000);
+});
+
+
+describe('access-only final profile', () => {
+  it('drops refresh authority and rejects insufficient expiry budgets', async () => {
+    const { accessOnlyCodexSubscription } = await import('../runner/boundary/subscription-auth.ts');
+    const now = 1700000000000;
+    const input = { tokens: { id_token: 'synthetic-id', access_token: 'x.' + Buffer.from(JSON.stringify({ exp: now / 1000 + 2000 })).toString('base64url') + '.x', refresh_token: 'never-stage', account_id: 'synthetic-account' } };
+    const result = JSON.parse(accessOnlyCodexSubscription(input, 900, now));
+    expect(result.auth_mode).toBe('chatgptAuthTokens'); expect(result.tokens.refresh_token).toBe('');
+    expect(JSON.stringify(result)).not.toContain('never-stage');
+    expect(() => accessOnlyCodexSubscription(input, 900, now + 1000000)).toThrow(/expiry budget/);
+  });
+  it('denies wrong endpoint methods, refresh, encoded paths and undeclared routes', async () => {
+    const { server } = createEgressBroker({ routes: [{ id: 'codex', hostname: 'chatgpt.com', port: 443, pathPrefix: '/backend-api/codex', exactPaths: ['/backend-api/codex/models', '/backend-api/codex/responses'], endpointMethods: { '/backend-api/codex/models': ['GET'], '/backend-api/codex/responses': ['POST'] }, methods: ['GET', 'POST'], addresses: ['8.8.8.8'], requestHeaders: [] }], timeoutMs: 1000, maxBodyBytes: 1024 });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening'); const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('port');
+    const { request } = await import('node:http');
+    try {
+      for (const [method, path] of [['POST', '/route/codex/backend-api/codex/models'], ['GET', '/route/codex/backend-api/codex/responses'], ['POST', '/route/refresh/oauth/token'], ['GET', '/route/codex/backend-api/codex/models%2fsecret'], ['GET', '/route/other/backend-api/codex/models']]) {
+        const status = await new Promise<number>((resolve, reject) => { const req = request({ hostname: '127.0.0.1', port: address.port, path, method }, (res) => { res.resume(); resolve(res.statusCode!); }); req.on('error', reject); req.end(); });
+        expect(status).toBe(403);
+      }
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
 });

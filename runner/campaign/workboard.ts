@@ -263,7 +263,9 @@ export function buildWorkboard(input: {
       listedAvailableCredits,
       resetCreditListMayBeTruncated: provider.resetCreditsAvailableCount !== null
         && provider.resetCreditsAvailableCount > listedAvailableCredits,
-      resetCredits: provider.resetCredits,
+      // Opaque backend credit IDs stay in the private quota snapshot for an
+      // explicitly invoked consume flow; never serialize them to the board.
+      resetCredits: provider.resetCredits.map(({ resetType, expiresAt, status }) => ({ resetType, expiresAt, status })),
       normalResetsAt: provider.normalResetsAt,
       cooldownUntil: provider.cooldownUntil,
       blackouts,

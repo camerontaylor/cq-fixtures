@@ -20,6 +20,7 @@ import {
 } from '../runner/campaign/scheduler.ts';
 import { buildWorkboard } from '../runner/campaign/workboard.ts';
 import { CodexAppServerQuotaAdapter, type CodexAppServerSession } from '../runner/campaign/codex-app-server.ts';
+import { AggregateQuotaSource, CodexBarQuotaSource } from '../runner/campaign/codexbar.ts';
 import { FileCampaignQueueStore, FileResetJournal } from '../runner/campaign/persistence.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -337,35 +338,51 @@ describe('campaign scheduler admission and durable assignment lane', () => {
         if (entries.has(entry.idempotencyKey)) throw new Error('journal conflict');
         entries.set(entry.idempotencyKey, entry);
       },
-      async complete(key, result) {
+      async recordAction(key, actionOutcome, beforeQuota) {
         const prior = entries.get(key);
         if (!prior || prior.state !== 'prepared') throw new Error('no prepared journal entry');
+        entries.set(key, { ...prior, state: 'action-executed/evidence-pending', actionOutcome, beforeQuota });
+      },
+      async complete(key, result) {
+        const prior = entries.get(key);
+        if (!prior || !['prepared', 'action-executed/evidence-pending'].includes(prior.state)) throw new Error('no incomplete journal entry');
         entries.set(key, { ...prior, state: 'completed', result });
       },
     };
     let consumeCalls = 0;
     let readCalls = 0;
+    const before = quotaSnapshot(Date.parse('2026-09-28T20:30:01Z'), {
+      resetCredits: [{ id: 'credit-1', resetType: 'codexRateLimits', expiresAt: '2026-10-04T00:53:20.000Z', status: 'available' }],
+      windows: [{ id: 'weekly', windowMinutes: 10_080, observedAt: '2026-09-28T20:30:01.000Z', resetsAt: '2026-10-03T21:27:33.000Z', remainingFraction: 0.04, remainingUnits: null, unit: null, binding: true, source: 'native' }],
+    });
+    const after = quotaSnapshot(Date.parse('2026-09-28T20:30:02Z'), {
+      resetCredits: [],
+      windows: [{ id: 'weekly', windowMinutes: 10_080, observedAt: '2026-09-28T20:30:02.000Z', resetsAt: '2026-10-04T00:53:20.000Z', remainingFraction: 1, remainingUnits: null, unit: null, binding: true, source: 'native' }],
+    });
     const outcome: ResetCreditConsumeResult = {
-      outcome: 'reset', resetType: 'codex_rate_limits', creditId: 'credit-1',
-      beforeAllowance: 4, afterAllowance: 100, observedAt: '2026-09-28T20:30:00Z',
+      outcome: 'reset', resetType: 'codexRateLimits', creditId: 'credit-1',
+      beforeAllowance: null, afterAllowance: null, observedAt: '2026-09-28T20:30:00Z',
     };
     const consumer: SupportedResetCreditConsumer = {
       route: 'account/rateLimitResetCredit/consume',
       async consume(request) {
         expect(request.idempotencyKey).toBe(idempotencyKey);
+        expect(request.resetType).toBe('codexRateLimits');
+        expect(request.creditId).toBe('credit-1');
         consumeCalls += 1;
         return outcome;
       },
       async readRateLimits() {
         readCalls += 1;
-        return quotaSnapshot(Date.parse('2026-09-28T20:30:01Z'));
+        return readCalls === 1 ? before : after;
       },
     };
-    const request = { idempotencyKey, resetType: 'codex_rate_limits', creditId: 'credit-1' };
+    const request = { idempotencyKey, resetType: 'codexRateLimits', creditId: 'credit-1' };
     const first = await consumeResetCreditOnce(consumer, journal, request, { now: () => Date.parse('2026-09-28T20:30:02Z') });
     const replay = await consumeResetCreditOnce(consumer, journal, request, { now: () => Date.parse('2026-09-28T20:30:02Z') });
     expect(first.outcome).toBe('reset');
-    expect(first.refreshedQuota?.fetchedAt).toBe('2026-09-28T20:30:01.000Z');
+    expect(first.refreshedQuota?.fetchedAt).toBe('2026-09-28T20:30:02.000Z');
+    expect(first.allowanceChangeVerified).toBe(true);
     expect(replay).toEqual(first);
     expect(consumeCalls).toBe(1);
     expect(readCalls).toBe(2);
@@ -374,6 +391,51 @@ describe('campaign scheduler admission and durable assignment lane', () => {
     await expect(consumeResetCreditOnce(consumer, journal, { ...request, creditId: 'credit-2' }, { now: () => Date.parse('2026-09-28T20:30:02Z') }))
       .rejects.toThrow('different reset request');
     await expect(consumeResetCreditOnce(consumer, journal, { ...request, idempotencyKey: 'bad' })).rejects.toThrow('UUID idempotencyKey');
+  });
+
+  it('keeps a successful consume action evidence-pending and refreshes without consuming again', async () => {
+    const idempotencyKey = 'a66b12d1-d038-4af1-8f0d-b2190d89535c';
+    const entries = new Map<string, ResetJournalEntry>();
+    const journal: ResetJournal = {
+      async get(key) { return entries.get(key) ?? null; },
+      async create(entry) { entries.set(entry.idempotencyKey, entry); },
+      async recordAction(key, actionOutcome, beforeQuota) {
+        const entry = entries.get(key)!;
+        entries.set(key, { ...entry, state: 'action-executed/evidence-pending', actionOutcome, beforeQuota });
+      },
+      async complete(key, result) { entries.set(key, { ...entries.get(key)!, state: 'completed', result }); },
+    };
+    const before = quotaSnapshot(Date.parse('2026-09-28T20:30:01Z'), {
+      resetCredits: [{ id: 'credit-private', resetType: 'codexRateLimits', expiresAt: '2026-10-04T00:53:20Z', status: 'available' }],
+    });
+    const after = quotaSnapshot(Date.parse('2026-09-28T20:30:02Z'), { resetCredits: [] });
+    let reads = 0;
+    let consumes = 0;
+    let failFirstPostRead = true;
+    const consumer: SupportedResetCreditConsumer = {
+      route: 'account/rateLimitResetCredit/consume',
+      async consume() {
+        consumes += 1;
+        return { outcome: 'reset', resetType: 'codexRateLimits', creditId: 'credit-private', beforeAllowance: null, afterAllowance: null, observedAt: before.fetchedAt };
+      },
+      async readRateLimits() {
+        reads += 1;
+        if (reads === 1) return before;
+        if (failFirstPostRead) {
+          failFirstPostRead = false;
+          throw new Error('post-read unavailable');
+        }
+        return after;
+      },
+    };
+    const request = { idempotencyKey, resetType: 'codexRateLimits' };
+    await expect(consumeResetCreditOnce(consumer, journal, request, { now: () => Date.parse('2026-09-28T20:30:03Z') }))
+      .rejects.toThrow('post-read unavailable');
+    expect(entries.get(idempotencyKey)?.state).toBe('action-executed/evidence-pending');
+    const recovered = await consumeResetCreditOnce(consumer, journal, request, { now: () => Date.parse('2026-09-28T20:30:03Z') });
+    expect(recovered.allowanceChangeVerified).toBe(true);
+    expect(consumes).toBe(1);
+    expect(entries.get(idempotencyKey)?.state).toBe('completed');
   });
 
   it('keeps unsupported/missing telemetry probes bounded by both attempt and usage caps', () => {
@@ -512,6 +574,14 @@ describe('campaign scheduler admission and durable assignment lane', () => {
     expect(board.providers[0]).toMatchObject({ telemetryFresh: false, telemetryAgeMs: 5 * 60_000 });
   });
 
+  it('keeps opaque native credit IDs out of the rendered workboard', () => {
+    const now = Date.parse('2026-09-29T01:00:00Z');
+    const snapshot = quotaSnapshot(now, { resetCredits: [{ id: 'opaque-secret-id', resetType: 'codexRateLimits', expiresAt: '2026-10-04T00:53:20.000Z', status: 'available' }] });
+    const board = buildWorkboard({ nowMs: now, snapshot, maxTelemetryAgeMs: 60_000, work: [] });
+    expect(board.providers[0]?.resetCredits).toEqual([{ resetType: 'codexRateLimits', expiresAt: '2026-10-04T00:53:20.000Z', status: 'available' }]);
+    expect(JSON.stringify(board)).not.toContain('opaque-secret-id');
+  });
+
   it('retries a quarantined paired stage with a new attempt and unblocks its frozen block and dependents', async () => {
     const now = Date.parse('2026-09-29T01:00:00Z');
     const store = new MemoryStore();
@@ -582,6 +652,57 @@ describe('campaign scheduler admission and durable assignment lane', () => {
     expect(result.providers[0]).toMatchObject({ resetCreditsAvailableCount: 3, resetCreditsKnown: true });
     expect(methods).toEqual(['account/rateLimits/read']);
     expect(closed).toBe(true);
+  });
+
+  it('deduplicates the native base and keyed Codex window, keeps the exact reset enum, and sends schema-only consume params', async () => {
+    const methods: string[] = [];
+    const paramsSeen: Record<string, unknown>[] = [];
+    const weekly = { limitId: 'codex', primary: { usedPercent: 25, windowDurationMins: 10_080, resetsAt: 1_791_000_000 }, secondary: null };
+    const session: CodexAppServerSession = {
+      async request(method, params) {
+        methods.push(method);
+        paramsSeen.push(params);
+        if (method === 'account/rateLimitResetCredit/consume') return { outcome: 'reset' };
+        return { rateLimits: weekly, rateLimitsByLimitId: { codex: weekly }, rateLimitResetCredits: {
+          availableCount: 3,
+          credits: [{ id: 'opaque-private-credit-id', resetType: 'codexRateLimits', status: 'available', expiresAt: 1_791_000_000 }],
+        } };
+      },
+      notify() {}, async close() {},
+    };
+    const adapter = new CodexAppServerQuotaAdapter(async () => session, () => Date.parse('2026-09-29T01:00:00Z'));
+    const snapshot = await adapter.refresh();
+    expect(snapshot.providers[0]?.windows).toHaveLength(1);
+    expect(snapshot.providers[0]?.windows[0]?.id).toBe('codex:primary');
+    expect(snapshot.providers[0]?.resetCredits[0]).toMatchObject({ resetType: 'codexRateLimits', status: 'available' });
+    expect(snapshot.providers[0]?.resetCredits[0]?.id).toBe('opaque-private-credit-id');
+
+    const result = await adapter.consume({ idempotencyKey: '5df197d0-974c-4a96-bc2d-eed93f0fc523', resetType: 'codexRateLimits' });
+    expect(result).toMatchObject({ outcome: 'reset', resetType: 'codexRateLimits', creditId: 'opaque-private-credit-id' });
+    const consumeParams = paramsSeen.at(-1);
+    expect(consumeParams).toEqual({ idempotencyKey: '5df197d0-974c-4a96-bc2d-eed93f0fc523', creditId: 'opaque-private-credit-id' });
+    expect(Object.keys(consumeParams ?? {}).sort()).toEqual(['creditId', 'idempotencyKey']);
+    expect(methods.filter((method) => method === 'account/rateLimitResetCredit/consume')).toHaveLength(1);
+  });
+
+  it('maps fresh CodexBar ZAI and OpenCodeGo windows and aggregates them with Codex telemetry', async () => {
+    const now = Date.parse('2026-09-29T01:00:00Z');
+    const codexbar = new CodexBarQuotaSource({
+      async read(provider) {
+        return [{ provider, source: 'api', usage: {
+          updatedAt: '2026-09-29T00:59:30Z',
+          primary: { usedPercent: provider === 'zai' ? 10 : 0, windowMinutes: 300, resetsAt: '2026-09-29T05:00:00Z' },
+          secondary: { usedPercent: 25, windowMinutes: 10_080, resetsAt: '2026-10-03T00:00:00Z' },
+        } }];
+      },
+    }, () => now);
+    const codex = { async refresh() { return quotaSnapshot(now); } };
+    const combined = await new AggregateQuotaSource([codex, codexbar], () => now).refresh();
+    expect(combined.providers.map((provider) => provider.provider).sort()).toEqual(['codex', 'opencodego', 'zai']);
+    const zai = combined.providers.find((provider) => provider.provider === 'zai');
+    expect(zai).toMatchObject({ telemetryAvailable: true, observedAt: '2026-09-29T00:59:30.000Z' });
+    expect(zai?.windows[0]).toMatchObject({ id: 'zai:primary', windowMinutes: 300, remainingFraction: 0.9, remainingUnits: null });
+    expect(combined.fetchedAt).toBe('2026-09-29T01:00:00.000Z');
   });
 
   it('persists queue and reset journal records append-only across store instances', async () => {

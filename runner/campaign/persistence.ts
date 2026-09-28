@@ -258,11 +258,20 @@ export class FileResetJournal implements ResetJournal {
     });
   }
 
-  async complete(idempotencyKey: string, result: ResetCreditConsumeResult): Promise<void> {
+  async recordAction(idempotencyKey: string, outcome: ResetJournalEntry['actionOutcome'] & {}, beforeQuota: NonNullable<ResetJournalEntry['beforeQuota']>): Promise<void> {
     await this.mutex.run(async () => {
       const entries = await readLines<ResetJournalEntry>(this.journalPath);
       const prior = entries.filter((entry) => entry.idempotencyKey === idempotencyKey).at(-1);
       if (!prior || prior.state !== 'prepared') throw new Error(`No prepared reset journal entry for ${idempotencyKey}`);
+      await appendDurable(this.journalPath, { ...prior, state: 'action-executed/evidence-pending', actionOutcome: outcome, beforeQuota });
+    });
+  }
+
+  async complete(idempotencyKey: string, result: ResetCreditConsumeResult): Promise<void> {
+    await this.mutex.run(async () => {
+      const entries = await readLines<ResetJournalEntry>(this.journalPath);
+      const prior = entries.filter((entry) => entry.idempotencyKey === idempotencyKey).at(-1);
+      if (!prior || !['prepared', 'action-executed/evidence-pending'].includes(prior.state)) throw new Error(`No incomplete reset journal entry for ${idempotencyKey}`);
       if (result.resetType !== prior.resetType || (prior.creditId !== undefined && result.creditId !== prior.creditId)) {
         throw new Error('Reset result does not match its prepared journal request');
       }

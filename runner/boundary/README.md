@@ -1,5 +1,9 @@
 # CQ campaign boundary contract
 
+The dedicated VM/container follow-up is in [FALLBACK.md](FALLBACK.md). It provides
+tested namespace/egress infrastructure and offline Linux startup. Actual-route
+G2 remains unverified; the host findings below are unchanged.
+
 `compileBoundary(spec)` resolves every explicit path, rejects grants overlapping
 protected material and emits a default-deny SBPL profile plus a SHA-256 identity.
 Create fresh, disjoint `task/`, `context/`, `home/`, `tmp/` under a dedicated bundle.
@@ -51,7 +55,8 @@ To run an external model route, supply a separately verified trusted loopback
 broker/service with upstream endpoint ACLs and no host-filesystem/connector/tool
 interface. Capture its upstream restrictions in the `networkEvidence` artifact;
 the reference and local port become part of boundary identity. Proxy environment
-keys may be explicitly bound. A broker is **not implemented or validated here**.
+keys may be explicitly bound. A host-loopback production broker is **not configured or validated here**.
+The container follow-up implements a reverse broker with synthetic TLS tests.
 TLS/hostname/redirect checks, proxy support in the native runtime, and direct
 network denial need actual-route tests. A VM/container with equivalent network
 restrictions is an alternative, not an automatic fallback.

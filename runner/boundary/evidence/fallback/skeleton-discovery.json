@@ -1,0 +1,30 @@
+{
+  "guest": {
+    "exitCode": 1,
+    "elapsedSeconds": 0.4,
+    "stdout": "",
+    "stderr": "time=\"2026-09-29T07:02:37+10:00\" level=warning msg=\"found ~/.colima, ignoring $XDG_CONFIG_HOME...\"\ntime=\"2026-09-29T07:02:37+10:00\" level=warning msg=\"delete ~/.colima to use $XDG_CONFIG_HOME as config directory\"\ntime=\"2026-09-29T07:02:37+10:00\" level=warning msg=\"or run `mv ~/.colima \\\"/Users/ctaylor/.config/colima\\\"`\"\ntime=\"2026-09-29T07:02:37+10:00\" level=fatal msg=\"colima not running\"\n"
+  },
+  "docker": {
+    "exitCode": 0,
+    "elapsedSeconds": 0.09,
+    "ID": "e15e4bd0-8a2f-4f5b-b335-2bd18da11100",
+    "ServerVersion": "29.5.2",
+    "OperatingSystem": "Ubuntu 24.04.4 LTS",
+    "Architecture": "x86_64",
+    "NCPU": 2,
+    "MemTotal": 3115057152,
+    "DockerRootDir": "/var/lib/docker",
+    "SecurityOptions": [
+      "name=apparmor",
+      "name=seccomp,profile=builtin",
+      "name=cgroupns"
+    ]
+  },
+  "pull": {
+    "exitCode": 0,
+    "elapsedSeconds": 19.15,
+    "stdout": "24-bookworm-slim: Pulling from library/node\na0498254f698: Pulling fs layer\n774043ccc8cc: Pulling fs layer\neab09f3e3981: Pulling fs layer\n1c473ca5523b: Pulling fs layer\n2a11efab3191: Pulling fs layer\n2a11efab3191: Download complete\na0498254f698: Download complete\neab09f3e3981: Download complete\n92d1ac168531: Download complete\n17ce047f8267: Download complete\n774043ccc8cc: Download complete\neab09f3e3981: Pull complete\n774043ccc8cc: Pull complete\n1c473ca5523b: Download complete\n1c473ca5523b: Pull complete\n2a11efab3191: Pull complete\na0498254f698: Pull complete\nDigest: sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6\nStatus: Downloaded newer image for node:24-bookworm-slim\ndocker.io/library/node:24-bookworm-slim\n",
+    "stderr": ""
+  }
+}

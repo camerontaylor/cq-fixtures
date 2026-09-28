@@ -29,3 +29,9 @@ Two-worker full run: incomplete; no final summary in retained log
 Final focused run: 3 files / 15 tests passed in 3.71s.
 Final typecheck and lint passed. Both full-run build phases passed.
 No further full-suite rerun after overseer steer.
+
+VM/container follow-up: build, typecheck and lint passed.
+Focused verification: 3 files / 19 tests passed in 1.96s.
+No new full-suite run; previous full-suite timeouts unchanged.
+Synthetic qualification: 59 checks passed; live TypeScript preparer passed.
+Linux startup: Codex/Pi --version and ZCode --help exit 0 without network/auth.

@@ -43,8 +43,29 @@
       "suites/review-classifier/breadth-tail/suite.json"
     ]
   },
+  "workflowCorpus": {
+    "manifest": "campaigns/cq-settings/corpus/workflows.json",
+    "sha256": "a9f197d99d1b246b840b4b189c8a55862fe4b30d3c564035bfd6f650c59b3052",
+    "scenarioCount": 6,
+    "substrateCount": 6,
+    "modelRoleDiversityClaim": 0,
+    "families": [
+      "review-loop",
+      "merge-pr-conflicts",
+      "fleet-sweep",
+      "baseline-test-fix",
+      "analyze-remediate",
+      "monotonic-ratchets"
+    ],
+    "split": "all six scenarios are visible calibration; no held-out task or oracle is included",
+    "heldoutReservation": "whole template and fault-family identities reserved before tuning in the corpus manifest; reservation metadata does not enforce a read boundary",
+    "redGreenAndAdequacyEvidence": "test/campaign-workflows.test.ts; six synthetic red/green oracle pairs plus six local/mocked exported-operation integrations; not role-task adequacy evidence",
+    "coverageLimit": "operation-level integrations exercise selected exported APIs; they do not claim full end-to-end coverage of review-loop, runPrs, sweep cleanup/salvage, test-fix execution, analysis apply/verification/restoration, or model-role scoring",
+    "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
+    "pristineBaselineIntegrity": "synthetic task vectors are versioned by this manifest and SHA256; no toolkit or existing substrate fixture changed"
+  },
   "scope": {
-    "stage": "S0 bounded dependency reconciliation",
+    "stage": "S0 bounded dependency reconciliation plus bounded visible S5 workflow corpus slice",
     "campaignCallsMade": false,
     "paidCallsMade": false,
     "webfrontAccessed": false,

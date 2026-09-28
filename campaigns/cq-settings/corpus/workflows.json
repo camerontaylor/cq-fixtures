@@ -1,0 +1,119 @@
+{
+  "manifestVersion": 1,
+  "status": "calibration-only",
+  "scenarioCount": 6,
+  "substrateCount": 6,
+  "modelRoleDiversityClaim": 0,
+  "scenarios": [
+    {
+      "id": "review-loop-anchor-repair",
+      "family": "review-loop",
+      "modelRole": "review-fix-worker calibration",
+      "substrate": "local-review-worktree-01",
+      "templateFamily": "review-anchor-v1",
+      "faultFamily": "anchored-multifile-scope-v1",
+      "oracle": "changed-fix-must-carry-commit; prompt retains the anchored file and excludes unrelated file",
+      "adequacyEvidence": "red no-op contract and green anchored fix contract are both evaluated; one local operation fixture only",
+      "split": "calibration",
+      "red": { "changed": false, "commits": [] },
+      "green": { "changed": true, "commits": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }
+    },
+    {
+      "id": "merge-pr-conflict-verification",
+      "family": "merge-pr-conflicts",
+      "modelRole": "merge-conflict-resolver calibration",
+      "substrate": "local-merge-worktree-01",
+      "templateFamily": "conflict-resolution-v1",
+      "faultFamily": "false-acted-report-v1",
+      "oracle": "acted is accepted only when mocked PR head changes from its baseline",
+      "adequacyEvidence": "red unchanged-head and green moved-head cases are represented; effects and Driver are local fakes",
+      "split": "calibration",
+      "red": { "baselineSha": "b", "headShaAfter": "b", "expected": "indeterminate" },
+      "green": { "baselineSha": "b", "headShaAfter": "c", "expected": "ok" }
+    },
+    {
+      "id": "fleet-sweep-changed-scope",
+      "family": "fleet-sweep",
+      "modelRole": "fleet planner integration; no model call",
+      "substrate": "local-monorepo-01",
+      "templateFamily": "fleet-changed-vs-base-v1",
+      "faultFamily": "nested-package-prefix-v1",
+      "oracle": "longest package path prefix owns changed files; untouched packages are omitted",
+      "adequacyEvidence": "nested package ownership and untouched sibling are asserted; one synthetic monorepo",
+      "split": "calibration",
+      "red": { "selected": ["core", "core-tests"], "expected": ["core-tests"] },
+      "green": { "selected": ["core-tests"], "expected": ["core-tests"] }
+    },
+    {
+      "id": "baseline-test-fix-preserves-product-scope",
+      "family": "baseline-test-fix",
+      "modelRole": "test-only fixer planning integration; no model call",
+      "substrate": "local-test-worktree-01",
+      "templateFamily": "test-fix-allowlist-v1",
+      "faultFamily": "preexisting-failure-preservation-v1",
+      "oracle": "phase-B plan contains only test-fix units and test-file stage allowlists",
+      "adequacyEvidence": "phase-A planner report feeds exported phase-B plan builder; one synthetic package",
+      "split": "calibration",
+      "red": { "fixers": ["product-fix"], "testOnly": false },
+      "green": { "fixers": ["test-fix"], "testOnly": true }
+    },
+    {
+      "id": "analyze-remediate-cluster-proposal",
+      "family": "analyze-remediate",
+      "modelRole": "analysis/remediation proposer calibration",
+      "substrate": "local-analysis-worktree-01",
+      "templateFamily": "cluster-proposal-v1",
+      "faultFamily": "deterministic-cluster-repair-v1",
+      "oracle": "same signature clusters deterministically and remediation is a read-only proposal",
+      "adequacyEvidence": "two matching failures form one cluster; injected Driver proposal is confined to read-only policy",
+      "split": "calibration",
+      "red": { "clusterCount": 2, "toolMode": "allowlist", "sandbox": "workspace-write" },
+      "green": { "clusterCount": 1, "toolMode": "none", "sandbox": "read-only" }
+    },
+    {
+      "id": "monotonic-quality-ratchets",
+      "family": "monotonic-ratchets",
+      "modelRole": "deterministic quality gate; no model call",
+      "substrate": "local-ratchet-workspace-01",
+      "templateFamily": "lower-is-better-ratchet-v1",
+      "faultFamily": "metric-loosening-v1",
+      "oracle": "usable evidence passes only when equal or tighter; regressions and absent evidence fail",
+      "adequacyEvidence": "real temporary baseline proves green tighten and red loosen; monotonic diff guard checks both directions",
+      "split": "calibration",
+      "red": { "baseline": 2, "current": 3, "expected": "fail" },
+      "green": { "baseline": 2, "current": 1, "expected": "pass" }
+    }
+  ],
+  "heldoutReserve": {
+    "reservedBeforeTuning": true,
+    "completeTemplateFamilies": [
+      "review-anchor-v2",
+      "conflict-resolution-v2",
+      "fleet-changed-vs-base-v2",
+      "test-fix-allowlist-v2",
+      "cluster-proposal-v2",
+      "lower-is-better-ratchet-v2"
+    ],
+    "completeFaultFamilies": [
+      "review-stale-anchor-v2",
+      "conflict-base-retarget-v2",
+      "fleet-deleted-rename-prefix-v2",
+      "test-fix-baseline-fingerprint-v2",
+      "analysis-cluster-collision-v2",
+      "ratchet-missing-evidence-v2"
+    ],
+    "heldoutSubstratesIncluded": 0,
+    "oracleContentIncluded": false,
+    "enforcement": "reservation metadata only; no held-out task or oracle is delivered in this calibration corpus"
+  },
+  "evidence": {
+    "buggyRedFixedGreenVectors": "test/campaign-workflows.test.ts generic oracle checks both states per scenario",
+    "operationIntegration": "test/campaign-workflows.test.ts invokes selected exported toolkit operations with local fakes",
+    "adequacy": "six workflow families are represented; this is not six scenarios times twenty substrates and is not role adequacy evidence",
+    "coverageLimit": "operation-level integrations exercise selected exported APIs; they do not claim full end-to-end coverage of review-loop, runPrs, sweep cleanup/salvage, test-fix execution, analysis apply/verification/restoration, or model-role scoring",
+    "testDiscovery": "npm exec vitest run -- test/campaign-workflows.test.ts",
+    "pristineBaseline": "synthetic task states are inline immutable JSON vectors; no fixture checkout or toolkit source was changed",
+    "publicExternalEffects": false,
+    "paidCalls": false
+  }
+}

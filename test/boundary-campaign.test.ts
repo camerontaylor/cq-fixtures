@@ -428,3 +428,66 @@ it('rejects alternate content-pinned workers before staging or admission', async
     expect(() => createFinalCodexSpawnAdapter(input)).toThrow(/hard-pinned final native worker/);
   }
 });
+
+describe('G2 harness synthetic evidence cannot grant actual qualification', () => {
+  async function sample() {
+    const h = await import('../runner/boundary/g2-harness.ts');
+    const pins = await import('../runner/boundary/codex-final-profile.ts');
+    const fixture = h.createG2Fixture(); roots.push(fixture.privateRoot);
+    const exportRoot = mkdtempSync(join(tmpdir(), 'cq-g2-export-test-')); roots.push(exportRoot);
+    writeFileSync(join(exportRoot, '.g2-partial'), 'CQ_G2_PUBLIC_TASK_CONTROL', { mode: 0o700 });
+    const traces = fixture.probes.map(probe => ({ invocationId: 'synthetic-invocation', probeId: probe.id, channel: probe.channel, target: probe.target, requestedCommand: probe.command, attempted: true, disposition: probe.expected === 'deny' ? 'denied' as const : 'success' as const, denialKind: (probe.channel === 'native-config' ? 'config-inventory-verified' : ['process-argv', 'process-env'].includes(probe.channel) ? 'guardian-not-visible' : ['shell-network', 'native-network'].includes(probe.channel) ? 'broker-403' : 'not-found') as import('../runner/boundary/g2-harness.ts').G2NativeTrace['denialKind'], output: Buffer.from(probe.expected === 'deny' ? 'synthetic denial' : 'CQ_G2_PUBLIC_TASK_CONTROL'), complete: true }));
+    const result: import('../runner/boundary/g2-harness.ts').G2NativeResult = { invocationId: 'synthetic-invocation', boundaryIdentity: 'synthetic-boundary', launchIdentity: 'synthetic-launch', provenance: 'synthetic', admissionId: 'synthetic-admission', stage: 'actual-route-G2', profile: 'cq-subscription-http', workerImage: pins.FINAL_NATIVE_IMAGE, brokerImage: pins.FINAL_BROKER_IMAGE, brokerIdentity: pins.FINAL_BROKER_IDENTITY, configHash: pins.FINAL_CODEX_CONFIG_HASH, traces, rawOutputs: [], workerAbsentVerified: true, teardownAwaited: true, baselineVerified: true, exportRoot, timedOutOrCancelled: true, childTreeStopped: true, actualResponsesStreamObserved: true, nativeInventoryComplete: true };
+    return { h, fixture, result };
+  }
+  it('requires every actual channel and never trusts fabricated complete evidence', async () => {
+    const { h, fixture, result } = await sample();
+    const report = h.evaluateG2(fixture, result); expect(report.channelsComplete).toBe(true); expect(report.qualified).toBe(false);
+    expect(JSON.stringify(report)).not.toContain(fixture.values.judge);
+    result.traces = result.traces.filter(t => t.channel !== 'native-network');
+    expect(h.evaluateG2(fixture, result).rows.filter(r => r.channel === 'native-network').every(r => r.traceUnavailable)).toBe(true);
+    expect(h.evaluateG2(fixture, result).channelsComplete).toBe(false);
+  });
+  it('detects sentinel bytes split across chunks and encoded in exported data', async () => {
+    const { h, fixture, result } = await sample(); const secret = fixture.values.solution;
+    result.rawOutputs = [Buffer.from(secret.slice(0, 12)), Buffer.from(secret.slice(12))];
+    expect(h.evaluateG2(fixture, result).sentinelDetected).toBe(true);
+    result.rawOutputs = []; writeFileSync(join(result.exportRoot, 'leak'), Buffer.from(secret).toString('base64'));
+    expect(h.evaluateG2(fixture, result).sentinelDetected).toBe(true);
+  });
+  it('rejects duplicate, mismatched-command and incomplete trace claims', async () => {
+    const { h, fixture, result } = await sample();
+    result.traces.push(result.traces[0]); result.traces[1].complete = false;
+    const child = result.traces.find(t => t.channel === 'shell-child')!; child.requestedCommand = 'model prose substituted shell';
+    const rows = h.evaluateG2(fixture, result).rows;
+    expect(rows.find(r => r.id === fixture.probes[0].id)?.traceUnavailable).toBe(true);
+    expect(rows.find(r => r.id === child.probeId)?.traceUnavailable).toBe(true);
+  });
+  it('blocks invocation without final G1/guardian before any native callback', async () => {
+    const { h, fixture } = await sample(); let called = false;
+    await expect(h.runG2Harness(fixture, { finalG1EvidenceAccepted: false, admissionId: 'not-admitted', timeoutMs: 1000, execute: async () => { called = true; throw new Error(); }, stop: async () => {}, verifyConsumedAdmission: async () => false })).rejects.toThrow(/final G1/);
+    expect(called).toBe(false);
+  });
+});
+
+describe('protected judge child input boundary', () => {
+  it('permits bounded behavioral calls but rejects traversal, huge inputs and excessive deadlines', async () => {
+    const { validateJudgeChildRequest } = await import('../runner/boundary/judge-child.ts');
+    const request = { candidateRoot: '/synthetic', module: 'src/product.mjs', exportName: 'behavior', requests: [['public input']], timeoutMs: 1000 };
+    expect(JSON.parse(validateJudgeChildRequest(request)).requests).toEqual([['public input']]);
+    for (const changed of [{ module: '../judge.mjs' }, { module: '/hidden/reference.js' }, { requests: [['x'.repeat(70000)]] }, { timeoutMs: 16000 }]) expect(() => validateJudgeChildRequest({ ...request, ...changed })).toThrow();
+  });
+});
+
+it('does not normalize missing canonical tool outcomes into denial', async () => {
+  const h = await import('../runner/boundary/g2-harness.ts');
+  const fixture = h.createG2Fixture(); roots.push(fixture.privateRoot);
+  const probe = fixture.probes[0];
+  const receipt: import('../runner/boundary/g2-harness.ts').G2CanonicalNativeReceipt = {
+    identity: { assignmentId: 'synthetic', stageId: 'G2', attemptId: 'one', invocationId: 'synthetic' },
+    launch: { boundaryIdentity: 'synthetic', launchIdentity: 'synthetic', admissionId: 'synthetic' }, terminal: { state: 'exit' },
+    toolTrace: ['start', 'result'].map((phase, i) => ({ eventId: String(i), invocationId: 'synthetic', phase: phase as 'start' | 'result', kind: 'read' as const, targetOrCommand: probe.target, correlationId: 'pair' })),
+  };
+  const result = h.normalizeG2NativeReceipt(fixture, receipt, {} as Parameters<typeof h.normalizeG2NativeReceipt>[2]);
+  expect(result.traces[0].attempted).toBe(true); expect(result.traces[0].complete).toBe(false); expect(result.traces[0].disposition).toBe('unavailable');
+});

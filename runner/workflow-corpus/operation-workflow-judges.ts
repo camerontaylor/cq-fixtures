@@ -85,22 +85,57 @@ export function judgeTestFixScopePlan(serializedPlan: string): WorkflowOracleRep
 }
 
 /** Independent semantic check for a remediation proposal that addresses the clustered defect. */
-export function judgeAnalysisRemediationProposal(value: unknown): WorkflowOracleReport {
+export interface AnalysisBehaviorContract {
+  readonly sourceId: string;
+  readonly baselineId: string;
+  readonly oracleId: string;
+  readonly examples: readonly { readonly input: unknown; readonly expected: boolean }[];
+}
+
+const EMPTY_SETTING_CONTRACT: AnalysisBehaviorContract = {
+  ...OPERATION_WORKFLOW_IDENTITIES.analyze,
+  examples: [
+    { input: '', expected: false },
+    { input: '   ', expected: false },
+    { input: 'setting', expected: true },
+    { input: null, expected: false },
+  ],
+};
+
+const LABEL_LENGTH_CONTRACT: AnalysisBehaviorContract = {
+  sourceId: 'cq-settings.analysis-unicode-label-seed.v1',
+  baselineId: 'cq-settings.analysis-unicode-limit.baseline.v1',
+  oracleId: 'cq-settings.analysis-unicode-remediation.oracle.v1',
+  examples: [
+    { input: 'A'.repeat(40), expected: true },
+    { input: '😀'.repeat(40), expected: true },
+    { input: '😀'.repeat(41), expected: false },
+    { input: '  Campaign  ', expected: true },
+    { input: '', expected: false },
+  ],
+};
+
+/** Independently probes proposed source behavior; multiple valid implementations pass. */
+export function judgeAnalysisRemediationProposal(
+  value: unknown,
+  contract: AnalysisBehaviorContract = EMPTY_SETTING_CONTRACT,
+): WorkflowOracleReport {
   const failures: string[] = [];
   const output = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
   const summary = typeof output.summary === 'string' ? output.summary : '';
   const patch = typeof output.patch === 'string' ? output.patch : '';
   const candidateSource = typeof output.candidateSource === 'string' ? output.candidateSource : '';
-  const describesFix = /empty|non-empty|blank/i.test(summary) && /reject|trim|empty|non-empty|blank/i.test(patch);
-  if (!describesFix) failures.push('proposal does not describe and encode empty-setting validation');
+  if (summary.trim().length === 0 || patch.trim().length === 0) failures.push('proposal must explain and locate its remediation');
   if (!patch.includes('src/settings.ts') && !patch.includes('validate')) failures.push('proposal does not anchor its change to settings validation');
   if (candidateSource.length === 0 || candidateSource.length > 32 * 1024) {
     failures.push('proposal candidate source is missing or exceeds the host judge limit');
   } else {
+    const examples = JSON.stringify(contract.examples);
     const probe = `const source = Buffer.from(process.env.CQ_REMEDIATION_SOURCE ?? '', 'base64').toString('utf8');
 const module = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 const check = typeof module.isValidSetting === 'function' ? module.isValidSetting : null;
-if (!check || check('') !== false || check('   ') !== false || check('setting') !== true || check(null) !== false) process.exitCode = 1;`;
+const cases = ${examples};
+if (!check || cases.some(({ input, expected }) => check(input) !== expected)) process.exitCode = 1;`;
     try {
       execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
         env: { ...process.env, CQ_REMEDIATION_SOURCE: Buffer.from(candidateSource).toString('base64') },
@@ -110,9 +145,13 @@ if (!check || check('') !== false || check('   ') !== false || check('setting') 
       failures.push(`remediation candidate failed bounded behavior checks: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const identity = OPERATION_WORKFLOW_IDENTITIES.analyze;
-  return { ...identity, passed: failures.length === 0, failures };
+  return { sourceId: contract.sourceId, baselineId: contract.baselineId, oracleId: contract.oracleId, passed: failures.length === 0, failures };
 }
+
+export const ANALYSIS_REMEDIATION_CONTRACTS = {
+  emptySetting: EMPTY_SETTING_CONTRACT,
+  unicodeLabelLength: LABEL_LENGTH_CONTRACT,
+} as const;
 
 /** Checks both live ratchet behavior and monotonicity of candidate baseline edits. */
 export function judgeRatchetOutcomes(input: {
@@ -120,12 +159,31 @@ export function judgeRatchetOutcomes(input: {
   readonly regressed: string;
   readonly tighteningAccepted: boolean;
   readonly looseningAccepted: boolean;
+  readonly direction?: 'lower-is-better' | 'higher-is-better';
+  readonly sourceId?: string;
+  readonly baselineId?: string;
+  readonly oracleId?: string;
+  readonly initialValue?: number;
+  readonly improvedValue?: number;
+  readonly regressedValue?: number;
 }): WorkflowOracleReport {
   const failures: string[] = [];
-  if (input.tightened !== 'pass') failures.push('a lower error count did not pass the lower-is-better ratchet');
-  if (input.regressed !== 'fail') failures.push('a higher error count did not fail the lower-is-better ratchet');
+  const direction = input.direction ?? 'lower-is-better';
+  if (input.tightened !== 'pass') failures.push(`an improving metric did not pass the ${direction} ratchet`);
+  if (input.regressed !== 'fail') failures.push(`a regressing metric did not fail the ${direction} ratchet`);
   if (!input.tighteningAccepted) failures.push('tightening baseline diff was not accepted');
   if (input.looseningAccepted) failures.push('loosening baseline diff was accepted');
-  const identity = OPERATION_WORKFLOW_IDENTITIES.ratchet;
+  if (input.initialValue !== undefined && input.improvedValue !== undefined && input.regressedValue !== undefined) {
+    const valuesMatchDirection = direction === 'lower-is-better'
+      ? input.improvedValue < input.initialValue && input.regressedValue > input.initialValue
+      : input.improvedValue > input.initialValue && input.regressedValue < input.initialValue;
+    if (!valuesMatchDirection) failures.push(`task values do not represent improvement and regression for ${direction}`);
+  }
+  const identity = {
+    ...OPERATION_WORKFLOW_IDENTITIES.ratchet,
+    ...(input.sourceId === undefined ? {} : { sourceId: input.sourceId }),
+    ...(input.baselineId === undefined ? {} : { baselineId: input.baselineId }),
+    ...(input.oracleId === undefined ? {} : { oracleId: input.oracleId }),
+  };
   return { ...identity, passed: failures.length === 0, failures };
 }

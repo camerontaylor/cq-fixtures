@@ -45,6 +45,14 @@ import {
   createReviewLoopRepairTask,
   executeReviewLoopRepairTask,
 } from '../campaigns/cq-settings/corpus/review-loop-task.js';
+import {
+  ANALYSIS_TASKS,
+  createAnalysisRemediationTask,
+  createRatchetTask,
+  executeAnalysisRemediationTask,
+  executeRatchetTask,
+} from '../campaigns/cq-settings/corpus/operation-tasks.js';
+import { ANALYSIS_REMEDIATION_CONTRACTS } from '../runner/workflow-corpus/operation-workflow-judges.js';
 
 function expectOk<T>(result: OpResult<T>): T {
   if (result.status !== 'ok') {
@@ -696,4 +704,96 @@ describe('cq-settings bounded workflow corpus', () => {
     });
     expect(report).toMatchObject({ passed: true, oracleId: 'cq-settings.analysis-remediation.oracle.v1' });
   }, 10_000);
+
+  it.each([
+    {
+      variant: 'whitespaceSetting' as const,
+      source: `export function isValidSetting(value) { return typeof value === 'string' && value.trim().length > 0; }\n`,
+      contract: ANALYSIS_REMEDIATION_CONTRACTS.emptySetting,
+    },
+    {
+      variant: 'unicodeLabelLimit' as const,
+      source: `export function isValidSetting(value) { return typeof value === 'string' && value.trim().length > 0 && [...value.trim()].length <= 40; }\n`,
+      contract: ANALYSIS_REMEDIATION_CONTRACTS.unicodeLabelLength,
+    },
+  ])('executes independently judged analyze/remediate task $variant using the supplied route', async ({ variant, source, contract }) => {
+    const modelSpec = { model: `offline-${variant}`, provider: 'fake' } as const;
+    const task = await createAnalysisRemediationTask(variant, modelSpec);
+    const invocations: Parameters<Driver['run']>[0][] = [];
+    const driver: Driver = {
+      async run(invocation) {
+        invocations.push(invocation);
+        return completedWorker({
+          summary: 'Reject invalid campaign settings at the validation boundary.',
+          patch: 'src/settings.ts: update isValidSetting to enforce the task validation rule',
+          candidateSource: source,
+        });
+      },
+    };
+    try {
+      expect(task.baselineCommit).toMatch(/^[a-f0-9]{40}$/);
+      expect(task.fixtureSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(task.oraclePin).toMatch(/^[a-f0-9]{64}$/);
+      const result = await executeAnalysisRemediationTask(task, driver);
+      expect(result.clusterCount).toBe(1);
+      expect(result.clusterSize).toBe(2);
+      expect(result.oracle).toMatchObject({
+        passed: true,
+        sourceId: ANALYSIS_TASKS[variant].sourceId,
+        baselineId: ANALYSIS_TASKS[variant].baselineId,
+        oracleId: ANALYSIS_TASKS[variant].oracleId,
+      });
+      expect(invocations[0]?.modelSpec).toEqual(modelSpec);
+      expect(invocations[0]?.toolPolicy).toEqual({ allow: [], mode: 'none' });
+      expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'read-only' });
+      const baseline = judgeAnalysisRemediationProposal({
+        summary: 'Keep existing source behavior.',
+        patch: 'src/settings.ts: no-op',
+        candidateSource: readFileSync(join(task.workspacePath, 'src/settings.ts'), 'utf8'),
+      }, contract);
+      expect(baseline.passed).toBe(false);
+      const alternative = judgeAnalysisRemediationProposal({
+        summary: 'Validate after normalizing at the boundary.',
+        patch: 'src/settings.ts: use a helper that checks normalized setting semantics',
+        candidateSource: variant === 'whitespaceSetting'
+          ? `export function isValidSetting(v) { if (typeof v !== 'string') return false; for (const c of v) if (!/\\s/u.test(c)) return true; return false; }`
+          : `export function isValidSetting(v) { if (typeof v !== 'string') return false; let count = 0; for (const c of v.trim()) count += 1; return count > 0 && count <= 40; }`,
+      }, contract);
+      expect(alternative.passed).toBe(true);
+      expect(execFileSync('git', ['status', '--porcelain'], { cwd: task.workspacePath, encoding: 'utf8' })).toBe('');
+    } finally {
+      await task.cleanup();
+    }
+  }, 30_000);
+
+  it.each(['lowerErrorCount', 'higherCoverage'] as const)(
+    'runs captured-baseline/check/monotonicity exports for $variant with independent direction oracle', async (variant) => {
+      const task = await createRatchetTask(variant);
+      try {
+        const report = await executeRatchetTask(task);
+        expect(task.baselineCommit).toMatch(/^[a-f0-9]{40}$/);
+        expect(task.oraclePin).toMatch(/^[a-f0-9]{64}$/);
+        expect(report.oracle).toMatchObject({
+          passed: true,
+          sourceId: task.sourceId,
+          baselineId: task.baselineId,
+          oracleId: task.oracleId,
+        });
+        expect(report.tightened).toBe('pass');
+        expect(report.regressed).toBe('fail');
+        expect(report.tighteningAccepted).toBe(true);
+        expect(report.looseningAccepted).toBe(false);
+        expect(report.baselineValues.from).toBe(task.initialValue);
+        if (task.direction === 'higher-is-better') {
+          expect(task.improvedValue).toBeGreaterThan(task.initialValue);
+          expect(task.regressedValue).toBeLessThan(task.initialValue);
+        } else {
+          expect(task.improvedValue).toBeLessThan(task.initialValue);
+          expect(task.regressedValue).toBeGreaterThan(task.initialValue);
+        }
+      } finally {
+        await task.cleanup();
+      }
+    },
+  );
 });

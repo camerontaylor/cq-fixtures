@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "taskOracleIds": [
+    "cq-settings.analysis-remediation.oracle.v1",
+    "cq-settings.analysis-unicode-remediation.oracle.v1",
+    "cq-settings.ratchet-monotonicity.oracle.v1",
+    "cq-settings.ratchet-coverage-monotonicity.oracle.v1"
+  ],
+  "dependencies": [
+    {
+      "path": "campaigns/cq-settings/corpus/operation-tasks.ts",
+      "sha256": "284e279ad779ab00d36f0d7ffe91bb474f4b1707da5a328bd152a9a23e38ee6a"
+    },
+    {
+      "path": "runner/workflow-corpus/operation-workflow-judges.ts",
+      "sha256": "a96ec0087d77c2c821d8e4ed1a397a420788f670b93977298b25a90e65ac3f10"
+    }
+  ]
+}

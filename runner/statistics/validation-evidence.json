@@ -1,0 +1,50 @@
+{
+  "command": "timeout 180s npx vitest run test/campaign-statistics.test.ts test/toolkit-package-smoke.test.ts --reporter=verbose --silent=false",
+  "log": "/tmp/cq-campaign-focused-post-s0.log",
+  "testStatus": "passed",
+  "validatedAt": "2026-09-29",
+  "toolkitPackageSha256": "90cc17ea030f96c83d6f77f35fbf0af1f6df7c893b65853928b7e2a60d176c9c",
+  "toolkitInstall": "npm ci --offline passed after S0 handoff",
+  "scenarioClassesPerTrack": 10,
+  "datasetsPerTrack": 2000,
+  "bootstrapResamplesPerDataset": 199,
+  "clustersPerDataset": 24,
+  "repeatsPerTask": 3,
+  "native": {
+    "seed": 12648430,
+    "marginalCoverage": 1,
+    "marginalCoverageLower95": 0.9993601665122168,
+    "marginalCovered": 6000,
+    "marginalEvaluated": 6000,
+    "familywiseError": 0,
+    "familywiseErrorUpper95": 0.00636170101370071,
+    "familywiseRejected": 0,
+    "familywiseEvaluated": 600,
+    "gatesPassed": true
+  },
+  "diagnostic": {
+    "seed": 12648431,
+    "marginalCoverage": 1,
+    "marginalCoverageLower95": 0.9993601665122168,
+    "marginalCovered": 6000,
+    "marginalEvaluated": 6000,
+    "familywiseError": 0,
+    "familywiseErrorUpper95": 0.00636170101370071,
+    "familywiseRejected": 0,
+    "familywiseEvaluated": 600,
+    "gatesPassed": true
+  },
+  "scenarioClasses": [
+    "balanced baseline p=.50, ICC=.05, no missingness, global null",
+    "balanced baseline p=.50, ICC=.20, repeat noise, +.02 per contender",
+    "balanced baseline p=.50, ICC=.40, repeat noise, +.00 global null",
+    "ceiling baseline p=.88, ICC=.20, +.02 effects",
+    "floor baseline p=.12, ICC=.20, +.02 effects",
+    "unequal tasks per substrate (1–3), ICC=.25, global null",
+    "repeat-level noise increase, ICC=.10, +.02 effects",
+    "symmetric 5% paired task missingness, ICC=.20, +.02 effects (fallback) ",
+    "symmetric 15% paired task missingness, ICC=.35, global null (fallback)",
+    "asymmetric 5% strategy missingness, ICC=.25, global null (fallback stress)"
+  ],
+  "interpretation": "Marginal gate passed for both separate tracks. Familywise gate was evaluated on 600 complete-coverage global-null datasets per track; missingness scenarios exercised the required descriptive/fallback suppression path and were excluded from familywise adjustment eligibility. This validates interval coverage and null-error gates, not power or five-point resolution."
+}

@@ -11,7 +11,7 @@ export interface LaunchProfile {
   version: string | null;
   args: string[];
   envKeys: string[];
-  cwdBehavior: string;
+  cwdBehavior: string | null;
   providerRoute: string;
   requestedModel: string | null;
   authClass: string;

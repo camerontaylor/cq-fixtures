@@ -1,13 +1,15 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
+import { SessionStore, type OpInvocation, type WorkerResult } from '@camerontaylor/cq-toolkit';
 import { CodexExecDriver } from '../runner/native/codex.ts';
 import { PiNativeDriver } from '../runner/native/pi.ts';
 import { ZcodeAcpDriver, assertOutsideGlmBlackout } from '../runner/native/zcode.ts';
-import { runSupervised } from '../runner/native/process.ts';
-import type { InvocationIdentity } from '../runner/native/observation.ts';
+import { runSupervised, visibleCalibrationSpawnAdapter } from '../runner/native/process.ts';
+import { parseJsonEventLines, applyUsageObservation } from '../runner/native/events.ts';
+import { unavailableObservation, type InvocationIdentity } from '../runner/native/observation.ts';
+import { RUNNER_SESSION_DIRECTORY } from '../runner/native/session.ts';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -26,10 +28,10 @@ function fakeExecutable(root: string, output: string, exit = 0): string {
   return file;
 }
 
-function invocation(prompt = 'simulated task'): OpInvocation {
+function invocation(prompt = 'simulated task', model = 'gpt-6-luna'): OpInvocation {
   return {
     prompt,
-    modelSpec: { model: 'scaffold-default', provider: 'test-default' },
+    modelSpec: { model, provider: 'test-provider' },
     toolPolicy: { allow: ['read', 'edit', 'run'], mode: 'allowlist' },
     sandboxPolicy: { level: 'workspace-write' },
     budget: { wallClockMs: 2_000 },
@@ -38,6 +40,10 @@ function invocation(prompt = 'simulated task'): OpInvocation {
 
 function identity(id: string): InvocationIdentity {
   return { invocationId: id, assignmentId: `assignment-${id}`, stageId: 'draft', attemptId: `attempt-${id}` };
+}
+
+function simulatedVisibleLaunch() {
+  return visibleCalibrationSpawnAdapter({ admissionId: 'test-admission-only', scope: 'visible-calibration', isolation: 'disabled', heldOut: false, environmentNames: ['PATH'] });
 }
 
 describe('native transport event and identity handling', () => {
@@ -60,10 +66,10 @@ describe('native transport event and identity handling', () => {
       JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '{"fixed":true}' } }),
       JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 20, output_tokens: 8, cached_input_tokens: 3 } }),
     ].join('\n') + '\n';
-    const driver = new CodexExecDriver({ executable: fakeExecutable(root, events), version: 'fake-1', artifactDirectory: join(root, 'artifacts'), allowUnconfinedTestProcess: true });
+    const driver = new CodexExecDriver({ executable: fakeExecutable(root, events), version: 'fake-1', artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch() });
     const runWithIdentity = async (id: string, prompt: string) => {
       await driver.beginInvocation(identity(id));
-      return driver.run(invocation(prompt));
+      return driver.run(invocation(prompt, 'gpt-6-luna'));
     };
     const [a, b] = await Promise.all([runWithIdentity('a', 'A'), runWithIdentity('b', 'B')]);
     expect((a.structuredOutput as { fixed: boolean }).fixed).toBe(true);
@@ -82,12 +88,12 @@ describe('native transport event and identity handling', () => {
     const root = tempRoot();
     const hidden = 'underlying-model-must-not-escape';
     const events = JSON.stringify({ type: 'message_end', message: {
-      role: 'assistant', model: hidden, usage: { input: 7, output: 4 },
+      id: 'msg-final', role: 'assistant', stopReason: 'stop', model: hidden, usage: { input: 7, output: 4 },
       content: [{ type: 'text', text: '{"answer":42}' }],
     } });
-    const driver = new PiNativeDriver({ executable: fakeExecutable(root, `${events}\n`), artifactDirectory: join(root, 'artifacts'), allowUnconfinedTestProcess: true });
+    const driver = new PiNativeDriver({ executable: fakeExecutable(root, `${events}\n`), artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch() });
     await driver.beginInvocation(identity('pi'));
-    const result = await driver.run(invocation());
+    const result = await driver.run(invocation('simulated task', 'opencode-go/space-bunny-free'));
     const observation = driver.getObservation('pi')!;
     expect(result.structuredOutput).toEqual({ answer: 42 });
     expect(observation.model.configuredTarget).toBe('pi-opencode/opencode-go/space-bunny-free');
@@ -97,6 +103,65 @@ describe('native transport event and identity handling', () => {
     expect(observation.usage.counters.input.value).toBe(7);
   });
 
+  it('folds distinct Pi assistant responses once, preserves reported totals, and selects only the terminal answer', () => {
+    const toolTurn = { id: 'msg-tool', role: 'assistant', stopReason: 'toolUse', usage: { input: 10, output: 2, cacheRead: 5, totalTokens: 17 }, content: [{ type: 'text', text: 'intermediate, not JSON' }] };
+    const finalTurn = { id: 'msg-final', role: 'assistant', stopReason: 'stop', usage: { input: 6, output: 4, cacheRead: 2, totalTokens: 12 }, content: [{ type: 'text', text: '{"answer":true}' }] };
+    const raw = [
+      { type: 'message_end', message: toolTurn },
+      { type: 'agent_end', messages: [toolTurn] },
+      { type: 'message_end', message: finalTurn },
+      { type: 'agent_end', messages: [toolTurn, finalTurn] },
+    ].map((event) => JSON.stringify(event)).join('\n');
+    const parsed = parseJsonEventLines(raw, 'pi');
+    expect(parsed.finalText).toBe('{"answer":true}');
+    expect(parsed.usage).toMatchObject({ input: 16, output: 6, cacheRead: 7, tokenTotal: 29 });
+  });
+
+  it('uses Codex source total without adding cached-input subsets or inventing absent cache-write usage', () => {
+    const parsed = parseJsonEventLines(JSON.stringify({ type: 'turn.completed', turn_id: 'turn-1', usage: {
+      input_tokens: 20, output_tokens: 10, cached_input_tokens: 8, total_tokens: 30,
+    } }), 'codex');
+    expect(parsed.usage).toMatchObject({ input: 20, output: 10, cacheRead: 8, tokenTotal: 30 });
+    expect(parsed.usage.cacheWrite).toBeUndefined();
+    const observation = unavailableObservation(identity('codex-usage'), 'codex-exec', null);
+    applyUsageObservation(observation, parsed, 'codex-json');
+    expect(observation.usage.tokenTotal).toMatchObject({ value: 30, availability: 'observed' });
+    expect(observation.usage.counters.cacheWrite.availability).toBe('unavailable');
+  });
+
+  it('preserves measured Codex events when the process fails after emitting them', async () => {
+    const root = tempRoot();
+    const partial = `${JSON.stringify({ type: 'turn.completed', turn_id: 'partial-turn', usage: {
+      input_tokens: 11, output_tokens: 3, total_tokens: 14,
+    } })}\n`;
+    const driver = new CodexExecDriver({ executable: fakeExecutable(root, partial, 7), artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch() });
+    await driver.beginInvocation(identity('failed-after-events'));
+    const result = await driver.run(invocation());
+    expect(result.stopReason).toBe('error');
+    expect(result.error).toContain('exited 7');
+    const observation = driver.getObservation('failed-after-events')!;
+    expect(observation.usage.counters.input.value).toBe(11);
+    expect(observation.usage.tokenTotal.value).toBe(14);
+    expect(observation.artifacts).toHaveLength(1);
+  });
+
+  it('resolves the runner sessionRef workspace for a Codex ephemeral CLI launch', async () => {
+    const root = tempRoot();
+    const store = new SessionStore(RUNNER_SESSION_DIRECTORY);
+    const session = await store.create(root);
+    const events = `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '{"ok":true}' } })}\n`;
+    const executable = join(root, 'fake-cli');
+    writeFileSync(executable, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(join(root, 'cwd.txt'))}, process.cwd());\nprocess.stdout.write(${JSON.stringify(events)});\n`, { mode: 0o700 });
+    chmodSync(executable, 0o700);
+    const driver = new CodexExecDriver({ executable, artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch(), workspaceForInvocation: () => root });
+    await driver.beginInvocation(identity('session-bound'));
+    const result = await driver.run({ ...invocation('task', 'gpt-6-luna'), sessionRef: session.sessionId });
+    expect(readFileSync(join(root, 'cwd.txt'), 'utf8')).toBe(root);
+    expect(result.sessionId).toBe(session.sessionId);
+    expect(driver.getObservation('session-bound')?.model.settings.session).toMatchObject({ status: 'runner-workspace-resolved' });
+    unlinkSync(join(RUNNER_SESSION_DIRECTORY, `${session.sessionId}.jsonl`));
+  });
+
   it('preserves a ZCode ACP envelope around a simulated native result and refuses blackout dispatch', async () => {
     const root = tempRoot();
     const fake: Pick<{ run(input: OpInvocation): Promise<WorkerResult> }, 'run'> = {
@@ -104,7 +169,7 @@ describe('native transport event and identity handling', () => {
     };
     const driver = new ZcodeAcpDriver({ driver: fake, sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root });
     await driver.beginInvocation(identity('zcode'));
-    const result = await driver.run(invocation());
+    const result = await driver.run(invocation('simulated task', 'GLM-5.3-Flash'));
     expect(result.stopReason).toBe('complete');
     expect(driver.getObservation('zcode')).toMatchObject({
       transport: 'zcode-acp', model: {
@@ -119,6 +184,10 @@ describe('native transport event and identity handling', () => {
 });
 
 describe('supervised native subprocesses', () => {
+  it('rejects unpinned proxy or provider endpoint overrides for visible calibration', () => {
+    expect(() => visibleCalibrationSpawnAdapter({ admissionId: 'test', scope: 'visible-calibration', isolation: 'disabled', heldOut: false, environmentNames: ['HTTPS_PROXY'] })).toThrow(/cannot override provider or proxy endpoints/u);
+  });
+
   it('returns a hard timeout and cleans up a descendant in the process group', async () => {
     if (process.platform === 'win32') return;
     const root = tempRoot();

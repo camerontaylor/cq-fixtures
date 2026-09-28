@@ -5,7 +5,8 @@ import type { InvocationIdentity } from './observation.ts';
 import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
 import { applyUsageObservation, parseJsonEventLines, toStructuredOutput } from './events.ts';
 import { ObservedNativeDriver, createWorkerResult, usageProjection, type NativeDriverOptions } from './observed-driver.ts';
-import { runSupervised } from './process.ts';
+import { launchEvidenceStatus, runSupervised } from './process.ts';
+import { resolveNativeSession } from './session.ts';
 import type { BoundaryLaunch } from '../boundary/spawn.ts';
 import type { NativeSpawnAdapter } from './process.ts';
 
@@ -21,7 +22,6 @@ export interface CodexExecOptions {
   workspaceForInvocation?: (invocation: OpInvocation) => string;
   boundaryForInvocation?: (identity: InvocationIdentity, invocation: OpInvocation, workspace: string) => Omit<BoundaryLaunch, 'executable' | 'args'>;
   spawnAdapter?: NativeSpawnAdapter;
-  allowUnconfinedTestProcess?: boolean;
 }
 
 /** Native subscription route through `codex exec --json`; this never starts a Codex app-server turn. */
@@ -34,7 +34,6 @@ export class CodexExecDriver extends ObservedNativeDriver {
   private readonly workspaceForInvocation: NonNullable<CodexExecOptions['workspaceForInvocation']>;
   private readonly boundaryForInvocation: CodexExecOptions['boundaryForInvocation'];
   private readonly spawnAdapter: NativeSpawnAdapter | undefined;
-  private readonly allowUnconfinedTestProcess: boolean;
 
   constructor(options: CodexExecOptions = {}) {
     const executable = options.executable ?? 'codex';
@@ -55,27 +54,27 @@ export class CodexExecDriver extends ObservedNativeDriver {
     this.workspaceForInvocation = options.workspaceForInvocation ?? (() => process.cwd());
     this.boundaryForInvocation = options.boundaryForInvocation;
     this.spawnAdapter = options.spawnAdapter;
-    this.allowUnconfinedTestProcess = options.allowUnconfinedTestProcess ?? false;
   }
 
   protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
-    invocation = this.invocationForTarget(invocation, this.model, 'openai-codex');
     const startedAt = new Date().toISOString();
     const observation = this.newObservation(identity, invocation, startedAt);
+    observation.model.settings.launchedTarget = { value: `codex/${this.model}`, source: 'CodexExecDriver configuration', status: 'configured' };
     observation.model.settings.effort = { value: this.effort, source: 'codex exec --config', status: 'requested-unobservable' };
     observation.model.settings.sandbox = { value: invocation.sandboxPolicy.level, source: 'codex exec --sandbox', status: 'requested' };
     observation.model.settings.toolPolicy = { value: invocation.toolPolicy, source: 'OpInvocation.toolPolicy', status: 'not-enforced-by-codex-exec-flags' };
     this.observations.set(identity.invocationId, observation);
-    if (invocation.sessionRef) {
-      const error = new Error('codex exec bridge does not resume sessions; use a fresh bounded assignment');
-      this.failObservation(observation, error);
-      throw error;
-    }
     try {
-      const cwd = resolve(this.workspaceForInvocation(invocation));
+      this.assertRequestedModel(invocation, this.model);
+      const session = await resolveNativeSession(invocation, this.workspaceForInvocation);
+      const cwd = resolve(session.cwd);
+      observation.model.settings.session = {
+        value: session.status === 'runner-workspace-resolved' ? 'runner workspace binding; Codex turn ephemeral' : 'fresh Codex ephemeral turn',
+        source: 'runner SessionStore + codex exec --ephemeral', status: session.status,
+      };
       const args = [
         'exec', '--json', '--ephemeral', '--sandbox', codexSandbox(invocation),
-        '-C', cwd, '-m', invocation.modelSpec.model,
+        '-C', cwd, '-m', this.model,
         '-c', `model_reasoning_effort=${JSON.stringify(this.effort)}`, '-',
       ];
       const result = await runSupervised(this.executable, args, {
@@ -85,9 +84,9 @@ export class CodexExecDriver extends ObservedNativeDriver {
         signal: currentJobContext()?.signal,
         ...(this.boundaryForInvocation ? { boundary: this.boundaryForInvocation(identity, invocation, cwd) } : {}),
         ...(this.spawnAdapter ? { spawnAdapter: this.spawnAdapter } : {}),
-        allowUnconfinedTestProcess: this.allowUnconfinedTestProcess,
       });
-      if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'spawnBoundary', status: 'admitted-visible-route' };
+      if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };
+      observation.model.settings.processTree = { value: result.treeStopped, source: 'native process-group stop proof', status: result.treeStopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden' };
       const raw = [result.stdout, result.stderr ? `\n${result.stderr}` : ''].join('');
       this.persistEventArtifact(observation, raw);
       const parsed = parseJsonEventLines(result.stdout, 'codex');
@@ -101,13 +100,16 @@ export class CodexExecDriver extends ObservedNativeDriver {
         observation.terminal.cause = 'spawn-error';
         throw error;
       } else if (result.code !== 0) observation.terminal.cause = `exit:${result.code ?? result.signal ?? 'unknown'}`;
-      const worker = createWorkerResult(usageProjection(observation.usage.counters), result.code === 0 ? 'complete' :
+      if (!result.treeStopped) observation.terminal.cause = 'process-tree-stop-unproven';
+      const worker = createWorkerResult(usageProjection(observation.usage.counters), result.code === 0 && result.treeStopped ? 'complete' :
         result.terminal === 'timeout' ? 'budget' : result.terminal === 'cancelled' ? 'aborted' : 'error', {
         ...(parsed.model ? { model: parsed.model } : {}),
-        ...(parsed.text ? { structuredOutput: toStructuredOutput(parsed.text) } : {}),
-        ...(result.code !== 0 ? { error: result.stderr.slice(-2000) || `codex exec exited ${result.code ?? result.signal}` } : {}),
+        ...(parsed.finalText ? { structuredOutput: toStructuredOutput(parsed.finalText) } : {}),
+        ...(result.code !== 0 || !result.treeStopped ? { error: result.stderr.slice(-2000) || (!result.treeStopped ? 'codex process tree stop could not be proven; capture is forbidden' : `codex exec exited ${result.code ?? result.signal}`) } : {}),
+        ...(session.sessionRef ? { sessionId: session.sessionRef } : {}),
       });
       this.finishObservation(observation, worker);
+      if (!result.treeStopped) throw new Error('codex process tree stop could not be proven; candidate capture is forbidden');
       return worker;
     } catch (error) {
       if (!this.observations.has(identity.invocationId) || this.observations.get(identity.invocationId) !== observation) {

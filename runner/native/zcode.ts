@@ -4,6 +4,8 @@ import type { InvocationIdentity } from './observation.ts';
 import type { NativeLaunchEvidence } from './process.ts';
 import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
 import { ObservedNativeDriver, type NativeDriverOptions } from './observed-driver.ts';
+import { resolveNativeSession, RUNNER_SESSION_DIRECTORY } from './session.ts';
+import { launchEvidenceStatus } from './process.ts';
 
 export interface ZcodeAcpOptions {
   executable?: string;
@@ -35,6 +37,7 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
   constructor(options: ZcodeAcpOptions = {}) {
     const executable = options.executable ?? 'zcode-acp';
     const version = options.version ?? null;
+    const sessionsDirectory = options.sessionsDirectory ?? RUNNER_SESSION_DIRECTORY;
     super({
       configuredTarget: 'zcode/GLM-5.3-Flash', transport: 'zcode-acp',
       executable: resolveLaunchExecutable(executable),
@@ -44,11 +47,12 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
     } satisfies NativeDriverOptions);
     this.acp = options.driver ?? new AcpDriver({
       command: [executable, 'server'], termGraceMs: 300, killGraceMs: options.killGraceMs ?? 1_000,
+      sessionsDir: sessionsDirectory,
       ...(options.spawn ? { spawn: options.spawn } : {}),
     });
     this.admittedSpawnConfigured = Boolean(options.driver || (options.spawn && options.launchEvidence?.admissionId.trim()));
     this.launchEvidence = options.launchEvidence;
-    this.sessions = new SessionStore(options.sessionsDirectory ?? `${process.env.TMPDIR ?? '/tmp'}/cq-native-sessions`);
+    this.sessions = new SessionStore(sessionsDirectory);
     this.workspaceForInvocation = options.workspaceForInvocation ?? (() => process.cwd());
     this.hardWallClockMs = options.hardWallClockMs ?? 120_000;
     this.abortGraceMs = options.abortGraceMs ?? 300;
@@ -56,26 +60,36 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
   }
 
   protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
-    invocation = this.invocationForTarget(invocation, 'GLM-5.3-Flash', 'zcode');
     const startedAt = new Date().toISOString();
     const observation = this.newObservation(identity, invocation, startedAt);
     observation.model.configuredTarget = 'zcode/GLM-5.3-Flash';
+    observation.model.settings.launchedTarget = { value: 'zcode/GLM-5.3-Flash', source: 'ZcodeAcpDriver configuration', status: 'configured' };
     observation.model.settings.effort = { value: 'high', source: 'Paseo ZCode GLM-5.3-Flash profile', status: 'requested-unobservable' };
     observation.model.settings.permissionMode = { value: 'yolo', source: 'Paseo ZCode profile', status: 'requested-unobservable' };
     this.observations.set(identity.invocationId, observation);
     try {
+      this.assertRequestedModel(invocation, 'GLM-5.3-Flash');
       if (!this.admittedSpawnConfigured) {
         throw new Error('ZCode ACP requires a parent-admitted boundary spawn adapter');
       }
       if (this.launchEvidence) {
-        observation.model.settings.launch = { value: this.launchEvidence, source: 'parent-admitted ACP spawn', status: 'admitted-visible-route' };
+        observation.model.settings.launch = { value: this.launchEvidence, source: 'parent-admitted ACP spawn', status: launchEvidenceStatus(this.launchEvidence) };
       }
       assertOutsideGlmBlackout();
-      const workspace = resolve(this.workspaceForInvocation(identity, invocation));
-      const session = await this.sessions.create(workspace);
+      const session = await resolveNativeSession(
+        invocation,
+        (candidate) => this.workspaceForInvocation(identity, candidate),
+        this.sessions,
+      );
+      const workspace = resolve(session.cwd);
+      const sessionRef = session.sessionRef ?? (await this.sessions.create(workspace)).sessionId;
+      observation.model.settings.session = {
+        value: session.status === 'runner-workspace-resolved' ? 'runner workspace binding; ACP session resume policy applies' : 'fresh ACP session',
+        source: 'runner SessionStore + ACP session protocol', status: session.status,
+      };
       const boundedInvocation: OpInvocation = {
         ...invocation,
-        sessionRef: session.sessionId,
+        sessionRef,
         budget: { ...invocation.budget, wallClockMs: invocation.budget.wallClockMs ?? this.hardWallClockMs },
       };
       const parent = currentJobContext();
@@ -117,8 +131,9 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
       // measurements, so this bridge leaves all campaign counters unknown.
       observation.terminal.cause = worker.stopReason === 'complete' ? null : worker.stopReason;
       observation.terminal.cancelled = worker.stopReason === 'aborted';
-      this.finishObservation(observation, worker);
-      return worker;
+      const result = { ...worker, sessionId: sessionRef };
+      this.finishObservation(observation, result);
+      return result;
     } catch (error) {
       if (!observation.timing.endedAt) this.failObservation(observation, error);
       throw error;

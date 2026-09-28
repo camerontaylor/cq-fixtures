@@ -357,3 +357,35 @@ describe('access-only final profile', () => {
     } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
   });
 });
+
+describe('final native container admission and argument boundary', () => {
+  it('requires a distinct stage, profile, invocation and unexpired parent receipt', async () => {
+    const { validateFinalAdmission } = await import('../runner/boundary/codex-final-profile.ts');
+    const expected = { stage: 'final-profile-G1' as const, boundaryIdentity: 'boundary', invocationIdentity: 'invocation' };
+    const receipt = { ...expected, admissionId: 'parent-final-profile-1', profile: 'cq-subscription-http' as const, expiresAt: 10000, heldOut: false as const };
+    expect(() => validateFinalAdmission(receipt, expected, 1000)).not.toThrow();
+    for (const changed of [{ stage: 'actual-route-G2' }, { profile: 'host-visible' }, { invocationIdentity: 'other' }, { expiresAt: 999 }, { heldOut: true }]) {
+      expect(() => validateFinalAdmission({ ...receipt, ...changed } as typeof receipt, expected, 1000)).toThrow(/distinct final-profile/);
+    }
+  });
+  it('maps only the exact declared native invocation to frozen provider controls', async () => {
+    const { finalCodexArguments } = await import('../runner/boundary/codex-final-profile.ts');
+    const args = ['exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', 'danger-full-access', '-C', '/synthetic/task', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="low"', '-'];
+    const actual = finalCodexArguments(args, '/synthetic/task');
+    expect(actual[7]).toBe('/task'); expect(actual).toContain('--ignore-user-config');
+    expect(actual).toContain('model_providers.cq-subscription-http.requires_openai_auth=true');
+    expect(actual).toContain('model_providers.cq-subscription-http.supports_websockets=false');
+    expect(() => finalCodexArguments([...args, '-c', 'model_provider="escaped"'], '/synthetic/task')).toThrow();
+    expect(() => finalCodexArguments(args, '/other/task')).toThrow();
+  });
+  it('rechecks private access-only expiry and forbids refresh authority', async () => {
+    const { validateFinalCodexAuth } = await import('../runner/boundary/codex-final-profile.ts');
+    const now = 1700000000000;
+    const jwt = 'x.' + Buffer.from(JSON.stringify({ exp: now / 1000 + 1200 })).toString('base64url') + '.x';
+    const auth = { auth_mode: 'chatgptAuthTokens', OPENAI_API_KEY: null, tokens: { access_token: jwt, id_token: jwt, account_id: 'synthetic', refresh_token: '' } };
+    expect(() => validateFinalCodexAuth(JSON.stringify(auth), 900, now)).not.toThrow();
+    expect(() => validateFinalCodexAuth(JSON.stringify(auth), 900, now + 300000)).toThrow(/expiry/);
+    auth.tokens.refresh_token = 'shared-synthetic';
+    expect(() => validateFinalCodexAuth(JSON.stringify(auth), 900, now)).toThrow(/access-only/);
+  });
+});

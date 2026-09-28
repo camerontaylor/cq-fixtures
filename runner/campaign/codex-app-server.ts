@@ -88,7 +88,7 @@ function nativeQuotaSnapshot(result: unknown, fetchedAt: string): QuotaSnapshot 
     const resetType = typeof credit?.resetType === 'string' ? credit.resetType : null;
     const expiresAt = epochIso(credit?.expiresAt);
     const status = credit?.status;
-    if (!resetType || !expiresAt || !['available', 'redeemed', 'expired', 'unavailable'].includes(String(status))) return [];
+    if (!resetType || !expiresAt || !['available', 'redeeming', 'redeemed', 'expired', 'unavailable', 'unknown'].includes(String(status))) return [];
     const id = typeof credit?.id === 'string' ? credit.id : undefined;
     return [{ ...(id ? { id } : {}), resetType, expiresAt, status: status === 'available' ? 'available' as const : 'unavailable' as const }];
   });
@@ -245,8 +245,9 @@ export class CodexAppServerQuotaAdapter implements QuotaSource, SupportedResetCr
     return nativeQuotaSnapshot(raw, new Date(this.clock()).toISOString());
   }
 
-  async consume(request: ResetCreditConsumeRequest): Promise<ResetCreditConsumeResult> {
+  async consume(request: ResetCreditConsumeRequest, options: { replayPrepared: boolean } = { replayPrepared: false }): Promise<ResetCreditConsumeResult> {
     if (request.resetType !== 'codexRateLimits') throw new Error('Unsupported native Codex reset type');
+    if (!request.creditId) throw new Error('Codex reset consume requires a journal-pinned physical credit ID');
     // The native endpoint has no resetType parameter. Validate it against the
     // authenticated account read, then preserve the opaque ID privately.
     const beforeQuota = await this.readRateLimits();
@@ -254,10 +255,10 @@ export class CodexAppServerQuotaAdapter implements QuotaSource, SupportedResetCr
       throw new Error('Codex reset consume requires fresh authenticated rate-limit telemetry');
     }
     const credits = beforeQuota.providers.flatMap((provider) => provider.resetCredits);
-    const selected = credits.find((credit) => credit.status === 'available'
-      && credit.resetType === request.resetType
-      && (request.creditId === undefined || credit.id === request.creditId));
-    if (!selected?.id) throw new Error('No authenticated available reset credit matches the requested native reset type and credit ID');
+    const selected = credits.find((credit) => credit.id === request.creditId && credit.resetType === request.resetType);
+    if (!selected?.id || selected.status !== 'available' && !options.replayPrepared) {
+      throw new Error('No authenticated available or journal-pinned recovery credit matches the requested native reset type and ID');
+    }
     const params: Record<string, unknown> = {
       idempotencyKey: request.idempotencyKey,
       creditId: selected.id,

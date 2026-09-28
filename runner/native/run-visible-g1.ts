@@ -430,6 +430,7 @@ async function main(argv: string[]): Promise<void> {
       driver: ObservedNativeDriver;
       boundary: VisibleG1BoundaryEvidence;
       quotaSource?: QuotaSource;
+      launchInventory?: NativeLaunchInventory;
     }>;
   };
   if (typeof loaded.createVisibleG1Driver !== 'function') throw new Error('driver module must export createVisibleG1Driver');
@@ -445,7 +446,9 @@ async function main(argv: string[]): Promise<void> {
   }
   const result = await runVisibleG1({
     route: routeArg, driver: created.driver, boundary: created.boundary,
-    outputRoot, configPath, ...(created.quotaSource ? { quotaSource: created.quotaSource } : {}),
+    outputRoot, configPath,
+    ...(created.quotaSource ? { quotaSource: created.quotaSource } : {}),
+    ...(created.launchInventory ? { launchInventory: created.launchInventory } : {}),
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }

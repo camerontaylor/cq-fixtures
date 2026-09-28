@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ArtifactStore } from '../../cq-settings-integration/runner/artifacts/index.ts';
 import { judgeManifestHash } from '../../cq-settings-integration/runner/experiment.ts';
+import { runVisibleReviewLoopScreening } from '../runner/strategies/visible-screening.ts';
 import { NativeSupervisorControl } from '../../cq-settings-integration/runner/native/process.ts';
 import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
 import {
@@ -89,6 +91,94 @@ class FakeExecutor implements StageExecutor {
 }
 
 describe('bounded campaign strategy engine', () => {
+  it('runs same-model review and repair into a real S1 TaskOutcome, artifact, row and table', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'visible-strategy-screen-'));
+    let active: { invocationId: string; assignmentId: string; stageId: string; attemptId: string } | undefined;
+    const observations = new Map<string, unknown>();
+    const counter = (name: string, value: number) => ({ value, availability: 'observed', source: `simulated-${name}`, semantics: name });
+    let modelRuns = 0;
+    let verifyRuns = 0;
+    const driver = {
+      beginInvocation(identity: typeof active) { active = identity; },
+      getObservation(invocationId: string) { return observations.get(invocationId) as never; },
+      async run(invocation: { prompt: string }) {
+        const workspace = invocation.prompt.match(/^workspace: (.+)$/mu)?.[1]
+          ?? invocation.prompt.match(/^Worktree: (.+) \(/mu)?.[1];
+        if (!workspace) throw new Error('simulated native invocation omitted workspace');
+        const identity = active;
+        if (!identity) throw new Error('simulated native invocation omitted S1 identity');
+        const baselineCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace, encoding: 'utf8' }).trim();
+        if (invocation.prompt.includes('Review the candidate in the supplied read-only workspace')) {
+          verifyRuns += 1;
+          observations.set(identity.invocationId, {
+            schemaVersion: 1, identity,
+            usage: { counters: { input: counter('input', 4), output: counter('output', 2), cacheRead: counter('cacheRead', 0), cacheWrite: counter('cacheWrite', 0), reasoning: counter('reasoning', 1) },
+              tokenTotal: { value: 6, availability: 'observed', source: 'simulated-total', semantics: 'authoritative-total' },
+              inclusion: { input: 'disjoint', output: 'reasoning-in-output', cache: 'disjoint', reasoning: 'included-in-output' } },
+            terminal: { cause: null, cancelled: false, transportException: null },
+            capture: { status: 'captured', baselineCommit, patchSha256: null, workspaceSha256: null },
+            timing: { startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), stages: { run: 1 } },
+          });
+          return { structuredOutput: { passed: verifyRuns > 1, feedback: verifyRuns === 1 ? 'Add a Unicode code point length limit.' : 'Candidate meets the request.' },
+            usage: { input: 4, output: 2, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete', model: 'gpt-6-sol' };
+        }
+
+        modelRuns += 1;
+        const source = modelRuns === 1
+          ? `export function isValidCampaignLabel(label) {\n  if (typeof label !== 'string') return false;\n  const normalized = label.trim();\n  return normalized.length > 0 && [...normalized].length <= 40;\n}\n`
+          : `export function isValidCampaignLabel(label) {\n  if (typeof label !== 'string') return false;\n  const count = Array.from(label.trim()).length;\n  return count >= 1 && count <= 40;\n}\n`;
+        writeFileSync(join(workspace, 'src/settings.mjs'), source);
+        execFileSync('git', ['add', 'src/settings.mjs'], { cwd: workspace });
+        try { execFileSync('git', ['diff', '--cached', '--quiet'], { cwd: workspace }); }
+        catch { execFileSync('git', ['-c', 'user.name=Screening Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'Simulated review-loop candidate'], { cwd: workspace }); }
+        const candidateCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace, encoding: 'utf8' }).trim();
+        observations.set(identity.invocationId, {
+          schemaVersion: 1, identity,
+          usage: { counters: { input: counter('input', 4), output: counter('output', 2), cacheRead: counter('cacheRead', 0), cacheWrite: counter('cacheWrite', 0), reasoning: counter('reasoning', 1) },
+            tokenTotal: { value: 6, availability: 'observed', source: 'simulated-total', semantics: 'authoritative-total' },
+            inclusion: { input: 'disjoint', output: 'reasoning-in-output', cache: 'disjoint', reasoning: 'included-in-output' } },
+          terminal: { cause: null, cancelled: false, transportException: null },
+          capture: { status: 'captured', baselineCommit, patchSha256: null, workspaceSha256: candidateCommit },
+          timing: { startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), stages: { run: 1 } },
+        });
+        return { structuredOutput: { changed: true, summary: 'Bound campaign labels to 40 Unicode code points.', commits: [candidateCommit] },
+          usage: { input: 4, output: 2, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete', model: 'gpt-6-sol' };
+      },
+    };
+    try {
+      const result = await runVisibleReviewLoopScreening({
+        driver: driver as never,
+        supervisor: { async cancelInvocationAndWait({ identity }) {
+          return { invocationId: identity.invocationId, stageId: identity.stageId, attemptId: identity.attemptId,
+            processTree: 'stopped-and-reaped', invocation: 'settled' };
+        } },
+        route: { id: 'codex-sol-simulated', transport: 'codex-exec', tokenEnforcement: 'unsupported', supportedSettings: { effort: ['high'] } },
+        model: 'gpt-6-sol', provider: 'codex', effort: 'high', profileId: 'test-codex-sol', settingsId: 'effort-high',
+        evaluationBoundaryHash: 'a'.repeat(64), toolsAssistanceHash: 'b'.repeat(64), tierId: 'visible-small',
+        assignmentId: 'visible-review-assignment-01', outputRoot: join(root, 'run'),
+      });
+      expect(result.status, JSON.stringify({ operationalStatus: result.strategy.operationalStatus,
+        recipeCompleted: result.strategy.recipeCompleted, correctness: result.taskOutcome?.candidateCorrectness,
+        format: result.taskOutcome?.formatConformance, reasons: result.strategy.incompleteReasons,
+        stages: result.strategy.stages.map(({ kind, status, detail, operationalError }) => ({ kind, status, detail, operationalError })) })).toBe('complete');
+      expect(result.strategy.recipeKind).toBe('same-model-verify-repair');
+      expect(result.strategy.stages.map((stage) => stage.kind)).toEqual(['draft', 'verify', 'repair', 'verify', 'independent-judge']);
+      expect(result.strategy.stages[0]?.baselineCommit).toMatch(/^[a-f0-9]{40}$/);
+      expect(result.strategy.stages[0]?.baselineCommit).toBe(result.strategy.stages[2]?.baselineCommit);
+      expect(result.strategy.stages.filter((stage) => stage.kind !== 'independent-judge')
+        .every((stage) => stage.tokenCapMode === 'not-configured')).toBe(true);
+      expect(result.strategy.accounting.usage.tokenTotal).toBe(24);
+      expect(result.taskOutcome?.candidateCorrectness).toBe(true);
+      expect(result.taskOutcome?.formatConformance).toBe(true);
+      expect(result.rows).toHaveLength(1);
+      expect(result.tables.length).toBeGreaterThan(0);
+      const artifact = result.taskOutcome?.judgements[0]?.artifact;
+      expect(artifact?.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(readFileSync(join(root, 'run', 'artifacts', artifact!.path))).toBeTruthy();
+      expect(result.limits.totalWallClockEnforced).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 180_000);
+
   it('requires three configurable tiers and runs a frozen recipe at each tier', async () => {
     expect(() => defineBudgetTiers([tier])).toThrow(/at least three/);
     const tiers = defineBudgetTiers([

@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { QuotaSource } from './scheduler.ts';
+import { inspectQuotaFreshness } from './quota.ts';
 import type {
   ProviderQuota,
   QuotaSnapshot,
@@ -40,8 +41,20 @@ function nativeQuotaSnapshot(result: unknown, fetchedAt: string): QuotaSnapshot 
   const base = record(response?.rateLimits);
   if (!base) throw new Error('Codex app-server account/rateLimits/read omitted rateLimits');
   const byLimit = record(response?.rateLimitsByLimitId) ?? {};
-  const limitRecords = [base, ...Object.values(byLimit).map(record).filter((value): value is Record<string, unknown> => value !== null)];
-  const windows = limitRecords.flatMap((limit, limitIndex) => {
+  // The backwards-compatible base view commonly duplicates one entry in the
+  // keyed view. Deduplicate by the provider's physical limit identity, while
+  // retaining distinct native limit IDs as separate capacity windows.
+  const limitsByIdentity = new Map<string, Record<string, unknown>>();
+  const addLimit = (limit: Record<string, unknown>, fallbackIdentity: string) => {
+    const nativeId = typeof limit.limitId === 'string' && limit.limitId.length > 0 ? limit.limitId : fallbackIdentity;
+    if (!limitsByIdentity.has(nativeId)) limitsByIdentity.set(nativeId, limit);
+  };
+  addLimit(base, 'base');
+  for (const [key, value] of Object.entries(byLimit)) {
+    const limit = record(value);
+    if (limit) addLimit(limit, key);
+  }
+  const windows = [...limitsByIdentity.entries()].flatMap(([limitId, limit]) => {
     const rows: ProviderQuota['windows'][number][] = [];
     for (const key of ['primary', 'secondary'] as const) {
       const detail = record(limit[key]);
@@ -52,7 +65,7 @@ function nativeQuotaSnapshot(result: unknown, fetchedAt: string): QuotaSnapshot 
       const windowMinutes = finite(detail.windowDurationMins);
       const resetsAt = epochIso(detail.resetsAt);
       rows.push({
-        id: `${String(limit.limitId ?? `limit-${limitIndex}`)}:${key}`,
+        id: `${limitId}:${key}`,
         windowMinutes: windowMinutes !== null && windowMinutes >= 0 ? windowMinutes : null,
         observedAt: fetchedAt,
         resetsAt,
@@ -76,7 +89,8 @@ function nativeQuotaSnapshot(result: unknown, fetchedAt: string): QuotaSnapshot 
     const expiresAt = epochIso(credit?.expiresAt);
     const status = credit?.status;
     if (!resetType || !expiresAt || !['available', 'redeemed', 'expired', 'unavailable'].includes(String(status))) return [];
-    return [{ resetType, expiresAt, status: status === 'available' ? 'available' as const : 'unavailable' as const }];
+    const id = typeof credit?.id === 'string' ? credit.id : undefined;
+    return [{ ...(id ? { id } : {}), resetType, expiresAt, status: status === 'available' ? 'available' as const : 'unavailable' as const }];
   });
   const normalResetsAt = windows.map((window) => window.resetsAt).filter((value): value is string => value !== null);
   const provider: ProviderQuota = {
@@ -96,7 +110,10 @@ function nativeQuotaSnapshot(result: unknown, fetchedAt: string): QuotaSnapshot 
 
 function consumeOutcome(value: unknown): ResetCreditConsumeResult['outcome'] {
   const response = record(value);
-  const candidate = response?.outcome ?? response?.status ?? response?.result;
+  if (!response || Object.keys(response).length !== 1 || !Object.hasOwn(response, 'outcome')) {
+    throw new Error('Codex app-server reset-credit response did not match the installed outcome-only schema');
+  }
+  const candidate = response.outcome;
   if (candidate === 'reset' || candidate === 'alreadyRedeemed' || candidate === 'nothingToReset' || candidate === 'noCredit') {
     return candidate;
   }
@@ -208,11 +225,16 @@ function spawnSession(executable = 'codex', timeoutMs = 30_000): Promise<CodexAp
 /** Uses only initialize, account/rateLimits/read, and explicit consume calls. */
 export class CodexAppServerQuotaAdapter implements QuotaSource, SupportedResetCreditConsumer {
   readonly route = 'account/rateLimitResetCredit/consume' as const;
+  private readonly sessionFactory: CodexAppServerSessionFactory;
+  private readonly clock: () => number;
 
   constructor(
-    private readonly sessionFactory: CodexAppServerSessionFactory = () => spawnSession(),
-    private readonly clock: () => number = Date.now,
-  ) {}
+    sessionFactory: CodexAppServerSessionFactory = () => spawnSession(),
+    clock: () => number = Date.now,
+  ) {
+    this.sessionFactory = sessionFactory;
+    this.clock = clock;
+  }
 
   async refresh(): Promise<QuotaSnapshot> {
     return this.readRateLimits();
@@ -224,21 +246,33 @@ export class CodexAppServerQuotaAdapter implements QuotaSource, SupportedResetCr
   }
 
   async consume(request: ResetCreditConsumeRequest): Promise<ResetCreditConsumeResult> {
+    if (request.resetType !== 'codexRateLimits') throw new Error('Unsupported native Codex reset type');
+    // The native endpoint has no resetType parameter. Validate it against the
+    // authenticated account read, then preserve the opaque ID privately.
+    const beforeQuota = await this.readRateLimits();
+    if (!inspectQuotaFreshness(beforeQuota, this.clock()).fresh) {
+      throw new Error('Codex reset consume requires fresh authenticated rate-limit telemetry');
+    }
+    const credits = beforeQuota.providers.flatMap((provider) => provider.resetCredits);
+    const selected = credits.find((credit) => credit.status === 'available'
+      && credit.resetType === request.resetType
+      && (request.creditId === undefined || credit.id === request.creditId));
+    if (!selected?.id) throw new Error('No authenticated available reset credit matches the requested native reset type and credit ID');
     const params: Record<string, unknown> = {
       idempotencyKey: request.idempotencyKey,
-      resetType: request.resetType,
+      creditId: selected.id,
     };
-    if (request.creditId !== undefined) params.creditId = request.creditId;
     const raw = await this.withSession((session) => session.request('account/rateLimitResetCredit/consume', params));
-    const response = record(raw);
-    const returnedCreditId = typeof response?.creditId === 'string' ? response.creditId : request.creditId;
     return {
       outcome: consumeOutcome(raw),
+      // This is the ID selected from the authenticated pre-action read, not an
+      // ID returned by the consume endpoint (which has no such response field).
       resetType: request.resetType,
-      ...(returnedCreditId === undefined ? {} : { creditId: returnedCreditId }),
+      creditId: selected.id,
       beforeAllowance: null,
       afterAllowance: null,
       observedAt: new Date(this.clock()).toISOString(),
+      beforeQuota,
     };
   }
 

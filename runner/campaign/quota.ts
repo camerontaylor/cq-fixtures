@@ -53,7 +53,7 @@ export interface QuotaFreshness {
 
 export const DEFAULT_MAX_TELEMETRY_AGE_MS = 60_000;
 export const RESET_REDEMPTION_INTEGRATION_DEPENDENCY =
-  'The Codex app-server adapter is available; parent must verify the installed generated protocol exposes account/rateLimitResetCredit/consume before enabling explicit redemption.';
+  'The verified Codex consume route is implemented but redemption remains disabled pending explicit operator invocation.';
 
 export function inspectQuotaFreshness(
   snapshot: QuotaSnapshot | null | undefined,
@@ -81,7 +81,9 @@ export interface ResetCreditConsumeRequest {
 
 export interface ResetCreditConsumeResult {
   outcome: ResetCreditConsumeOutcome;
+  /** Exact native enum established by authenticated pre-action account read. */
   resetType: string;
+  /** Opaque ID selected from the authenticated pre-action read, not consume response. */
   creditId?: string;
   beforeAllowance: number | null;
   afterAllowance: number | null;
@@ -101,8 +103,12 @@ export interface SupportedResetCreditConsumer {
 export interface ResetJournalEntry {
   idempotencyKey: string;
   resetType: string;
+  /** Exact caller input; distinguishes omitted ID from an explicit selected ID on replay. */
+  requestedCreditId?: string;
   creditId?: string;
-  state: 'prepared' | 'completed';
+  state: 'prepared' | 'action-executed/evidence-pending' | 'completed';
+  actionOutcome?: ResetCreditConsumeOutcome;
+  beforeQuota?: QuotaSnapshot;
   result?: ResetCreditConsumeResult;
 }
 
@@ -110,7 +116,9 @@ export interface ResetJournal {
   get(idempotencyKey: string): Promise<ResetJournalEntry | null>;
   /** Must be create-if-absent. A conflicting entry is an error. */
   create(entry: ResetJournalEntry): Promise<void>;
-  /** Must only complete the matching prepared entry. */
+  /** Record the provider response before attempting a post-action read. */
+  recordAction(idempotencyKey: string, outcome: ResetCreditConsumeOutcome, beforeQuota: QuotaSnapshot): Promise<void>;
+  /** Must only complete the matching prepared or evidence-pending entry. */
   complete(idempotencyKey: string, result: ResetCreditConsumeResult): Promise<void>;
 }
 
@@ -134,35 +142,71 @@ export async function consumeResetCreditOnce(
   }
   if (!request.resetType.trim()) throw new Error('Reset type must be explicit');
 
-  const prior = await journal.get(request.idempotencyKey);
-  if (prior && (prior.resetType !== request.resetType || prior.creditId !== request.creditId)) {
+  let prior = await journal.get(request.idempotencyKey);
+  if (prior && (prior.resetType !== request.resetType || prior.requestedCreditId !== request.creditId)) {
     throw new Error('Idempotency key is already journaled for a different reset request');
   }
   if (prior?.state === 'completed' && prior.result) return prior.result;
-  if (!prior) await journal.create({ ...request, state: 'prepared' });
-
-  const beforeQuota = await consumer.readRateLimits();
-  const beforeFreshness = inspectQuotaFreshness(beforeQuota, (options.now ?? Date.now)(), options.maxAgeMs ?? DEFAULT_MAX_TELEMETRY_AGE_MS);
-  if (!beforeFreshness.fresh) throw new Error(`Reset redemption requires fresh rate-limit telemetry (${beforeFreshness.reason})`);
-  const consumed = await consumer.consume(request);
-  if (!['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'].includes(consumed.outcome)) {
-    throw new Error('Provider returned an unsupported reset-credit outcome');
-  }
-  if (consumed.resetType !== request.resetType) {
-    throw new Error('Provider returned a different reset type than requested');
-  }
-  if (request.creditId !== undefined && consumed.creditId !== request.creditId) {
-    throw new Error('Provider returned a different credit ID than requested');
+  const now = options.now ?? Date.now;
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_TELEMETRY_AGE_MS;
+  let beforeQuota: QuotaSnapshot;
+  let outcome: ResetCreditConsumeOutcome;
+  let creditId = request.creditId;
+  if (prior?.state === 'action-executed/evidence-pending') {
+    beforeQuota = prior.beforeQuota!;
+    outcome = prior.actionOutcome!;
+    creditId = prior.creditId;
+  } else {
+    beforeQuota = await consumer.readRateLimits();
+    const beforeFreshness = inspectQuotaFreshness(beforeQuota, now(), maxAgeMs);
+    if (!beforeFreshness.fresh) throw new Error(`Reset redemption requires fresh rate-limit telemetry (${beforeFreshness.reason})`);
+    const eligible = beforeQuota.providers.flatMap((provider) => provider.resetCredits)
+      .find((credit) => credit.status === 'available' && credit.resetType === request.resetType
+        && (request.creditId === undefined || credit.id === request.creditId));
+    if (!eligible?.id) throw new Error('Fresh authenticated telemetry has no eligible credit for the exact native reset type and credit ID');
+    creditId = eligible.id;
+    if (!prior) {
+      prior = { idempotencyKey: request.idempotencyKey, resetType: request.resetType,
+        ...(request.creditId === undefined ? {} : { requestedCreditId: request.creditId }),
+        creditId, state: 'prepared' };
+      await journal.create(prior);
+    } else if (prior.creditId !== creditId) {
+      throw new Error('Prepared reset journal credit does not match the currently eligible authenticated credit');
+    }
+    const consumed = await consumer.consume({ ...request, creditId });
+    if (!['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'].includes(consumed.outcome)) {
+      throw new Error('Provider returned an unsupported reset-credit outcome');
+    }
+    if (consumed.resetType !== request.resetType || consumed.creditId !== creditId) {
+      throw new Error('Consumer result does not match the locally authenticated reset type and selected credit');
+    }
+    outcome = consumed.outcome;
+    await journal.recordAction(request.idempotencyKey, outcome, beforeQuota);
   }
   const refreshedQuota = await consumer.readRateLimits();
-  const refreshedFreshness = inspectQuotaFreshness(refreshedQuota, (options.now ?? Date.now)(), options.maxAgeMs ?? DEFAULT_MAX_TELEMETRY_AGE_MS);
+  const refreshedFreshness = inspectQuotaFreshness(refreshedQuota, now(), maxAgeMs);
   if (!refreshedFreshness.fresh) {
-    throw new Error(`Reset redemption requires fresh post-consumption rate-limit telemetry (${refreshedFreshness.reason})`);
+    throw new Error(`Reset action is recorded as evidence-pending; fresh post-action telemetry unavailable (${refreshedFreshness.reason})`);
   }
-  const allowanceChangeVerified = hasObservedAllowanceIncrease(beforeQuota, refreshedQuota);
-  const result = { ...consumed, beforeQuota, refreshedQuota, allowanceChangeVerified };
+  const allowanceChangeVerified = hasObservedAllowanceIncrease(beforeQuota, refreshedQuota)
+    || (outcome === 'reset' || outcome === 'alreadyRedeemed') && creditNoLongerAvailable(beforeQuota, refreshedQuota, creditId);
+  if ((outcome === 'reset' || outcome === 'alreadyRedeemed') && !allowanceChangeVerified) {
+    throw new Error('Reset action remains evidence-pending: post-action read did not verify an allowance or credit-state change');
+  }
+  const result: ResetCreditConsumeResult = {
+    outcome, resetType: request.resetType, ...(creditId ? { creditId } : {}),
+    beforeAllowance: null, afterAllowance: null, observedAt: refreshedQuota.fetchedAt,
+    beforeQuota, refreshedQuota, allowanceChangeVerified,
+  };
   await journal.complete(request.idempotencyKey, result);
   return result;
+}
+
+function creditNoLongerAvailable(before: QuotaSnapshot, after: QuotaSnapshot, creditId: string | undefined): boolean {
+  if (!creditId) return false;
+  const beforeCredit = before.providers.flatMap((provider) => provider.resetCredits).find((credit) => credit.id === creditId);
+  const afterCredit = after.providers.flatMap((provider) => provider.resetCredits).find((credit) => credit.id === creditId);
+  return !!beforeCredit && beforeCredit.status === 'available' && (!afterCredit || afterCredit.status !== 'available');
 }
 
 function hasObservedAllowanceIncrease(before: QuotaSnapshot, after: QuotaSnapshot): boolean {

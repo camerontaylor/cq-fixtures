@@ -19,6 +19,8 @@ export interface StrategyRoute {
   transport: 'codex-exec' | 'pi-json' | 'pi-rpc' | 'zcode-acp' | 'shared-diagnostic' | 'fake';
   /** Optional native settings inventory. Unsupported values must not be sent. */
   supportedSettings?: Readonly<Record<string, readonly string[]>>;
+  /** Frozen requested effort for this route; copied onto every stage request. */
+  selectedEffort?: string;
 }
 
 export interface PerTaskBudgetTier {
@@ -363,6 +365,9 @@ function validateRecipe(recipe: StrategyRecipe): void {
   for (const route of routesOf(recipe)) {
     if (!route.id || !['hard', 'advisory', 'unsupported'].includes(route.tokenEnforcement)
       || !['codex-exec', 'pi-json', 'pi-rpc', 'zcode-acp', 'shared-diagnostic', 'fake'].includes(route.transport)) throw new Error(`Invalid configured route: ${route.id}`);
+    if (route.selectedEffort !== undefined && (!route.selectedEffort || !route.supportedSettings?.effort?.includes(route.selectedEffort))) {
+      throw new Error(`Unsupported or unpinned effort ${route.selectedEffort} on route ${route.id}`);
+    }
   }
   const count = (name: string, value: number, max: number): void => {
     if (!Number.isSafeInteger(value) || value < 1 || value > max) throw new RangeError(`${name} must be in [1, ${max}]`);
@@ -562,7 +567,7 @@ export async function runStrategy(
     const epochNow = options.epochNow ?? Date.now;
     const request: StageRequest = Object.freeze({
       assignmentId, stageId, attemptId, stageKey, attemptOrdinal, task, recipeHash: hash, kind: input.kind, purpose: input.purpose,
-      route, effort: input.effort, tier, deadlineMonotonicMs: timeoutAt,
+      route, effort: input.effort ?? input.route?.selectedEffort, tier, deadlineMonotonicMs: timeoutAt,
       deadlineEpochMs: epochNow() + Math.max(0, timeoutAt - stageStart), monotonicNowMs: stageStart,
       workspace: candidateWorkspace, workspaceId, workspacePolicy: input.workspacePolicy ?? 'task', signal: joined.controller.signal,
       hardTokenCap, tokenCapMode: capMode, inputCandidates: Object.freeze([...(input.inputCandidates ?? [])]), feedback: input.feedback,

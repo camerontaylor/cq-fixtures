@@ -12,7 +12,8 @@
     "pairedDifferenceICC": [0, 0.3, 0.6],
     "effects": [0, 0.02, 0.05],
     "tasksAndRepeatsAndWeights": [[1, 1, "equal"], [3, 3, "cycle-1-2-3"]],
-    "contrasts": 3
+    "contrasts": 3,
+    "partialNullSupplement": "At every design/baseline/discordance/ICC anchor also validate effects [0,.02,.05]. Mandatory gates as part of core. Amendment before completed gate reports; initial runs aborted on numerical boundary checks."
   },
   "stressGrid": "20 clusters; saturated p=.01/.98,q=.02; q=.05; dominant cluster weight=100; perfect substrate dependence rho=1; strategy-only and paired missingness. These are outside candidate eligibility and retain conservative/descriptive fallback; raw failures remain reported.",
   "datasetsPerStratumPerTrack": 2000,

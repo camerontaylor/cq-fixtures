@@ -7,6 +7,13 @@ import { ArtifactStore } from '../../cq-settings-integration/runner/artifacts/in
 import { NativeSupervisorControl } from '../../cq-settings-integration/runner/native/process.ts';
 import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
 import {
+  createScreeningCatalog,
+  createScreeningComparisonArtifact,
+  freezeScreeningDesign,
+  SCREENING_PROFILES,
+  type ScreeningCatalogInputs,
+} from '../runner/strategies/screening-catalog.ts';
+import {
   defineBudgetTiers,
   observedZeroUsage,
   runStrategy,
@@ -503,5 +510,129 @@ describe('bounded campaign strategy engine', () => {
     expect(outcome.operationalStatus).toBe('timed-out');
     expect(outcome.accounting.endToEndMs).toBeLessThan(500);
     expect(outcome.candidateCorrectness).toBeNull();
+  });
+});
+
+describe('outcome-blind broad screening catalog', () => {
+  const digest = (letter: string) => letter.repeat(64);
+  const screeningInputs = (overrides: Partial<ScreeningCatalogInputs> = {}): ScreeningCatalogInputs => ({
+    budgetTiers: [
+      { id: 'screen-small', maxAttempts: 8, maxStages: 12, wallClockMs: 60_000, judgementAllowanceMs: 5_000,
+        shutdownAllowanceMs: 2_000, observationAllowanceMs: 1_000, captureAllowanceMs: 2_000, tokenPolicy: 'advisory' },
+      { id: 'screen-medium', maxAttempts: 12, maxStages: 18, wallClockMs: 180_000, judgementAllowanceMs: 8_000,
+        shutdownAllowanceMs: 3_000, observationAllowanceMs: 2_000, captureAllowanceMs: 3_000, tokenPolicy: 'advisory' },
+      { id: 'screen-large', maxAttempts: 20, maxStages: 28, wallClockMs: 480_000, judgementAllowanceMs: 12_000,
+        shutdownAllowanceMs: 5_000, observationAllowanceMs: 3_000, captureAllowanceMs: 5_000, tokenPolicy: 'advisory' },
+    ],
+    boundaryHashes: { native: digest('a'), diagnostic: digest('b') },
+    toolsAssistanceHashes: { native: digest('c'), diagnostic: digest('d') },
+    sourcePin: 'fixtures:abc123', corpusPin: 'review-loop:v2', judgePin: 'judge:sha256:123',
+    ...overrides,
+  });
+
+  it('covers verified effort levels with all five recipes and three tiers on separate tracks', () => {
+    const catalog = createScreeningCatalog(screeningInputs());
+    expect(createScreeningCatalog(screeningInputs()).catalogId).toBe(catalog.catalogId);
+    const native = catalog.candidates.filter((candidate) => candidate.track === 'native');
+    const diagnostic = catalog.candidates.filter((candidate) => candidate.track === 'diagnostic');
+    expect(catalog.candidateCount).toBeLessThan(140);
+    expect(catalog.trackCandidateCounts).toEqual({ native: 90, diagnostic: 24 });
+    expect(native.length).toBeGreaterThan(0);
+    expect(diagnostic.length).toBeGreaterThan(0);
+    for (const track of ['native', 'diagnostic'] as const) {
+      const cells = catalog.candidates.filter((candidate) => candidate.track === track);
+      expect(new Set(cells.map((candidate) => candidate.recipeId))).toEqual(new Set([
+        'one-shot', 'same-model-verify-repair', 'candidate-selection', 'mixed-model-verify-repair', 'cheap-first-escalation',
+      ]));
+      for (const kind of new Set(cells.map((candidate) => candidate.recipeId))) {
+        expect(new Set(cells.filter((candidate) => candidate.recipeId === kind).map((candidate) => candidate.budgetTier.id)))
+          .toEqual(new Set(['screen-small', 'screen-medium', 'screen-large']));
+      }
+    }
+    expect(SCREENING_PROFILES.find((profile) => profile.id === 'codex-sol')?.supportedEfforts)
+      .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+    expect(SCREENING_PROFILES.find((profile) => profile.id === 'codex-luna')?.supportedEfforts)
+      .toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(SCREENING_PROFILES.find((profile) => profile.id === 'zcode-glm-flash')?.supportedEfforts)
+      .toEqual(['low', 'high', 'max']);
+    expect(SCREENING_PROFILES.find((profile) => profile.id === 'pi-space-bunny')?.supportedEfforts).toEqual([]);
+    expect(catalog.unsupportedSettings).toContainEqual(expect.objectContaining({
+      profileId: 'pi-space-bunny', setting: 'effort', value: 'high', status: 'not-exposed',
+    }));
+    expect(catalog.candidates.every((candidate) => candidate.plannedCandidateOnly && candidate.status === 'planned')).toBe(true);
+    expect(catalog.candidates.every((candidate) => candidate.chargedStageEnvelope.tokenCapClaim === 'none')).toBe(true);
+    const diagnosticBaseline = catalog.candidates.find((candidate) => candidate.track === 'diagnostic' && candidate.recipe.kind === 'one-shot');
+    expect(diagnosticBaseline?.recipe.kind === 'one-shot' ? diagnosticBaseline.recipe.route.transport : null).toBe('shared-diagnostic');
+  });
+
+  it('binds effective profile, evaluation boundary, assistance and all cumulative tier limits into identity', async () => {
+    const first = createScreeningCatalog(screeningInputs());
+    const changed = createScreeningCatalog(screeningInputs({
+      toolsAssistanceHashes: { native: digest('e'), diagnostic: digest('d') },
+    }));
+    const firstCell = first.candidates.find((candidate) => candidate.track === 'native' && candidate.recipeId === 'one-shot' && candidate.selectedEfforts[0] === 'low' && candidate.budgetTier.id === 'screen-small')!;
+    const changedCell = changed.candidates.find((candidate) => candidate.track === 'native' && candidate.recipeId === 'one-shot' && candidate.selectedEfforts[0] === 'low' && candidate.budgetTier.id === 'screen-small')!;
+    expect(firstCell.strategyId).not.toBe(changedCell.strategyId);
+    expect(firstCell.chargedStageEnvelope).toMatchObject({
+      chargedAttempts: 2, chargedStages: 2, tierAttemptCap: 8, tierStageCap: 12,
+      independentJudgeReserveMs: 5_000, tokenBudget: null, tokenCapClaim: 'none',
+    });
+    const selection = first.candidates.find((candidate) => candidate.recipeId === 'candidate-selection' && candidate.budgetTier.id === 'screen-small')!;
+    expect(selection.chargedStageEnvelope.chargedStages).toBe(4); // two drafts + selector + independent judge
+    expect(Object.isFrozen(selection.recipe)).toBe(true);
+    expect(first.candidates.find((candidate) => candidate.recipeId === 'same-model-verify-repair' && candidate.budgetTier.id === 'screen-small')?.chargedStageEnvelope.chargedStages)
+      .toBe(5); // draft, verify, repair, final verify, independent judge
+    expect(first.candidates.find((candidate) => candidate.recipeId === 'mixed-model-verify-repair' && candidate.budgetTier.id === 'screen-small')?.chargedStageEnvelope.chargedStages)
+      .toBe(5);
+    expect(first.candidates.find((candidate) => candidate.recipeId === 'cheap-first-escalation' && candidate.budgetTier.id === 'screen-small')?.chargedStageEnvelope.chargedStages)
+      .toBe(4); // low draft + verify + high escalation + independent judge
+    const lowEffortBaseline = first.candidates.find((candidate) => candidate.track === 'native' && candidate.recipe.kind === 'one-shot'
+      && candidate.profileIds[0] === 'codex-sol' && candidate.selectedEfforts[0] === 'low' && candidate.budgetTier.id === 'screen-small')!;
+    expect(lowEffortBaseline.recipe.kind === 'one-shot' ? lowEffortBaseline.recipe.route.selectedEffort : null).toBe('low');
+    const executor = new FakeExecutor();
+    await runStrategy(task, lowEffortBaseline.recipe, lowEffortBaseline.budgetTier, executor, { assignmentId: 'catalog-assignment-01' });
+    expect(executor.requests.find((request) => request.kind === 'draft')?.effort).toBe('low');
+  });
+
+  it('rejects token-cap claims for routes without verified enforcement', () => {
+    const inputs = screeningInputs({ budgetTiers: screeningInputs().budgetTiers.map((tier, index) => index === 0 ? { ...tier, tokenBudget: 500 } : tier) });
+    expect(() => createScreeningCatalog(inputs)).toThrow(/no verified hard token caps/);
+  });
+
+  it('freezes tunable calibration rules and a separate sealed held-out manifest before outcomes', () => {
+    const catalog = createScreeningCatalog(screeningInputs());
+    const design = freezeScreeningDesign(catalog, {
+      designId: 'visible-screen-v1', frozenAtUTC: '2026-09-29T01:00:00Z',
+      calibration: { cohortId: 'calibration-01', taskManifestHash: digest('1'), substrateManifestHash: digest('2'), pilotEvidenceHash: digest('3') },
+      heldOut: { cohortId: 'heldout-01', taskManifestHash: digest('4'), substrateManifestHash: digest('5'), reservedBeforeOutcomes: true },
+      promotionPolicy: { minimumPairedSubstrates: 8, promisingSuccessDifference: 0.05, uncertaintyConfidence: 0.95,
+        retainIfUncertaintyHalfWidthAtLeast: 0.1, alwaysRetainIndividualModelBaselines: true, calibrationOnly: true },
+      tuningInputs: { budgetPilotManifestHash: digest('6'), variancePilotManifestHash: digest('7'), budgetsDerivedFromPilot: true },
+    });
+    expect(design).toMatchObject({
+      heldOutSealedFromPromotion: true, cohortPoolingAllowed: false,
+      tracks: ['native', 'diagnostic'], catalogId: catalog.catalogId,
+    });
+    expect(design.candidateIds).toHaveLength(catalog.candidateCount);
+    expect(design.designHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(() => freezeScreeningDesign(catalog, {
+      designId: 'bad-design', frozenAtUTC: '2026-09-29T01:00:00Z',
+      calibration: { ...design.calibration }, heldOut: { ...design.heldOut, cohortId: design.calibration.cohortId },
+      promotionPolicy: { ...design.promotionPolicy }, tuningInputs: { ...design.tuningInputs },
+    })).toThrow(/cohorts must be distinct/);
+    const comparison = createScreeningComparisonArtifact(catalog, design, 'native', digest('8'),
+      catalog.candidates.filter((candidate) => candidate.track === 'native').map((candidate) => ({
+        candidateId: candidate.candidateId, assignmentCount: 0, launchCount: 0, validOutcomeCount: 0,
+        operationalCompletionRate: null, conditionalCorrectness: null, assignedStrategySuccess: null,
+        pairedSubstrateCount: 0, uncertaintyInterval95: null, disposition: 'unscreened' as const,
+        dispositionReason: 'planned candidate has no calibration assignments yet',
+      })));
+    expect(comparison).toMatchObject({ cohortId: 'calibration-01', track: 'native', heldOutOutcomeManifestHash: null, cohortPoolingAllowed: false });
+    expect(comparison.comparisons).toHaveLength(catalog.trackCandidateCounts.native);
+    const diagnosticCandidateId = catalog.candidates.find((candidate) => candidate.track === 'diagnostic')!.candidateId;
+    expect(() => createScreeningComparisonArtifact(catalog, design, 'native', digest('8'), [
+      { ...comparison.comparisons[0]!, candidateId: diagnosticCandidateId },
+      ...comparison.comparisons.slice(1),
+    ])).toThrow(/outside the frozen native design/);
   });
 });

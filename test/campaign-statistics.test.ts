@@ -1,9 +1,17 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { join as pathJoin } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { loadPrecisionValidation, loadPrecisionForecast } from '../runner/statistics/evidence-loader.js';
+import { precisionMonteCarloReport } from '../runner/statistics/precision-monte-carlo.js';
+import { simulatePrecisionPower } from '../runner/statistics/precision-power.js';
+import { simulatePrecisionMissingness } from '../runner/statistics/precision-missingness.js';
 import { describe, expect, it } from 'vitest';
 import { analyzeFixedSample, designHash, validationDesignHash, type Assignment, type Observation, type Preregistration, type ValidationEvidence, wilsonBounds } from '../runner/statistics/inference.js';
 import { simulateProcedure } from '../runner/statistics/simulation.js';
 import { studentTCdf, studentTCritical } from '../runner/statistics/student-t.js';
-import { CORE_POINTS, VALIDATION_POINTS, FORECAST_POINTS, precisionForecastPasses, pointEffects, PRECISION_RECIPE, precisionRecipeHash, weightedClusterT, precisionValidationPasses, analyzePrecisionSample, type PrecisionValidation, type PrecisionForecastEvidence } from '../runner/statistics/precision.js';
+import { CORE_POINTS, FORECAST_POINTS, precisionForecastPasses, PRECISION_RECIPE, precisionRecipeHash, weightedClusterT, precisionValidationPasses, analyzePrecisionSample, type PrecisionValidation } from '../runner/statistics/precision.js';
 import { adaptTaskOutcomes, type TaskOutcomeInput, type OutcomeJoinRegistration } from '../runner/statistics/task-outcome-adapter.js';
 import { forecastFivePointDesign } from '../runner/statistics/power.js';
 
@@ -178,10 +186,7 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
   });
 
   function validation(): PrecisionValidation {
-    return { recipe: PRECISION_RECIPE, recipeHash: precisionRecipeHash, track: 'native', seed: 7, allCorePassed: true,
-      core: VALIDATION_POINTS.map(point => ({ point, datasets: 2000, jointCovered: 1980, perContrastCovered: [1980, 1980, 1980],
-        nullDatasets: pointEffects(point).includes(0) ? 2000 : 0, anyNullRejected: 0, degenerateDatasets: 0,
-        meanWidth: .2, coverageLower95: wilsonBounds(1980, 2000)[0], fwerUpper95: pointEffects(point).includes(0) ? wilsonBounds(0, 2000)[1] : null, passes: true })) };
+    return loadPrecisionValidation(new URL('../runner/statistics/precision-validation-native-v1.json', import.meta.url));
   }
 
   it('checks every stratum and exact track rather than trusting a pooled pass flag', () => {
@@ -215,7 +220,7 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
   });
 
   it('requires all forecast point gates before extending to larger calibrated designs', () => {
-    const evidence = JSON.parse(readFileSync(new URL('../runner/statistics/precision-power-native-v1.json', import.meta.url), 'utf8')) as PrecisionForecastEvidence;
+    const evidence = loadPrecisionForecast(new URL('../runner/statistics/precision-power-native-v1.json', import.meta.url));
     expect(precisionForecastPasses(evidence, 'native')).toBe(true);
     expect(precisionForecastPasses(evidence, 'diagnostic')).toBe(false);
     const model = FORECAST_POINTS.find(p => p.clusters === 1280 && p.weights === 'cycle-1-2-3' && p.icc === .6 && p.discordance === .35)!;
@@ -285,4 +290,119 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
     join.assignments = join.assignments.slice(1);
     expect(() => adaptTaskOutcomes(reg, join, outcomes)).toThrow(/full assigned/);
   });
+  it('rejects coherent fabricated evidence, seed changes and recipe substitution', () => {
+    const v = validation();
+    for (const stratum of v.core) {
+      stratum.jointCovered = stratum.datasets;
+      stratum.perContrastCovered = [stratum.datasets, stratum.datasets, stratum.datasets];
+      stratum.anyNullRejected = 0;
+      stratum.coverageLower95 = wilsonBounds(stratum.datasets, stratum.datasets)[0];
+      stratum.fwerUpper95 = stratum.nullDatasets ? wilsonBounds(0, stratum.nullDatasets)[1] : null;
+    }
+    expect(precisionValidationPasses(v, 'native')).toBe(false);
+    expect(precisionValidationPasses({ ...validation(), seed: 1 }, 'native')).toBe(false);
+    const forecast = loadPrecisionForecast(new URL('../runner/statistics/precision-power-native-v1.json', import.meta.url));
+    expect(precisionForecastPasses({ ...forecast, recipeHash: 'a'.repeat(64) }, 'native')).toBe(false);
+    forecast.cells[0]!.coverage[0]!.meanWidth += .001;
+    expect(precisionForecastPasses(forecast, 'native')).toBe(false);
+    const reordered = Object.fromEntries(Object.entries(validation()).reverse()) as unknown as PrecisionValidation;
+    expect(precisionValidationPasses(reordered, 'native')).toBe(true);
+  });
+
+  it('refuses unpinned and failed base evidence before CLI or function simulations', () => {
+    const dir = mkdtempSync(pathJoin(tmpdir(), 's6-pins-'));
+    try {
+      // Compile only these CLI entry points and their statistics dependencies.
+      // The fresh fixture cannot use stale/missing dist or unrelated runner builds.
+      const statisticsRoot = fileURLToPath(new URL('../runner/statistics/', import.meta.url));
+      const config = pathJoin(dir, 'tsconfig.json'), emitted = pathJoin(dir, 'compiled');
+      writeFileSync(pathJoin(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+      writeFileSync(config, JSON.stringify({
+        extends: fileURLToPath(new URL('../tsconfig.json', import.meta.url)),
+        compilerOptions: { noEmit: false, noEmitOnError: true, allowImportingTsExtensions: false,
+          declaration: false, sourceMap: false, rootDir: statisticsRoot, outDir: emitted,
+          types: ['node'], typeRoots: [fileURLToPath(new URL('../node_modules/@types/', import.meta.url))] },
+        files: ['power', 'missingness'].map(cli => pathJoin(statisticsRoot, `run-precision-${cli}.ts`)),
+        include: [],
+      }));
+      const compiled = spawnSync(process.execPath,
+        [fileURLToPath(new URL('../node_modules/typescript/bin/tsc', import.meta.url)), '--project', config],
+        { encoding: 'utf8', cwd: dir, timeout: 20000 });
+      expect(compiled.error).toBeUndefined();
+      expect(compiled.status, compiled.stdout + compiled.stderr).toBe(0);
+      for (const cli of ['power', 'missingness']) expect(existsSync(pathJoin(emitted, `run-precision-${cli}.js`))).toBe(true);
+      for (const failed of [false, true]) {
+        const v = validation();
+        if (failed) { v.allCorePassed = false; v.core[0]!.jointCovered = 1800; }
+        else v.seed = 7;
+        const input = pathJoin(dir, 'validation.json');
+        writeFileSync(input, JSON.stringify({ validation: v }));
+        expect(() => loadPrecisionValidation(input)).toThrow(/unpinned/);
+        expect(() => simulatePrecisionPower(v, v.seed + 300000000)).toThrow(/failed or unpinned/);
+        expect(() => simulatePrecisionMissingness(v, v.seed + 400000000)).toThrow(/failed or unpinned/);
+        for (const cli of ['power', 'missingness']) {
+          const output = pathJoin(dir, cli + '.json');
+          const result = spawnSync(process.execPath, [pathJoin(emitted, `run-precision-${cli}.js`), input, output], { encoding: 'utf8', cwd: dir, timeout: 10000 });
+          expect(result.status).toBe(1);
+          expect(result.stderr).toMatch(/unpinned validation archive/);
+          expect(existsSync(output)).toBe(false);
+        }
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 30000);
+
+  it('reports simultaneous Monte Carlo coverage per contrast with dataset denominators', () => {
+    const v = validation(), report = precisionMonteCarloReport(v);
+    expect(report.boundsCount).toBe(3240);
+    expect(report.gatesChanged).toBe(false);
+    expect(report.strata).toHaveLength(720);
+    for (let i = 0; i < report.strata.length; i++) {
+      const stratum = report.strata[i]!, source = v.core[i]!;
+      expect(stratum.perContrast).toHaveLength(3);
+      for (const c of stratum.perContrast) {
+        expect(c.datasets).toBe(source.datasets);
+        expect(c.covered).toBe(source.perContrastCovered[c.contrastIndex]);
+        expect(c.simultaneousLower95).toBe(wilsonBounds(c.covered, source.datasets, 4.5)[0]);
+        expect(c.simultaneousLower95).toBeGreaterThanOrEqual(stratum.coverageLower);
+      }
+    }
+  });
+
+  it('rejects duplicate and nonpositive registration before adapter roster maps', () => {
+    for (const invalid of ['duplicate', 'zero', 'negative']) {
+      const { reg, join, outcomes } = outcomeFixture();
+      reg.assignments = invalid === 'duplicate' ? [...reg.assignments, { ...reg.assignments[0]! }]
+        : reg.assignments.map((a, i) => i === 0 ? { ...a, weight: invalid === 'zero' ? 0 : -1 } : a);
+      join.baseDesignHash = designHash(reg);
+      expect(() => adaptTaskOutcomes(reg, join, outcomes)).toThrow(/duplicate|weight/);
+    }
+  });
+
+  it('accounts assignment budget causes once, preserves failures and reports unknown totals', () => {
+    const { reg, join, outcomes } = outcomeFixture();
+    const analyze = () => analyzeFixedSample(reg, adaptTaskOutcomes(reg, join, outcomes).observations).contrasts[0]!;
+    expect(analyze().launchedBudgetFailures).toBeNull();
+    expect(analyze().knownLaunchedBudgetFailures).toBe(0);
+    for (const o of outcomes) o.execution = { launched: true, terminalCause: 'complete', sourceInvocationIds: o.stages.map(s => s.invocationId) };
+    for (const terminalCause of ['complete', 'transport-error', 'provider-cancelled', 'operator-cancelled'] as const) {
+      outcomes[0]!.execution!.terminalCause = terminalCause;
+      expect(analyze().launchedBudgetFailures).toBe(0);
+    }
+    outcomes[0]!.execution!.terminalCause = 'budget-exhausted';
+    expect(analyze().launchedBudgetFailures).toBe(1);
+    expect(adaptTaskOutcomes(reg, join, outcomes).audit[0]!.execution).toEqual(outcomes[0]!.execution);
+    expect(adaptTaskOutcomes(reg, join, outcomes).observations.every(o => o.success === false)).toBe(true);
+    outcomes[1]!.execution!.terminalCause = 'unknown';
+    expect(analyze().launchedBudgetFailures).toBeNull();
+    expect(analyze().knownLaunchedBudgetFailures).toBe(1);
+    outcomes[1]!.execution = { launched: false, terminalCause: 'prelaunch-failure', sourceInvocationIds: [] };
+    expect(analyze().launchedBudgetFailures).toBe(1);
+    outcomes[1]!.execution = { launched: null, terminalCause: 'complete', sourceInvocationIds: [] };
+    expect(analyze().launchedBudgetFailures).toBeNull();
+    outcomes[0]!.execution!.sourceInvocationIds = ['unretained-invocation'];
+    expect(() => adaptTaskOutcomes(reg, join, outcomes)).toThrow(/provenance/);
+    outcomes[0]!.execution!.sourceInvocationIds = [];
+    expect(() => adaptTaskOutcomes(reg, join, outcomes)).toThrow(/provenance/);
+  });
+
 });

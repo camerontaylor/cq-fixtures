@@ -276,3 +276,56 @@ describe('private task inventory and cleanup contract', () => {
     expect(() => compileContainerBoundary({ ...specification, profile: 'other' as 'cq-boundary-s5' })).toThrow();
   });
 });
+
+describe('minimal managed subscription staging', () => {
+  it('retains only managed OAuth fields and cannot switch to API-key auth', async () => {
+    const { minimalCodexSubscription } = await import('../runner/boundary/subscription-auth.ts');
+    const value = JSON.parse(minimalCodexSubscription({ auth_mode: 'chatgpt', OPENAI_API_KEY: 'synthetic-unused-key', tokens: { id_token: 'synthetic-id', access_token: 'synthetic-access', refresh_token: 'synthetic-refresh', account_id: 'synthetic-account', extra: 'excluded' }, last_refresh: '2026-01-01T00:00:00Z', other: 'excluded' }));
+    expect(value.auth_mode).toBe('chatgpt'); expect(value.OPENAI_API_KEY).toBeNull();
+    expect(Object.keys(value.tokens).sort()).toEqual(['access_token', 'account_id', 'id_token', 'refresh_token']);
+    expect(value.other).toBeUndefined(); expect(value.last_refresh).toBe('2026-01-01T00:00:00Z');
+    expect(() => minimalCodexSubscription({ auth_mode: 'apikey', OPENAI_API_KEY: 'synthetic' })).toThrow(/subscription/);
+    expect(() => minimalCodexSubscription({ tokens: { access_token: 'partial' } })).toThrow(/fields unavailable/);
+  });
+});
+
+describe('production broker exact endpoint contract', () => {
+  it('rejects undeclared subpaths even when the parent prefix is allowed', async () => {
+    const { server } = createEgressBroker({ routes: [{ id: 'catalog', hostname: 'chatgpt.com', port: 443, pathPrefix: '/backend-api/codex', exactPaths: ['/backend-api/codex/models'], methods: ['GET'], addresses: ['8.8.8.8'], requestHeaders: ['authorization'] }], timeoutMs: 1000, maxBodyBytes: 1024 });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing port');
+    try {
+      const status = await new Promise<number>((resolve, reject) => {
+        (import('node:http')).then(({ get }) => get(`http://127.0.0.1:${address.port}/route/catalog/backend-api/codex/models/undeclared`, (response) => { response.resume(); resolve(response.statusCode!); }).on('error', reject), reject);
+      });
+      expect(status).toBe(403);
+      expect(() => compileBroker({ routes: [{ id: 'catalog', hostname: 'chatgpt.com', port: 443, pathPrefix: '/models', exactPaths: ['/oauth/token'], methods: ['GET'], addresses: ['8.8.8.8'], requestHeaders: [] }], timeoutMs: 1000, maxBodyBytes: 1024 })).toThrow();
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
+  it('pipes synthetic TLS SSE chunks before the upstream finishes', async () => {
+    const fs = await import('node:fs'); const https = await import('node:https'); const http = await import('node:http');
+    const root = mkdtempSync(join(tmpdir(), 'cq-sse-test-')); roots.push(root);
+    const key = join(root, 'key.pem'); const cert = join(root, 'cert.pem');
+    const generated = spawnSync('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=upstream.synthetic.test', '-addext', 'subjectAltName=DNS:upstream.synthetic.test'], { timeout: 10_000, stdio: 'ignore' });
+    expect(generated.status).toBe(0);
+    let finishUpstream: (() => void) | undefined;
+    const upstream = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (_req, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' }); response.write('data: synthetic-first\n\n');
+      finishUpstream = () => response.end('data: synthetic-last\n\n');
+    });
+    upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+    const target = upstream.address(); if (!target || typeof target === 'string') throw new Error('missing target port');
+    const { server } = createEgressBroker({ routes: [{ id: 'synthetic', hostname: 'upstream.synthetic.test', port: target.port, pathPrefix: '/responses', exactPaths: ['/responses'], methods: ['GET'], addresses: ['127.0.0.1'], requestHeaders: [] }], synthetic: { ca: fs.readFileSync(cert, 'utf8') }, timeoutMs: 10_000, maxBodyBytes: 1024 });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening'); const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('missing broker port');
+    try {
+      const body = await new Promise<string>((resolve, reject) => {
+        http.get(`http://127.0.0.1:${address.port}/route/synthetic/responses`, (response) => {
+          let data = ''; response.on('data', (chunk) => { data += chunk; if (data.includes('synthetic-first') && finishUpstream) { const finish = finishUpstream; finishUpstream = undefined; finish(); } });
+          response.once('end', () => resolve(data)); response.once('error', reject);
+        }).once('error', reject);
+      });
+      expect(body).toContain('synthetic-first'); expect(body).toContain('synthetic-last');
+    } finally { finishUpstream?.(); await Promise.all([new Promise<void>((resolve) => server.close(() => resolve())), new Promise<void>((resolve) => upstream.close(() => resolve()))]); }
+  }, 30_000);
+});

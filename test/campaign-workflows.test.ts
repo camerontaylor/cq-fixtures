@@ -22,6 +22,8 @@ import {
 } from '@camerontaylor/cq-toolkit';
 import { describe, expect, it } from 'vitest';
 import { runSuite } from '../runner/index.ts';
+import { ObservedNativeDriver } from '../runner/native/observed-driver.ts';
+import type { InvocationIdentity } from '../runner/native/observation.ts';
 import {
   judgeReviewLoopRepairTask,
   judgeReviewLoopWorkspace,
@@ -195,8 +197,20 @@ describe('cq-settings bounded workflow corpus', () => {
     const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
     const bundle = await createReviewLoopRunSuiteBundle(task);
     let workerWorkspace = '';
-    const driver: Driver = {
-      async run(invocation) {
+    class LocalObservedDriver extends ObservedNativeDriver {
+      readonly campaignBudgetCapabilities = { hardTokenCap: true, authoritativeTokenTotal: true };
+
+      constructor() {
+        super({
+          configuredTarget: OFFLINE_REVIEW_ROUTE.model,
+          transport: 'local-corpus-test',
+          executable: process.execPath,
+          executableVersion: process.version,
+          profile: 'deterministic-fixture',
+        });
+      }
+
+      protected async runObserved(invocation: Parameters<Driver['run']>[0], identity: InvocationIdentity) {
         const workspace = invocation.prompt.match(/^workspace: (.+)$/m)?.[1];
         if (!workspace) throw new Error('runSuite invocation omitted workspace path');
         workerWorkspace = workspace;
@@ -208,15 +222,23 @@ describe('cq-settings bounded workflow corpus', () => {
           '-c', 'user.email=corpus@example.invalid',
           'commit', '-q', '-m', 'Model-created valid candidate commit',
         ]);
-        return {
+        const result: WorkerResult = {
           ...completedWorker({
             fixed: true,
             notes: 'Count Unicode code points after trimming while preserving display input.',
           }),
           model: invocation.modelSpec.model,
         };
-      },
-    };
+        const observation = this.newObservation(identity, invocation, new Date().toISOString());
+        observation.withheldArtifacts = [];
+        observation.usage.tokenTotal.semantics = 'unknown';
+        observation.capture.baselineCommit = null;
+        this.finishObservation(observation, result);
+        return result;
+      }
+    }
+    const driver = new LocalObservedDriver();
+    const wrappedDriver = bundle.wrapDriver(driver);
     try {
       expect(bundle.suite.cases[0]?.id).toBe(task.id);
       expect(bundle.suite.cases[0]?.task.notes).toContain(`source=${REVIEW_LOOP_SOURCE_ID}`);
@@ -225,7 +247,7 @@ describe('cq-settings bounded workflow corpus', () => {
       const result = await runSuite({
         suiteDir: bundle.suiteDir,
         repoRoot: bundle.repoRoot,
-        driver: bundle.wrapDriver(driver),
+        driver: wrappedDriver,
         model: bundle.modelSpec.model,
         provider: bundle.modelSpec.provider,
         driverName: 'subprocess',
@@ -236,11 +258,23 @@ describe('cq-settings bounded workflow corpus', () => {
       expect(result.rows[0]).toMatchObject({ case: task.id, role: 'fixer-worker', model: 'glm-5.3-flash' });
       expect(result.rows[0]?.outcome).toMatchObject({ score: 1 });
       expect(result.tables).toHaveLength(1);
+      expect(result.observations).toHaveLength(1);
+      expect(result.observations[0]?.observation.transport).toBe('local-corpus-test');
+      expect(result.observations[0]?.observation.identity.invocationId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(result.observations[0]?.observation.workerResult?.model).toBe(OFFLINE_REVIEW_ROUTE.model);
+      expect(wrappedDriver.campaignBudgetCapabilities).toEqual({
+        hardTokenCap: true,
+        authoritativeTokenTotal: true,
+      });
       const baselineCommit = bundle.pinnedBaselineCommit(workerWorkspace);
       const candidateCommit = bundle.pinnedCandidateCommit(workerWorkspace);
       expect(baselineCommit).toMatch(/^[a-f0-9]{40}$/);
       expect(candidateCommit).toMatch(/^[a-f0-9]{40}$/);
+      if (baselineCommit === undefined || candidateCommit === undefined) {
+        throw new Error('runSuite adapter did not capture baseline and candidate commits');
+      }
       expect(candidateCommit).not.toBe(baselineCommit);
+      expect(execFileSync('git', ['-C', workerWorkspace, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(candidateCommit);
       expect(bundle.oraclePin).toMatchObject({
         version: 1,
         oracleId: REVIEW_LOOP_ORACLE_ID,
@@ -338,7 +372,7 @@ describe('cq-settings bounded workflow corpus', () => {
     execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'add', '.'], { cwd: repoRoot });
     execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', 'Seed conflict task'], { cwd: repoRoot });
     const baseline = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
-    const replacement = `export function campaignLabel(label) {\n  if (typeof label !== 'string') return '';\n  return Array.from(label.trim()).slice(0, 40).join('');\n}\n`;
+    const replacement = `export function campaignLabel(label) {\n  if (typeof label !== 'string') return '';\n  const trimmed = label.trim();\n  if (trimmed.length === 0 || Array.from(trimmed).length > 40) return '';\n  return trimmed;\n}\n`;
     let validations = 0;
     let pushedCommit = '';
     const effects: MergeEffects = {
@@ -388,7 +422,9 @@ describe('cq-settings bounded workflow corpus', () => {
       });
 
       expect(expectOk(result).decision).toBe('acted');
-      expect(judgeMergeConflictWorkspace(repoRoot, baseline)).toMatchObject({
+      const mergeReport = judgeMergeConflictWorkspace(repoRoot, baseline);
+      expect(mergeReport.failures, JSON.stringify(mergeReport)).toEqual([]);
+      expect(mergeReport).toMatchObject({
         passed: true,
         sourceId: 'cq-settings.merge-worktree-seed.v1',
         baselineId: 'cq-settings.merge-conflict.baseline.v1',
@@ -398,7 +434,8 @@ describe('cq-settings bounded workflow corpus', () => {
       expect(pushedCommit).not.toBe(baseline);
       expect(execFileSync('git', ['diff', '--name-only', baseline, 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()).toBe('src/settings.mjs');
       const candidate = await import(`${pathToFileURL(settingsPath).href}?fresh=${Date.now()}`) as { campaignLabel(label: unknown): string };
-      expect(candidate.campaignLabel('x'.repeat(41))).toHaveLength(40);
+      expect(candidate.campaignLabel('😀'.repeat(40))).toBe('😀'.repeat(40));
+      expect(candidate.campaignLabel('😀'.repeat(41))).toBe('');
       expect(invocations[0]?.prompt).toContain('src/settings.mjs');
       expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'none' });
     } finally {

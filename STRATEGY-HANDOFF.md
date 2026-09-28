@@ -80,6 +80,62 @@ route-configured `Driver`, invoke that task operation in the requested
 workspace, and map the returned or thrown toolkit result into S1 evidence.
 The corpus helper itself stays outside this branch's ownership.
 
+## Screening catalog
+
+`runner/strategies/screening-catalog.ts` exports `createScreeningCatalog`,
+`freezeScreeningDesign`, and `createScreeningComparisonArtifact`. The catalog
+is a set of **planned candidates**, not run results. Its pinned profile snapshot
+comes from Paseo profile/model/provider inspection at
+`2026-09-28T21:58:19Z`:
+
+- GPT-6 Sol: configured `codex` profile, full-access, profile-requested low;
+  provider model inventory exposes low/medium/high/xhigh/max/ultra.
+- GPT-6 Luna: available through the Codex provider, but no named Luna profile;
+  provider model inventory exposes low/medium/high/xhigh/max. The catalog
+  records the discovered full-access route as the launch mode.
+- GLM-5.3-Flash: configured ZCode profile, yolo, requested high; model inventory
+  exposes low/high/max.
+- Space Bunny: configured Pi/OpenCode profile at
+  `opencode-go/space-bunny-free`, requested high. Its underlying model stays
+  anonymous and the model inventory exposes no effort list, so the catalog
+  marks high as profile-requested and unverified rather than an effort contrast.
+
+The native screen covers each exposed effort with one-shot baselines at all
+three caller-supplied tiers, then uses representative high-effort scaffold
+cells, four directed mixed-model pipelines, and low-to-high escalation only
+where both levels are exposed. A smaller diagnostic screen mirrors all five
+recipe families on `shared-diagnostic` identities. It is separate from native
+cells and makes no claim that diagnostic harness conformance has been proven.
+This is a covering design rather than a Cartesian product. It currently
+generates 114 planned cells (90 native, 24 diagnostic).
+
+Callers must supply three or more pilot-derived bounded tiers and frozen
+boundary, tools/assistance, source, corpus, and judge identities. This catalog
+does not invent numeric pilot limits. Native token enforcement is explicitly
+`unsupported` in the screening inventory; tiers with token budgets or
+`hard-required` policy fail closed. Each candidate identity binds track,
+participants and selected effort, profile evidence, boundary and assistance
+hashes, recipe, all configured tiers, and a charged stage envelope. The
+envelope accounts for candidate drafts, verification, repair, selection,
+escalation, final judging, cumulative wall time, shutdown, observation, and
+capture reserves. Any candidate that could hit the stage or attempt ceiling is
+marked as possible bounded truncation.
+
+Freeze the screening design before outcomes, with distinct calibration and
+held-out cohort/manifest hashes, pilot references, and numeric promotion and
+uncertainty rules. Its comparison-artifact constructor accepts a single
+calibration track, requires every planned row (including missing/unscreened
+cells), and keeps held-out outcome hashes null. The design forbids post-hoc
+cohort pooling and retains individual-model baselines by policy.
+
+The native G1 entrypoint remains the priority and does not depend on this
+catalog. No native adapter changes are required for the catalog work. When
+mapping routes, use the route's `selectedEffort` (also copied into every
+`StageRequest.effort`) with its configured profile/model and transport; the
+native adapter does not need to parse effort out of a string ID. Keep
+`profile-requested` Space Bunny distinct from verified model effort, and do
+not send a token cap for these unsupported routes.
+
 ## Bounds and outcome fields
 
 Every stage, including selector, verifier, repair, escalation, and oracle, is

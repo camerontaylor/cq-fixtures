@@ -21,7 +21,7 @@
       "adequacyEvidence": "public regression test and independent host semantic checks are red on the known-buggy baseline and green on both reference and distinct alternative correct implementations; no-op claim, malformed output after edits, and throw after edits are independently judged; candidate commit identity and clean Git state are separate from workspace conformance",
       "split": "calibration",
       "pristineBaselineIntegrity": "fresh initial Git commit; grader compares candidate against its recorded base SHA and checks only src/settings.mjs changed; task factory's ModelSpec is caller supplied",
-      "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports a typed FixerSuiteCase adapter and bundle materializer; injected Driver pins the materialized baseline before delegation, preserves a worker-created candidate commit under a side ref, and the independent host probe passes",
+      "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports a typed FixerSuiteCase adapter and bundle materializer; wrapped native Driver preserves observation/control/capability seams, pins the materialized baseline before delegation, keeps candidate HEAD and index intact, and the independent host probe passes",
       "boundedOracle": "candidate module import and behavior child has a 5000ms wall limit; visible check is separately limited to 10000ms; process/host confinement is not claimed",
       "oracleImplementation": "runner/workflow-corpus/review-loop-judge.ts#judgeReviewLoopRepairTask and #judgeReviewLoopWorkspace",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/review-loop-oracle-pin.json",

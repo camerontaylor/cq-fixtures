@@ -1,4 +1,4 @@
-import { designHash, type Observation, type Preregistration } from './inference.js';
+import { designHash, validateRegistration, type Observation, type Preregistration } from './inference.js';
 
 /** Structural subset of S1 e5702c7 runner/experiment.ts exports. S1 integration
  * may pass canonical TaskOutcome directly; no sibling-path runtime dependency.
@@ -15,6 +15,12 @@ export interface TaskOutcomeInput {
   formatConformance: boolean | null;
   assignedStrategySuccess: boolean | null;
   operationalStatus: string;
+  /** Additive canonical S1 execution contract; older outcomes retain unknown accounting. */
+  execution?: {
+    launched: boolean | null;
+    terminalCause: 'complete' | 'budget-exhausted' | 'transport-error' | 'provider-cancelled' | 'operator-cancelled' | 'prelaunch-failure' | 'unknown';
+    sourceInvocationIds: readonly string[];
+  };
   stages: ReadonlyArray<{
     stageId: string; attemptId: string; invocationId: string;
     artifacts: ReadonlyArray<{ kind: string; path: string; sha256: string }>;
@@ -45,8 +51,9 @@ const sha = (v: string): boolean => /^[a-f0-9]{64}$/i.test(v);
 const statuses = new Set(['complete', 'measured-failure', 'measured-transport-failure', 'operational-missingness', 'judge-failure', 'interrupted', 'integrity-violation']);
 export function adaptTaskOutcomes(reg: Preregistration, join: OutcomeJoinRegistration, outcomes: readonly TaskOutcomeInput[]): {
   observations: Observation[];
-  audit: Array<{ assignmentId: string; judgementId: string; judgementVersion: number; stages: TaskOutcomeInput['stages']; judgementArtifact: { path: string; sha256: string } | null }>;
+  audit: Array<{ assignmentId: string; judgementId: string; judgementVersion: number; stages: TaskOutcomeInput['stages']; execution: TaskOutcomeInput['execution']; judgementArtifact: { path: string; sha256: string } | null }>;
 } {
+  validateRegistration(reg);
   if (join.frozen !== true || join.baseDesignHash !== designHash(reg) || !join.campaignId) throw new Error('outcome join must bind the frozen design');
   const strategies = new Set(reg.contrasts.flatMap(c => [c.strategyId, c.baselineId]));
   const roster = new Map(reg.assignments.map(a => [key('', a.taskId, a.repeatId), a]));
@@ -97,11 +104,26 @@ export function adaptTaskOutcomes(reg: Preregistration, join: OutcomeJoinRegistr
     // Candidate correctness, format and transport status never substitute for
     // the independently mapped assigned-strategy success (including false).
     const success = projection.assignedStrategySuccess;
+    const execution = o.execution;
+    let launchedBudgetFailure: boolean | null = null;
+    if (execution) {
+      const causes = new Set(['complete', 'budget-exhausted', 'transport-error', 'provider-cancelled', 'operator-cancelled', 'prelaunch-failure', 'unknown']);
+      if (![true, false, null].includes(execution.launched) || !causes.has(execution.terminalCause)
+        || new Set(execution.sourceInvocationIds).size !== execution.sourceInvocationIds.length
+        || execution.sourceInvocationIds.some(id => !invocations.has(id))
+        || (execution.terminalCause === 'budget-exhausted' && (execution.launched !== true || execution.sourceInvocationIds.length === 0))
+        || (execution.terminalCause === 'prelaunch-failure' && execution.launched !== false)
+        || (execution.launched === false && !['prelaunch-failure', 'unknown'].includes(execution.terminalCause))) throw new Error('invalid assignment execution provenance/source invocation join');
+      if (execution.launched === false && execution.terminalCause === 'prelaunch-failure') launchedBudgetFailure = false;
+      else if (execution.launched === true && execution.terminalCause !== 'unknown' && execution.sourceInvocationIds.length > 0) {
+        launchedBudgetFailure = execution.terminalCause === 'budget-exhausted';
+      }
+    }
     observations.push({ taskId: i.taskId, substrateId: j.substrateId, repeatId: i.repeatId, weight: i.frozenWeight,
       strategyId: i.strategyId, track: reg.track, cohortId: reg.cohortId,
-      status: success === null ? 'operational-missing' : 'measured', success, cause: projection.operationalStatus });
+      status: success === null ? 'operational-missing' : 'measured', success, launchedBudgetFailure, cause: execution?.terminalCause });
     audit.push({ assignmentId: i.assignmentId, judgementId: selected?.judgementId ?? j.judgementId, judgementVersion: selected?.version ?? j.judgementVersion,
-      stages: o.stages, judgementArtifact: selected?.artifact ?? null });
+      stages: o.stages, execution: o.execution, judgementArtifact: selected?.artifact ?? null });
   }
   return { observations, audit };
 }

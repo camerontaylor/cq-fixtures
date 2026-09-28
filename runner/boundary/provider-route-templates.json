@@ -5,11 +5,73 @@
   "externalWildcards": false,
   "policy": "Exact upstream TLS hostname, pinned public address inventory, narrow paths/methods/header names; redirects and CONNECT denied. Native owner resolves refresh/control endpoints before enabling any route.",
   "codex": {
-    "source": "https://learn.chatgpt.com/docs/config-file/config-reference",
-    "configKeys": ["openai_base_url", "chatgpt_base_url", "model_providers.<id>.base_url", "model_providers.<id>.requires_openai_auth", "model_providers.<id>.wire_api"],
-    "scope": "dedicated user-level config; project config cannot override provider routing",
-    "subscriptionRoute": null,
-    "blocker": "Current docs are not installed 0.155.1 schema evidence. Native owner must verify endpoint semantics and refresh with its exact runtime. chatgpt_base_url alone does not configure every destination. No external access granted."
+    "sourceTag": "rust-v0.155.1",
+    "sources": [
+      "codex-rs/model-provider-info/src/lib.rs:350-368,443-477",
+      "codex-rs/model-provider/src/auth.rs:197-221,310-328",
+      "codex-rs/login/src/auth/manager.rs:200-202,1598-1621,1733-1735"
+    ],
+    "metadataQualification": "subscription-http-metadata.json; managed ChatGPT + catalog GET200, no generation",
+    "builtinOverride": "openai_base_url preserves managed auth; default built-in supports_websockets=true",
+    "httpOnlyProfile": {
+      "model_provider": "cq-subscription-http",
+      "requires_openai_auth": true,
+      "supports_websockets": false,
+      "wire_api": "responses",
+      "base_url": "http://BROKER_IP:BROKER_PORT/route/codex/backend-api/codex",
+      "cli_auth_credentials_store": "file"
+    },
+    "refreshEnvironment": {
+      "CODEX_REFRESH_TOKEN_URL_OVERRIDE": "http://BROKER_IP:BROKER_PORT/route/refresh/oauth/token"
+    },
+    "inactiveRoutes": [
+      {
+        "id": "codex",
+        "hostname": "chatgpt.com",
+        "port": 443,
+        "pathPrefix": "/backend-api/codex",
+        "exactPaths": [
+          "/backend-api/codex/models",
+          "/backend-api/codex/responses"
+        ],
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "addresses": [],
+        "requestHeaders": [
+          "authorization",
+          "chatgpt-account-id",
+          "content-type",
+          "accept",
+          "openai-beta",
+          "originator",
+          "user-agent",
+          "version"
+        ]
+      },
+      {
+        "id": "refresh",
+        "hostname": "auth.openai.com",
+        "port": 443,
+        "pathPrefix": "/oauth/token",
+        "exactPaths": [
+          "/oauth/token"
+        ],
+        "methods": [
+          "POST"
+        ],
+        "addresses": [],
+        "requestHeaders": [
+          "content-type",
+          "accept",
+          "originator",
+          "user-agent",
+          "version"
+        ]
+      }
+    ],
+    "blocker": "Generation and real refresh remain unqualified and disabled. Parent chooses HTTP-only provider identity, native owner pins final config/header/runtime inventory, then repeats G1 and obtains actual-route admission. Do not compile inactive templates as an admitted launch."
   },
   "pi": {
     "source": "installed declared pi bundle chunks/openai-codex-responses-QDSOTBBO.js",
@@ -18,10 +80,20 @@
     "upstreamHostname": "chatgpt.com",
     "upstreamPort": 443,
     "inferencePath": "/backend-api/codex/responses",
-    "methods": ["POST"],
+    "methods": [
+      "POST"
+    ],
     "addresses": [],
     "requestHeaders": [],
-    "blocker": "Installed source attempts WebSocket then HTTP. Current reverse broker rejects Upgrade. Native owner must pin HTTP-only behavior or implement separately reviewed fixed-host WebSocket route; subscription refresh/control routes and header inventory unresolved. No inferred OAuth claim URL is an endpoint grant."
+    "blocker": "Configured Go credentials absent from checked ~/.pi/agent/auth.json; conventional ~/.local/share/opencode/auth.json absent. Native owner must name exact existing route auth/extension handoff. OpenAI OAuth entry cannot replace configured Go/Space Bunny route. No broader home search or route substitution performed.",
+    "configuredCampaignRoute": "opencode-go/space-bunny-free",
+    "alternateOpenAIOAuthSource": {
+      "path": "chunks/openai-codex.js",
+      "sha256": "2c0190771ae21bb4f5618195f5c47d93b2d2b6b0284a3097bb91b8cdf4939c23",
+      "refreshURL": "https://auth.openai.com/oauth/token",
+      "refreshOverride": "none observed in declared bundle",
+      "streamControl": "options.transport=\"sse\" supported by declared response adapter; native must inventory caller configuration"
+    }
   },
   "zcode": {
     "source": "declared Linux zcode-acp-server 0.37.3 dist/quota/client.js",

@@ -18,6 +18,12 @@
     "source": "selected local checkout at the immutable toolkitCommit; packaged with scripts/pack-toolkit.sh",
     "tarball": "vendor/cq-toolkit-1.0.1.tgz",
     "tarballSha256": "90cc17ea030f96c83d6f77f35fbf0af1f6df7c893b65853928b7e2a60d176c9c",
+    "packageContent": {
+      "treeAlgorithm": "sha256(relative-path NUL file-sha256 LF; paths sorted by en locale)",
+      "distTreeSha256": "5756628f354374bed58669fe658063e0fc063ba6a1b93202be7a0623c54f799d",
+      "distIndexSha256": "ae705d58e184dcdf73ceb9ef0c93b99493d4b5504aeb4038a2d9478b078adda3",
+      "distFileCount": 311
+    },
     "packageLock": {
       "resolved": "file:vendor/cq-toolkit-1.0.1.tgz",
       "integrity": "sha512-tNZBhcGB0NQAFWrjivXv1OuAM4wOUUzkYRHuF+nZYdEV3k5EgWAObiVOJW6czyDmf/lcLLDM5kjJ2zGMBHlEGw=="

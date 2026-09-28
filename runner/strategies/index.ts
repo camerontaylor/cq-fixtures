@@ -16,6 +16,7 @@ export interface StrategyRoute {
   id: string;
   /** Token-cap conformance is explicit for each native route. */
   tokenEnforcement: TokenEnforcement;
+  transport: 'codex-exec' | 'pi-json' | 'pi-rpc' | 'zcode-acp' | 'shared-diagnostic' | 'fake';
   /** Optional native settings inventory. Unsupported values must not be sent. */
   supportedSettings?: Readonly<Record<string, readonly string[]>>;
 }
@@ -30,6 +31,13 @@ export interface PerTaskBudgetTier {
   wallClockMs: number;
   /** Reserved within wallClockMs for the independent final judge. */
   judgementAllowanceMs: number;
+  /** Reserved after cancellation for process-tree stop confirmation. */
+  shutdownAllowanceMs: number;
+  /** Reserved for authoritative S1 envelope retrieval, including failed outcomes. */
+  observationAllowanceMs: number;
+  /** Reserved after confirmed shutdown to preserve workspace edits. */
+  captureAllowanceMs: number;
+  tokenPolicy?: 'hard-required' | 'advisory';
   /** If present, enforced only on routes whose conformance is `hard`. */
   tokenBudget?: number;
 }
@@ -45,12 +53,15 @@ export function defineBudgetTiers(tiers: readonly PerTaskBudgetTier[]): readonly
       maxStages: tier.maxStages,
       wallClockMs: tier.wallClockMs,
       judgementAllowanceMs: tier.judgementAllowanceMs,
+      shutdownAllowanceMs: tier.shutdownAllowanceMs,
+      observationAllowanceMs: tier.observationAllowanceMs,
+      captureAllowanceMs: tier.captureAllowanceMs,
     })) {
       if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${tier.id}.${name} must be a positive safe integer`);
     }
     if (tier.maxStages < 2) throw new RangeError(`${tier.id}.maxStages must reserve a candidate and judge stage`);
-    if (tier.judgementAllowanceMs >= tier.wallClockMs) {
-      throw new RangeError(`${tier.id}.judgementAllowanceMs must leave time for candidate work`);
+    if (tier.judgementAllowanceMs + tier.shutdownAllowanceMs + tier.observationAllowanceMs + tier.captureAllowanceMs >= tier.wallClockMs) {
+      throw new RangeError(`${tier.id} allowances must leave time for candidate work`);
     }
     if (tier.tokenBudget !== undefined && (!Number.isSafeInteger(tier.tokenBudget) || tier.tokenBudget < 1)) {
       throw new RangeError(`${tier.id}.tokenBudget must be a positive safe integer`);
@@ -63,8 +74,20 @@ export interface StrategyTask {
   id: string;
   prompt: string;
   evaluationTrack: EvaluationTrack;
+  /** Parent-selected independent oracle route; execution and judging remain parent-owned. */
+  independentJudgeRoute?: StrategyRoute;
   /** Parent-controlled opaque workspace/context handle. */
   workspace: unknown;
+  /** Frozen campaign identity included in the strategy hash. */
+  campaignIdentity: Readonly<{
+    profileInventoryHash: string;
+    evaluationBoundaryHash: string;
+    scaffoldAssistanceHash: string;
+    sourcePin?: string;
+    corpusPin?: string;
+    judgePin?: string;
+  }>;
+  requireFormatCompliance?: boolean;
 }
 
 export type StrategyRecipe =
@@ -96,6 +119,9 @@ export interface Candidate {
   id: string;
   /** Content-addressed by the executor when persisted; opaque to this engine. */
   sha256: string | null;
+  workspaceId: string;
+  /** Opaque parent-owned branch/worktree handle required for follow-up repair. */
+  workspace: unknown;
   value: unknown;
 }
 
@@ -104,6 +130,7 @@ export interface CounterObservation {
   availability: 'observed' | 'unavailable' | 'not-reported';
   source: string | null;
   semantics: TokenCounter;
+  inclusion: string | null;
 }
 
 export type UsageObservations = Readonly<Record<TokenCounter, CounterObservation>>;
@@ -115,6 +142,7 @@ export function unknownUsage(): UsageObservations {
       availability: 'not-reported',
       source: null,
       semantics: key,
+      inclusion: null,
     }]),
   ) as Record<TokenCounter, CounterObservation>);
 }
@@ -126,6 +154,7 @@ export function observedZeroUsage(source = 'local-stage-no-model-usage'): UsageO
       availability: 'observed',
       source,
       semantics: key,
+      inclusion: null,
     }]),
   ) as Record<TokenCounter, CounterObservation>);
 }
@@ -134,7 +163,7 @@ function sanitizeUsage(usage: UsageObservations): UsageObservations {
   return Object.freeze(Object.fromEntries(COUNTERS.map((counter) => {
     const value = usage?.[counter];
     if (!value || value.semantics !== counter) {
-      return [counter, { value: null, availability: 'not-reported', source: null, semantics: counter }];
+      return [counter, { value: null, availability: 'not-reported', source: null, semantics: counter, inclusion: null }];
     }
     if (value.availability !== 'observed') return [counter, { ...value, value: null }];
     if (value.availability === 'observed' && (!Number.isFinite(value.value) || value.value === null || value.value < 0)) {
@@ -162,7 +191,7 @@ export interface ExecutorResult {
   /** Null means the transport did not establish whether dispatch reached a model. */
   launched?: boolean | null;
   /** Independent oracle fields. Ignored for all non-oracle stages. */
-  judgement?: { correctness: boolean | null; status: 'valid' | 'unavailable' | 'invalid'; detail?: string };
+  judgement?: { correctness: boolean | null; taskSuccess?: boolean | null; formatCompliance?: boolean | null; status: 'valid' | 'unavailable' | 'invalid'; detail?: string };
 }
 
 export interface StageRequest extends InvocationIdentity {
@@ -173,8 +202,14 @@ export interface StageRequest extends InvocationIdentity {
   route: StrategyRoute | null;
   effort?: string;
   tier: PerTaskBudgetTier;
-  /** Remaining candidate-stage elapsed-time budget. */
-  deadlineAt: number;
+  /** Monotonic deadline in the same basis as monotonicNowMs. */
+  deadlineMonotonicMs: number;
+  /** Epoch deadline for native adapters; duration accounting stays monotonic. */
+  deadlineEpochMs: number;
+  monotonicNowMs: number;
+  workspace: unknown;
+  workspaceId: string;
+  workspacePolicy: 'task' | 'candidate-workspace' | 'fresh-independent' | 'read-only-candidates';
   signal: AbortSignal;
   /** A native token cap is sent only when conformance proves hard enforcement. */
   hardTokenCap: number | null;
@@ -189,16 +224,32 @@ export interface StageRequest extends InvocationIdentity {
 export interface StageExecutor {
   /** Run one bounded model/scaffold/oracle stage. Must honor AbortSignal in child processes. */
   execute(request: StageRequest): Promise<ExecutorResult>;
+  /** Must resolve only after the process tree is stopped and execute() has settled. */
+  stopAndWait(request: StageRequest, execution: Promise<ExecutorResult>, cause: unknown): Promise<{ stopped: boolean; executionSettled: boolean }>;
+  /** Authoritative S1 observation retrieval after return, throw, or timeout. */
+  getObservation(request: StageRequest): Promise<StageObservation | null> | StageObservation | null;
+  /** Allocate a pristine independent substrate for each candidate draft. */
+  createCandidateWorkspace?(request: Omit<StageRequest, 'workspace' | 'workspaceId'>, index: number): Promise<{ id: string; handle: unknown }> | { id: string; handle: unknown };
   /** Called after both return and throw so edits survive transport failures. */
-  captureCandidate?(
+  captureCandidate(
     request: StageRequest,
     state: { result: ExecutorResult | null; error: unknown | null },
   ): Promise<Candidate | null> | Candidate | null;
 }
 
+export interface StageObservation {
+  usage: UsageObservations;
+  launched: boolean | null;
+  serviceTimeMs: number | null;
+  inclusion?: Readonly<Record<'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'reasoning' | 'tokenTotal', string | null>>;
+}
+
 export interface StrategyEngineOptions {
   ids?: { next(kind: 'assignment' | 'stage' | 'attempt'): string };
+  /** Frozen parent roster ID; required for campaign use. */
+  assignmentId?: string;
   now?: () => number;
+  epochNow?: () => number;
   /** Independent signal for operator/provider cancellation. */
   signal?: AbortSignal;
 }
@@ -219,6 +270,7 @@ export interface StageRecord extends InvocationIdentity {
   tokenCapMode: StageRequest['tokenCapMode'];
   operationalError: { name: string; message: string } | null;
   detail: string | null;
+  quarantined: boolean;
 }
 
 export interface StrategyResult {
@@ -236,9 +288,12 @@ export interface StrategyResult {
   /** Success attributed to this complete configured recipe. */
   assignedStrategySuccess: boolean | null;
   operationalStatus: 'complete' | 'budget-exhausted' | 'cancelled' | 'timed-out' | 'judge-unavailable' | 'operational-failure';
+  recipeCompleted: boolean;
+  formatCompliance: boolean | null;
+  authorizedBudgetStop: boolean;
   accounting: {
     usage: Readonly<Record<TokenCounter, number | null>>;
-    knownUsageSubtotals: Readonly<Record<TokenCounter, number>>;
+    knownUsageSubtotals: Readonly<Record<TokenCounter, number | null>>;
     usageComplete: Readonly<Record<TokenCounter, boolean>>;
     endToEndMs: number;
     stageServiceMs: number | null;
@@ -271,11 +326,18 @@ export function recipeHash(recipe: StrategyRecipe): string {
   return createHash('sha256').update(canonical(recipe)).digest('hex');
 }
 
-function hashForTrack(recipe: StrategyRecipe, track: EvaluationTrack): string {
-  return createHash('sha256').update(canonical({ evaluationTrack: track, recipe })).digest('hex');
+function hashForTrack(recipe: StrategyRecipe, task: StrategyTask, tier: PerTaskBudgetTier): string {
+  return createHash('sha256').update(canonical({ evaluationTrack: task.evaluationTrack, taskId: task.id,
+    campaignIdentity: task.campaignIdentity ?? null, taskPrompt: task.prompt, requireFormatCompliance: task.requireFormatCompliance ?? false,
+    independentJudgeRoute: task.independentJudgeRoute ?? null, recipe, tier })).digest('hex');
 }
 
 function validateRecipe(recipe: StrategyRecipe): void {
+  if (!recipe || !['one-shot', 'same-model-verify-repair', 'candidate-selection', 'mixed-model-verify-repair', 'cheap-first-escalation'].includes((recipe as StrategyRecipe).kind)) throw new Error('Unknown strategy recipe');
+  for (const route of routesOf(recipe)) {
+    if (!route.id || !['hard', 'advisory', 'unsupported'].includes(route.tokenEnforcement)
+      || !['codex-exec', 'pi-json', 'pi-rpc', 'zcode-acp', 'shared-diagnostic', 'fake'].includes(route.transport)) throw new Error(`Invalid configured route: ${route.id}`);
+  }
   const count = (name: string, value: number, max: number): void => {
     if (!Number.isSafeInteger(value) || value < 1 || value > max) throw new RangeError(`${name} must be in [1, ${max}]`);
   };
@@ -294,11 +356,14 @@ function validateBudgetTier(tier: PerTaskBudgetTier): void {
     maxStages: tier.maxStages,
     wallClockMs: tier.wallClockMs,
     judgementAllowanceMs: tier.judgementAllowanceMs,
+    shutdownAllowanceMs: tier.shutdownAllowanceMs,
+    observationAllowanceMs: tier.observationAllowanceMs,
+    captureAllowanceMs: tier.captureAllowanceMs,
   })) {
     if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${tier.id}.${name} must be a positive safe integer`);
   }
   if (tier.maxStages < 2) throw new RangeError(`${tier.id}.maxStages must reserve a candidate and judge stage`);
-  if (tier.judgementAllowanceMs >= tier.wallClockMs) throw new RangeError(`${tier.id}.judgementAllowanceMs must leave time for candidate work`);
+  if (tier.judgementAllowanceMs + tier.shutdownAllowanceMs + tier.observationAllowanceMs + tier.captureAllowanceMs >= tier.wallClockMs) throw new RangeError(`${tier.id} allowances must leave time for candidate work`);
   if (tier.tokenBudget !== undefined && (!Number.isSafeInteger(tier.tokenBudget) || tier.tokenBudget < 1)) {
     throw new RangeError(`${tier.id}.tokenBudget must be a positive safe integer`);
   }
@@ -317,11 +382,11 @@ function routesOf(recipe: StrategyRecipe): StrategyRoute[] {
 
 function aggregateUsage(records: readonly StageRecord[]): {
   usage: Record<TokenCounter, number | null>;
-  known: Record<TokenCounter, number>;
+  known: Record<TokenCounter, number | null>;
   complete: Record<TokenCounter, boolean>;
 } {
   const usage = {} as Record<TokenCounter, number | null>;
-  const known = {} as Record<TokenCounter, number>;
+  const known = {} as Record<TokenCounter, number | null>;
   const complete = {} as Record<TokenCounter, boolean>;
   for (const counter of COUNTERS) {
     let subtotal = 0;
@@ -338,19 +403,29 @@ function aggregateUsage(records: readonly StageRecord[]): {
   return { usage, known, complete };
 }
 
-function joinSignal(parent: AbortSignal | undefined, deadlineMs: number): { controller: AbortController; dispose(): void } {
+function joinSignal(parent: AbortSignal | undefined): { controller: AbortController; dispose(): void } {
   const controller = new AbortController();
   const abort = (): void => controller.abort(parent?.reason ?? new Error('Strategy cancelled'));
   if (parent?.aborted) abort();
   else parent?.addEventListener('abort', abort, { once: true });
-  const timer = setTimeout(() => controller.abort(new Error('Stage deadline exceeded')), Math.max(0, deadlineMs));
-  return { controller, dispose: () => { clearTimeout(timer); parent?.removeEventListener('abort', abort); } };
+  return { controller, dispose: () => { parent?.removeEventListener('abort', abort); } };
 }
 
 function raceDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Hard wall-clock deadline exceeded')), Math.max(0, ms));
-    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+    promise.then((value) => { clearTimeout(timer); resolve(value); }, (error: unknown) => { clearTimeout(timer); reject(error); });
+  });
+}
+
+function raceStage<T>(promise: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Hard wall-clock deadline exceeded')), Math.max(0, ms));
+    const abort = (): void => reject(signal.reason ?? new Error('cancelled'));
+    if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
+    promise.then((value) => { clearTimeout(timer); signal.removeEventListener('abort', abort); resolve(value); }, (error: unknown) => {
+      clearTimeout(timer); signal.removeEventListener('abort', abort); reject(error);
+    });
   });
 }
 
@@ -365,96 +440,190 @@ export async function runStrategy(
   recipe = deepFreeze(structuredClone(recipe));
   validateRecipe(recipe);
   validateBudgetTier(tier);
+  task = Object.freeze({ ...task, campaignIdentity: Object.freeze({ ...task.campaignIdentity }) });
   if (!task.id || !task.prompt) throw new Error('Strategy task requires stable id and prompt');
+  if (!task.campaignIdentity?.profileInventoryHash || !task.campaignIdentity.evaluationBoundaryHash || !task.campaignIdentity.scaffoldAssistanceHash) {
+    throw new Error('Strategy task requires frozen profile, evaluation-boundary, and scaffold-assistance identity');
+  }
+  if (task.independentJudgeRoute) {
+    if (!task.independentJudgeRoute.id || !['hard', 'advisory', 'unsupported'].includes(task.independentJudgeRoute.tokenEnforcement)
+      || !['codex-exec', 'pi-json', 'pi-rpc', 'zcode-acp', 'shared-diagnostic', 'fake'].includes(task.independentJudgeRoute.transport)) {
+      throw new Error(`Invalid independent judge route: ${task.independentJudgeRoute.id}`);
+    }
+    if (task.evaluationTrack === 'native' && task.independentJudgeRoute.transport === 'shared-diagnostic') throw new Error('Diagnostic judge cannot enter a native campaign');
+    if (task.evaluationTrack === 'diagnostic' && task.independentJudgeRoute.transport !== 'shared-diagnostic' && task.independentJudgeRoute.transport !== 'fake') throw new Error('Native judge cannot enter a diagnostic campaign');
+  }
+  for (const route of routesOf(recipe)) {
+    if (task.evaluationTrack === 'native' && route.transport === 'shared-diagnostic') throw new Error('Diagnostic transport cannot enter a native campaign');
+    if (task.evaluationTrack === 'diagnostic' && route.transport !== 'shared-diagnostic' && route.transport !== 'fake') throw new Error('Native transport cannot enter a diagnostic campaign');
+  }
+  if (recipe.kind === 'cheap-first-escalation') for (const item of recipe.tiers) {
+    if (!item.route.supportedSettings?.effort?.includes(item.effort)) throw new Error(`Unsupported or unpinned effort ${item.effort} on route ${item.route.id}`);
+  }
   const now = options.now ?? (() => performance.now());
   const ids = options.ids ?? DEFAULT_IDS;
-  const assignmentId = ids.next('assignment');
+  const assignmentId = options.assignmentId ?? ids.next('assignment');
   if (!assignmentId) throw new Error('Assignment id must be non-empty');
   const seenStageIds = new Set<string>();
   const seenAttemptIds = new Set<string>();
-  const hash = hashForTrack(recipe, task.evaluationTrack);
+  const hash = hashForTrack(recipe, task, tier);
   const startedAt = now();
   const endAt = startedAt + tier.wallClockMs;
-  const candidateEndAt = endAt - tier.judgementAllowanceMs;
+  const workEndAt = endAt - tier.judgementAllowanceMs - tier.shutdownAllowanceMs - tier.observationAllowanceMs - tier.captureAllowanceMs;
+  const judgeEndAt = endAt;
   const stages: StageRecord[] = [];
   const candidates: Candidate[] = [];
+  const candidateWorkspaceIds = new Set<string>();
   const incompleteReasons: string[] = [];
-  const routeList = routesOf(recipe);
+  const routeList = [...routesOf(recipe), ...(task.independentJudgeRoute ? [task.independentJudgeRoute] : [])];
+  const hardRequired = tier.tokenPolicy === 'hard-required';
   const configuredTokenBudgetMode = tier.tokenBudget === undefined
     ? 'not-configured'
-    : routeList.every((route) => route.tokenEnforcement === 'hard') ? 'hard'
-      : routeList.some((route) => route.tokenEnforcement === 'unsupported') ? 'unsupported' : 'advisory';
+    : routeList.some((route) => route.tokenEnforcement === 'unsupported') ? 'unsupported'
+      : tier.tokenPolicy === 'advisory' || !task.independentJudgeRoute ? 'advisory'
+        : routeList.every((route) => route.tokenEnforcement === 'hard') ? 'hard' : 'advisory';
+  if (hardRequired && configuredTokenBudgetMode !== 'hard') throw new Error(`Tier ${tier.id} requires hard token enforcement on every route`);
   let attempts = 0;
   let stageOrdinal = 0;
   let lastStatus: StrategyResult['operationalStatus'] = 'complete';
   let usageTokensKnown = 0;
   let allTokenTotalsKnown = true;
+  let recipeCompleted = true;
+  let authorizedBudgetStop = false;
+  let formatCompliance: boolean | null = null;
   let lastCandidate: Candidate | null = null;
   let verificationMs = 0;
+  let shutdownReserveRemainingMs = tier.shutdownAllowanceMs;
+  let observationReserveRemainingMs = tier.observationAllowanceMs;
+  let captureReserveRemainingMs = tier.captureAllowanceMs;
 
   const invoke = async (input: {
     kind: StageKind; purpose: StagePurpose; route: StrategyRoute | null; effort?: string;
     inputCandidates?: readonly Candidate[]; feedback?: string; selectionPolicy?: 'frozen-rule' | 'judge' | 'model';
     oracle?: boolean;
+    workspace?: unknown; workspaceId?: string;
+    workspacePolicy?: StageRequest['workspacePolicy'];
   }): Promise<{ result: ExecutorResult | null; candidate: Candidate | null; record: StageRecord }> => {
     if (input.kind === 'independent-judge' ? stageOrdinal >= tier.maxStages : stageOrdinal >= tier.maxStages - 1) throw new Error('stage-limit');
     const isModelAttempt = input.kind !== 'independent-judge' && input.route !== null;
     if (isModelAttempt && attempts >= tier.maxAttempts) throw new Error('attempt-limit');
-    if (isModelAttempt && tier.tokenBudget !== undefined && routeList.every((item) => item.tokenEnforcement === 'hard')
+    if (isModelAttempt && tier.tokenBudget !== undefined && configuredTokenBudgetMode === 'hard'
+      && !allTokenTotalsKnown && attempts > 0 && hardRequired) throw new Error('token-usage-indeterminate');
+    if (isModelAttempt && tier.tokenBudget !== undefined && configuredTokenBudgetMode === 'hard'
       && allTokenTotalsKnown && usageTokensKnown >= tier.tokenBudget) throw new Error('token-limit');
-    if (input.kind !== 'independent-judge' && now() >= candidateEndAt) throw new Error('candidate-deadline');
+    if (input.kind !== 'independent-judge' && (now() >= workEndAt || options.signal?.aborted)) throw new Error(options.signal?.aborted ? 'cancelled' : 'candidate-deadline');
     stageOrdinal += 1;
     if (isModelAttempt) attempts += 1;
-    const stageId = ids.next('stage');
-    const attemptId = ids.next('attempt');
+    const stageId = options.assignmentId ? `${assignmentId}:${hash.slice(0, 12)}:s${stageOrdinal}` : ids.next('stage');
+    const attemptId = options.assignmentId ? `${assignmentId}:${hash.slice(0, 12)}:a${stageOrdinal}` : ids.next('attempt');
     if (!stageId || seenStageIds.has(stageId)) throw new Error(`Stage id must be new and non-empty: ${stageId}`);
     if (!attemptId || seenAttemptIds.has(attemptId)) throw new Error(`Attempt id must be new and non-empty: ${attemptId}`);
     seenStageIds.add(stageId);
     seenAttemptIds.add(attemptId);
-    const route = input.route;
-    let capMode: StageRequest['tokenCapMode'] = tier.tokenBudget === undefined ? 'not-configured' : route?.tokenEnforcement ?? 'unsupported';
+    const route = input.kind === 'independent-judge' ? task.independentJudgeRoute ?? null : input.route;
+    let capMode: StageRequest['tokenCapMode'] = tier.tokenBudget === undefined || route === null ? 'not-configured' : configuredTokenBudgetMode;
     if (capMode === 'hard' && !allTokenTotalsKnown) capMode = 'advisory';
+    if (configuredTokenBudgetMode !== 'hard' && capMode === 'hard') capMode = 'advisory';
     const hardTokenCap = capMode === 'hard' ? Math.max(0, tier.tokenBudget! - usageTokensKnown) : null;
-    const timeoutAt = input.kind === 'independent-judge' ? endAt : candidateEndAt;
+    const timeoutAt = input.kind === 'independent-judge' ? judgeEndAt : workEndAt;
     const stageStart = now();
-    const joined = joinSignal(options.signal, Math.max(0, timeoutAt - stageStart));
+    const joined = joinSignal(input.kind === 'independent-judge' ? undefined : options.signal);
+    const candidateWorkspace = input.workspace ?? (input.inputCandidates?.[0]?.workspace ?? task.workspace);
+    const workspaceId = input.workspaceId ?? input.inputCandidates?.[0]?.workspaceId ?? 'task-workspace';
+    const epochNow = options.epochNow ?? Date.now;
     const request: StageRequest = Object.freeze({
       assignmentId, stageId, attemptId, task, recipeHash: hash, kind: input.kind, purpose: input.purpose,
-      route, effort: input.effort, tier, deadlineAt: timeoutAt, signal: joined.controller.signal,
+      route, effort: input.effort, tier, deadlineMonotonicMs: timeoutAt,
+      deadlineEpochMs: epochNow() + Math.max(0, timeoutAt - stageStart), monotonicNowMs: stageStart,
+      workspace: candidateWorkspace, workspaceId, workspacePolicy: input.workspacePolicy ?? 'task', signal: joined.controller.signal,
       hardTokenCap, tokenCapMode: capMode, inputCandidates: Object.freeze([...(input.inputCandidates ?? [])]), feedback: input.feedback,
       selectionPolicy: input.selectionPolicy, allowedExternalEffects: Object.freeze([] as const),
     });
     let result: ExecutorResult | null = null;
     let error: unknown | null = null;
     let captured: Candidate | null = null;
+    let quarantined = false;
+    let execution: Promise<ExecutorResult> | null = null;
+    let settledProof = true;
+    const timedOut = (): boolean => now() >= timeoutAt;
     try {
-      const remaining = Math.max(0, timeoutAt - now());
-      result = await raceDeadline(executor.execute(request), remaining);
+      if (options.signal?.aborted && input.kind !== 'independent-judge') throw new Error('cancelled');
+      if (now() >= timeoutAt) throw new Error('deadline exceeded before launch');
+      execution = Promise.resolve().then(() => executor.execute(request));
+      result = await raceStage(execution, Math.max(0, timeoutAt - now()), joined.controller.signal);
     } catch (caught) {
       error = caught;
       const message = caught instanceof Error ? caught.message : String(caught);
-      const timedOut = /deadline|timed out/i.test(message) || now() >= timeoutAt;
+      const deadlineHit = /deadline|timed out/i.test(message) || timedOut();
+      const cancelled = message === 'cancelled' || (options.signal?.aborted && input.kind !== 'independent-judge');
+      joined.controller.abort(caught);
+      if (execution && !result && (deadlineHit || cancelled)) {
+        const shutdownStart = now();
+        try {
+          const proof = await raceDeadline(executor.stopAndWait(request, execution, caught), Math.min(shutdownReserveRemainingMs, Math.max(0, endAt - now())));
+          settledProof = proof.stopped && proof.executionSettled;
+        } catch { settledProof = false; }
+        shutdownReserveRemainingMs = Math.max(0, shutdownReserveRemainingMs - Math.max(0, now() - shutdownStart));
+      }
+      if (!settledProof) { quarantined = true; recipeCompleted = false; incompleteReasons.push(`executor-not-settled:${stageId}`); }
       result = {
-        status: options.signal?.aborted ? 'cancelled' : timedOut ? 'timed-out' : 'failed',
+        status: cancelled ? 'cancelled' : deadlineHit ? 'timed-out' : 'failed',
         usage: unknownUsage(), serviceTimeMs: null,
         operationalError: { name: caught instanceof Error ? caught.name : 'Error', message },
       };
-    } finally {
+    }
+    if (!joined.controller.signal.aborted) joined.controller.abort(new Error('Stage execution settled'));
+    let observation: StageObservation | null = null;
+    const observationStart = now();
+    try {
+      const observationWindow = Math.min(observationReserveRemainingMs, Math.max(0, endAt - tier.judgementAllowanceMs - tier.captureAllowanceMs - now()));
+      observation = observationWindow > 0 ? await raceDeadline(Promise.resolve(executor.getObservation(request)), observationWindow) ?? null : null;
+      if (!observation) incompleteReasons.push(`observation-unavailable:${stageId}`);
+    } catch (observationError) { incompleteReasons.push(`observation-retrieval-failed:${stageId}:${String(observationError)}`); }
+    observationReserveRemainingMs = Math.max(0, observationReserveRemainingMs - Math.max(0, now() - observationStart));
+    if (observation) {
+      result = { ...(result ?? { status: 'failed', usage: unknownUsage(), serviceTimeMs: null }),
+        usage: observation.usage, launched: observation.launched, serviceTimeMs: observation.serviceTimeMs };
+      if (observation.inclusion) result.usage = Object.fromEntries(COUNTERS.map((counter) => [counter, {
+        ...result!.usage[counter], inclusion: observation!.inclusion![counter],
+      }])) as UsageObservations;
+    }
+    let captureStart: number | null = null;
+    if (settledProof) {
       try {
-        captured = await raceDeadline(Promise.resolve(executor.captureCandidate?.(request, { result, error }) ?? null), Math.max(0, timeoutAt - now()));
+        if (input.kind !== 'independent-judge') {
+          captureStart = now();
+          const remaining = Math.min(captureReserveRemainingMs, Math.max(0, endAt - tier.judgementAllowanceMs - now()));
+          if (remaining <= 0) throw new Error('capture reserve exhausted');
+          captured = await raceDeadline(Promise.resolve(executor.captureCandidate(request, { result, error })), remaining);
+          captureReserveRemainingMs = Math.max(0, captureReserveRemainingMs - Math.max(0, now() - captureStart));
+        }
       } catch (captureError) {
+        if (captureStart !== null) captureReserveRemainingMs = Math.max(0, captureReserveRemainingMs - Math.max(0, now() - captureStart));
         incompleteReasons.push(`capture-failed:${stageId}:${captureError instanceof Error ? captureError.message : String(captureError)}`);
       }
-      joined.controller.abort(new Error('Stage complete'));
-      joined.dispose();
     }
-    if (!captured) captured = result?.candidate ?? null;
-    if (captured && !candidates.some((candidate) => candidate.id === captured!.id)) candidates.push(captured);
+    joined.controller.abort(new Error('Stage complete'));
+    joined.dispose();
+    if (!quarantined && !captured) captured = result?.candidate ?? null;
+    if (captured) {
+      if (!captured.id || !captured.sha256 || !/^[a-f0-9]{64}$/i.test(captured.sha256) || captured.workspaceId !== workspaceId) {
+        recipeCompleted = false; incompleteReasons.push(`candidate-identity-invalid:${stageId}`); captured = null;
+      } else {
+        const collision = candidates.find((candidate) => candidate.id === captured!.id);
+        if (collision && (collision.sha256 !== captured.sha256 || collision.workspaceId !== captured.workspaceId)) {
+          recipeCompleted = false; incompleteReasons.push(`candidate-id-collision:${captured.id}`); captured = null;
+        } else if (!collision && !candidates.some((candidate) => candidate.sha256 === captured!.sha256)) {
+          candidates.push(Object.freeze({ ...captured, value: deepFreeze(structuredClone(captured.value)) }));
+        }
+      }
+    }
     const stageEnd = now();
     const normalizedResult = result ?? {
       status: 'failed' as const, usage: unknownUsage(), serviceTimeMs: null,
       operationalError: { name: 'Error', message: 'Executor returned no result' },
     };
+    if (input.kind !== 'independent-judge' && normalizedResult.status !== 'completed') recipeCompleted = false;
     const safeUsage = sanitizeUsage(normalizedResult.usage);
     const tokenCounter = safeUsage.tokenTotal;
     if (tier.tokenBudget !== undefined && tokenCounter.availability !== 'observed' && capMode === 'hard') capMode = 'advisory';
@@ -469,6 +638,7 @@ export async function runStrategy(
       candidateSha256: captured?.sha256 ?? normalizedResult.candidate?.sha256 ?? null,
       tokenCapMode: capMode, operationalError: normalizedResult.operationalError ?? null,
       detail: normalizedResult.judgement?.detail ?? null,
+      quarantined,
     });
     stages.push(record);
     if (tokenCounter.availability === 'observed' && tokenCounter.value !== null) usageTokensKnown += tokenCounter.value;
@@ -480,16 +650,21 @@ export async function runStrategy(
     return { result: normalizedResult, candidate: captured, record };
   };
 
-  const canAttempt = (): boolean => attempts < tier.maxAttempts && stageOrdinal < tier.maxStages - 1 && now() < candidateEndAt
-    && !options.signal?.aborted && !(tier.tokenBudget !== undefined && routeList.every((item) => item.tokenEnforcement === 'hard')
-      && allTokenTotalsKnown && usageTokensKnown >= tier.tokenBudget);
+  const canAttempt = (): boolean => attempts < tier.maxAttempts && stageOrdinal < tier.maxStages - 1 && now() < workEndAt
+    && !options.signal?.aborted && !(tier.tokenBudget !== undefined && configuredTokenBudgetMode === 'hard'
+      && ((hardRequired && !allTokenTotalsKnown) || (allTokenTotalsKnown && usageTokensKnown >= tier.tokenBudget)));
   const markBound = (): void => {
     if (options.signal?.aborted) lastStatus = 'cancelled';
-    else if (now() >= candidateEndAt) lastStatus = 'timed-out';
-    else lastStatus = 'budget-exhausted';
+    else if (now() >= workEndAt) lastStatus = 'timed-out';
+    else if (hardRequired && !allTokenTotalsKnown) lastStatus = 'operational-failure';
+    else { lastStatus = 'budget-exhausted'; authorizedBudgetStop = true; }
   };
-  const generation = async (route: StrategyRoute, kind: 'draft' | 'repair' | 'escalate', feedback?: string, effort?: string): Promise<Candidate | null> => {
-    const outcome = await invoke({ kind, purpose: 'candidate-generation', route, effort, feedback, inputCandidates: lastCandidate ? [lastCandidate] : [] });
+  const generation = async (route: StrategyRoute, kind: 'draft' | 'repair' | 'escalate', feedback?: string, effort?: string,
+    workspace?: { id: string; handle: unknown }, independent = false): Promise<Candidate | null> => {
+    const outcome = await invoke({ kind, purpose: 'candidate-generation', route, effort, feedback,
+      inputCandidates: independent ? [] : lastCandidate ? [lastCandidate] : [], workspace: workspace?.handle,
+      workspaceId: workspace?.id ?? lastCandidate?.workspaceId ?? 'task-workspace',
+      workspacePolicy: independent ? 'fresh-independent' : lastCandidate ? 'candidate-workspace' : 'task' });
     lastCandidate = outcome.candidate ?? lastCandidate;
     if (outcome.result?.status !== 'completed') incompleteReasons.push(`${kind}-stage-${outcome.result?.status ?? 'missing'}:${outcome.record.stageId}`);
     return outcome.candidate;
@@ -502,69 +677,134 @@ export async function runStrategy(
         break;
       case 'same-model-verify-repair': {
         await generation(recipe.route, 'draft');
+        let verifiedFinal = false;
         for (let repair = 0; repair < recipe.maxRepairs && lastCandidate && canAttempt(); repair += 1) {
           const checked = await invoke({ kind: 'verify', purpose: 'scaffold', route: recipe.route, inputCandidates: [lastCandidate] });
-          if (checked.result?.verification?.passed) break;
-          if (checked.result?.verification) await generation(recipe.route, 'repair', checked.result.verification.feedback);
-          else { incompleteReasons.push(`verification-unavailable:${checked.record.stageId}`); break; }
+          if (checked.result?.status === 'completed' && checked.result.verification && typeof checked.result.verification.passed === 'boolean' && checked.result.verification.passed) { verifiedFinal = true; break; }
+          if (checked.result?.status === 'completed' && checked.result.verification && typeof checked.result.verification.passed === 'boolean') {
+            await generation(recipe.route, 'repair', checked.result.verification.feedback);
+          } else { recipeCompleted = false; incompleteReasons.push(`verification-unavailable:${checked.record.stageId}`); break; }
+        }
+        if (!verifiedFinal && lastCandidate) {
+          if (canAttempt()) {
+            const finalCheck = await invoke({ kind: 'verify', purpose: 'scaffold', route: recipe.route, inputCandidates: [lastCandidate] });
+            verifiedFinal = finalCheck.result?.status === 'completed' && finalCheck.result.verification?.passed === true;
+            if (finalCheck.result?.status !== 'completed' || typeof finalCheck.result.verification?.passed !== 'boolean') {
+              recipeCompleted = false; incompleteReasons.push(`final-verification-unavailable:${finalCheck.record.stageId}`);
+            } else if (!verifiedFinal) incompleteReasons.push(`final-verification-rejected:${finalCheck.record.stageId}`);
+          } else { recipeCompleted = false; incompleteReasons.push('required-final-verification-not-admitted'); }
         }
         break;
       }
       case 'candidate-selection': {
         const drafts: Candidate[] = [];
+        let workspaceIndex = 0;
         for (let index = 0; index < recipe.candidateCount && canAttempt(); index += 1) {
-          const candidate = await generation(recipe.route, 'draft');
-          if (candidate) drafts.push(candidate);
+          const allocation = joinSignal(options.signal);
+          const allocationMs = Math.max(0, workEndAt - now());
+          const allocationTimer = setTimeout(() => allocation.controller.abort(new Error('Workspace allocation deadline exceeded')), allocationMs);
+          const baseRequest = { assignmentId, stageId: `${assignmentId}:candidate-workspace:${index + 1}`,
+            attemptId: `${assignmentId}:candidate-workspace:${index + 1}`, task, recipeHash: hash, kind: 'draft' as const,
+            purpose: 'candidate-generation' as const, route: recipe.route, tier, deadlineMonotonicMs: workEndAt,
+            deadlineEpochMs: (options.epochNow ?? Date.now)() + Math.max(0, workEndAt - now()), monotonicNowMs: now(),
+            workspacePolicy: 'fresh-independent' as const, signal: allocation.controller.signal, hardTokenCap: null,
+            tokenCapMode: 'advisory' as const, inputCandidates: [], allowedExternalEffects: [] as const };
+          if (!executor.createCandidateWorkspace) {
+            clearTimeout(allocationTimer); allocation.dispose(); recipeCompleted = false; incompleteReasons.push('independent-candidate-workspace-unavailable'); break;
+          }
+          let workspace: { id: string; handle: unknown };
+          try {
+            workspace = await raceStage(Promise.resolve(executor.createCandidateWorkspace(baseRequest, workspaceIndex++)), allocationMs, allocation.controller.signal);
+          } finally {
+            clearTimeout(allocationTimer); allocation.controller.abort(new Error('Workspace allocation settled')); allocation.dispose();
+          }
+          if (!workspace.id || workspace.id === 'task-workspace' || candidateWorkspaceIds.has(workspace.id)) throw new Error('Candidate workspace requires a unique stable id');
+          candidateWorkspaceIds.add(workspace.id);
+          const candidate = await generation(recipe.route, 'draft', undefined, undefined, workspace, true);
+          if (candidate && !drafts.some((item) => item.sha256 === candidate.sha256)) drafts.push(candidate);
         }
-        if (drafts.length) {
+        if (workspaceIndex < recipe.candidateCount) {
+          recipeCompleted = false; incompleteReasons.push('candidate-drafts-not-admitted');
+          if (lastStatus === 'complete') markBound();
+        }
+        lastCandidate = null;
+        if (workspaceIndex === recipe.candidateCount && recipeCompleted) {
           const selectionRoute = recipe.selector.kind === 'model' || recipe.selector.kind === 'judge'
             ? recipe.selector.route ?? null : null;
           const chosen = await invoke({ kind: 'select', purpose: 'selection', route: selectionRoute,
             inputCandidates: drafts, selectionPolicy: recipe.selector.kind });
-          lastCandidate = drafts.find((candidate) => candidate.id === chosen.result?.selectedCandidateId) ?? null;
+          lastCandidate = chosen.result?.status === 'completed' ? drafts.find((candidate) => candidate.id === chosen.result?.selectedCandidateId) ?? null : null;
           if (!lastCandidate) incompleteReasons.push('candidate-selection-produced-no-valid-choice');
         }
         break;
       }
       case 'mixed-model-verify-repair': {
         await generation(recipe.draftRoute, 'draft');
+        let verifiedFinal = false;
         for (let repair = 0; repair < recipe.maxRepairs && lastCandidate && canAttempt(); repair += 1) {
           const checked = await invoke({ kind: 'verify', purpose: 'scaffold', route: recipe.verifyRoute, inputCandidates: [lastCandidate] });
-          if (checked.result?.verification?.passed) break;
-          if (checked.result?.verification) await generation(recipe.repairRoute ?? recipe.draftRoute, 'repair', checked.result.verification.feedback);
-          else { incompleteReasons.push(`verification-unavailable:${checked.record.stageId}`); break; }
+          if (checked.result?.status === 'completed' && checked.result.verification && typeof checked.result.verification.passed === 'boolean' && checked.result.verification.passed) { verifiedFinal = true; break; }
+          if (checked.result?.status === 'completed' && checked.result.verification && typeof checked.result.verification.passed === 'boolean') {
+            await generation(recipe.repairRoute ?? recipe.draftRoute, 'repair', checked.result.verification.feedback);
+          } else { recipeCompleted = false; incompleteReasons.push(`verification-unavailable:${checked.record.stageId}`); break; }
+        }
+        if (!verifiedFinal && lastCandidate) {
+          if (canAttempt()) {
+            const finalCheck = await invoke({ kind: 'verify', purpose: 'scaffold', route: recipe.verifyRoute, inputCandidates: [lastCandidate] });
+            verifiedFinal = finalCheck.result?.status === 'completed' && finalCheck.result.verification?.passed === true;
+            if (finalCheck.result?.status !== 'completed' || typeof finalCheck.result.verification?.passed !== 'boolean') {
+              recipeCompleted = false; incompleteReasons.push(`final-verification-unavailable:${finalCheck.record.stageId}`);
+            } else if (!verifiedFinal) incompleteReasons.push(`final-verification-rejected:${finalCheck.record.stageId}`);
+          } else { recipeCompleted = false; incompleteReasons.push('required-final-verification-not-admitted'); }
         }
         break;
       }
       case 'cheap-first-escalation': {
-        for (let index = 0; index < recipe.tiers.length && canAttempt(); index += 1) {
-          const tierRoute = recipe.tiers[index]!;
-          const current = await generation(tierRoute.route, index === 0 ? 'draft' : 'escalate', undefined, tierRoute.effort);
+        let tierIndex = 0;
+        for (; tierIndex < recipe.tiers.length && canAttempt(); tierIndex += 1) {
+          const tierRoute = recipe.tiers[tierIndex]!;
+          const current = await generation(tierRoute.route, tierIndex === 0 ? 'draft' : 'escalate', undefined, tierRoute.effort);
           if (!current) {
-            if (recipe.promoteWhen === 'no-candidate' && index + 1 < recipe.tiers.length) continue;
+            if (recipe.promoteWhen === 'no-candidate' && tierIndex + 1 < recipe.tiers.length) continue;
             break;
           }
-          if (index + 1 >= recipe.tiers.length) break;
+          if (tierIndex + 1 >= recipe.tiers.length) break;
+          if (recipe.promoteWhen === 'no-candidate') break;
           const check = await invoke({ kind: 'verify', purpose: 'scaffold', route: tierRoute.route, inputCandidates: [current] });
-          const shouldPromote = recipe.promoteWhen === 'verification-failed'
-            ? check.result?.verification?.passed !== true
-            : !current;
+          if (check.result?.status !== 'completed' || typeof check.result.verification?.passed !== 'boolean') {
+            recipeCompleted = false; incompleteReasons.push(`escalation-verification-unavailable:${check.record.stageId}`); break;
+          }
+          const shouldPromote = !check.result.verification.passed;
           if (!shouldPromote) break;
+        }
+        if (tierIndex < recipe.tiers.length && !canAttempt() && lastStatus === 'complete') {
+          recipeCompleted = false; incompleteReasons.push('escalation-tier-not-admitted'); markBound();
         }
         break;
       }
     }
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : String(caught);
-    if (message === 'attempt-limit' || message === 'stage-limit' || message === 'candidate-deadline' || message === 'token-limit') markBound();
+    if (message === 'token-usage-indeterminate') { lastStatus = 'operational-failure'; recipeCompleted = false; incompleteReasons.push(message); }
+    else if (message === 'attempt-limit' || message === 'stage-limit' || message === 'candidate-deadline' || message === 'token-limit' || message === 'cancelled') { markBound(); recipeCompleted = false; }
     else { lastStatus = 'operational-failure'; incompleteReasons.push(`strategy-error:${message}`); }
+  }
+
+  if (!recipeCompleted && lastStatus === 'complete') {
+    if (options.signal?.aborted) lastStatus = 'cancelled';
+    else if (now() >= workEndAt) lastStatus = 'timed-out';
+    else if (hardRequired && !allTokenTotalsKnown) lastStatus = 'operational-failure';
+    else { lastStatus = 'budget-exhausted'; authorizedBudgetStop = true; }
   }
 
   // A completed strategy with no candidate after launched, bounded work is a measured
   // task failure. A valid candidate still requires the parent's independent oracle.
-  if (!lastCandidate && lastStatus === 'complete' && (attempts >= tier.maxAttempts || stageOrdinal >= tier.maxStages || now() >= candidateEndAt)) markBound();
-  let candidateCorrectness: boolean | null = lastCandidate ? null : false;
-  let assignedStrategySuccess: boolean | null = lastCandidate ? null : false;
+  if (attempts >= tier.maxAttempts || stageOrdinal >= tier.maxStages - 1 || now() >= workEndAt) {
+    if (recipe.kind !== 'one-shot' && recipe.kind !== 'cheap-first-escalation' && !recipeCompleted) incompleteReasons.push('required-recipe-stage-not-admitted');
+    if (lastStatus === 'complete' && !recipeCompleted) markBound();
+  }
+  let candidateCorrectness: boolean | null = lastCandidate ? null : options.signal?.aborted || stages.some((stage) => stage.status === 'cancelled' || stage.status === 'timed-out' || stage.status === 'failed') ? null : false;
+  let assignedStrategySuccess: boolean | null = lastCandidate ? null : candidateCorrectness;
   if (!lastCandidate && stages.length > 0 && !stages.some((stage) => stage.launched === true)) {
     // A prelaunch/unknown transport failure is missingness, not a fabricated
     // zero. Once dispatch is established, a bounded no-candidate outcome fails.
@@ -572,13 +812,16 @@ export async function runStrategy(
     assignedStrategySuccess = null;
     if (stages.some((stage) => stage.status === 'failed')) lastStatus = 'operational-failure';
   }
-  if (lastCandidate && now() < endAt && stageOrdinal < tier.maxStages) {
+  if (lastCandidate && !stages.some((stage) => stage.quarantined) && now() < judgeEndAt && stageOrdinal < tier.maxStages) {
     try {
       const judged = await invoke({ kind: 'independent-judge', purpose: 'oracle', route: null, inputCandidates: [lastCandidate], oracle: true });
       const verdict = judged.result?.judgement;
-      if (verdict?.status === 'valid' && typeof verdict.correctness === 'boolean') {
+      if (judged.result?.status === 'completed' && verdict?.status === 'valid' && typeof verdict.correctness === 'boolean') {
         candidateCorrectness = verdict.correctness;
-        assignedStrategySuccess = verdict.correctness;
+        formatCompliance = typeof verdict.formatCompliance === 'boolean' ? verdict.formatCompliance : null;
+        const measuredSuccess = verdict.taskSuccess ?? (task.requireFormatCompliance && formatCompliance === false ? false : verdict.correctness);
+        assignedStrategySuccess = recipeCompleted && !options.signal?.aborted && now() < workEndAt
+          ? measuredSuccess : false;
       } else {
         candidateCorrectness = null;
         assignedStrategySuccess = null;
@@ -599,7 +842,7 @@ export async function runStrategy(
   }
 
   const aggregate = aggregateUsage(stages);
-  const tokenBudgetMode = configuredTokenBudgetMode === 'not-configured' || configuredTokenBudgetMode === 'unsupported'
+  const tokenBudgetMode = configuredTokenBudgetMode === 'not-configured' || configuredTokenBudgetMode === 'unsupported' || configuredTokenBudgetMode === 'advisory'
     ? configuredTokenBudgetMode
     : !allTokenTotalsKnown || stages.some((stage) => stage.tokenCapMode === 'advisory') ? 'advisory' : 'hard';
   // Preserve explicit known subtotals, while a nullable whole-pipeline total remains null.
@@ -613,7 +856,7 @@ export async function runStrategy(
   return {
     assignmentId, recipeHash: hash, recipeKind: recipe.kind, taskId: task.id, tierId: tier.id,
     stages: Object.freeze(stages), candidates: Object.freeze(candidates), selectedCandidateId: lastCandidate?.id ?? null,
-    finalCandidate: lastCandidate, candidateCorrectness, assignedStrategySuccess,
+    finalCandidate: lastCandidate, candidateCorrectness, assignedStrategySuccess, recipeCompleted, formatCompliance, authorizedBudgetStop,
     operationalStatus: lastStatus,
     accounting: {
       usage: Object.freeze(aggregate.usage), knownUsageSubtotals: Object.freeze(aggregate.known),

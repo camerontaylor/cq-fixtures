@@ -59,12 +59,18 @@ source epoch.
 `six-visible-task-expansion-brief.md` defines six distinct local substrates
 across review, analyze/remediate, merge-conflict, and fleet-sweep operations.
 Factories and task-local oracle definitions are in place. The six entries in
-`workflows.json` passed seven focused synthetic checks and remain excluded from
-the validated counts pending complete acceptance evidence. `npm run typecheck`
-also passes. The protected judge-child API is committed as `3f63fc7` and
+`workflows.json` passed nine focused synthetic checks, including both new
+analysis variants through the existing operation and a local injected Driver.
+They remain excluded from the validated counts pending complete acceptance
+evidence. `npm run typecheck` also passes. The protected judge-child API is
+committed as `3f63fc7` and
 available in this branch; new task-local behavior judges use it with private,
 untrusted stdout. Existing oracle caller migration remains assigned to S0. No
 model calls were made.
+
+The active review-loop task is v2 (`settings/module.js` and
+`settings/display.js`); the v1 oracle manifest is archived with its original
+actual-run evidence. The six expansion tasks remain additive to v2.
 
 All delivered tasks are calibration. Held-out family names in `workflows.json` are reservations only; no held-out artifact has been materialized or proven inaccessible. The task count is not an adequacy or power claim. The new task substrates do not represent nine independent workflow families.
 

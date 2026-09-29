@@ -12,7 +12,7 @@
     },
     {
       "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
-      "sha256": "0aa8a7179f9df3310931e7505bf8f4048ce26bfc97f26067b65fe43a0ec63dc3"
+      "sha256": "d65e482928f9921880f9d25abdff3fb8459baa2c86f492b1add9801e3c17a093"
     },
     {
       "path": "runner/boundary/judge-child.ts",
@@ -23,5 +23,5 @@
       "sha256": "2baca75b07bbb185753f80c4db83f5405586c33788bb0a52ae8f31538259179f"
     }
   ],
-  "sha256": "d521f9d703fa9fc147eb469f2a600bd612b1f4b1d59d0f632f5381d9484b0bd3"
+  "sha256": "db402f5ecb554fe4a872fbf48e91ff84959b7da2db8c3e5b7b97459d4ef97772"
 }

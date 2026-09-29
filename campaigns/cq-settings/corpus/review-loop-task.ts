@@ -14,10 +14,10 @@ import {
 } from '@camerontaylor/cq-toolkit';
 import { REVIEW_TASK_CONTRACTS, type ReviewTaskVariant } from './review-task-oracles.js';
 
-export const REVIEW_LOOP_TASK_ID = 'review-loop-label-limit-01' as const;
-export const REVIEW_LOOP_SOURCE_ID = 'cq-settings.settings-module-seed.v1' as const;
-export const REVIEW_LOOP_BASELINE_ID = 'cq-settings.label-length-defect.baseline.v1' as const;
-export const REVIEW_LOOP_ORACLE_ID = 'cq-settings.label-length-unicode.oracle.v1' as const;
+export const REVIEW_LOOP_TASK_ID = 'review-loop-label-limit-02' as const;
+export const REVIEW_LOOP_SOURCE_ID = 'cq-settings.settings-module-seed.v2' as const;
+export const REVIEW_LOOP_BASELINE_ID = 'cq-settings.label-length-defect.baseline.v2' as const;
+export const REVIEW_LOOP_ORACLE_ID = 'cq-settings.label-length-unicode.oracle.v2' as const;
 
 /** A worker-visible repair task; it intentionally contains no judge data. */
 export interface ReviewLoopRepairTask {
@@ -25,7 +25,7 @@ export interface ReviewLoopRepairTask {
   readonly sourceId: typeof REVIEW_LOOP_SOURCE_ID;
   readonly baselineId: typeof REVIEW_LOOP_BASELINE_ID;
   readonly oracleId: typeof REVIEW_LOOP_ORACLE_ID;
-  readonly substrateFamily: 'campaign-settings-module-v1';
+  readonly substrateFamily: 'campaign-settings-module-v2';
   readonly worktreePath: string;
   readonly baselineCommit: string;
   readonly modelSpec: ModelSpec;
@@ -73,8 +73,8 @@ const DISPLAY_SOURCE = `export function displayCampaignLabel(label) {
 `;
 
 const PUBLIC_TEST_SOURCE = `import assert from 'node:assert/strict';
-import { isValidCampaignLabel } from '../src/settings.mjs';
-import { displayCampaignLabel } from '../src/display.mjs';
+import { isValidCampaignLabel } from '../settings/module.js';
+import { displayCampaignLabel } from '../settings/display.js';
 
 assert.equal(isValidCampaignLabel(''), false);
 assert.equal(isValidCampaignLabel('   '), false);
@@ -89,11 +89,11 @@ const REVIEW_TASK_SEEDS = {
     sourceId: REVIEW_LOOP_SOURCE_ID,
     baselineId: REVIEW_LOOP_BASELINE_ID,
     oracleId: REVIEW_LOOP_ORACLE_ID,
-    substrateFamily: 'campaign-settings-module-v1',
-    sourcePath: 'src/settings.mjs',
+    substrateFamily: 'campaign-settings-module-v2',
+    sourcePath: 'settings/module.js',
     source: INITIAL_SETTINGS_SOURCE,
     tests: PUBLIC_TEST_SOURCE,
-    taskBody: 'Enforce the documented 40 Unicode code point campaign label limit after trimming. Preserve the original bytes used for display.',
+    taskBody: 'Campaign labels are limited to 40 Unicode code points after trimming. Reject longer labels. Preserve the original label for display; do not change settings/display.js.',
   },
   roleScope: {
     ...REVIEW_TASK_CONTRACTS.roleScope,
@@ -155,13 +155,10 @@ async function createReviewTaskVariant(
     scripts: { test: 'node test/public-settings.test.mjs' },
   }, null, 2) + '\n');
   if (variant === 'labelLimit' || variant === 'labelNfc') {
-    await writeFile(join(worktreePath, variant === 'labelNfc' ? 'settings/display.mjs' : 'src/display.mjs'), DISPLAY_SOURCE);
+    await writeFile(join(worktreePath, 'settings/display.js'), DISPLAY_SOURCE);
   }
   await writeFile(join(worktreePath, definition.sourcePath), definition.source);
-  const testSource = variant === 'labelLimit'
-    ? definition.tests.replace("../settings/settings.mjs", `../${definition.sourcePath}`)
-    : definition.tests;
-  await writeFile(join(worktreePath, 'test/public-settings.test.mjs'), testSource);
+  await writeFile(join(worktreePath, 'test/public-settings.test.mjs'), definition.tests);
 
   const git = (args: string[]): string => execFileSync('git', args, {
     cwd: worktreePath,

@@ -911,6 +911,42 @@ describe('six-task corpus expansion', () => {
     expect(ANALYSIS_TASK_CONTRACTS.originPolicy.expected).toEqual([true, false, false, false, true, true]);
   });
 
+  it.each(['safeIntegerSetting', 'originPolicy'] as const)(
+    'runs the existing analysis operation for the $variant task through an injected local Driver',
+    async (variant) => {
+      const modelSpec = { model: `offline-${variant}`, provider: 'fake' };
+      const task = await createAnalysisRemediationTask(variant, modelSpec);
+      const contract = ANALYSIS_TASK_CONTRACTS[variant];
+      const invocations: Parameters<Driver['run']>[0][] = [];
+      const driver: Driver = {
+        async run(invocation) {
+          invocations.push(invocation);
+          return completedWorker({
+            setting: contract.setting,
+            constraints: [...contract.requiredConstraints],
+            rejectsInvalidValues: true,
+            preservesInputRepresentation: true,
+          });
+        },
+      };
+      try {
+        const execution = await executeAnalysisRemediationTask(task, driver);
+        expect(execution.oracle).toMatchObject({
+          passed: true,
+          sourceId: task.sourceId,
+          baselineId: task.baselineId,
+          oracleId: task.oracleId,
+          failures: [],
+        });
+        expect(invocations).toHaveLength(1);
+        expect(invocations[0]?.modelSpec).toEqual(modelSpec);
+      } finally {
+        await task.cleanup();
+      }
+    },
+    30_000,
+  );
+
   it('checks review, merge, and fleet behavior vectors with the task-owned truth tables', () => {
     expect(judgeReviewTaskValues('roleScope', [true, true, false, false]).passed).toBe(true);
     expect(judgeReviewTaskValues('roleScope', [true, false, false, false]).passed).toBe(false);

@@ -4,7 +4,7 @@ import { AcpDriver, currentJobContext, runLadder, SessionStore, type Driver, typ
 import type { InvocationIdentity } from './observation.ts';
 import type { NativeLaunchEvidence } from './process.ts';
 import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
-import { ObservedNativeDriver, type NativeDriverOptions } from './observed-driver.ts';
+import { ObservedNativeDriver, createWorkerResult, usageProjection, type NativeDriverOptions } from './observed-driver.ts';
 import { resolveNativeSession, RUNNER_SESSION_DIRECTORY } from './session.ts';
 import { launchEvidenceStatus, stopAndWait } from './process.ts';
 
@@ -148,6 +148,7 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
         budget: { ...invocation.budget, wallClockMs: invocation.budget.wallClockMs ?? this.hardWallClockMs },
       };
       this.nativeSupervisor.expectProcessTree(identity);
+      const runSignal = this.signalFor(identity, currentJobContext()?.signal);
       let ladder;
       try {
         ladder = await runLadder(
@@ -158,12 +159,23 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
             killGraceMs: this.killGraceMs,
           },
           { op: 'zcode-acp', jobKey: identity.assignmentId, attempt: 1 },
-          { signal: this.signalFor(identity, currentJobContext()?.signal) },
+          { signal: runSignal },
         );
       } finally {
         const child = this.activeChild;
         this.activeChild = undefined;
-        if (child) {
+        const launchEvidence = this.launchEvidenceByInvocation.get(identity.invocationId);
+        const noSpawn = trustedNoSpawnEvidence(launchEvidence, identity);
+        if (noSpawn) {
+          this.reportProcessNotStarted(identity, launchEvidence!.source);
+          observation.model.settings.launch = {
+            value: this.launchEvidence ?? null,
+            source: 'identity-bound trusted pre-spawn guard/error evidence', status: 'not-started',
+          };
+          observation.model.settings.processTree = {
+            value: null, source: 'trusted launch evidence proves no process was created', status: 'not-started',
+          };
+        } else if (child) {
           observation.model.settings.launch = {
             value: this.launchEvidence ?? null,
             source: 'native ACP ChildProcess returned by the validated spawn adapter',
@@ -175,7 +187,10 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
             value: stopped, source: 'native ACP process-group stop proof',
             status: stopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden',
           };
-          if (!stopped) throw new Error('ZCode ACP process tree stop could not be proven; candidate capture is forbidden');
+          if (!stopped) {
+            setInterruptionCause(observation, ladder, runSignal);
+            throw new Error('ZCode ACP process tree stop could not be proven; candidate capture is forbidden');
+          }
         } else {
           this.reportProcessTree(identity, false);
           observation.model.settings.processTree = {
@@ -183,12 +198,14 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
           };
         }
       }
-      if (ladder.outcome === 'threw') throw ladder.error;
+      if (ladder.outcome === 'threw') {
+        if (runSignal.aborted) return this.finishInterruptedObservation(observation, ladder.error, runSignal);
+        throw ladder.error;
+      }
       if (ladder.outcome === 'killed') {
-        observation.terminal.cause = 'hard-timeout-killed';
-        observation.terminal.cancelled = true;
         observation.timing.stages.killLadderMs = ladder.elapsedMs;
-        throw new Error(`ZCode ACP exceeded hard wall bound (${ladder.elapsedMs}ms)`);
+        const timeout = new Error(`ZCode ACP exceeded hard wall bound (${ladder.elapsedMs}ms)`);
+        return this.finishInterruptedObservation(observation, timeout, runSignal);
       }
       const worker: WorkerResult = ladder.value;
       observation.timing.stages.transportMs = ladder.elapsedMs;
@@ -198,8 +215,17 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
       // The selected ACP package returns compatibility zeros when the server
       // omits usage. Without a per-counter presence bit those values are not
       // measurements, so this bridge leaves all campaign counters unknown.
+      // ACP itself may settle with stopReason=aborted after the ladder's
+      // internal wall-clock signal. The external signal is independent, so it
+      // distinguishes assignment cancellation from this model timeout.
+      if (worker.stopReason === 'aborted') {
+        const interrupted = runSignal.aborted
+          ? new Error('ZCode ACP operation was cancelled by the native supervisor')
+          : new Error(`ZCode ACP exceeded hard wall bound (${ladder.elapsedMs}ms)`);
+        return this.finishInterruptedObservation(observation, interrupted, runSignal);
+      }
       observation.terminal.cause = worker.stopReason === 'complete' ? null : worker.stopReason;
-      observation.terminal.cancelled = worker.stopReason === 'aborted';
+      observation.terminal.cancelled = false;
       const result = { ...worker, sessionId: sessionRef };
       this.finishObservation(observation, result);
       return result;
@@ -222,6 +248,50 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
     this.launchEvidenceByInvocation.set(identity.invocationId, {
       identity: { ...identity }, status, source, observedAt: new Date().toISOString(),
     });
+  }
+
+  private finishInterruptedObservation(
+    observation: ReturnType<ZcodeAcpDriver['newObservation']>,
+    error: unknown,
+    signal: AbortSignal,
+  ): WorkerResult {
+    const cancelled = signal.aborted;
+    observation.terminal.cause = cancelled ? 'operator-cancelled' : 'hard-timeout-killed';
+    observation.terminal.cancelled = cancelled;
+    const actual = error instanceof Error ? error : new Error(String(error));
+    observation.terminal.transportException = { name: actual.name, message: actual.message };
+    const result = createWorkerResult(usageProjection(observation.usage.counters), cancelled ? 'aborted' : 'budget', {
+      error: actual.message,
+    });
+    this.finishObservation(observation, result);
+    return result;
+  }
+}
+
+function trustedNoSpawnEvidence(
+  evidence: ZcodeLaunchEvidenceRecord | undefined,
+  identity: InvocationIdentity,
+): evidence is ZcodeLaunchEvidenceRecord & { status: 'no-spawn-observed' } {
+  if (!evidence || evidence.status !== 'no-spawn-observed') return false;
+  const bound = evidence.identity;
+  const identityMatches = bound.invocationId === identity.invocationId && bound.assignmentId === identity.assignmentId &&
+    bound.stageId === identity.stageId && bound.attemptId === identity.attemptId;
+  const sourceTrusted = evidence.source === 'visible-g1-glm-driver:spawn-command-guard-before-child_process.spawn' ||
+    evidence.source === 'node:child_process.ChildProcess:error-before-spawn-event';
+  return identityMatches && sourceTrusted && Number.isFinite(Date.parse(evidence.observedAt));
+}
+
+function setInterruptionCause(
+  observation: ReturnType<ZcodeAcpDriver['newObservation']>,
+  ladder: { outcome: string } | undefined,
+  signal: AbortSignal,
+): void {
+  if (signal.aborted) {
+    observation.terminal.cause = 'operator-cancelled';
+    observation.terminal.cancelled = true;
+  } else if (ladder?.outcome === 'killed') {
+    observation.terminal.cause = 'hard-timeout-killed';
+    observation.terminal.cancelled = false;
   }
 }
 

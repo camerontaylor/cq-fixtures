@@ -59,6 +59,46 @@ function fakeExecutable(root: string, output: string, exit = 0): string {
   return file;
 }
 
+function hangingAcpExecutable(root: string, promptMarker: string): string {
+  const file = join(root, 'fake-zcode-acp');
+  const source = `#!/usr/bin/env node
+const fs = require('node:fs');
+let pending = '';
+process.stdin.on('data', (chunk) => {
+  pending += chunk.toString();
+  for (;;) {
+    const end = pending.indexOf('\\n');
+    if (end < 0) break;
+    const line = pending.slice(0, end);
+    pending = pending.slice(end + 1);
+    let request;
+    try { request = JSON.parse(line); } catch { continue; }
+    if (request.id === undefined) continue;
+    let result;
+    if (request.method === 'initialize') result = { protocolVersion: 1, agentInfo: { name: 'synthetic', version: '1' }, agentCapabilities: {}, authMethods: [] };
+    else if (request.method === 'session/new') result = { sessionId: 'synthetic-session' };
+    else if (request.method === 'session/set_config_option') result = { modes: { currentModeId: 'build' } };
+    else if (request.method === 'session/prompt') { fs.writeFileSync(${JSON.stringify(promptMarker)}, 'prompt-reached'); continue; }
+    else result = {};
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');
+  }
+});
+setInterval(() => {}, 1000);
+`;
+  writeFileSync(file, source, { mode: 0o700 });
+  chmodSync(file, 0o700);
+  return file;
+}
+
+async function waitForFile(path: string, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('synthetic ACP did not reach session/prompt before test deadline');
+}
+
 function fakeTaskWorkspace(root: string): string {
   mkdirSync(join(root, '.git', 'objects'), { recursive: true });
   mkdirSync(join(root, '.git', 'refs', 'heads'), { recursive: true });
@@ -638,12 +678,16 @@ describe('native transport event and identity handling', () => {
     const fake: Pick<{ run(input: OpInvocation): Promise<WorkerResult> }, 'run'> = {
       async run() { return { model: 'GLM-5.3-Flash', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete' }; },
     };
-    const driver = new ZcodeAcpDriver({ driver: fake, sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root });
+    const driver = new ZcodeAcpDriver({ driver: fake, sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root, artifactDirectory: join(root, 'artifacts') });
     const invocationIdentity = identity('zcode');
     await driver.beginInvocation(invocationIdentity);
     const result = await driver.run(invocation('simulated task', 'GLM-5.3-Flash'));
     expect(result.stopReason).toBe('complete');
     expect(driver.getLaunchEvidence('zcode')).toMatchObject({ identity: invocationIdentity, status: 'unknown' });
+    expect(driver.getLifecycleEvidence('zcode')).toMatchObject({
+      identity: invocationIdentity,
+      process: { status: 'unknown' }, settlement: { status: 'settled' },
+    });
     await expect(driver.cancelInvocationAndWait({ identity: invocationIdentity, cause: 'post-run proof', deadlineEpochMs: Date.now() + 100 })).rejects.toThrow();
     expect(driver.getObservation('zcode')).toMatchObject({
       transport: 'zcode-acp', model: {
@@ -670,7 +714,7 @@ describe('native transport event and identity handling', () => {
       const invocationIdentity = identity('zcode-spawn-observed');
       const driver = new ZcodeAcpDriver({
         executable: 'zcode-acp', version: 'synthetic ACP fixture',
-        sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root,
+        sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root, artifactDirectory: join(root, 'artifacts'),
         launchEvidence: {
           boundaryIdentity: 'visible-only-unconfined', launchIdentity: 'test-launch-identity', admissionId: 'test-spawn-admission',
           environmentNames: ['PATH'], scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
@@ -709,7 +753,7 @@ describe('native transport event and identity handling', () => {
       const invocationIdentity = identity('zcode-no-spawn-observed');
       const driver = new ZcodeAcpDriver({
         executable: 'zcode-acp', version: 'synthetic ACP fixture',
-        sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root,
+        sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root, artifactDirectory: join(root, 'artifacts'),
         launchEvidence: {
           boundaryIdentity: 'visible-only-unconfined', launchIdentity: 'test-launch-identity', admissionId: 'test-substitution-admission',
           environmentNames: ['PATH'], scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
@@ -727,13 +771,84 @@ describe('native transport event and identity handling', () => {
         source: 'visible-g1-glm-driver:spawn-command-guard-before-child_process.spawn',
       });
       expect(driver.getObservation(invocationIdentity.invocationId)?.model.settings.processTree).toMatchObject({
-        value: null, status: 'no-child-process-receipt',
+        value: null, status: 'not-started',
       });
+      const observation = driver.getObservation(invocationIdentity.invocationId)!;
+      const lifecycleArtifact = expectArtifactWithValidHash(observation, 'native-lifecycle');
+      expect(driver.getLifecycleEvidence(invocationIdentity.invocationId)).toMatchObject({
+        identity: invocationIdentity,
+        process: { status: 'not-started', evidence: lifecycleArtifact },
+        settlement: { status: 'settled', evidence: lifecycleArtifact },
+      });
+      expect(driver.getLaunchEvidence(invocationIdentity.invocationId)?.status).toBe('no-spawn-observed');
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
     }
   });
+
+  it('preserves a process-backed hard timeout as budget exhaustion after verified tree stop', async () => {
+    setGlmSafeTestTime();
+    const root = tempRoot();
+    const promptMarker = join(root, 'prompt-reached');
+    const executable = hangingAcpExecutable(root, promptMarker);
+    const invocationIdentity = identity('zcode-hard-timeout');
+    const driver = new ZcodeAcpDriver({
+      executable, version: 'synthetic ACP fixture', hardWallClockMs: 180,
+      abortGraceMs: 30, killGraceMs: 80, sessionsDirectory: join(root, 'sessions'),
+      workspaceForInvocation: () => root, artifactDirectory: join(root, 'artifacts'),
+      launchEvidence: {
+        boundaryIdentity: 'visible-only-unconfined', launchIdentity: 'zcode-timeout-launch', admissionId: 'zcode-timeout-admission',
+        environmentNames: [], scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
+      },
+      spawn: (input) => spawn(input.command, [...input.args], { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' }),
+    });
+    await driver.beginInvocation(invocationIdentity);
+    const result = await driver.run(invocation('synthetic timeout; no model request', 'GLM-5.3-Flash'));
+    await waitForFile(promptMarker);
+    expect(result.stopReason).toBe('budget');
+    expect(result.error).toMatch(/hard wall bound/u);
+    expect(driver.getObservation(invocationIdentity.invocationId)?.terminal).toMatchObject({
+      cause: 'hard-timeout-killed', cancelled: false,
+    });
+    expect(driver.getObservation(invocationIdentity.invocationId)?.model.settings.processTree)
+      .toMatchObject({ value: true, status: 'stopped-and-settled' });
+    expect(driver.getLifecycleEvidence(invocationIdentity.invocationId)).toMatchObject({
+      process: { status: 'stopped' }, settlement: { status: 'settled' },
+    });
+  }, 15_000);
+
+  it('preserves external cancellation as aborted after verified child stop', async () => {
+    setGlmSafeTestTime();
+    const root = tempRoot();
+    const promptMarker = join(root, 'cancel-prompt-reached');
+    const executable = hangingAcpExecutable(root, promptMarker);
+    const invocationIdentity = identity('zcode-external-cancel');
+    const driver = new ZcodeAcpDriver({
+      executable, version: 'synthetic ACP fixture', hardWallClockMs: 5_000,
+      abortGraceMs: 40, killGraceMs: 100, sessionsDirectory: join(root, 'sessions'),
+      workspaceForInvocation: () => root, artifactDirectory: join(root, 'artifacts'),
+      launchEvidence: {
+        boundaryIdentity: 'visible-only-unconfined', launchIdentity: 'zcode-cancel-launch', admissionId: 'zcode-cancel-admission',
+        environmentNames: [], scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
+      },
+      spawn: (input) => spawn(input.command, [...input.args], { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' }),
+    });
+    await driver.beginInvocation(invocationIdentity);
+    const execution = driver.run(invocation('synthetic cancellation; no model request', 'GLM-5.3-Flash'));
+    await waitForFile(promptMarker);
+    const proof = await driver.cancelInvocationAndWait({ identity: invocationIdentity, cause: new Error('synthetic stage cancellation'), deadlineEpochMs: Date.now() + 3_000 });
+    const result = await execution;
+    expect(result.stopReason).toBe('aborted');
+    expect(result.error).toMatch(/cancelled by the native supervisor/u);
+    expect(proof).toMatchObject({ invocationId: invocationIdentity.invocationId, processTree: 'stopped-and-reaped', invocation: 'settled' });
+    expect(driver.getObservation(invocationIdentity.invocationId)?.terminal).toMatchObject({ cause: 'operator-cancelled', cancelled: true });
+    expect(driver.getObservation(invocationIdentity.invocationId)?.model.settings.processTree)
+      .toMatchObject({ value: true, status: 'stopped-and-settled' });
+    expect(driver.getLifecycleEvidence(invocationIdentity.invocationId)).toMatchObject({
+      process: { status: 'stopped' }, settlement: { status: 'settled' },
+    });
+  }, 15_000);
 });
 
 describe('final-profile G1 quota source selection', () => {

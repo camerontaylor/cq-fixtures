@@ -139,14 +139,30 @@ not send a token cap for these unsupported routes.
 ## Visible review-loop strategy runner
 
 `runner/strategies/visible-screening.ts` wires the bounded same-model
-verify/repair recipe to the real review-loop `runSuite` host oracle. Its
-synthetic, no-model S1 driver makes those rows local-judge diagnostics only:
-they are under `localJudge`, marked `pipelineCampaignEvidence: false`, and
-excluded from top-level pipeline rows/tables. The pipeline `TaskOutcome` stays
-null until the S4 stage ledger can be joined to S1 using validated invocation
-evidence. Pipeline candidate correctness and recipe success come from S4's
-bounded strategy result; format compliance stays unknown because the synthetic
-S1 driver supplies a fixed structured response.
+verify/repair recipe to the real review-loop `runSuite` host oracle. It freezes
+the exact matching S1 judgement ID, version, pin, and candidate hash during the
+assigned judge stage, then calls S1's `mapPipelineCampaignEvidence` with the
+strategy ledger, nullable per-counter values and inclusion semantics, and
+explicit evidence entries for every native invocation. A separate immutable
+recipe judgement is appended under the S1 judge attempt namespace; the original
+`runSuite` judgement history remains intact. The top-level TaskOutcome/rows/
+tables come only from that mapper. Raw `runSuite` rows remain grouped under
+`localJudge` as local diagnostics and are marked `pipelineCampaignEvidence:
+false`.
+
+The mapping is fail-closed if the S1 mapper rejects the frozen identity. In the
+currently checked-out S1 integration revision, its identity check compares the
+row and host judgement `judgePin` (the corpus oracle content pin) to
+`judgeManifestHash(context.judgeManifest)`. Those are distinct pins for the
+review-loop bundle, so the real successful `runSuite` path currently raises
+`runSuite judge pin does not match frozen oracle manifest`. The caller does not
+rewrite the historical row or judgement to hide this mismatch. S1 must reconcile
+its host-oracle pin and manifest-hash join before this visible path can emit a
+mapped successful candidate. Until then, the real-store integration test
+reaches and documents this contract failure; no paid provider call is made.
+Pipeline recipe format and assigned success are passed separately from the S1
+host row. The synthetic S1 driver supplies a fixed structured response, so S4
+format compliance remains unknown unless an admitted recipe stage reports it.
 
 `pipelineEvidence.stages` preserves every model-stage ID, attempt ID, native
 invocation ID when known, terminal cause, transport exception, nullable usage

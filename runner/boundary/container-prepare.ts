@@ -1,3 +1,4 @@
+import { FINAL_BROKER_RUNTIME_IDENTITY, verifyLiveBrokerToolchain } from './broker-toolchain.ts';
 import { compileBroker } from './egress-broker.ts';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -23,7 +24,7 @@ interface Container { State: { Running: boolean; Pid: number }; HostConfig: { Pr
  * Each worker gets a fresh container. Named task volume must be exclusive per run.
  */
 export function containerPreparer(specification: ContainerBoundarySpec, stagingInput?: TaskStageReceipt,
-  brokerInput?: { containerId: string; imageId: string; configPath: string }) {
+  brokerInput?: { containerId: string; imageId: string; configPath: string; publicAssetVolume?: string; runtimeRunId?: string }) {
   const policy = compileContainerBoundary(specification);
   const staging = structuredClone(stagingInput);
   const broker = structuredClone(brokerInput);
@@ -45,6 +46,10 @@ export function containerPreparer(specification: ContainerBoundarySpec, stagingI
       }
       await verifyStageVolumes(control, staging);
       if (!/^[a-f0-9]{64}$/.test(broker.containerId) || !/^sha256:[a-f0-9]{64}$/.test(broker.imageId) || broker.configPath !== '/opt/config.json') throw new Error('fixed broker content receipt required');
+      if (policy.spec.network.productionEligible) {
+        if (policy.spec.network.brokerRuntimeIdentity !== FINAL_BROKER_RUNTIME_IDENTITY || !broker.publicAssetVolume || !broker.runtimeRunId) throw new Error('declared effective broker toolchain identity required');
+        await verifyLiveBrokerToolchain(control, broker.containerId, broker.publicAssetVolume, broker.runtimeRunId);
+      }
       const liveBroker = JSON.parse(await docker(['inspect', broker.containerId]))[0];
       if (!liveBroker.State.Running || liveBroker.Image !== broker.imageId || liveBroker.Config.Labels?.['cq.boundary.broker'] !== policy.spec.network.brokerIdentity) throw new Error('live broker image or identity mismatch');
       const brokerConfig = JSON.parse(await docker(['exec', broker.containerId, '/usr/local/bin/node', '-e', "process.stdout.write(require('node:fs').readFileSync('/opt/config.json'))"]));

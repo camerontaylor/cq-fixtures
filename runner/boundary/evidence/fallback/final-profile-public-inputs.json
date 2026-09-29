@@ -55,12 +55,13 @@
     "-"
   ],
   "sourceAssets": {
-    "codex-final-profile.ts": "6a80ae48add7d54b75c48cd989f6bdad154d4909f55a5d65f0c48a57a9bc817a",
-    "container.ts": "1c7756bf8cec7eb7e74597137c3c9472b60bc7efc79a0e5ffbe30f3f72935ae0",
-    "container-prepare.ts": "11d84e4376b303c4c609bb40a8d02509efa0c1b5d3cda4b32394c31ad1f9b509",
+    "codex-final-profile.ts": "1cca73fb8e231aeca32669a9ad433a432015217277f23b9fde48df9020d2e367",
+    "container.ts": "4970c1d40bb7a5f96272def60d956cfb860202aeee139518ed6602badad951c3",
+    "container-prepare.ts": "93489d63cb817ddaa08b275a9fb974a88a265479241603ba16615c5338e2f7f4",
     "task-session.ts": "b30bda6a6e4f5bdbf3333b2e901ff3747de795fd97a331df84ded436d6047d8d",
     "task-staging.ts": "f34a09301a58c75288ac6e21241012d37b71ac8f0e2b642dd3b7c3455b0982ff",
-    "namespace-acl.sh": "6abafb0afac7421ce082b42865a70c7e11b6e623e6ed9f046156bccc2050da73"
+    "namespace-acl.sh": "6abafb0afac7421ce082b42865a70c7e11b6e623e6ed9f046156bccc2050da73",
+    "broker-toolchain.ts": "0150bb5add0b4b012489faa5eee85918908a4a1b751e1743b7c6ff196a752e1c"
   },
   "dynamicPrivateInputs": [
     "exclusive stage receipt/content inventory and task baseline identity",
@@ -70,5 +71,24 @@
     "expected boundary=compileContainerBoundary(spec).identity",
     "expected invocation=sha256(JSON.stringify({boundaryIdentity,stage,executable:\"/usr/local/bin/codex\",args:finalArguments,bootstrap:bootstrapHash,budget}))"
   ],
-  "authoritativeAdmission": "Parent preregisters expected identities independently, verifies source/assignment linkage, consumes exclusive wx replay ledger BEFORE returning receipt. Provision failure consumes admission; native enforces whole-provision deadline. Callback echo is not authorization."
+  "authoritativeAdmission": "Parent preregisters expected identities independently, verifies source/assignment linkage, consumes exclusive wx replay ledger BEFORE returning receipt. Provision failure consumes admission; native enforces whole-provision deadline. Callback echo is not authorization.",
+  "strategyVersion": "nonroot-public-toolchain-v2",
+  "effectiveBrokerIdentity": "a0271b61483a1c253b86884ce054793d58d3e66e42f020d6d0434101ca869fe8",
+  "brokerPublicToolchain": {
+    "inventoryHash": "e7263ccbc3bd0fe0b82c08b7c1959fae20afbda381a0d2310fdb1842e272e506",
+    "assets": {
+      "broker.mjs": "f20f5e3e74b8a3c545f417a03f12b144254bf1f27b57293e5419164d80c2fc6d",
+      "config.json": "c6d8d0b3dba5ac98779663e4cc75b92107fddb14430fc42180f4ec675c0f99b0"
+    },
+    "user": "1000:1000",
+    "readonlyMount": "/opt",
+    "exclusiveVolume": true,
+    "additionalMounts": false,
+    "entrypoint": "/usr/local/bin/node",
+    "args": [
+      "/opt/broker.mjs",
+      "/opt/config.json"
+    ],
+    "historicalInputs": "final-profile-public-inputs-before-broker-toolchain.json"
+  }
 }

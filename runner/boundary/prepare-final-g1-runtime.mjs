@@ -1,8 +1,11 @@
+import { brokerAssetTree, FINAL_BROKER_RUNTIME_IDENTITY, FINAL_BROKER_ASSET_INVENTORY, verifyLiveBrokerToolchain } from './broker-toolchain.ts';
 /** No-dispatch operator: creates dedicated infrastructure, fresh access-only private context and disabled approval template. */
 import { mkdtempSync, chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { snapshotTask } from './task-tree.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { DockerControl, teardownContainer } from './docker-control.ts';
 import { prepareFinalCodexContext } from './codex-final-profile.ts';
@@ -20,40 +23,59 @@ export async function preparePrivateRuntime(repoRoot, runId) {
   const runtimeSourceSha256 = hash(readFileSync(runtimeSource));
   const privateRoot = realpathSync(mkdtempSync(join(tmpdir(), 'cq-s5-final-g1-private-'))); chmodSync(privateRoot, 0o700);
   const task = await createReviewLoopRepairTask({ provider: 'codex', model: 'gpt-6-sol' });
-  let taskFiles;
-  try { taskFiles = Object.fromEntries(['package.json','src/settings.mjs','src/display.mjs','test/public-settings.test.mjs'].map(p => [p, hash(readFileSync(join(task.worktreePath, p)))])); }
+  let taskFiles, taskDirectories;
+  try { const tree = snapshotTask(task.worktreePath, true); taskFiles = Object.fromEntries(tree.entries.filter(e => !e.path.startsWith('.git/') && e.kind === 'file').map(e => [e.path, hash(Buffer.from(e.data, 'base64'))])); taskDirectories = tree.entries.filter(e => !e.path.startsWith('.git') && e.kind === 'directory').map(e => e.path); }
   finally { await task.cleanup(); }
   const c = new DockerControl(), network = 'cq-s5-final-g1-' + randomBytes(8).toString('hex');
-  let brokerId, networkCreated = false, auth;
+  const brokerAssetVolume = 'cq-s5-broker-assets-' + randomBytes(8).toString('hex');
+  let assetsCreated = false;
+  let brokerId, networkCreated = false, auth, phase = 'daemon';
   const utilityImage = 'sha256:4a14ba40f65117679e6f60d0f7f7bfa5eb44ff9be79e96137966a1ba9675f9b0';
   try {
     if (await c.run(['info', '--format', '{{.ID}}']) !== pins.daemon.id || hash(readFileSync(pins.vm.configPath)) !== pins.vm.configHash) throw new Error('dedicated daemon/VM identity differs');
+    phase = 'images';
     for (const image of [pins.workerImage, pins.brokerImage, utilityImage]) if (JSON.parse(await c.run(['image', 'inspect', image]))[0].Id !== image) throw new Error('immutable image unavailable');
+    phase = 'network-inventory';
     const networks = (await c.run(['network','ls','-q'])).split('\n').filter(Boolean);
-    for (const id of networks) { const n = JSON.parse(await c.run(['network','inspect',id]))[0]; if (n.IPAM.Config.some(cfg => cfg.Subnet === pins.network.internalSubnet)) throw new Error('final subnet already owned; do not mutate existing network'); }
+    for (const id of networks) { const n = JSON.parse(await c.run(['network','inspect',id]))[0]; if ((n.IPAM.Config ?? []).some(cfg => cfg.Subnet === pins.network.internalSubnet)) throw new Error('final subnet already owned; do not mutate existing network'); }
+    phase = 'access-only-auth';
     auth = prepareFinalCodexContext('/Users/ctaylor/.tmp/cq-s5-frozen-profile-3AQYGq/config.toml');
+    phase = 'public-assets';
+    if ((await c.run(['volume','ls','-q'])).split('\n').includes(brokerAssetVolume)) throw new Error('public toolchain collision');
+    await c.run(['volume','create','--label','cq.boundary.runtime=' + runId,'--label','cq.boundary.public-assets=' + FINAL_BROKER_ASSET_INVENTORY,brokerAssetVolume]); assetsCreated = true;
+    const writer = readFileSync(new URL('./volume-io.mjs', import.meta.url),'utf8');
+    await c.utility(['--rm','-i','--pull=never','--network','none','--user','0:0','--read-only','--cap-drop','ALL','--cap-add','CHOWN','--security-opt','no-new-privileges','--pids-limit','32','--memory','256m','--cpus','0.5','--mount',`type=volume,source=${brokerAssetVolume},target=/task,volume-nocopy`,'--entrypoint','/usr/local/bin/node',utilityImage,'-e',writer,'write'],JSON.stringify(brokerAssetTree().entries));
+    phase = 'network-create';
     await c.run(['network','create','--internal','--subnet',pins.network.internalSubnet,'--label','cq.boundary.runtime=' + runId,network]); networkCreated = true;
-    brokerId = await c.run(['create','--pull=never','--name',network + '-broker','--label','cq.boundary.runtime=' + runId,'--label','cq.boundary.broker=' + pins.brokerIdentity,'--network','bridge','--user','1000:1000','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','32','--memory','256m','--memory-swap','256m','--cpus','0.5','--ipc','private','--cgroupns','private','--no-healthcheck','--entrypoint','/usr/local/bin/node',pins.brokerImage,'/opt/broker.js','/opt/config.json']);
+    phase = 'broker-create';
+    brokerId = await c.run(['create','--pull=never','--name',network + '-broker','--label','cq.boundary.runtime=' + runId,'--label','cq.boundary.broker=' + pins.brokerIdentity,'--label','cq.boundary.broker-runtime=' + FINAL_BROKER_RUNTIME_IDENTITY,'--mount',`type=volume,source=${brokerAssetVolume},target=/opt,readonly,volume-nocopy`,'--network','bridge','--user','1000:1000','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','32','--memory','256m','--memory-swap','256m','--cpus','0.5','--ipc','private','--cgroupns','private','--no-healthcheck','--entrypoint','/usr/local/bin/node',pins.brokerImage,'/opt/broker.mjs','/opt/config.json']);
     await c.run(['network','connect','--ip',pins.network.brokerIP,network,brokerId]); await c.run(['start',brokerId]);
+    phase = 'broker-config';
+    await verifyLiveBrokerToolchain(c,brokerId,brokerAssetVolume,runId);
     const config = JSON.parse(await c.run(['exec',brokerId,'/usr/local/bin/node','-e',"process.stdout.write(require('fs').readFileSync('/opt/config.json'))"]));
     const { compileBroker } = await load('runner/boundary/egress-broker.ts'); if (compileBroker(config).identity !== pins.brokerIdentity) throw new Error('exact live broker configuration differs');
+    phase = 'host-G1-evidence';
     const report = '/Volumes/offload/neptune/repos/toolkit-research-cq-settings/research/research-20260929-cq-settings-execution/visible-g1-runs/codex/de7971b1-827b-4da2-a7df-a821c525e2e2/visible-g1-report.json';
-    const plan = { repoRoot:root, privateRoot, privateAuthRoot:auth.privateRoot, network, brokerContainerId:brokerId, runId, runtimeSource, runtimeSourceSha256, sourcePins, sourcePin, publicInputsSha256, utilityImage, taskFiles, nativeControlEvidence:'accepted-host-visible-G1-report-sha256:' + hash(readFileSync(report)) + ';final-container-G1-unqualified;extension-lifetime-unverified' };
-    save(join(privateRoot,'setup-state.json'), { network, broker:{containerId:brokerId,imageId:pins.brokerImage,configPath:'/opt/config.json'}, authRoot:auth.privateRoot, handedOff:false });
+    const repositoryHead = execFileSync('/usr/bin/git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8',timeout:5000}).trim();
+    const sourceIsProvisional = pins.effectiveBrokerIdentity !== FINAL_BROKER_RUNTIME_IDENTITY || !!execFileSync('/usr/bin/git',['status','--porcelain'],{cwd:root,encoding:'utf8',timeout:5000,maxBuffer:512*1024}).trim();
+    const runtimeDependenciesSha256 = Object.fromEntries(['broker-toolchain.ts','broker-public-assets/broker.mjs','broker-public-assets/config.json'].map(p => { const path=fileURLToPath(new URL('./'+p,import.meta.url));return [path,hash(readFileSync(path))] }));
+    const plan = { runtimeDependenciesSha256, brokerAssetVolume, effectiveBrokerIdentity:FINAL_BROKER_RUNTIME_IDENTITY, repositoryHead, sourceIsProvisional, repoRoot:root, privateRoot, privateAuthRoot:auth.privateRoot, network, brokerContainerId:brokerId, runId, runtimeSource, runtimeSourceSha256, sourcePins, sourcePin, publicInputsSha256, utilityImage, taskFiles, taskDirectories, nativeControlEvidence:'accepted-host-visible-G1-report-sha256:' + hash(readFileSync(report)) + ';final-container-G1-unqualified;extension-lifetime-unverified' };
+    save(join(privateRoot,'setup-state.json'), { network, broker:{containerId:brokerId,imageId:pins.brokerImage,configPath:'/opt/config.json',publicAssetVolume:brokerAssetVolume,runtimeRunId:runId}, authRoot:auth.privateRoot, handedOff:false });
     const planSha256 = hash(JSON.stringify(plan)); save(join(privateRoot,'plan-hash.json'),{sha256:planSha256});
     const wrapper = `import { createPreparedFinalG1Runtime } from ${JSON.stringify(pathToFileURL(runtimeSource).href)};\nconst plan=${JSON.stringify(plan)};\nexport async function createFinalProfileG1Runtime(){return (await createPreparedFinalG1Runtime(plan)).options}\nexport async function cleanupFinalProfileG1Runtime(options={}){return (await createPreparedFinalG1Runtime(plan,{verify:false})).cleanup(options)}\nexport async function verifyFinalProfileG1Runtime(){await (await createPreparedFinalG1Runtime(plan)).verifyInfrastructure();return {verified:true,modelCalls:0}}\n`;
     writeFileSync(join(privateRoot,'runtime.mjs'),wrapper,{mode:0o600,flag:'wx'});
-    const approval = { approved:false, stage:'final-profile-G1', runId, assignmentId:'final-profile-g1-' + runId, attemptId:'final-profile-g1-' + runId + '-attempt-1', sourcePin, publicInputsSha256, runtimeSourceSha256, runtimeModuleSha256:hash(wrapper), planSha256, allowVerifiedDynamicPrivateStaging:true, modelBudgetSeconds:90, heldOut:false, admissionId:'PARENT-MUST-CHOOSE-UNIQUE-ID', expiresAt:0 };
+    const approval = { approved:false, brokerStrategy:'nonroot-public-toolchain-v2', effectiveBrokerIdentity:FINAL_BROKER_RUNTIME_IDENTITY, publicAssetInventoryHash:FINAL_BROKER_ASSET_INVENTORY, sourceIsProvisional, repositoryHead, stage:'final-profile-G1', runId, assignmentId:'final-profile-g1-' + runId, attemptId:'final-profile-g1-' + runId + '-attempt-1', sourcePin, publicInputsSha256, runtimeSourceSha256, runtimeModuleSha256:hash(wrapper), planSha256, allowVerifiedDynamicPrivateStaging:true, modelBudgetSeconds:90, heldOut:false, admissionId:'PARENT-MUST-CHOOSE-UNIQUE-ID', expiresAt:0 };
     save(join(privateRoot,'parent-approval.template.json'),approval); mkdirSync(join(privateRoot,'reports'),{mode:0o700});
+    phase = 'runtime-verification';
     const { createPreparedFinalG1Runtime } = await import(pathToFileURL(runtimeSource).href); await (await createPreparedFinalG1Runtime(plan)).verifyInfrastructure();
     return { privateModule:join(privateRoot,'runtime.mjs'), approvalTemplate:join(privateRoot,'parent-approval.template.json'), modelCalls:0, approvalEnabled:false, ...approval, taskFiles, lifetime:{setup:'runtime-self-cutoff-before-native-60s;Docker-operations-bounded-but-not-interruptible',runtime:'native-90s-assignment-240s',latePreparation:'self-clean-on-return',recovery:'retained-after-handoff-until-parent-disposition'} };
   } catch {
-    if (brokerId) await teardownContainer(c,brokerId); if (networkCreated) await c.run(['network','rm',network]);
+    if (brokerId) await teardownContainer(c,brokerId); if (networkCreated) await c.run(['network','rm',network]); if (assetsCreated) { const v=JSON.parse(await c.run(['volume','inspect',brokerAssetVolume]))[0]; if(v.Labels?.['cq.boundary.runtime']!==runId || v.Labels?.['cq.boundary.public-assets']!==FINAL_BROKER_ASSET_INVENTORY || await c.run(['ps','-aq','--filter','volume='+brokerAssetVolume])) throw new Error('private public-toolchain recovery ownership changed');await c.run(['volume','rm',brokerAssetVolume]); }
     // Private auth inventory retained for explicit parent recovery, never printed.
-    throw new Error('private runtime preparation unavailable; created infrastructure disposed, private recovery retained');
+    throw new Error('private runtime preparation unavailable at ' + phase + '; created infrastructure disposed, private recovery retained');
   } finally { c.close(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try { console.log(JSON.stringify(await preparePrivateRuntime(process.argv[2],process.argv[3]),null,2)); }
-  catch { console.error('bounded private runtime preparation failed; no credential details disclosed'); process.exitCode=1; }
+  catch (error) { console.error(error.message.startsWith('private runtime preparation unavailable at ') ? error.message : 'bounded private runtime preparation failed before infrastructure; no credential details disclosed'); process.exitCode=1; }
 }

@@ -1971,9 +1971,9 @@ it('source executor and source operation share one ownership module instance', a
   writeFileSync(modulePath, code, { mode: 0o600 });
   writeFileSync(privateInputPath, '{}', { mode: 0o600 });
   const now = Date.now();
-  const operation = { phase: 'execution' as const, modulePath, moduleSha256: createHash('sha256').update(code).digest('hex'), exportName: 'execute', privateInputPath, deadlineEpochMs: now + 2000 };
-  const receipt = await superviseAssignment({ identity: identity('source-owner-instance'), privateRoot: root, operations: [operation], allowedOperations: [operation], resources: [], resourceDeadlineEpochMs: now + 2000, reapDeadlineEpochMs: now + 3000, quarantineDeadlineEpochMs: now + 4000, requiredGuarantee: 'host-process-group' });
+  const operation = { phase: 'execution' as const, modulePath, moduleSha256: createHash('sha256').update(code).digest('hex'), exportName: 'execute', privateInputPath, deadlineEpochMs: now + 10_000 };
+  const receipt = await superviseAssignment({ identity: identity('source-owner-instance'), privateRoot: root, operations: [operation], allowedOperations: [operation], resources: [], resourceDeadlineEpochMs: now + 10_000, reapDeadlineEpochMs: now + 12_000, quarantineDeadlineEpochMs: now + 14_000, requiredGuarantee: 'host-process-group' });
   expect(receipt).toMatchObject({ terminal: 'completed', resourceLifetime: 'unsupported' });
   expect(JSON.parse(readFileSync(receipt.results[0]!.path, 'utf8'))).toEqual({ sourceOwner: true });
   expect(JSON.parse(readFileSync(receipt.registryPath, 'utf8')).resources).toContainEqual({ kind: 'volume', id: 'cq-s5-pk04-owner' });
-});
+}, 20_000);

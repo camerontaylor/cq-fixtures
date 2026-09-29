@@ -109,8 +109,12 @@ export interface ResetJournalEntry {
   /** Fresh authenticated snapshot that selected and pinned the physical credit before action. */
   beforeQuota?: QuotaSnapshot;
   preparedAt?: string;
-  state: 'prepared' | 'action-executed/evidence-pending' | 'completed';
+  state: 'prepared' | 'action-executing' | 'action-executed/evidence-pending' | 'completed';
   actionOutcome?: ResetCreditConsumeOutcome;
+  /** Exact response, including mismatches, or null when transport outcome is uncertain. */
+  actionResponse?: ResetCreditConsumeResult | null;
+  actionStartedAt?: string;
+  refreshedQuota?: QuotaSnapshot;
   result?: ResetCreditConsumeResult;
 }
 
@@ -118,8 +122,12 @@ export interface ResetJournal {
   get(idempotencyKey: string): Promise<ResetJournalEntry | null>;
   /** Must be create-if-absent. A conflicting entry is an error. */
   create(entry: ResetJournalEntry): Promise<void>;
-  /** Record the provider response before attempting a post-action read. */
-  recordAction(idempotencyKey: string, outcome: ResetCreditConsumeOutcome, beforeQuota: QuotaSnapshot): Promise<void>;
+  /** Durable single-use claim written before dispatch. */
+  startAction(idempotencyKey: string, startedAt: string): Promise<void>;
+  /** Record the exact response (or null for an ambiguous transport result). */
+  recordAction(idempotencyKey: string, response: ResetCreditConsumeResult | null, beforeQuota: QuotaSnapshot): Promise<void>;
+  /** Preserve a fresh post-action quota observation even when the response cannot be confirmed. */
+  recordEvidence(idempotencyKey: string, refreshedQuota: QuotaSnapshot): Promise<void>;
   /** Must only complete the matching evidence-pending entry with verified evidence for successful resets. */
   complete(idempotencyKey: string, result: ResetCreditConsumeResult): Promise<void>;
 }
@@ -152,20 +160,26 @@ export async function consumeResetCreditOnce(
   const now = options.now ?? Date.now;
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_TELEMETRY_AGE_MS;
   let beforeQuota: QuotaSnapshot;
-  let outcome: ResetCreditConsumeOutcome;
   let creditId = prior?.creditId ?? request.creditId;
-  if (prior?.state === 'action-executed/evidence-pending') {
+  let response: ResetCreditConsumeResult | null = prior?.actionResponse ?? null;
+  if (prior) {
     beforeQuota = requirePreparedQuota(prior);
-    outcome = prior.actionOutcome!;
-  } else if (prior?.state === 'prepared') {
-    beforeQuota = requirePreparedQuota(prior);
-    if (!creditId) throw new Error('Prepared reset journal omitted its pinned physical credit ID');
-    const boundCredit = beforeQuota.providers.find((provider) => provider.provider === 'codex')?.resetCredits
-      .find((credit) => credit.id === creditId && credit.resetType === request.resetType && credit.status === 'available');
-    if (!boundCredit) throw new Error('Prepared reset journal lacks the original authenticated available-credit binding');
-    // The consumer performs a new fresh read, but must send this same physical
-    // ID and UUID even when current telemetry now marks the credit redeemed.
-    outcome = await consumePinnedCredit(consumer, journal, request, creditId, beforeQuota, true);
+    if (prior.state === 'action-executing') {
+      await recordFreshResetEvidence(consumer, journal, request.idempotencyKey, beforeQuota, now, maxAgeMs);
+      throw new Error('Reset action is already in flight or has an uncertain outcome; it was not retried');
+    }
+    if (prior.state === 'prepared') {
+      // A crash or competing process may have dispatched after the prepared
+      // record. Never infer that it is safe to send the consume request again.
+      await journal.recordAction(request.idempotencyKey, null, beforeQuota);
+      await recordFreshResetEvidence(consumer, journal, request.idempotencyKey, beforeQuota, now, maxAgeMs);
+      throw new Error('Reset action remains evidence-pending after an uncertain dispatch; it was not retried');
+    }
+    if (!response || response.resetType !== request.resetType || response.creditId !== creditId
+      || !['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'].includes(response.outcome)) {
+      await recordFreshResetEvidence(consumer, journal, request.idempotencyKey, beforeQuota, now, maxAgeMs);
+      throw new Error('Reset action remains evidence-pending after an uncertain or mismatched provider response; it was not retried');
+    }
   } else {
     beforeQuota = await consumer.readRateLimits();
     const beforeFreshness = resetSnapshotFreshness(beforeQuota, now(), maxAgeMs, 'codex');
@@ -179,9 +193,24 @@ export async function consumeResetCreditOnce(
       ...(request.creditId === undefined ? {} : { requestedCreditId: request.creditId }),
       creditId, beforeQuota, preparedAt: new Date(now()).toISOString(), state: 'prepared' };
     await journal.create(prior);
-    outcome = await consumePinnedCredit(consumer, journal, request, creditId, beforeQuota, false);
+    await journal.startAction(request.idempotencyKey, new Date(now()).toISOString());
+    try {
+      response = await consumer.consume({ ...request, creditId }, { replayPrepared: false });
+      await journal.recordAction(request.idempotencyKey, response, beforeQuota);
+    } catch (error) {
+      await journal.recordAction(request.idempotencyKey, null, beforeQuota);
+      await recordFreshResetEvidence(consumer, journal, request.idempotencyKey, beforeQuota, now, maxAgeMs);
+      throw new Error('Reset action response is uncertain and remains evidence-pending; it was not retried', { cause: error });
+    }
+    if (response.resetType !== request.resetType || response.creditId !== creditId
+      || !['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'].includes(response.outcome)) {
+      await recordFreshResetEvidence(consumer, journal, request.idempotencyKey, beforeQuota, now, maxAgeMs);
+      throw new Error('Consumer result does not match the locally authenticated reset type and pinned credit ID; action remains evidence-pending');
+    }
   }
+  if (!response) throw new Error('Reset action remains evidence-pending without a confirmed provider response');
   const refreshedQuota = await consumer.readRateLimits();
+  await journal.recordEvidence(request.idempotencyKey, refreshedQuota);
   const refreshedFreshness = resetSnapshotFreshness(refreshedQuota, now(), maxAgeMs, 'codex');
   if (!refreshedFreshness.fresh) {
     throw new Error(`Reset action is recorded as evidence-pending; fresh post-action telemetry unavailable (${refreshedFreshness.reason})`);
@@ -191,11 +220,11 @@ export async function consumeResetCreditOnce(
     throw new Error('Reset action remains evidence-pending: post-action binding-window identity set changed');
   }
   const allowanceChangeVerified = windowEvidence.changed;
-  if ((outcome === 'reset' || outcome === 'alreadyRedeemed') && !allowanceChangeVerified) {
+  if ((response.outcome === 'reset' || response.outcome === 'alreadyRedeemed') && !allowanceChangeVerified) {
     throw new Error('Reset action remains evidence-pending: post-action read did not verify an allowance or credit-state change');
   }
   const result: ResetCreditConsumeResult = {
-    outcome, resetType: request.resetType, ...(creditId ? { creditId } : {}),
+    outcome: response.outcome, resetType: request.resetType, ...(creditId ? { creditId } : {}),
     beforeAllowance: null, afterAllowance: null, observedAt: refreshedQuota.fetchedAt,
     beforeQuota, refreshedQuota, allowanceChangeVerified,
   };
@@ -203,23 +232,23 @@ export async function consumeResetCreditOnce(
   return result;
 }
 
-async function consumePinnedCredit(
+async function recordFreshResetEvidence(
   consumer: SupportedResetCreditConsumer,
   journal: ResetJournal,
-  request: ResetCreditConsumeRequest,
-  creditId: string,
-  beforeQuota: QuotaSnapshot,
-  replayPrepared: boolean,
-): Promise<ResetCreditConsumeOutcome> {
-  const consumed = await consumer.consume({ ...request, creditId }, { replayPrepared });
-  if (!['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'].includes(consumed.outcome)) {
-    throw new Error('Provider returned an unsupported reset-credit outcome');
+  idempotencyKey: string,
+  _beforeQuota: QuotaSnapshot,
+  now: () => number,
+  maxAgeMs: number,
+): Promise<void> {
+  try {
+    const refreshedQuota = await consumer.readRateLimits();
+    if (resetSnapshotFreshness(refreshedQuota, now(), maxAgeMs, 'codex').fresh) {
+      await journal.recordEvidence(idempotencyKey, refreshedQuota);
+    }
+  } catch {
+    // Keep the request evidence-pending. A later authenticated read may append
+    // evidence, but this path never repeats a potentially spent action.
   }
-  if (consumed.resetType !== request.resetType || consumed.creditId !== creditId) {
-    throw new Error('Consumer result does not match the locally authenticated reset type and pinned credit ID');
-  }
-  await journal.recordAction(request.idempotencyKey, consumed.outcome, beforeQuota);
-  return consumed.outcome;
 }
 
 function requirePreparedQuota(entry: ResetJournalEntry): QuotaSnapshot {

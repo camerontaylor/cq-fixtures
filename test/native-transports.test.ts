@@ -464,13 +464,41 @@ describe('native transport event and identity handling', () => {
     const root = tempRoot();
     const script = join(root, 'hanging-cli');
     const child = `process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);`;
-    const source = `#!/usr/bin/env node\nconst {spawn}=require('node:child_process'); spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'}); process.stdout.write('partial\\n'); setInterval(()=>{},1000);\n`;
+    const source = `#!/usr/bin/env node\nconst {spawn}=require('node:child_process'); spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'}); process.stdout.write('partial\\n'); process.stdin.on('data',()=>process.stdout.write('runner-ready\\n')); setInterval(()=>{},1000);\n`;
     writeFileSync(script, source, { mode: 0o700 });
     chmodSync(script, 0o700);
-    const driver = new CodexExecDriver({ executable: script, artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch(), killGraceMs: 80 });
+    let markLaunched!: () => void;
+    const launched = new Promise<void>((resolve) => { markLaunched = resolve; });
+    let childProcess: ReturnType<typeof spawn> | undefined;
+    const driver = new CodexExecDriver({ executable: script, artifactDirectory: join(root, 'artifacts'), killGraceMs: 80,
+      spawnAdapter: async (command, args, { cwd }) => {
+        const child = spawn(command, [...args], { cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+        childProcess = child;
+        // The fixture writes only after spawning its descendant. Await that
+        // event so this assertion exercises stop/reap after actual launch,
+        // rather than cancellation racing asynchronous session resolution.
+        await new Promise<void>((resolve, reject) => {
+          child.stdout!.once('data', () => resolve());
+          child.once('error', reject);
+        });
+        markLaunched();
+        return {
+          child, boundaryIdentity: 'visible-only-unconfined', launchIdentity: 'cancel-proof-launch',
+          admissionId: 'cancel-proof-admission', environmentNames: [],
+          scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
+        };
+      },
+    });
     const invocationIdentity = identity('cancel-proof');
     await driver.beginInvocation(invocationIdentity);
     const execution = driver.run(invocation());
+    await launched;
+    // This second line is emitted only after runSupervised has accepted the
+    // receipt, attached stream handling, and delivered the invocation input.
+    await new Promise<void>((resolve, reject) => {
+      childProcess!.stdout!.once('data', () => resolve());
+      childProcess!.once('error', reject);
+    });
     const proof = await driver.cancelInvocationAndWait({ identity: invocationIdentity, cause: 'stage deadline', deadlineEpochMs: Date.now() + 3_000 });
     const result = await execution;
     expect(proof).toEqual({ invocationId: 'cancel-proof', stageId: 'draft', attemptId: 'attempt-cancel-proof', processTree: 'stopped-and-reaped', invocation: 'settled' });

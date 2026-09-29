@@ -171,11 +171,13 @@ observation.
 Each draft starts from an isolated worktree with the exact pinned seed commit
 and tree. Repair and verification also start from that seed, with the captured,
 content-hash checked candidate patch applied. The runner freezes three finite
-tiers, a 120-second model stage limit, and the S1 60-second host-check limit.
-Whole-pipeline wall time, whole-judge time, and token hard caps remain
-unenforced pending native supervisor support, so this runner makes no hard
-total-bound claim. Caller configuration must attest route effort and supply
-the already admitted driver and native supervisor. The runner performs no
+tiers, a 120-second model-stage decision limit, a 60-second independent-judge
+decision limit, and a separate bounded cleanup window. S4 enforces the decision
+deadline across candidate work, selection, and independent judging, then uses
+the remaining shutdown, observation, and capture reserves. Native process-tree
+lifetime beyond S2's stop proof and external resource lifetime are not globally
+enforced. Token hard caps remain unsupported. Caller configuration must attest
+route effort and supply the already admitted driver and native supervisor. The runner performs no
 credential resolution or public calls, and it has no held-out cohort input.
 The S1 checkout is taken from this repository when it contains the required
 sources, or supplied explicitly through `s1DependencyRoot`; the runner never
@@ -191,6 +193,18 @@ autocrlf and fsmonitor, and installs a highest-priority trusted attributes
 rule that disables filters and text conversions. S1's trusted capture routine remains private to its runner;
 exposing it as a shared helper would give both paths one hardened capture
 contract and remove this strategy-local implementation.
+
+The current S1 `runSuite` host-check API has no cancellation/reap handle. The
+visible entrypoint therefore requires an `IndependentJudgeSupervisor`: its
+`run` must place the host judge and check process in a cancellable OS boundary,
+and `cancelAndWait` must return matching assignment/stage/attempt identity,
+stopped-and-reaped process-tree proof, settled execution, and completed
+cleanup. A failed, missing, or quarantined proof suppresses the verdict and
+candidate progression; recovery resources remain retained. S2's native
+supervisor cannot stand in for this proof because it only controls the
+configured native Driver invocation. Parent integration must implement this
+additive judge-boundary adapter before screening; calling the current
+in-process `runSuite` API by itself does not meet the contract.
 
 Focused tests use a fake model driver while exercising the real artifact
 store and S1 `runSuite`/host oracle, plus isolated Git capture and root
@@ -230,10 +244,11 @@ assigned result fail.
 
 ## Integration seam for S1/S2
 
-The parent integration should implement one adapter outside this owned
+The parent integration should implement the native adapter outside this owned
 directory, mapping `InvocationIdentity` into S1 `beginInvocation` and
-`getObservation(invocationId)`. S1 persists transport evidence; this engine
-returns strategy state and nullable accounting. Verify route setting inventories
+`getObservation(invocationId)`, plus the supervised S1 judge boundary above.
+S1 persists transport evidence; this engine returns strategy state and
+nullable accounting. Verify route setting inventories
 against the frozen profile pins and carry assignment identity from the campaign
 roster. Persist candidate content before workspace cleanup. Keep native and
 diagnostic tracks separate in storage and comparison tables.

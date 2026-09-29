@@ -1,12 +1,13 @@
 /** Visible-only same-model review-loop screening through S4 and the S1 runner. */
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
-import { createNativeStrategyExecutor, type NativeObservedDriver, type NativeSupervisorControl } from './executor.ts';
+import { createNativeStrategyExecutor, type IndependentJudgeSupervisor, type NativeObservedDriver, type NativeSupervisorControl } from './executor.ts';
 import {
   defineBudgetTiers, runStrategy, type Candidate, type ExecutorResult, type PerTaskBudgetTier,
   type StageRequest, type StrategyRoute, type StrategyResult, unknownUsage,
@@ -15,9 +16,12 @@ import {
 export const VISIBLE_REVIEW_LOOP_LIMITS = Object.freeze({
   modelStageMs: 120_000,
   independentJudgeMs: 60_000,
+  decisionDeadlineEnforced: true,
   totalWallClockEnforced: false,
   independentJudgeTotalEnforced: false,
-  totalEnforcementReason: 'S2 native whole-pipeline supervisor admission is pending',
+  totalEnforcementReason: 'The strategy decision has a finite deadline; its cleanup window is separate and global external resource lifetime is not enforced.',
+  boundedCleanupWindowMs: 30_000,
+  globalResourceLifetimeEnforced: false,
   tokenEnforcement: 'unsupported' as const,
   tiers: defineBudgetTiers([
     { id: 'visible-small', maxAttempts: 4, maxStages: 6, wallClockMs: 480_000, judgementAllowanceMs: 60_000, shutdownAllowanceMs: 20_000, observationAllowanceMs: 20_000, captureAllowanceMs: 20_000 },
@@ -30,6 +34,8 @@ export interface VisibleReviewLoopOptions {
   /** Already configured native driver; this entrypoint never resolves credentials or launches by itself. */
   driver: Driver & NativeObservedDriver;
   supervisor: NativeSupervisorControl;
+  /** Parent-owned process boundary for S1 runSuite and its host check subprocess. */
+  independentJudgeSupervisor: IndependentJudgeSupervisor;
   route: StrategyRoute & { transport: 'codex-exec' | 'pi-json' | 'pi-rpc' | 'zcode-acp' };
   model: string;
   provider: string;
@@ -90,6 +96,7 @@ export interface VisibleReviewLoopResult {
     diagnostics: readonly string[];
   };
   limits: typeof VISIBLE_REVIEW_LOOP_LIMITS;
+  resourceCleanup: 'complete' | 'quarantined' | 'unproven';
 }
 
 interface S1TaskOutcome {
@@ -238,6 +245,9 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(options.assignmentId)) throw new Error('assignmentId must be a path-safe frozen roster ID');
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(options.runNamespace)) throw new Error('runNamespace must be a path-safe frozen roster ID');
   if (options.route.tokenEnforcement !== 'unsupported') throw new Error('visible screening cannot claim whole-pipeline token enforcement');
+  if (!options.independentJudgeSupervisor?.run || !options.independentJudgeSupervisor.cancelAndWait) {
+    throw new Error('visible screening requires an independent S1 judge process supervisor with cancel, reap, settlement, and cleanup proof');
+  }
   if (!options.route.supportedSettings?.effort?.includes(options.effort)) throw new Error(`route does not attest effort '${options.effort}'`);
   const tier = VISIBLE_REVIEW_LOOP_LIMITS.tiers.find((entry) => entry.id === options.tierId);
   if (!tier) throw new Error(`unknown frozen visible screening tier '${options.tierId}'`);
@@ -245,14 +255,18 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
   const outputRoot = resolve(options.outputRoot);
   mkdirSync(outputRoot, { recursive: true });
   const artifactRoot = join(outputRoot, 'artifacts');
-  mkdirSync(artifactRoot, { recursive: true });
+  const privateArtifactRoot = join(tempRoot, 's1-artifacts');
+  mkdirSync(privateArtifactRoot, { recursive: true });
   const s1Root = resolveS1DependencyRoot(options.s1DependencyRoot);
   const s1 = await loadS1Bindings(s1Root);
+  const artifactStore = new s1.ArtifactStore(artifactRoot);
   const task = await s1.createReviewLoopRepairTask({ model: options.model, provider: options.provider }, tempRoot);
   let bundle: ReviewBundle | undefined;
   const workspaceByAttempt = new Map<string, CandidateWorkspace>();
   const runSuiteResults: S1RunSuiteResult[] = [];
   let seedTree = '';
+  let preserveForRecovery = false;
+  let cleanupAttempted = false;
   try {
     bundle = await s1.createReviewLoopRunSuiteBundle(task, tempRoot);
     stageJudgeManifest(s1Root, bundle.repoRoot, bundle.oraclePin.dependencies);
@@ -322,7 +336,7 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
           const result = await s1.runSuite({
             suiteDir: bundle!.suiteDir,
             repoRoot: bundle!.repoRoot,
-            artifactRoot,
+            artifactRoot: privateArtifactRoot,
             driver: bundle!.wrapDriver(suiteDriver),
             model: options.model,
             provider: options.provider,
@@ -417,6 +431,7 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
         return { id: stableWorkspaceId, handle: allocateClone(stableWorkspaceId, request.attemptId) };
       },
       supervisor: options.supervisor,
+      independentJudgeSupervisor: options.independentJudgeSupervisor,
     });
 
     const strategyTask = {
@@ -433,6 +448,8 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
       requireFormatCompliance: true,
     };
     const strategy = await runStrategy(strategyTask, recipe, tier, executor, { assignmentId: options.assignmentId });
+    preserveForRecovery = strategy.stages.some((stage) => stage.quarantined);
+    if (!preserveForRecovery) promoteArtifactTree(privateArtifactRoot, artifactRoot);
     const finalResult = runSuiteResults.at(-1);
     const assignedCaseId = bundle!.suite.cases[0]!.id;
     const localOutcome = finalResult?.rows.find((row) => row.case === assignedCaseId)?.taskOutcome ?? null;
@@ -500,8 +517,7 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
       const pipelineJudgement = { judgementId, version, artifact };
       // Validate the full join before creating an immutable artifact, then map again to retain its real ref.
       s1.mapPipelineCampaignEvidence({ ...mapInput, pipelineJudgementArtifact: pipelineJudgement });
-      const store = new s1.ArtifactStore(artifactRoot);
-      const stored = store.write(mappingContext, `recipe-${hash(judgementId).slice(0, 24)}.json`, contents);
+      const stored = artifactStore.write(mappingContext, `recipe-${hash(judgementId).slice(0, 24)}.json`, contents);
       pipelineJudgementArtifact = { judgementId, version, artifact: stored };
     }
     const mapped = s1.mapPipelineCampaignEvidence({ ...mapInput,
@@ -538,15 +554,83 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
         diagnostics: finalResult?.diagnostics ?? [],
       },
       limits: VISIBLE_REVIEW_LOOP_LIMITS,
+      resourceCleanup: preserveForRecovery ? 'quarantined' : 'complete',
     };
+    if (!preserveForRecovery) {
+      cleanupAttempted = true;
+      const cleanup = await cleanupWithinWindow(bundle, task, tempRoot, VISIBLE_REVIEW_LOOP_LIMITS.boundedCleanupWindowMs);
+      if (cleanup !== 'complete') {
+        preserveForRecovery = true;
+        report.resourceCleanup = 'unproven';
+        report.status = 'incomplete';
+      }
+    }
     const reportBytes = `${JSON.stringify(report, null, 2)}\n`;
     writeFileSync(report.reportPath, reportBytes, { flag: 'wx', mode: 0o600 });
     return report;
   } finally {
+    if (!cleanupAttempted && !preserveForRecovery) {
+      cleanupAttempted = true;
+      await cleanupWithinWindow(bundle, task, tempRoot, VISIBLE_REVIEW_LOOP_LIMITS.boundedCleanupWindowMs);
+    }
+  }
+}
+
+async function cleanupWithinWindow(
+  bundle: ReviewBundle | undefined,
+  task: ReviewTask,
+  root: string,
+  windowMs: number,
+): Promise<'complete' | 'failed' | 'timed-out'> {
+  const cleanup = (async () => {
     await bundle?.cleanup();
     await task.cleanup();
-    rmSync(tempRoot, { recursive: true, force: true });
-  }
+    await rm(root, { recursive: true, force: true });
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      cleanup.then(() => 'complete' as const, () => 'failed' as const),
+      new Promise<'timed-out'>((resolve) => { timer = setTimeout(() => resolve('timed-out'), Math.max(0, windowMs)); }),
+    ]);
+  } finally { if (timer !== undefined) clearTimeout(timer); }
+}
+
+function promoteArtifactTree(sourceRoot: string, destinationRoot: string): void {
+  const source = resolve(sourceRoot);
+  const destination = resolve(destinationRoot);
+  const sourceStat = lstatSync(source);
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) throw new Error('private S1 artifact root must be a real directory');
+  mkdirSync(destination, { recursive: true });
+  assertRealDirectory(destination);
+  const limits = { files: 10_000, bytes: 64 * 1024 * 1024 };
+  const budget = { files: 0, bytes: 0 };
+  const copyDirectory = (from: string, to: string): void => {
+    for (const name of readdirSync(from)) {
+      const input = join(from, name);
+      const output = resolve(to, name);
+      if (!output.startsWith(`${destination}${sep}`)) throw new Error('private S1 artifact path escaped its destination');
+      const stat = lstatSync(input);
+      if (stat.isSymbolicLink()) throw new Error('private S1 artifacts must not contain symlinks');
+      if (stat.isDirectory()) {
+        if (!existsSync(output)) mkdirSync(output, { recursive: false });
+        assertRealDirectory(output);
+        copyDirectory(input, output);
+      } else if (stat.isFile()) {
+        if (++budget.files > limits.files || (budget.bytes += stat.size) > limits.bytes) {
+          throw new Error('private S1 artifact promotion exceeded its bounded file/byte limit');
+        }
+        assertRealDirectory(dirname(output));
+        copyFileSync(input, output, fsConstants.COPYFILE_EXCL);
+      } else throw new Error('private S1 artifact tree contains a non-regular entry');
+    }
+  };
+  copyDirectory(source, destination);
+}
+
+function assertRealDirectory(path: string): void {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`artifact destination is not a real directory: ${path}`);
 }
 
 function git(cwd: string, args: string[]): string {

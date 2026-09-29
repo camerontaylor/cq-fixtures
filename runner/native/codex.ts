@@ -161,8 +161,14 @@ export class CodexExecDriver extends ObservedNativeDriver {
         throw error;
       } else if (result.code !== 0) observation.terminal.cause = `exit:${result.code ?? result.signal ?? 'unknown'}`;
       if (!result.treeStopped) observation.terminal.cause = 'process-tree-stop-unproven';
-      const worker = createWorkerResult(usageProjection(observation.usage.counters), result.code === 0 && result.treeStopped ? 'complete' :
-        result.terminal === 'timeout' ? 'budget' : result.terminal === 'cancelled' ? 'aborted' : 'error', {
+      // A clean exit after the supervisor's timeout signal does not turn the
+      // timed-out invocation into a completed one. Some CLIs handle SIGTERM,
+      // flush a final response, then exit 0; terminal cause remains the
+      // supervisor's timeout while output and usage are still retained.
+      const stopReason: WorkerResult['stopReason'] = result.terminal === 'timeout' ? 'budget' :
+        result.terminal === 'cancelled' ? 'aborted' :
+        result.code === 0 && result.treeStopped ? 'complete' : 'error';
+      const worker = createWorkerResult(usageProjection(observation.usage.counters), stopReason, {
         ...(parsed.model ? { model: parsed.model } : {}),
         ...(parsed.finalText ? { structuredOutput: toStructuredOutput(parsed.finalText) } : {}),
         ...(result.code !== 0 || !result.treeStopped ? { error: result.stderr.slice(-2000) || (!result.treeStopped ? 'codex process tree stop could not be proven; capture is forbidden' : `codex exec exited ${result.code ?? result.signal}`) } : {}),

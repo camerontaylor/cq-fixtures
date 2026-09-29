@@ -136,6 +136,39 @@ describe('native transport event and identity handling', () => {
     }
   }, 15_000);
 
+  it('keeps timeout terminal when Codex exits cleanly with format-mismatched output', async () => {
+    const root = tempRoot();
+    const events = [
+      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '"format-mismatch"' } }),
+      JSON.stringify({ type: 'turn.completed', turn_id: 'timeout-with-output', usage: {
+        input_tokens: 9, output_tokens: 2, cached_input_tokens: 4, total_tokens: 11,
+      } }),
+    ].join('\n') + '\n';
+    const executable = join(root, 'codex-handles-term');
+    writeFileSync(executable, `#!/usr/bin/env node\nprocess.on('SIGTERM', () => process.exit(0));\nprocess.stdout.write(${JSON.stringify(events)});\nsetInterval(() => {}, 1000);\n`, { mode: 0o700 });
+    chmodSync(executable, 0o700);
+    const driver = new CodexExecDriver({ executable, hardWallClockMs: 250,
+      artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch() });
+    await driver.beginInvocation(identity('timeout-clean-exit'));
+    const result = await driver.run(invocation('retain output after timeout'));
+    const observation = driver.getObservation('timeout-clean-exit')!;
+
+    expect(result.stopReason).toBe('budget');
+    expect(result.structuredOutput).toBe('format-mismatch');
+    expect(observation.terminal.cause).toBe('timeout');
+    expect(observation.workerResult?.stopReason).toBe('budget');
+    expect(observation.model.settings.processTree).toMatchObject({ value: true, status: 'stopped-and-settled' });
+    expect(observation.capture.status).toBe('pending-runner-capture');
+    expect(observation.usage.counters.input).toMatchObject({ value: 9, availability: 'observed' });
+    expect(observation.usage.counters.output).toMatchObject({ value: 2, availability: 'observed' });
+    expect(observation.usage.counters.cacheRead).toMatchObject({ value: 4, availability: 'observed' });
+    expect(observation.usage.counters.cacheWrite.value).toBeNull();
+    expect(observation.usage.tokenTotal).toMatchObject({ value: 11, availability: 'observed', semantics: 'authoritative-total' });
+    expectArtifactWithValidHash(observation, 'raw-events');
+    expect(JSON.parse(readFileSync(expectArtifactWithValidHash(observation, 'supervisor-lifecycle').path, 'utf8')))
+      .toMatchObject({ terminal: 'timeout', processTreeStopped: true });
+  }, 15_000);
+
   it('keeps Space Bunny anonymous while preserving usage and response text', async () => {
     const root = tempRoot();
     const hidden = 'underlying-model-must-not-escape';

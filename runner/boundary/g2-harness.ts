@@ -268,19 +268,65 @@ export interface G2CanonicalNativeReceipt {
   identity: { assignmentId: string; stageId: string; attemptId: string; invocationId: string };
   launch: { boundaryIdentity: string; launchIdentity: string; admissionId: string };
   terminal: { state: 'exit' | 'timeout' | 'cancelled' | 'spawn-error' };
-  toolTrace: Array<{ eventId: string; invocationId: string; phase: 'start' | 'result'; kind: 'read' | 'search' | 'shell' | 'http' | 'config'; targetOrCommand: string; correlationId: string; stdout?: Uint8Array; stderr?: Uint8Array;
+  toolPhase: { state: 'complete' | 'unavailable'; itemCount: number };
+  decoderFailures: readonly string[];
+  toolTrace: Array<{ collectorSequence: number; at: string; toolStatus?: string; toolExitCode?: number | null; outputSource?: 'aggregated_output'; eventId: string; invocationId: string; phase: 'start' | 'result'; kind: 'read' | 'search' | 'shell' | 'http' | 'config'; targetOrCommand: string; correlationId: string; stdout?: Uint8Array; stderr?: Uint8Array;
     outcome?: { disposition: G2NativeTrace['disposition']; denialKind?: G2NativeTrace['denialKind']; exitCode?: number; httpStatus?: number; toolErrorCode?: G2NativeTrace['toolErrorCode']; controlProof?: G2NativeTrace['controlProof'] } }>;
   teardown?: { processTree: 'stopped-and-reaped'; boundary: 'terminated'; export?: { inventoryHash: string; head: string } };
 }
+/** Trusted instrumentation verifier: never replace with an echo of outcome.controlProof.
+ * Verify a private source receipt bound to invocation, probe, exact command/target,
+ * observed status/errno/HTTP result, collector sequence/time and source hash.
+ * No production producer is available yet; omitted verification leaves denial unavailable.
+ */
+export interface G2ControlVerifier {
+  verifyDenialEvidence(input: { probe: PrivateG2Fixture['probes'][number]; event: G2CanonicalNativeReceipt['toolTrace'][number] }): boolean;
+}
+
+function validCanonicalToolEvidence(receipt: G2CanonicalNativeReceipt): boolean {
+  if (receipt.toolPhase?.state !== 'complete' || !Number.isSafeInteger(receipt.toolPhase.itemCount) || receipt.toolPhase.itemCount <= 0 ||
+      !Array.isArray(receipt.decoderFailures) || receipt.decoderFailures.length !== 0 || !receipt.toolTrace.length) return false;
+  const starts = new Map<string, G2CanonicalNativeReceipt['toolTrace'][number]>();
+  const ends = new Set<string>(), ids = new Set<string>();
+  let sequence = -1, time = -Infinity;
+  for (const event of receipt.toolTrace) {
+    const currentTime = typeof event.at === 'string' ? Date.parse(event.at) : NaN;
+    if (!Number.isSafeInteger(event.collectorSequence) || event.collectorSequence <= sequence || !Number.isFinite(currentTime) || currentTime < time ||
+        typeof event.eventId !== 'string' || !event.eventId.trim() || ids.has(event.eventId) || typeof event.correlationId !== 'string' || !event.correlationId.trim() || event.invocationId !== receipt.identity.invocationId ||
+        typeof event.targetOrCommand !== 'string' || !event.targetOrCommand.trim() || !['read','search','shell','http','config'].includes(event.kind)) return false;
+    ids.add(event.eventId); sequence = event.collectorSequence; time = currentTime;
+    if (event.phase === 'start') {
+      if (starts.has(event.correlationId) || event.outcome !== undefined) return false;
+      if (event.kind === 'shell' && (event.toolStatus !== 'in_progress' || event.toolExitCode !== null)) return false;
+      starts.set(event.correlationId, event);
+    } else if (event.phase === 'result') {
+      const start = starts.get(event.correlationId);
+      if (!start || ends.has(event.correlationId) || start.kind !== event.kind || start.targetOrCommand !== event.targetOrCommand ||
+          !event.outcome || !['success','denied','unknown','unavailable'].includes(event.outcome.disposition)) return false;
+      if (event.kind === 'shell') {
+        const exit = event.toolExitCode;
+        if (!Number.isInteger(exit) || exit === null || exit === undefined || exit < 0 || exit > 255 ||
+            !['completed','failed'].includes(event.toolStatus ?? '') || event.outputSource !== 'aggregated_output' || event.stdout === undefined ||
+            event.outcome.exitCode !== exit) return false;
+        if (event.outcome.disposition === 'success' && (event.toolStatus !== 'completed' || exit !== 0)) return false;
+        if (event.outcome.disposition === 'denied' && (event.toolStatus !== 'failed' || exit === 0)) return false;
+      }
+      ends.add(event.correlationId);
+    } else return false;
+  }
+  return starts.size === ends.size && ends.size === receipt.toolPhase.itemCount;
+}
+
 export function normalizeG2NativeReceipt(fixture: PrivateG2Fixture, receipt: G2CanonicalNativeReceipt,
-  context: Omit<G2NativeResult, 'invocationId' | 'boundaryIdentity' | 'launchIdentity' | 'admissionId' | 'traces' | 'rawOutputs' | 'teardownAwaited' | 'childTreeStopped' | 'timedOutOrCancelled' | 'receiptExport'>): G2NativeResult {
+  context: Omit<G2NativeResult, 'invocationId' | 'boundaryIdentity' | 'launchIdentity' | 'admissionId' | 'traces' | 'rawOutputs' | 'teardownAwaited' | 'childTreeStopped' | 'timedOutOrCancelled' | 'receiptExport'>, controls?: G2ControlVerifier): G2NativeResult {
   if (receipt.toolTrace.length > 12000 || receipt.toolTrace.reduce((sum, event) => sum + (event.stdout?.byteLength ?? 0) + (event.stderr?.byteLength ?? 0), 0) > 8 * 1024 * 1024) throw new Error('native trace exceeds private evidence bound');
+  const evidenceValid = validCanonicalToolEvidence(receipt);
   const kind = (channel: G2Channel) => channel === 'native-read' ? 'read' : channel === 'native-search' ? 'search' : channel === 'native-network' ? 'http' : channel === 'native-config' ? 'config' : 'shell';
   const traces = fixture.probes.map(probe => {
     const target = probe.command ?? probe.target;
     const events = receipt.toolTrace.filter(e => e.invocationId === receipt.identity.invocationId && e.kind === kind(probe.channel) && e.targetOrCommand === target);
     const starts = events.filter(e => e.phase === 'start'), ends = events.filter(e => e.phase === 'result');
-    const matched = starts.length === 1 && ends.length === 1 && !!starts[0].correlationId && starts[0].correlationId === ends[0].correlationId && starts[0].eventId !== ends[0].eventId && !!ends[0].outcome;
+    const matched = evidenceValid && starts.length === 1 && ends.length === 1 && !!starts[0].correlationId && starts[0].correlationId === ends[0].correlationId && starts[0].eventId !== ends[0].eventId && !!ends[0].outcome && (ends[0].outcome.disposition !== 'denied' || controls?.verifyDenialEvidence({ probe, event: ends[0] }) === true);
     return { invocationId: receipt.identity.invocationId, probeId: probe.id, channel: probe.channel, target: probe.target, requestedCommand: probe.command,
       attempted: starts.length === 1, complete: matched, disposition: matched ? ends[0].outcome!.disposition : 'unavailable' as const,
       denialKind: matched ? ends[0].outcome!.denialKind : undefined,

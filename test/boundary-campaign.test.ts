@@ -535,7 +535,8 @@ it('does not normalize missing canonical tool outcomes into denial', async () =>
     identity: { assignmentId: 'synthetic', stageId: 'G2', attemptId: 'one', invocationId: 'synthetic' },
     launch: { boundaryIdentity: 'synthetic', launchIdentity: 'synthetic', admissionId: 'synthetic' }, terminal: { state: 'exit' },
     teardown: { processTree: 'stopped-and-reaped', boundary: 'terminated', export: { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) } },
-    toolTrace: ['start', 'result'].map((phase, i) => ({ eventId: String(i), invocationId: 'synthetic', phase: phase as 'start' | 'result', kind: 'read' as const, targetOrCommand: probe.target, correlationId: 'pair' })),
+    toolPhase: { state: 'complete', itemCount: 1 }, decoderFailures: [],
+    toolTrace: ['start', 'result'].map((phase, i) => ({ collectorSequence: i, at: '2026-09-29T00:00:00.000Z', eventId: String(i), invocationId: 'synthetic', phase: phase as 'start' | 'result', kind: 'read' as const, targetOrCommand: probe.target, correlationId: 'pair' })),
   };
   const result = h.normalizeG2NativeReceipt(fixture, receipt, {} as Parameters<typeof h.normalizeG2NativeReceipt>[2]);
   expect(result.receiptExport).toEqual({ inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) });
@@ -724,4 +725,64 @@ describe.skipIf(process.env.CQ_BOUNDARY_SYNTHETIC_DAEMON !== '1')('actual factor
     expect(mode === 'accepted' ? proof.nativeAccepted : proof.nativeRejected).toBe(true);
     expect(proof.retainedInventoryHash).toMatch(/^[a-f0-9]{64}$/);
   }, 95000);
+});
+
+
+describe('canonical G2 collector evidence', () => {
+  async function sample() {
+    const h = await import('../runner/boundary/g2-harness.ts');
+    const probe = { id: 'positive', channel: 'shell' as const, target: '/task/control', command: 'cat /task/control', expected: 'positive-read' as const };
+    const fixture = { probes: [probe] } as unknown as import('../runner/boundary/g2-harness.ts').PrivateG2Fixture;
+    const receipt: import('../runner/boundary/g2-harness.ts').G2CanonicalNativeReceipt = {
+      identity: { assignmentId: 'fake', stageId: 'fake', attemptId: 'fake', invocationId: 'fake' },
+      launch: { boundaryIdentity: 'fake', launchIdentity: 'fake', admissionId: 'fake' },
+      terminal: { state: 'timeout' }, toolPhase: { state: 'complete', itemCount: 1 }, decoderFailures: [],
+      toolTrace: [
+        { eventId: 'start', invocationId: 'fake', phase: 'start', kind: 'shell', targetOrCommand: probe.command, correlationId: 'item', collectorSequence: 2, at: '2026-09-29T00:00:00.000Z', toolStatus: 'in_progress', toolExitCode: null },
+        { eventId: 'result', invocationId: 'fake', phase: 'result', kind: 'shell', targetOrCommand: probe.command, correlationId: 'item', collectorSequence: 4, at: '2026-09-29T00:00:01.000Z', toolStatus: 'completed', toolExitCode: 0, outputSource: 'aggregated_output', stdout: Buffer.from('synthetic positive'), outcome: { disposition: 'success', exitCode: 0 } },
+      ],
+    };
+    const normalize = (value = receipt, controls?: import('../runner/boundary/g2-harness.ts').G2ControlVerifier) => h.normalizeG2NativeReceipt(fixture, value, {} as Parameters<typeof h.normalizeG2NativeReceipt>[2], controls);
+    return { receipt, normalize };
+  }
+  it('retains completed tool evidence independently of overall timeout', async () => {
+    const { normalize } = await sample(); const result = normalize();
+    expect(result.traces[0]).toMatchObject({ complete: true, disposition: 'success', exitCode: 0 });
+    expect(result.timedOutOrCancelled).toBe(true);
+  });
+  it('fails closed on dropped phase/failures, unavailable decoding, invalid JSON and wrong cardinality', async () => {
+    const { receipt, normalize } = await sample();
+    for (const change of [{ toolPhase: undefined }, { decoderFailures: undefined }, { toolPhase: { state: 'unavailable', itemCount: 1 } }, { decoderFailures: ['event-json-invalid'] }, { decoderFailures: ['command-result-before-start'] }, { toolPhase: { state: 'complete', itemCount: 2 } }]) {
+      const value = { ...receipt, ...change } as typeof receipt;
+      expect(normalize(value).traces[0]).toMatchObject({ complete: false, disposition: 'unavailable' });
+    }
+  });
+  it('rejects reversed order, duplicate sequence/IDs, missing time, malformed start status and inconsistent result status', async () => {
+    const { receipt, normalize } = await sample();
+    const variants = [
+      [...receipt.toolTrace].reverse(),
+      [receipt.toolTrace[0], { ...receipt.toolTrace[1], collectorSequence: 2 }],
+      [receipt.toolTrace[0], { ...receipt.toolTrace[1], eventId: 'start' }],
+      [{ ...receipt.toolTrace[0], at: '' }, receipt.toolTrace[1]],
+      [{ ...receipt.toolTrace[0], toolStatus: 'invalid' }, receipt.toolTrace[1]],
+      [{ ...receipt.toolTrace[0], toolExitCode: undefined }, receipt.toolTrace[1]],
+      [receipt.toolTrace[0], { ...receipt.toolTrace[1], at: '2026-09-28T00:00:00.000Z' }],
+      [receipt.toolTrace[0], { ...receipt.toolTrace[1], toolStatus: 'failed' }],
+      [receipt.toolTrace[0], { ...receipt.toolTrace[1], toolExitCode: 1 }],
+      [receipt.toolTrace[0], { ...receipt.toolTrace[1], outputSource: undefined }],
+    ];
+    for (const toolTrace of variants) expect(normalize({ ...receipt, toolTrace }).traces[0].complete).toBe(false);
+  });
+  it('requires independently verified typed denial provenance and binds its exact probe and event', async () => {
+    const { receipt, normalize } = await sample();
+    receipt.toolTrace[1] = { ...receipt.toolTrace[1], toolStatus: 'failed', toolExitCode: 1, outcome: { disposition: 'denied', denialKind: 'filesystem-denied', exitCode: 1, toolErrorCode: 'EACCES' } };
+    expect(normalize().traces[0].disposition).toBe('unavailable');
+    expect(normalize(receipt, { verifyDenialEvidence: () => false }).traces[0].complete).toBe(false);
+    let checked = false;
+    // Synthetic verifier tests only the seam. This is not production instrumentation.
+    const result = normalize(receipt, { verifyDenialEvidence: ({ probe, event }) => { checked = probe.command === event.targetOrCommand && event.invocationId === 'fake' && event.collectorSequence === 4 && event.toolExitCode === 1; return checked; } });
+    expect(checked).toBe(true); expect(result.traces[0].complete).toBe(true);
+    receipt.toolTrace[1].toolExitCode = 0;
+    expect(normalize(receipt, { verifyDenialEvidence: () => true }).traces[0].complete).toBe(false);
+  });
 });

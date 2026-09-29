@@ -437,3 +437,33 @@ The original async baseline error was not persisted in its lifecycle artifact;
 the source timing defect is separately reproducible, not retroactive stop/export
 proof. Resource lifetime remains unsupported beyond the bounded decision/cleanup
 contract. G2 remains pending.
+
+### Canonical G2 evidence preservation (2026-09-29)
+
+Boundary normalization now independently requires `toolPhase` complete with exact
+positive result/pair cardinality, empty mandatory `decoderFailures`, and every
+trace event's trusted `collectorSequence` and `at`. Sequences must strictly
+increase in supplied collector order (gaps allowed); times cannot decrease.
+Unique event IDs, matched correlation IDs, invocation identity, phase order,
+kind and exact command/target are checked before any probe row is complete.
+Shell starts require `in_progress` and explicit null exit; results require
+`completed`/`failed`, bounded integer exit, `aggregated_output` source and actual
+output bytes. Successful/denied outcomes must match their raw exit and status.
+Omitted fields, unavailable decoding, invalid JSON failure codes, reordered
+frames or invalid status cannot be erased by a canonical converter.
+
+The additive contract is coordinated with native ownership of the decoder and
+converter. Overall invocation timeout/cancellation remains independent of
+completed tool items. Ledger admission and independent stopped-export bindings
+remain required; this validation does not grant qualification. Unobserved
+read/search/http/config channels remain unobserved.
+
+Typed denial annotations alone are insufficient. The optional trusted
+`G2ControlVerifier.verifyDenialEvidence({probe,event})` seam must check an
+independent private instrumentation source receipt bound to invocation/item,
+probe identity, exact command/target, observed errno/HTTP/exit/control status,
+collector sequence/time and source digest. It must verify independently owned
+observation provenance, not echo `verified:true` or model output. No production
+instrumentation producer is claimed available; absent/negative verification
+makes denials unavailable. Synthetic positive verification only tests this seam.
+No models, credentials, quota, namespaces or preserved recovery were accessed.

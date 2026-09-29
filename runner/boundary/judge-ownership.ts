@@ -5,8 +5,9 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { validateTaskEntries, type TaskTree } from './task-tree.ts';
 import { DockerControl } from './docker-control.ts';
 import { FINAL_NATIVE_IMAGE } from './codex-final-profile.ts';
+import { G2_EXPECTED_DAEMON_ID, assertG2DaemonPreregistration } from './g2-daemon-contract.ts';
 
-const DAEMON = 'e15e4bd0-8a2f-4f5b-b335-2bd18da11100';
+const DAEMON = G2_EXPECTED_DAEMON_ID;
 const sha = (value: string) => createHash('sha256').update(value).digest('hex');
 const parentHandles = new WeakSet<JudgeNamespaceHandle>();
 const digest = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -90,7 +91,7 @@ export async function cleanupJudgeNamespace(handle: JudgeNamespaceHandle, input:
     if (actual.planSha256 !== handle.planSha256 || JSON.stringify(actual.plan) !== JSON.stringify(handle.plan)) throw new Error('judge plan changed');
     control = suppliedControl ?? new DockerControl();
     const run = (args: string[]) => { const remaining = Math.floor(input.deadlineEpochMs - Date.now()); if (remaining <= 0) throw new Error('judge cleanup deadline'); return control!.run(args, undefined, 256 * 1024, remaining); };
-    if (await run(['info','--format','{{.ID}}']) !== handle.plan.daemonId) throw new Error('judge daemon changed'); proof.daemonVerified = true;
+    assertG2DaemonPreregistration(handle.plan.daemonId, await run(['info','--format','{{.ID}}'])); proof.daemonVerified = true;
     const owned: string[] = [], volumes: string[] = [];
     for (const slot of handle.plan.slots) {
       const labels = judgeSlotLabels(handle, slot);

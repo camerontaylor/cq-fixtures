@@ -8,6 +8,7 @@ import { snapshotTask } from './task-tree.ts';
 import { DockerControl, teardownContainer } from './docker-control.ts';
 import { claimJudgeNamespaceSlot, stableJudgeCandidateInventory } from './judge-ownership.ts';
 import { FINAL_NATIVE_IMAGE } from './codex-final-profile.ts';
+import { G2_EXPECTED_DAEMON_ID, assertG2DaemonPreregistration } from './g2-daemon-contract.ts';
 
 export const JUDGE_CHILD_BOOTSTRAP = `let s='';process.stdin.on('data',b=>{s+=b;if(s.length>65536)process.exit(125)});process.stdin.on('end',async()=>{try{const r=JSON.parse(s);const m=await import('file:///task/'+r.module);const f=m[r.exportName];if(typeof f!=='function')throw Error();const out=[];for(const args of r.requests)out.push(await f(...args));process.stdout.write(JSON.stringify(out))}catch{process.exit(125)}})`;
 export interface JudgeChildRequest { candidateRoot: string; module: string; exportName: string; requests: unknown[][]; timeoutMs: number; }
@@ -31,7 +32,7 @@ export async function executeProtectedJudgeChild(request: JudgeChildRequest): Pr
   const labelArgs = Object.entries(labels).flatMap(([key,value]) => ['--label', key + '=' + value]);
   let created = false; let container: string | undefined; let phase = 'daemon';
   try {
-    if (await control.run(['info', '--format', '{{.ID}}']) !== 'e15e4bd0-8a2f-4f5b-b335-2bd18da11100') throw new Error('dedicated judge daemon changed');
+    assertG2DaemonPreregistration(G2_EXPECTED_DAEMON_ID, await control.run(['info', '--format', '{{.ID}}']));
     if ((await control.run(['volume', 'ls', '-q', '--filter', 'name=^' + volume + '$'])).split('\n').includes(volume)) throw new Error('judge private volume exists');
     if (owned) for (const name of [owned.slot.writer, owned.slot.candidate]) if (await control.run(['ps','-aq','--filter',`name=^/${name}$`])) throw new Error('judge preregistered container collision');
     phase = 'volume';

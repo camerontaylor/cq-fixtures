@@ -69,11 +69,15 @@ export async function superviseAssignment(input: {
    * grants namespace absence. Recovery deletion is not part of this API. */
   quarantine?: (request: { identity: SupervisedInvocationIdentity; resources: AssignmentResource[]; deadlineEpochMs: number; signal: AbortSignal }) => Promise<void>;
 }): Promise<AssignmentReceipt> {
+  // Snapshot and freeze before any callback or asynchronous handoff. Hooks and
+  // caller continuation must never rewrite the registry/request/receipt join.
+  const identity = structuredClone(input.identity);
+  if (!identity || typeof identity !== 'object' || Object.keys(identity).sort().join(',') !== 'assignmentId,attemptId,invocationId,stageId' || Object.values(identity).some(v => typeof v !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(v))) throw new Error('exact supervisor invocation identity required');
+  Object.freeze(identity);
   if (input.requiredGuarantee === 'hard-resource-lifetime') throw new Error('hard resource lifetime unsupported; freeze refused');
   if (process.platform === 'win32') throw new Error('independent process-group reap unavailable');
   const root = resolve(input.privateRoot), stat = lstatSync(root);
   if (realpathSync(root) !== root || !stat.isDirectory() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) throw new Error('exclusive private supervisor root required');
-  if (Object.keys(input.identity).sort().join(',') !== 'assignmentId,attemptId,invocationId,stageId' || Object.values(input.identity).some(v => typeof v !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(v))) throw new Error('exact supervisor invocation identity required');
   const limits = [input.resourceDeadlineEpochMs, input.reapDeadlineEpochMs, input.quarantineDeadlineEpochMs];
   if (limits.some(v => !Number.isFinite(v)) || limits[0] <= Date.now() || limits[1] < limits[0] || limits[2] < limits[1] || limits[2] - Date.now() > 3600_000) throw new Error('bounded absolute supervisor deadlines required');
   if (!input.operations.length || input.operations.length > 5) throw new Error('bounded phase operations required');
@@ -87,7 +91,7 @@ export async function superviseAssignment(input: {
     privateFile(op.privateInputPath);
   }
   if (input.resources.length > 256 || input.resources.some(r => !validResource(r, root))) throw new Error('invalid preregistered resources');
-  const identity = structuredClone(input.identity), resources = structuredClone(input.resources);
+  const resources = structuredClone(input.resources);
   const registryPath = join(root, `ownership-${identity.invocationId}.json`);
   const registry = { version: 'assignment-ownership-v1', identity, resources, state: 'preregistered' };
   save(registryPath, registry, true);
@@ -155,7 +159,7 @@ export async function superviseAssignment(input: {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), Math.max(0, limits[2] - Date.now()));
     try {
-      await Promise.race([input.quarantine({ identity, resources: structuredClone(resources), deadlineEpochMs: limits[2], signal: controller.signal }),
+      await Promise.race([input.quarantine(Object.freeze({ identity: Object.freeze(structuredClone(identity)), resources: structuredClone(resources), deadlineEpochMs: limits[2], signal: controller.signal })),
         new Promise<never>((_, reject) => { if (controller.signal.aborted) reject(new Error()); else controller.signal.addEventListener('abort', () => reject(new Error()), { once: true }); })]);
     } catch { quarantine = 'unknown'; } finally { clearTimeout(t); }
   }

@@ -17,6 +17,7 @@ import { canonicalJson, experimentId, suiteTaskId, type ExperimentContext } from
 import { sha256 } from '../artifacts/index.ts';
 import { createReviewLoopRunSuiteBundle } from '../workflow-corpus/review-loop-suite.ts';
 import { runNativeConformanceSuite } from './conformance.ts';
+import { inventoryTaskWorkspace, runWorkspaceConformance } from './workspace-conformance.ts';
 import { CodexExecDriver } from './codex.ts';
 import type { ObservedDriver } from './observation.ts';
 import type { InvocationIdentity } from './observation.ts';
@@ -47,7 +48,8 @@ const SOURCE_FILES = [
   'runner/workflow-corpus/review-loop-pin.ts', 'runner/campaign/scheduler.ts',
   'runner/campaign/persistence.ts', 'runner/campaign/codexbar.ts', 'runner/campaign/codex-app-server.ts',
   'runner/experiment.ts', 'runner/native/run-final-profile-g1.ts', 'runner/native/codex.ts',
-  'runner/native/process.ts', 'runner/native/conformance.ts', 'runner/native/observation.ts',
+  'runner/native/process.ts', 'runner/native/conformance.ts', 'runner/native/workspace-conformance.ts',
+  'runner/native/observation.ts',
   'runner/index.ts', 'schema/result-row.schema.json', 'schema/comparison-table.schema.json',
   'runner/boundary/codex-final-profile.ts', 'runner/boundary/container.ts',
   'runner/boundary/container-prepare.ts', 'runner/boundary/task-session.ts',
@@ -393,6 +395,11 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   const stageId = `${assignmentId}-stage-1`;
   const attemptId = `${assignmentId}-attempt-1`;
   const caseId = bundle.suite.cases[0]!.id;
+  const frozenTaskInventory = inventoryTaskWorkspace(task.worktreePath);
+  const frozenTaskTree = execFileSync('git', ['rev-parse', '--verify', `${task.baselineCommit}^{tree}`], {
+    cwd: task.worktreePath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  if (!/^[a-f0-9]{40,64}$/u.test(frozenTaskTree)) throw new Error('final-profile G1 task baseline tree pin is invalid');
   const enqueuedAt = now();
   const admissionEstimate = estimateFinalProfileAdmission({
     startedAt: started, enqueuedAt, decisionDeadlineEpochMs: deadlineEpochMs,
@@ -512,13 +519,32 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   let finished = false;
   try {
     await withinAssignment(scheduler.markRunning(assignmentId, decision.reservation.id));
-    const run = runNativeConformanceSuite({
-      suiteDir: bundle.suiteDir, repoRoot: bundle.repoRoot, artifactRoot, driver: wrapped,
-      hostCheckScoringEnvironment: (workspace, baseline) => bundle.hostCheckScoringEnvironment(workspace, baseline),
-      model: 'gpt-6-sol', provider: 'codex', driverName: 'codex-exec', checkTimeoutMs: JUDGE_BUDGET_MS,
-      experiment: identityContext, expectedCaseIds: [caseId], expectedInvocations: [{ assignmentId, stageId, attemptId }], expectedTransport: 'codex-exec',
-    });
-    const result = await withinAssignment(run);
+    const workspaceConformance = await withinAssignment(runWorkspaceConformance({
+      driver: wrapped,
+      experiment: identityContext,
+      suiteName: bundle.suite.name,
+      caseId,
+      frozenJudgePin: bundle.oraclePin.sha256,
+      frozenBaseline: {
+        contentSha256: frozenTaskInventory.contentSha256,
+        taskCommit: task.baselineCommit,
+        taskTree: frozenTaskTree,
+      },
+      artifactRoot,
+      runSuite: (conformanceDriver) => runNativeConformanceSuite({
+        suiteDir: bundle.suiteDir, repoRoot: bundle.repoRoot, artifactRoot,
+        driver: conformanceDriver as typeof wrapped,
+        hostCheckScoringEnvironment: (workspace, baseline) => bundle.hostCheckScoringEnvironment(workspace, baseline),
+        model: 'gpt-6-sol', provider: 'codex', driverName: 'codex-exec', checkTimeoutMs: JUDGE_BUDGET_MS,
+        experiment: identityContext, expectedCaseIds: [caseId],
+        expectedInvocations: [{ assignmentId, stageId, attemptId }], expectedTransport: 'codex-exec',
+      }),
+    }));
+    if (workspaceConformance.receipt.status !== 'passed' || workspaceConformance.receipt.workspaceSeparationStatus !== 'passed' ||
+        workspaceConformance.receipt.lifecycle.qualification !== 'qualified') {
+      throw new Error(`final-profile G1 workspace conformance failed: ${workspaceConformance.receipt.failureCodes.join(',') || 'qualification-incomplete'}`);
+    }
+    const result = workspaceConformance.result;
     if (Date.now() > deadlineEpochMs) throw new Error('whole-assignment deadline elapsed before final-profile report');
     const observations = result.observations.map(({ observation, artifact }) => ({ observation, observationArtifact: artifact,
       baselineCommit: observation.capture.baselineCommit, baselineTree: observation.capture.baselineTree,
@@ -558,6 +584,7 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
         frozenLaneEligible: false, schedulerMaxAttempts: 1, maxTokens: null, hardTokenCap: false, usage: 'unknown-usage-no-capacity-claim' },
       quotaReads, profileComparison: comparison,
       launchProfiles: { configured, effective },
+      workspaceConformance: { receipt: workspaceConformance.receipt, artifact: workspaceConformance.artifact },
       runDirectory, artifactRoot, queueDirectory, rows: result.rows, tables: result.tables,
       observations, absences: result.absences, diagnostics: result.diagnostics,
     };

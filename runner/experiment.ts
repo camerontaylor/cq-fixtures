@@ -44,6 +44,8 @@ export interface ExperimentContext {
 /** Exact task-supplied oracle provenance and the source files it depends on. */
 export interface JudgeDependencyManifest {
   sourcePin: string;
+  /** Optional allowlisted host checkout identity; never an arbitrary path. */
+  sourceRootId?: 'cq-settings-native-checkout';
   dependencies: ReadonlyArray<{ path: string; sha256: string }>;
 }
 

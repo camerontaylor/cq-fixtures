@@ -81,7 +81,15 @@ For one-case runs, `ExperimentContext.substrateId` and
 each `caseAssignments[caseId]` entry to carry its own assignment, stage,
 attempt, substrate ID and judge dependency manifest. The suite case label is
 not used as a substrate identity. Each task supplies the independent judge's
-source pin and dependency path/hash manifest; the runner verifies those files,
+source pin and dependency path/hash manifest. A manifest may set
+`sourceRootId: 'cq-settings-native-checkout'`; S1 resolves that closed ID to
+the canonical real path of its own trusted toolkit checkout, independent of
+the temporary `runSuite.repoRoot` and writable candidate workspace. Unknown
+IDs, absolute or non-normalized paths, traversal, duplicate paths, symlinks
+outside the selected root, and dependency hash mismatches fail before driver
+dispatch. The manifest hash includes `sourceRootId`. Legacy manifests without
+an ID continue to resolve dependencies under `runSuite.repoRoot`. The runner
+verifies those files,
 binds the manifest hash and immutable initial workspace tree into `judgePin`,
 preserves the manifest and baseline commit/tree in the judgement artifact, and
 passes the baseline commit to the check process as `CQ_BASELINE_REF`. This

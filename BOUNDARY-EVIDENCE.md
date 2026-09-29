@@ -325,3 +325,77 @@ Live pinned-daemon checks proved worker absence and exclusive task-volume owners
 Prospective diagnostics only: `lifecycle-evidence.ts` appends to an existing parent-owned mode-0600 plain private file with O_NOFOLLOW, bounded size, no arbitrary messages, args, output or credentials. Records include fixed phases, timestamps, whitelisted error class/errno and recognized bounded-Docker operation/exit metadata. Runtime stages `boundary-lifecycle.jsonl` outside task/context and returns `lifecycleEvidencePath` through the native setup spread; final adapter records timer/close/error trigger, termination start/reuse/error, session stop, prepared disposal, stopped export, publication, cleanup and control close. Runtime abort/cleanup records permit distinguishing concurrent actors. Recorder failures never replace the original lifecycle failure; missing evidence grants no proof. Termination, cleanup and admission behavior are unchanged. Old runtimes are retired; source pins and private modules must be regenerated after integration and parent clean-HEAD notice.
 
 Validation: six focused lifecycle/privacy/quota tests passed, 43 skipped, 656ms; typecheck and owned lint passed. Regression proves timer failure is memoized, finalization rethrows the first cause without export, secret-like messages are absent and symlink evidence redirection is refused. One initial regression over-specified asynchronous reuse/error record ordering; corrected assertions retain the causal ordering while allowing reuse before the settled error. No full suite, auth refresh, model call, cleanup deletion, host candidate execution or runtime regeneration. Both runs' recovery remains private and preserved. Another actual G1 remains blocked on actual failure diagnosis; G2/frozen-lifetime eligibility is not claimed.
+
+### Actual runtime setup-signal ownership reproduction (2026-09-29)
+
+The retained setup signal in `createPreparedFinalG1Runtime` could independently
+start runtime cleanup after a successful handoff. A bounded synthetic reproduction
+uses that actual factory, real `stageTaskClone`, `containerTaskSession`,
+`finalContainerLifecycle`, pinned worker/utility images and fresh exclusive
+volumes. The worker is nonprivileged, user 1000, read-only root, network `none`,
+0.5 CPU / 256 MiB / 32 PIDs, with only its synthetic task volume mounted.
+The child is an EventEmitter fixture; broker declarations and the auth validator
+are explicitly mocked. Context files contain inert synthetic text, no auth.
+This is lifecycle evidence, not subscription/runtime/G2 qualification.
+
+The forced, feasible order was: factory handoff → adapter timer → adapter observes
+worker in `ps` → retained setup signal abort → runtime cleanup observes/removes
+worker → adapter `inspect` fails → memoized termination error prevents export.
+Default explicit cleanup retained task/context recovery. Pre-fix proof:
+`/tmp/cq-factory-abort-repro.log`, private fixture
+`/Users/ctaylor/.tmp/cq-s5-factory-abort-pD677p/proof.json`.
+The no-abort control completed termination/export and retained recovery:
+`/tmp/cq-factory-abort-control.log`.
+
+The narrow fix limits the abort listener to preparation and detaches it in
+`finally`. It also removes the independent post-handoff cleanup timer: neither
+setup cancellation nor that timer may race the active adapter. Native owns
+post-handoff terminate → finalize (including failed finalization) → awaited
+`cleanupInvocation`; before handoff, preparation failure awaits cleanup.
+Approval refusal still awaits cleanup before any launch. Default cleanup retains
+handed-off task/context/auth recovery. The fixed forced-abort ordering completed
+termination/export and only then performed explicit invocation cleanup:
+`/tmp/cq-factory-abort-final.log`. This proves a possible mechanism; runs 16/17
+lack the original phase evidence needed to attribute their failures to it.
+There is no global resource-lifetime or frozen-lane claim.
+
+Runnable regression: `CQ_BOUNDARY_SYNTHETIC_DAEMON=1 npx vitest run
+ test/boundary-campaign.test.ts -t 'actual private factory abort ownership'`.
+It covers forced post-handoff abort, no-abort control, and abort immediately after
+real staging but before handoff (cleanup awaited before rejection). Each case has
+an explicit 90-second subprocess bound. No model, endpoint, subscription auth,
+quota or existing recovery is used. Fresh synthetic recovery is retained for audit.
+
+### Run 17 read-only judged-candidate binding
+
+`reconcile-retained-index.mjs` checked exact daemon, task-volume label/content
+ownership, worker absence before/after a nonprivileged read-only utility, then
+compared that inventory with the judged host snapshot without running Git or
+candidate code. Both full inventories remain distinct and preserved:
+retained `4617612713f74fec94dbc01577704143caa6542a0108324ccb9b8e7eaef1fa08`,
+host `04d382251a2c37bfff285c716e09253c66755b835d8b73892296cbbec948278d`.
+Only `.git/index` differs. Its SHA-256 changed from
+`2df779c5efef2920ae79cbc7e1b47cadc713397e52d14c8a3521d886cc4f243d`
+to `532f798aedc44153ad8b61b83f94a0306da99c21d02af1fe197542511e8c59c7`.
+Validated Git index v2 entries for `package.json`, `settings/display.js`, and
+`test/public-settings.test.mjs` differ only ctime/mtime/inode cache fields.
+Object IDs, flags, modes and extensions match; all four task-file bytes/modes
+match, including module SHA-256
+`5ccc1b590d4f09ee3b60c721a933980b2946588e6c74e2323154adfdf1a7da60`.
+Protected judgement artifact SHA-256 is
+`7e8506aa21e56305c8bac6c0a23833903f4836c64dee475d1a1971b6f8c5e353`.
+Private full manifests and canonical sanitized receipt are in run17's
+`index-reconciliation/`; public hashes/status log:
+`/tmp/cq-boundary-reconcile17-final.log`. Existing recovery/auth/events were not
+altered. Mechanical judgement binding holds; missing commit/full-task failure,
+publication failure and unproven supervisor stop remain unchanged.
+
+Final bounded regression also validates the actual stopped-export publication
+receipt through `publishStoppedTask`, not merely export existence. The first
+publication test fixture used an invalid export-directory name and was correctly
+refused; correcting the fixture to a fresh `.cq-stopped-export-*` sibling required
+no production policy relaxation. Final results: **3 passed / 49 skipped**, 12.91s;
+`/tmp/cq-factory-abort-publication-final.log`. Owned ESLint, typecheck and
+`git diff --check` passed. Sanitized before/after ordering artifact:
+`runner/boundary/evidence/fallback/runtime-abort-synthetic.json`.
+The full suite was not rerun; historical full-suite timeouts remain unchanged.

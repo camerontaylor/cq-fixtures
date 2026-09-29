@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
@@ -27,6 +28,7 @@ import { FileCampaignQueueStore } from '../runner/campaign/persistence.ts';
 import { normalizeG2NativeReceipt, runG2Harness, toBoundaryCanonicalNativeReceipt, type G2ProbeFixture, type NativeExecutionReceipt } from '../runner/native/g2-harness.ts';
 import { decodeCodexShellEventFrames } from '../runner/native/codex-g2-events.ts';
 import type { LaunchProfile } from '../runner/native/launch-inventory.ts';
+import { superviseAssignment } from '../runner/boundary/assignment-supervisor.ts';
 import { SAFE_GIT_CONFIG, snapshotTask } from '../runner/boundary/task-tree.ts';
 import type { ExperimentContext } from '../runner/experiment.ts';
 import { createReviewLoopRepairTask } from '../campaigns/cq-settings/corpus/review-loop-task.ts';
@@ -1937,6 +1939,24 @@ it('actual Codex pre-spawn ownership refusal settles no-start proof with unknown
   expect(spawnAdapter).not.toHaveBeenCalled();
   expect(driver.getLaunchEvidence(target.invocationId)).toMatchObject({ identity: target, status: 'no-spawn-observed' });
   expect(driver.getLifecycleEvidence(target.invocationId)).toMatchObject({ identity: target, process: { status: 'not-started' }, settlement: { status: 'settled' } });
-  expect(driver.getObservation(target.invocationId)!.usage.totalTokens).toBeNull();
+  expect(driver.getObservation(target.invocationId)!.usage.tokenTotal).toMatchObject({ value: null, semantics: 'unknown' });
+  expect(Object.values(driver.getObservation(target.invocationId)!.usage.counters).every(counter => counter.value === null)).toBe(true);
   await expect(driver.cancelInvocationAndWait({ identity: target, cause: 'fixture audit', deadlineEpochMs: Date.now() + 100 })).resolves.toMatchObject({ invocationId: target.invocationId, invocation: 'settled', processTree: 'stopped-and-reaped' });
+});
+
+
+it('source executor and source operation share one ownership module instance', async () => {
+  const root = realpathSync(tempRoot());
+  const modulePath = join(root, 'owner-fixture.mjs');
+  const privateInputPath = join(root, 'owner-input.json');
+  const ownerUrl = pathToFileURL(realpathSync(resolve('runner/boundary/assignment-supervisor-owner.ts'))).href;
+  const code = `export async function execute(context) { const owner = await import(${JSON.stringify(ownerUrl)}); if (owner.assignmentResourceOwner() !== context.preregister) throw Error('mixed ownership module instances'); await context.preregister({ kind: 'volume', id: 'cq-s5-pk04-owner' }); return { sourceOwner: true }; }`;
+  writeFileSync(modulePath, code, { mode: 0o600 });
+  writeFileSync(privateInputPath, '{}', { mode: 0o600 });
+  const now = Date.now();
+  const operation = { phase: 'execution' as const, modulePath, moduleSha256: createHash('sha256').update(code).digest('hex'), exportName: 'execute', privateInputPath, deadlineEpochMs: now + 2000 };
+  const receipt = await superviseAssignment({ identity: identity('source-owner-instance'), privateRoot: root, operations: [operation], allowedOperations: [operation], resources: [], resourceDeadlineEpochMs: now + 2000, reapDeadlineEpochMs: now + 3000, quarantineDeadlineEpochMs: now + 4000, requiredGuarantee: 'host-process-group' });
+  expect(receipt).toMatchObject({ terminal: 'completed', resourceLifetime: 'unsupported' });
+  expect(JSON.parse(readFileSync(receipt.results[0]!.path, 'utf8'))).toEqual({ sourceOwner: true });
+  expect(JSON.parse(readFileSync(receipt.registryPath, 'utf8')).resources).toContainEqual({ kind: 'volume', id: 'cq-s5-pk04-owner' });
 });

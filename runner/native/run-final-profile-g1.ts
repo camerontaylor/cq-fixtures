@@ -689,6 +689,7 @@ export async function runSupervisedFinalProfileG1(input: {
   if (input.requiredGuarantee !== 'host-process-group') throw new Error('hard resource lifetime unsupported; freeze refused');
   if (!/^[A-Za-z0-9._-]{1,80}$/u.test(input.runId) || !/^[A-Za-z0-9._-]{1,128}$/u.test(input.invocationId)) throw new Error('exact outer assignment identity required');
   const root = await realpath(ROOT);
+  if (await realpath(fileURLToPath(import.meta.url)) !== join(root, 'runner/native/run-final-profile-g1.ts')) throw new Error('outer ownership requires the single pinned source TypeScript module graph');
   const privateRoot = resolve(input.privateRoot);
   const stat = await lstat(privateRoot);
   if (await realpath(privateRoot) !== privateRoot || !stat.isDirectory() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) throw new Error('canonical owner-only private root required');
@@ -699,7 +700,7 @@ export async function runSupervisedFinalProfileG1(input: {
   const preparation = 'runner/boundary/prepare-final-g1-runtime.mjs';
   const execution = 'runner/boundary/final-g1-runtime.mjs';
   const required = new Set([...await discoverSourceDependencyClosure(root, [...SOURCE_FILES, preparation, execution,
-    'runner/boundary/assignment-supervisor.executor.mjs']), 'package.json', 'package-lock.json', 'vendor/cq-toolkit-1.0.1.tgz']);
+    'runner/boundary/assignment-supervisor.executor.mjs', 'runner/boundary/assignment-supervisor-owner.ts']), 'package.json', 'package-lock.json', 'vendor/cq-toolkit-1.0.1.tgz']);
   // Package closure is the complete installed runtime byte tree from the
   // independent successor freeze, including bare imports and implicit assets.
   for (const entry of await readdir(join(root, 'node_modules'), { recursive: true })) {

@@ -1,5 +1,4 @@
 /** Trusted visible-only launcher for the configured Pi/OpenCode Go route. */
-import { timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +16,7 @@ const MODEL = 'opencode-go/space-bunny-free';
  * already configured for this Paseo provider. Values stay in memory and are
  * never included in diagnostics, observations, or artifacts.
  */
-export function assertPiConfiguredAuthHandoff(configPath: string): void {
+export function assertPiConfiguredAuthHandoff(configPath: string): string {
   const config = JSON.parse(readFileSync(configPath, 'utf8')) as PaseoConfig;
   const profile = (config.agentProfiles ?? config.daemon?.agentProfiles ?? []).find((item) => item.name === PROFILE_LABEL);
   if (!profile || profile.provider !== 'pi-opencode' || profile.model !== MODEL) {
@@ -26,10 +25,10 @@ export function assertPiConfiguredAuthHandoff(configPath: string): void {
   const provider = config.agents?.providers?.[profile.provider];
   if (provider?.extends !== 'pi') throw new Error('configured Pi provider no longer extends the installed Pi runtime');
   const configuredValue = provider.env?.OPENCODE_API_KEY;
-  const processValue = process.env.OPENCODE_API_KEY;
-  if (typeof configuredValue !== 'string' || !configuredValue || !processValue || !sameSecret(configuredValue, processValue)) {
-    throw new Error('Pi OpenCode Go auth handoff is unavailable: Paseo configuration and the admitted native environment do not contain the same configured credential');
+  if (typeof configuredValue !== 'string' || !configuredValue) {
+    throw new Error('Pi OpenCode Go auth handoff is unavailable in the configured Paseo provider');
   }
+  return configuredValue;
 }
 
 /** Driver-module entrypoint consumed by runner/native/run-visible-g1.ts. */
@@ -42,7 +41,7 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
     throw new Error('parent must provide a non-secret CQ_VISIBLE_G1_ADMISSION_ID before visible dispatch');
   }
   const configPath = process.env.CQ_PASEO_CONFIG ?? join(homedir(), '.paseo', 'config.json');
-  assertPiConfiguredAuthHandoff(configPath);
+  const configuredAuth = assertPiConfiguredAuthHandoff(configPath);
   const mode: PiMode = input.route === 'pi-json' ? 'json' : 'rpc';
   const inventory = resolveNativeLaunchInventory(configPath, {
     environmentNames: { 'pi-opencode': ENVIRONMENT_NAMES },
@@ -65,7 +64,7 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
     spawnAdapter: visibleCalibrationSpawnAdapter({
       admissionId, scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
       environmentNames: ENVIRONMENT_NAMES,
-    }),
+    }, { environmentValues: { OPENCODE_API_KEY: configuredAuth } }),
   });
   return {
     driver,
@@ -77,12 +76,6 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
     },
     launchInventory: inventory,
   };
-}
-
-function sameSecret(left: string, right: string): boolean {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 interface PaseoProvider { extends?: string; env?: Record<string, string> }

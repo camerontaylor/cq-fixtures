@@ -19,30 +19,50 @@ export interface SupervisedProcessResult {
   startedAt: string;
   endedAt: string;
   launch?: NativeLaunchEvidence;
+  lifecycle?: { terminated: boolean; finalized: boolean; error?: { name: string; message: string } };
   error?: { name: string; message: string };
 }
 
 export interface NativeLaunchEvidence {
   boundaryIdentity: string;
   launchIdentity: string;
+  /** S5 final profile identity (boundary + exact args/bootstrap/runtime budget). */
+  profileInvocationIdentity?: string;
   admissionId: string;
   environmentNames: string[];
   scope: 'visible-calibration' | 'boundary';
   isolation: 'disabled' | 'unverified';
   heldOut: false;
+  taskExport?: { inventoryHash: string; head: string };
 }
+
+export type NativeInvocationStage = 'visible-calibration-G1' | 'final-profile-G1' | 'actual-route-G2';
+export interface NativeSpawnContext {
+  cwd: string;
+  identity: SupervisedInvocationIdentity;
+  stage: NativeInvocationStage;
+  /** Absolute wall deadline for admission, provisioning, transport and teardown. */
+  deadlineEpochMs: number;
+  /** Aborted at the assignment deadline; adapters should stop provisioning promptly. */
+  signal: AbortSignal;
+}
+export interface NativeTaskExport { inventoryHash: string; head: string }
 
 export interface NativeSpawnReceipt {
   child: ChildProcess;
   boundaryIdentity: string;
   launchIdentity: string;
   admissionId: string;
+  profileInvocationIdentity?: string;
   environmentNames: string[];
-  scope: 'visible-calibration';
-  isolation: 'disabled';
+  scope: 'visible-calibration' | 'boundary';
+  isolation: 'disabled' | 'unverified';
   heldOut: false;
+  terminate?: () => Promise<void>;
+  finalize?: () => Promise<NativeTaskExport>;
 }
-export type NativeSpawnAdapter = (command: string, args: readonly string[], options: { cwd: string }) => Promise<NativeSpawnReceipt>;
+export type NativeSpawnAdapter = (command: string, args: readonly string[], context: NativeSpawnContext) => Promise<NativeSpawnReceipt>;
+export type NativeSpawnAdapterFactory = (context: NativeSpawnContext) => Promise<NativeSpawnAdapter>;
 
 export interface SupervisedInvocationIdentity {
   invocationId: string;
@@ -161,7 +181,10 @@ export function launchEvidenceStatus(evidence: NativeLaunchEvidence): string {
 }
 
 /** Explicit, auditable direct launch for visible calibration only; never held-out eligible. */
-export function visibleCalibrationSpawnAdapter(admission: VisibleCalibrationAdmission): NativeSpawnAdapter {
+export function visibleCalibrationSpawnAdapter(
+  admission: VisibleCalibrationAdmission,
+  options: { environmentValues?: Record<string, string> } = {},
+): NativeSpawnAdapter {
   if (!admission.admissionId.trim() || admission.scope !== 'visible-calibration' ||
       admission.isolation !== 'disabled' || admission.heldOut !== false) {
     throw new Error('visible calibration launch requires a non-empty parent admission and heldOut=false');
@@ -170,8 +193,14 @@ export function visibleCalibrationSpawnAdapter(admission: VisibleCalibrationAdmi
     throw new Error('visible calibration cannot override provider or proxy endpoints');
   }
   const environmentNames = [...new Set(admission.environmentNames)].sort();
+  for (const name of Object.keys(options.environmentValues ?? {})) {
+    if (!environmentNames.includes(name)) throw new Error(`native credential environment key '${name}' is not allowlisted`);
+  }
   return async (command, args, { cwd }) => {
-    const env = Object.fromEntries(environmentNames.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
+    const env: NodeJS.ProcessEnv = Object.fromEntries(environmentNames.flatMap((name) => {
+      const value = options.environmentValues?.[name] ?? process.env[name];
+      return value === undefined ? [] : [[name, value]];
+    }));
     const child = spawn(command, [...args], {
       cwd, env, stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32', windowsHide: true,
@@ -179,7 +208,7 @@ export function visibleCalibrationSpawnAdapter(admission: VisibleCalibrationAdmi
     const launchIdentity = createHash('sha256').update(JSON.stringify({ command, args, cwd, admissionId: admission.admissionId })).digest('hex');
     return {
       child, boundaryIdentity: 'visible-only-unconfined', launchIdentity,
-      admissionId: admission.admissionId, environmentNames: environmentNames.filter((name) => process.env[name] !== undefined),
+      admissionId: admission.admissionId, environmentNames: environmentNames.filter((name) => env[name] !== undefined),
       scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
     };
   };
@@ -187,15 +216,21 @@ export function visibleCalibrationSpawnAdapter(admission: VisibleCalibrationAdmi
 
 export interface SupervisedProcessOptions {
   cwd: string;
+  identity?: SupervisedInvocationIdentity;
+  stage?: NativeInvocationStage;
   env?: NodeJS.ProcessEnv;
   input?: string;
   signal?: AbortSignal;
+  /** Includes adapter admission/provisioning and teardown, not only child runtime. */
+  hardDeadlineEpochMs?: number;
   timeoutMs: number;
   killGraceMs?: number;
   maxOutputBytes?: number;
   onStdout?: (chunk: string) => void;
   boundary?: Omit<BoundaryLaunch, 'executable' | 'args'>;
   spawnAdapter?: NativeSpawnAdapter;
+  /** Creates invocation-specific staging/admission inside the same hard deadline. */
+  spawnAdapterFactory?: NativeSpawnAdapterFactory;
   /** Explicitly for fake executables in tests; production launches fail closed without a boundary adapter. */
   allowUnconfinedTestProcess?: boolean;
 }
@@ -213,6 +248,10 @@ export async function runSupervised(
     throw new RangeError('timeoutMs must be a positive finite number');
   }
   const startedAt = new Date().toISOString();
+  const hardDeadlineEpochMs = options.hardDeadlineEpochMs ?? Date.now() + options.timeoutMs;
+  if (!Number.isFinite(hardDeadlineEpochMs)) throw new RangeError('hardDeadlineEpochMs must be finite');
+  const setupController = new AbortController();
+  const setupSignal = options.signal ? AbortSignal.any([options.signal, setupController.signal]) : setupController.signal;
   const maxBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const stdoutParts: string[] = [];
   const stderrParts: string[] = [];
@@ -222,9 +261,26 @@ export async function runSupervised(
   let spawnError: Error | undefined;
   let child: ChildProcess;
   let launch: SupervisedProcessResult['launch'];
+  let boundaryLifecycle: Pick<NativeSpawnReceipt, 'terminate' | 'finalize'> | undefined;
+  let lifecycleResult: SupervisedProcessResult['lifecycle'];
   let treeStopped = false;
+  let processLaunchStarted = false;
 
+  let launchTimeoutReject!: (error: Error) => void;
+  const launchDeadline = new Promise<never>((_, reject) => { launchTimeoutReject = reject; });
+  const onSetupAbort = () => launchTimeoutReject(new Error('native assignment was cancelled during admission or provisioning'));
+  options.signal?.addEventListener('abort', onSetupAbort, { once: true });
+  const remainingAtStart = hardDeadlineEpochMs - Date.now();
+  if (remainingAtStart <= 0) {
+    return spawnFailure(command, args, options.cwd, startedAt, new Error('native assignment deadline elapsed before launch'), 'timeout');
+  }
+  const launchTimeout = setTimeout(() => {
+    setupController.abort(new Error('native assignment deadline elapsed during admission or provisioning'));
+    launchTimeoutReject(new Error('native assignment deadline elapsed during admission or provisioning'));
+  }, remainingAtStart);
+  let launchPromise: Promise<{ child: ChildProcess; receipt?: NativeSpawnReceipt; launch?: NativeLaunchEvidence }>;
   try {
+    launchPromise = (async () => {
     if (options.boundary) {
       if (options.boundary.purpose !== 'actual-route' || options.boundary.heldOut !== false) {
         throw new Error('native transport requires an explicitly admitted visible actual-route boundary');
@@ -232,38 +288,78 @@ export async function runSupervised(
       if (resolve(options.boundary.policy.resolved.task) !== resolve(options.cwd)) {
         throw new Error('boundary task directory must match the invocation workspace');
       }
+      processLaunchStarted = true;
       const receipt = await spawnBoundary({ ...options.boundary, executable: command, args: [...args] });
-      child = receipt.child;
-      launch = {
+      const launchEvidence: NativeLaunchEvidence = {
         boundaryIdentity: receipt.boundaryIdentity, launchIdentity: receipt.launchIdentity,
         admissionId: receipt.admissionId ?? '', environmentNames: receipt.environmentNames,
         scope: 'boundary', isolation: 'unverified', heldOut: false,
       };
-    } else if (options.spawnAdapter) {
-      const receipt = await options.spawnAdapter(command, args, { cwd: options.cwd });
-      if (!receipt.admissionId.trim() || receipt.scope !== 'visible-calibration' ||
-          receipt.isolation !== 'disabled' || receipt.heldOut !== false) {
-        throw new Error('native spawn adapter receipt is not admitted visible-only calibration evidence');
+      return { child: receipt.child, launch: launchEvidence };
+    } else if (options.spawnAdapter || options.spawnAdapterFactory) {
+      if (!options.identity) throw new Error('admitted native spawn requires invocation identity');
+      const context: NativeSpawnContext = {
+        cwd: options.cwd, identity: options.identity, stage: options.stage ?? 'visible-calibration-G1',
+        deadlineEpochMs: hardDeadlineEpochMs, signal: setupSignal,
+      };
+      const adapter = options.spawnAdapter ?? await options.spawnAdapterFactory!(context);
+      if (Date.now() >= hardDeadlineEpochMs || setupSignal.aborted) throw new Error('native assignment deadline elapsed before adapter launch');
+      processLaunchStarted = true;
+      const receipt = await adapter(command, args, context);
+      if (!receipt.admissionId.trim() || receipt.heldOut !== false ||
+          (receipt.scope === 'visible-calibration' && receipt.isolation !== 'disabled') ||
+          (receipt.scope === 'boundary' && (receipt.isolation !== 'unverified' || !receipt.terminate || !receipt.finalize))) {
+        throw new Error('native spawn receipt does not match an admitted visible or final-profile boundary lifecycle');
       }
-      child = receipt.child;
-      launch = {
+      const launchEvidence: NativeLaunchEvidence = {
         boundaryIdentity: receipt.boundaryIdentity, launchIdentity: receipt.launchIdentity,
+        ...(receipt.profileInvocationIdentity ? { profileInvocationIdentity: receipt.profileInvocationIdentity } : {}),
         admissionId: receipt.admissionId, environmentNames: receipt.environmentNames,
         scope: receipt.scope, isolation: receipt.isolation, heldOut: receipt.heldOut,
       };
+      return { child: receipt.child, receipt, launch: launchEvidence };
     } else if (options.allowUnconfinedTestProcess) {
-      child = spawn(command, [...args], {
+      processLaunchStarted = true;
+      return { child: spawn(command, [...args], {
         cwd: options.cwd,
         env: options.env ?? process.env,
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
         windowsHide: true,
-      });
+      }) };
     } else {
       throw new Error('native route launch requires boundary isolation and orchestrator admission');
     }
+    throw new Error('native launch adapter returned no child');
+    })();
+    const launched = await Promise.race([launchPromise, launchDeadline]);
+    child = launched.child;
+    launch = launched.launch;
+    if (launched.receipt?.scope === 'boundary') boundaryLifecycle = { terminate: launched.receipt.terminate, finalize: launched.receipt.finalize };
   } catch (error) {
-    return spawnFailure(command, args, options.cwd, startedAt, error);
+    clearTimeout(launchTimeout);
+    const deadlineExpired = Date.now() >= hardDeadlineEpochMs;
+    const launchCancelled = options.signal?.aborted === true;
+    if (deadlineExpired || launchCancelled) {
+      // If an adapter cannot stop provisioning synchronously, a late receipt is
+      // still reaped and finalized. The caller receives no successful capture.
+      void launchPromise!.then(async (late) => {
+        await stopAndWait(late.child, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
+        if (late.receipt?.scope === 'boundary') {
+          let terminationError: unknown;
+          try { await late.receipt.terminate?.(); } catch (failure) { terminationError = failure; }
+          try { await late.receipt.finalize?.(); } catch (failure) { if (!terminationError) terminationError = failure; }
+        }
+      }).catch(() => undefined);
+    } else {
+      void launchPromise!.catch(() => undefined);
+    }
+    return spawnFailure(command, args, options.cwd, startedAt, error,
+      deadlineExpired ? 'timeout' : launchCancelled ? 'cancelled' : 'spawn-error',
+      !processLaunchStarted && (deadlineExpired || launchCancelled));
+  } finally {
+    clearTimeout(launchTimeout);
+    options.signal?.removeEventListener('abort', onSetupAbort);
   }
 
   const collect = (target: string[], current: number, chunk: Buffer, stream: 'stdout' | 'stderr') => {
@@ -285,11 +381,52 @@ export async function runSupervised(
     command, args: [...args], cwd: options.cwd,
     stdout: stdoutParts.join(''), stderr: stderrParts.join(''), code, signal,
     treeStopped: stopped,
-    terminal: spawnError ? 'spawn-error' : timedOut ? 'timeout' : cancelled ? 'cancelled' : terminal,
+    terminal: spawnError ? 'spawn-error' : cancelled ? 'cancelled' : timedOut ? 'timeout' : terminal,
     startedAt, endedAt: new Date().toISOString(),
     ...(launch ? { launch } : {}),
+    ...(lifecycleResult ? { lifecycle: lifecycleResult } : {}),
     ...(spawnError ? { error: { name: spawnError.name, message: spawnError.message } } : {}),
   });
+  let stopCompletion: Promise<boolean> | undefined;
+  const stopAndFinalize = (): Promise<boolean> => stopCompletion ??= (async () => {
+    const hostTreeStopped = await stopAndWait(child, Math.min(options.killGraceMs ?? DEFAULT_KILL_GRACE_MS,
+      Math.max(50, hardDeadlineEpochMs - Date.now())));
+    if (!boundaryLifecycle) {
+      treeStopped = hostTreeStopped;
+      return treeStopped;
+    }
+    let terminated = false;
+    let finalized = false;
+    let taskExport: NativeTaskExport | undefined;
+    let lifecycleError: Error | undefined;
+    try {
+      await boundaryLifecycle.terminate!();
+      terminated = true;
+    } catch (error) {
+      lifecycleError = error instanceof Error ? error : new Error(String(error));
+    }
+    try {
+      // Always await finalization after termination has settled. The trusted
+      // adapter itself refuses export unless container stop was proven.
+      taskExport = await boundaryLifecycle.finalize!();
+      if (!/^[a-f0-9]{64}$/iu.test(taskExport.inventoryHash) || !/^[a-f0-9]{40,64}$/iu.test(taskExport.head)) {
+        throw new Error('native boundary task export returned an invalid inventory hash or HEAD');
+      }
+      finalized = true;
+    } catch (error) {
+      if (!lifecycleError) lifecycleError = error instanceof Error ? error : new Error(String(error));
+    }
+    if (terminated && hostTreeStopped && finalized && taskExport && launch) {
+      launch.taskExport = { inventoryHash: taskExport.inventoryHash, head: taskExport.head };
+    }
+    lifecycleResult = {
+      terminated,
+      finalized,
+      ...(lifecycleError ? { error: { name: lifecycleError.name, message: lifecycleError.message } } : {}),
+    };
+    treeStopped = hostTreeStopped && terminated && finalized && Date.now() <= hardDeadlineEpochMs;
+    return treeStopped;
+  })();
   let fallbackTimer: NodeJS.Timeout | undefined;
   const result = new Promise<SupervisedProcessResult>((resolve) => {
     child.once('error', (error) => {
@@ -300,7 +437,7 @@ export async function runSupervised(
       // A leader can exit while a detached descendant remains in its process
       // group. Prove the complete group is gone before resolving so callers
       // cannot capture a workspace while a late descendant can still edit it.
-      void stopAndWait(child, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS).then((stopped) => {
+      void withinDeadline(stopAndFinalize(), hardDeadlineEpochMs).then((stopped) => {
         treeStopped = stopped;
         resolve(snapshot(code, signal, stopped));
       });
@@ -313,15 +450,19 @@ export async function runSupervised(
   };
   const onAbort = () => { cancelled = true; terminateTree(child); scheduleForceKill(); };
   options.signal?.addEventListener('abort', onAbort, { once: true });
-  const timer = setTimeout(() => { timedOut = true; terminateTree(child); scheduleForceKill(); }, options.timeoutMs);
+  const remainingTransportMs = Math.max(1, Math.min(options.timeoutMs, hardDeadlineEpochMs - Date.now()));
+  const timer = setTimeout(() => { timedOut = true; setupController.abort(new Error('native assignment deadline elapsed')); terminateTree(child); scheduleForceKill(); }, remainingTransportMs);
   if (cancelled) onAbort();
 
   // The hard fallback bounds even a child that closes its leader early but
   // leaves a descendant holding an inherited pipe open.
-  const forceResolveMs = options.timeoutMs + (options.killGraceMs ?? DEFAULT_KILL_GRACE_MS) + 2000;
+  const forceResolveMs = Math.max(1, hardDeadlineEpochMs - Date.now());
   const forced = new Promise<SupervisedProcessResult>((resolve) => {
     fallbackTimer = setTimeout(() => {
-      void stopAndWait(child, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS).then((stopped) => {
+      timedOut = true;
+      setupController.abort(new Error('native assignment deadline elapsed during teardown'));
+      terminateTree(child);
+      void withinDeadline(stopAndFinalize(), hardDeadlineEpochMs).then((stopped) => {
         treeStopped = stopped;
         resolve(snapshot(null, 'SIGKILL', stopped));
       });
@@ -341,7 +482,7 @@ function terminateTree(child: ChildProcess): void {
   killTree(child, 'SIGTERM');
 }
 
-async function stopAndWait(child: ChildProcess, graceMs: number): Promise<boolean> {
+export async function stopAndWait(child: ChildProcess, graceMs: number): Promise<boolean> {
   if (!child.pid) return true;
   terminateTree(child);
   if (await waitForGroupExit(child.pid, Math.max(50, graceMs))) return true;
@@ -381,12 +522,24 @@ function spawnFailure(
   cwd: string,
   startedAt: string,
   value: unknown,
+  terminal: ProcessTerminal = 'spawn-error',
+  treeStopped = true,
 ): SupervisedProcessResult {
   const error = value instanceof Error ? value : new Error(String(value));
   return {
     command, args: [...args], cwd, stdout: '', stderr: '', code: null,
-    signal: null, terminal: 'spawn-error', treeStopped: true, startedAt,
+    signal: null, terminal, treeStopped, startedAt,
     endedAt: new Date().toISOString(),
     error: { name: error.name, message: error.message },
   };
+}
+
+async function withinDeadline<T>(work: Promise<T>, deadlineEpochMs: number): Promise<T | false> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, deadlineEpochMs - Date.now())); }),
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
 }

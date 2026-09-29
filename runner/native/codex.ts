@@ -5,7 +5,7 @@ import type { InvocationIdentity } from './observation.ts';
 import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
 import { applyUsageObservation, parseJsonEventLines, toStructuredOutput } from './events.ts';
 import { ObservedNativeDriver, createWorkerResult, usageProjection, type NativeDriverOptions } from './observed-driver.ts';
-import { launchEvidenceStatus, runSupervised } from './process.ts';
+import { launchEvidenceStatus, runSupervised, type NativeInvocationStage, type NativeSpawnAdapterFactory } from './process.ts';
 import { resolveNativeSession } from './session.ts';
 import type { BoundaryLaunch } from '../boundary/spawn.ts';
 import type { NativeSpawnAdapter } from './process.ts';
@@ -22,6 +22,10 @@ export interface CodexExecOptions {
   workspaceForInvocation?: (invocation: OpInvocation) => string;
   boundaryForInvocation?: (identity: InvocationIdentity, invocation: OpInvocation, workspace: string) => Omit<BoundaryLaunch, 'executable' | 'args'>;
   spawnAdapter?: NativeSpawnAdapter;
+  spawnAdapterFactory?: NativeSpawnAdapterFactory;
+  invocationStage?: NativeInvocationStage;
+  assignmentDeadlineEpochMs?: number;
+  signal?: AbortSignal;
 }
 
 /** Native subscription route through `codex exec --json`; this never starts a Codex app-server turn. */
@@ -34,6 +38,10 @@ export class CodexExecDriver extends ObservedNativeDriver {
   private readonly workspaceForInvocation: NonNullable<CodexExecOptions['workspaceForInvocation']>;
   private readonly boundaryForInvocation: CodexExecOptions['boundaryForInvocation'];
   private readonly spawnAdapter: NativeSpawnAdapter | undefined;
+  private readonly spawnAdapterFactory: NativeSpawnAdapterFactory | undefined;
+  private readonly invocationStage: NativeInvocationStage;
+  private readonly assignmentDeadlineEpochMs: number | undefined;
+  private readonly assignmentSignal: AbortSignal | undefined;
 
   constructor(options: CodexExecOptions = {}) {
     const executable = options.executable ?? 'codex';
@@ -54,6 +62,10 @@ export class CodexExecDriver extends ObservedNativeDriver {
     this.workspaceForInvocation = options.workspaceForInvocation ?? (() => process.cwd());
     this.boundaryForInvocation = options.boundaryForInvocation;
     this.spawnAdapter = options.spawnAdapter;
+    this.spawnAdapterFactory = options.spawnAdapterFactory;
+    this.invocationStage = options.invocationStage ?? 'visible-calibration-G1';
+    this.assignmentDeadlineEpochMs = options.assignmentDeadlineEpochMs;
+    this.assignmentSignal = options.signal;
   }
 
   protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
@@ -80,12 +92,14 @@ export class CodexExecDriver extends ObservedNativeDriver {
       ];
       this.nativeSupervisor.expectProcessTree(identity);
       const result = await runSupervised(this.executable, args, {
-        cwd, input: invocation.prompt,
-        timeoutMs: invocation.budget.wallClockMs ?? this.hardWallClockMs,
+        cwd, identity, stage: this.invocationStage, input: invocation.prompt,
+        timeoutMs: Math.min(invocation.budget.wallClockMs ?? this.hardWallClockMs, this.hardWallClockMs),
+        ...(this.assignmentDeadlineEpochMs === undefined ? {} : { hardDeadlineEpochMs: this.assignmentDeadlineEpochMs }),
         killGraceMs: this.killGraceMs,
-        signal: this.signalFor(identity, currentJobContext()?.signal),
+        signal: this.signalFor(identity, joinSignals(this.assignmentSignal, currentJobContext()?.signal)),
         ...(this.boundaryForInvocation ? { boundary: this.boundaryForInvocation(identity, invocation, cwd) } : {}),
         ...(this.spawnAdapter ? { spawnAdapter: this.spawnAdapter } : {}),
+        ...(this.spawnAdapterFactory ? { spawnAdapterFactory: this.spawnAdapterFactory } : {}),
       });
       this.reportProcessTree(identity, result.treeStopped);
       if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };
@@ -121,6 +135,11 @@ export class CodexExecDriver extends ObservedNativeDriver {
       throw error;
     }
   }
+}
+
+function joinSignals(first?: AbortSignal, second?: AbortSignal): AbortSignal | undefined {
+  if (first && second) return AbortSignal.any([first, second]);
+  return first ?? second;
 }
 
 function codexSandbox(invocation: OpInvocation): string {

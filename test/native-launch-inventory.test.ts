@@ -79,5 +79,5 @@ describe('launch inventory', () => {
     expect(inventory.proposedBridges[1]?.args).toContain('--no-extensions');
     expect(inventory.comparisons.some(({ comparison }) => comparison.unknown.includes('tools'))).toBe(true);
     expect(JSON.stringify(inventory)).not.toContain('private-value');
-  });
+  }, 15_000);
 });

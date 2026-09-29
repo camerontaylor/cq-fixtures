@@ -4,7 +4,7 @@ import type { InvocationIdentity } from './observation.ts';
 import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
 import { applyUsageObservation, parseJsonEventLines, toStructuredOutput } from './events.ts';
 import { ObservedNativeDriver, createWorkerResult, usageProjection, type NativeDriverOptions } from './observed-driver.ts';
-import { launchEvidenceStatus, runSupervised } from './process.ts';
+import { launchEvidenceStatus, runSupervised, type NativeInvocationStage } from './process.ts';
 import { resolveNativeSession } from './session.ts';
 import type { BoundaryLaunch } from '../boundary/spawn.ts';
 import type { NativeSpawnAdapter } from './process.ts';
@@ -25,6 +25,7 @@ export interface PiNativeOptions {
   workspaceForInvocation?: (invocation: OpInvocation) => string;
   boundaryForInvocation?: (identity: InvocationIdentity, invocation: OpInvocation, workspace: string) => Omit<BoundaryLaunch, 'executable' | 'args'>;
   spawnAdapter?: NativeSpawnAdapter;
+  invocationStage?: NativeInvocationStage;
 }
 
 /** Pi native JSON/RPC transport for the configured OpenCode Go subscription route. */
@@ -39,6 +40,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
   private readonly workspaceForInvocation: NonNullable<PiNativeOptions['workspaceForInvocation']>;
   private readonly boundaryForInvocation: PiNativeOptions['boundaryForInvocation'];
   private readonly spawnAdapter: NativeSpawnAdapter | undefined;
+  private readonly invocationStage: NativeInvocationStage;
 
   constructor(options: PiNativeOptions = {}) {
     const executable = options.executable ?? 'pi';
@@ -62,6 +64,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
     this.workspaceForInvocation = options.workspaceForInvocation ?? (() => process.cwd());
     this.boundaryForInvocation = options.boundaryForInvocation;
     this.spawnAdapter = options.spawnAdapter;
+    this.invocationStage = options.invocationStage ?? 'visible-calibration-G1';
   }
 
   protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
@@ -71,7 +74,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
     observation.model.settings.effort = { value: this.thinking, source: 'Paseo pi-opencode profile', status: 'requested-unobservable' };
     observation.model.settings.session = { value: 'ephemeral', source: 'Pi --no-session', status: 'requested' };
     observation.model.settings.toolPolicy = { value: invocation.toolPolicy, source: 'Pi --tools/--no-tools', status: 'requested-unverified' };
-    observation.model.settings.extensions = { value: [], source: 'Pi --no-extensions', status: 'disabled' };
+    observation.model.settings.extensions = { value: null, source: 'Pi user extension/provider discovery; project-local files denied', status: 'unverified' };
     observation.model.settings.sandbox = { value: invocation.sandboxPolicy.level, source: 'Pi native profile', status: 'unsupported-by-pi-cli' };
     this.observations.set(identity.invocationId, observation);
     try {
@@ -88,14 +91,15 @@ export class PiNativeDriver extends ObservedNativeDriver {
         '--model', `${this.model}:${this.thinking}`,
         '--thinking', this.thinking,
         '--no-session',
-        '--no-extensions',
+        '--no-approve',
         '-p', invocation.prompt,
       ];
       const toolArgs = piToolArgs(invocation);
       args.splice(args.length - 2, 0, ...toolArgs);
       this.nativeSupervisor.expectProcessTree(identity);
       const result = await runSupervised(this.executable, args, {
-        cwd, timeoutMs: invocation.budget.wallClockMs ?? this.hardWallClockMs,
+        cwd, identity, stage: this.invocationStage,
+        timeoutMs: invocation.budget.wallClockMs ?? this.hardWallClockMs,
         killGraceMs: this.killGraceMs,
         signal: this.signalFor(identity, currentJobContext()?.signal),
         ...(this.boundaryForInvocation ? { boundary: this.boundaryForInvocation(identity, invocation, cwd) } : {}),

@@ -1,11 +1,12 @@
 import { resolve } from 'node:path';
+import type { ChildProcess } from 'node:child_process';
 import { AcpDriver, currentJobContext, runLadder, SessionStore, type Driver, type OpInvocation, type WorkerResult } from '@camerontaylor/cq-toolkit';
 import type { InvocationIdentity } from './observation.ts';
 import type { NativeLaunchEvidence } from './process.ts';
 import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
 import { ObservedNativeDriver, type NativeDriverOptions } from './observed-driver.ts';
 import { resolveNativeSession, RUNNER_SESSION_DIRECTORY } from './session.ts';
-import { launchEvidenceStatus } from './process.ts';
+import { launchEvidenceStatus, stopAndWait } from './process.ts';
 
 export interface ZcodeAcpOptions {
   executable?: string;
@@ -33,6 +34,7 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
   private readonly killGraceMs: number;
   private readonly admittedSpawnConfigured: boolean;
   private readonly launchEvidence: NativeLaunchEvidence | undefined;
+  private activeChild: ChildProcess | undefined;
 
   constructor(options: ZcodeAcpOptions = {}) {
     const executable = options.executable ?? 'zcode-acp';
@@ -48,7 +50,11 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
     this.acp = options.driver ?? new AcpDriver({
       command: [executable, 'server'], termGraceMs: 300, killGraceMs: options.killGraceMs ?? 1_000,
       sessionsDir: sessionsDirectory,
-      ...(options.spawn ? { spawn: options.spawn } : {}),
+      ...(options.spawn ? { spawn: (input) => {
+        const child = options.spawn!(input);
+        this.activeChild = child;
+        return child;
+      } } : {}),
     });
     this.admittedSpawnConfigured = Boolean(options.driver || (options.spawn && options.launchEvidence?.admissionId.trim()));
     this.launchEvidence = options.launchEvidence;
@@ -92,20 +98,10 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
         sessionRef,
         budget: { ...invocation.budget, wallClockMs: invocation.budget.wallClockMs ?? this.hardWallClockMs },
       };
-      const parent = currentJobContext();
-      let worker: WorkerResult;
       this.nativeSupervisor.expectProcessTree(identity);
-      if (parent) {
-        if (parent.info.wallClockMs === undefined) {
-          throw new Error('ZCode ACP requires a governed wall-clock bound when called inside a toolkit job');
-        }
-        // The toolkit ACP driver registers its process-group SIGTERM/SIGKILL
-        // port against this runner-owned context, preserving operator cancel.
-        const begin = Date.now();
-        worker = await this.acp.run(boundedInvocation);
-        observation.timing.stages.transportMs = Date.now() - begin;
-      } else {
-        const ladder = await runLadder(
+      let ladder;
+      try {
+        ladder = await runLadder(
           () => this.acp.run(boundedInvocation),
           {
             wallClockMs: boundedInvocation.budget.wallClockMs,
@@ -113,8 +109,19 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
             killGraceMs: this.killGraceMs,
           },
           { op: 'zcode-acp', jobKey: identity.assignmentId, attempt: 1 },
-          { signal: this.signalFor(identity) },
+          { signal: this.signalFor(identity, currentJobContext()?.signal) },
         );
+      } finally {
+        const child = this.activeChild;
+        this.activeChild = undefined;
+        const stopped = child ? await stopAndWait(child, this.killGraceMs) : true;
+        this.reportProcessTree(identity, stopped);
+        observation.model.settings.processTree = {
+          value: stopped, source: 'native ACP process-group stop proof',
+          status: stopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden',
+        };
+        if (!stopped) throw new Error('ZCode ACP process tree stop could not be proven; candidate capture is forbidden');
+      }
         if (ladder.outcome === 'threw') throw ladder.error;
         if (ladder.outcome === 'killed') {
           observation.terminal.cause = 'hard-timeout-killed';
@@ -122,9 +129,8 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
           observation.timing.stages.killLadderMs = ladder.elapsedMs;
           throw new Error(`ZCode ACP exceeded hard wall bound (${ladder.elapsedMs}ms)`);
         }
-        worker = ladder.value;
+        const worker: WorkerResult = ladder.value;
         observation.timing.stages.transportMs = ladder.elapsedMs;
-      }
       observation.model.observed = worker.model
         ? { value: worker.model, source: 'ACP config_option_update', status: 'observed' }
         : { value: null, source: null, status: 'not-reported' };

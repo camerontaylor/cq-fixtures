@@ -10,7 +10,7 @@ import { ArtifactStore } from '../runner/artifacts/index.ts';
 import { experimentId, suiteTaskId, type ExperimentContext } from '../runner/experiment.ts';
 import { runSuite, SESSION_STORE_DIR } from '../runner/index.ts';
 import { campaignUsage, validatedLaunchEvidenceLaunched, type InvocationIdentity, type NativeObservation, type ObservedDriver } from '../runner/native/observation.ts';
-import { inventoryTaskWorkspace, runWorkspaceConformance, WorkspaceConformanceError } from '../runner/native/workspace-conformance.ts';
+import { inventoryTaskWorkspace, runWorkspaceConformance, WorkspaceConformanceError, type NativeLifecycleEvidence } from '../runner/native/workspace-conformance.ts';
 
 const TASK_ID = 'review-loop-label-limit-02';
 const SOURCE_ID = 'cq-settings.settings-module-seed.v2';
@@ -45,10 +45,14 @@ afterEach(() => { if (tempRoot !== '') rmSync(tempRoot, { recursive: true, force
 class InjectedObservedNativeDriver implements Driver, ObservedDriver {
   identity?: InvocationIdentity;
   readonly launched: string[] = [];
+  extensionReceiverPreserved = false;
   constructor(
     private readonly behavior: 'fix' | 'throw-after-edit' = 'fix',
     private readonly launchStatus?: 'spawn-observed' | 'no-spawn-observed' | 'unknown',
+    private readonly lifecycleMode: 'valid' | 'missing' | 'bad-reference' = 'valid',
   ) {}
+
+  nativeExtension(): void { this.extensionReceiverPreserved = true; }
 
   async beginInvocation(identity: InvocationIdentity): Promise<void> { this.identity = identity; }
 
@@ -81,7 +85,10 @@ class InjectedObservedNativeDriver implements Driver, ObservedDriver {
       identity: this.identity,
       transport: 'injected-development-driver',
       executable: { path: 'development-injection', version: null, profile: 'test' },
-      artifacts: [], withheldArtifacts: [],
+      artifacts: [
+        { kind: 'process-stop', path: 'injected/lifecycle/process-stop.json', sha256: digest('injected-process-stop') },
+        { kind: 'worker-settlement', path: 'injected/lifecycle/worker-settlement.json', sha256: digest('injected-worker-settlement') },
+      ], withheldArtifacts: [],
       model: {
         configuredTarget: 'test/native-v2',
         requested: { value: 'test/native-v2', source: 'test', status: 'verified' },
@@ -111,6 +118,26 @@ class InjectedObservedNativeDriver implements Driver, ObservedDriver {
       status: this.launchStatus,
       source: 'injected-development-driver',
       observedAt: new Date().toISOString(),
+    };
+  }
+
+  getLifecycleEvidence(invocationId: string): NativeLifecycleEvidence | undefined {
+    if (this.identity === undefined || this.identity.invocationId !== invocationId || this.lifecycleMode === 'missing') return undefined;
+    return {
+      identity: this.identity,
+      process: {
+        status: this.launchStatus === 'no-spawn-observed' ? 'not-started' : 'stopped',
+        evidence: {
+          kind: 'process-stop', path: 'injected/lifecycle/process-stop.json',
+          sha256: digest(this.lifecycleMode === 'bad-reference' ? 'wrong-stop-proof' : 'injected-process-stop'),
+        },
+      },
+      settlement: {
+        status: 'settled',
+        evidence: {
+          kind: 'worker-settlement', path: 'injected/lifecycle/worker-settlement.json', sha256: digest('injected-worker-settlement'),
+        },
+      },
     };
   }
 }
@@ -180,18 +207,21 @@ assert.equal(candidate.isValidCampaignLabel('😀'.repeat(41)), false);
   };
   const artifactRoot = join(tempRoot, 'artifacts');
   const invoke = (driver: Driver, receiptRoot = artifactRoot) => runWorkspaceConformance({
-    driver: driver as Driver & ObservedDriver, experiment, suiteName: 'review-loop-visible-g1-v2', caseId: TASK_ID,
+    driver: driver as Driver & ObservedDriver & { getLifecycleEvidence: (invocationId: string) => NativeLifecycleEvidence | undefined }, experiment, suiteName: 'review-loop-visible-g1-v2', caseId: TASK_ID,
     frozenJudgePin: ORACLE_PIN,
     frozenBaseline: { contentSha256: frozenBaseline.contentSha256, taskCommit, taskTree },
     artifactRoot: receiptRoot,
-    runSuite: (boundDriver) => runSuite({
-      suiteDir, repoRoot, artifactRoot, driver: boundDriver,
-      model: 'test/native-v2', provider: 'test', driverName: 'pi-json', experiment,
-      hostCheckScoringEnvironment: (_workspace, pinnedBaselineCommit) => ({
-        CQ_REVIEW_LOOP_BASELINE_SHA: pinnedBaselineCommit,
-        CQ_REVIEW_LOOP_ORACLE_PIN: ORACLE_PIN,
-      }),
-    }),
+    runSuite: (boundDriver) => {
+      (boundDriver as Driver & { nativeExtension: () => void }).nativeExtension();
+      return runSuite({
+        suiteDir, repoRoot, artifactRoot, driver: boundDriver,
+        model: 'test/native-v2', provider: 'test', driverName: 'pi-json', experiment,
+        hostCheckScoringEnvironment: (_workspace, pinnedBaselineCommit) => ({
+          CQ_REVIEW_LOOP_BASELINE_SHA: pinnedBaselineCommit,
+          CQ_REVIEW_LOOP_ORACLE_PIN: ORACLE_PIN,
+        }),
+      });
+    },
   });
   return { repoRoot, fixtureDir, suiteDir, checkPath, taskCommit, taskTree, frozenBaseline, experiment, artifactRoot, invoke };
 }
@@ -207,6 +237,10 @@ describe('task-owned native workspace conformance seam', () => {
     const conformance = await env.invoke(driver);
     expect(driver.launched).toHaveLength(1);
     expect(conformance.receipt.status).toBe('passed');
+    expect(conformance.receipt.workspaceSeparationStatus).toBe('passed');
+    expect(conformance.receipt.lifecycle.qualification).toBe('qualified');
+    expect(conformance.receipt.baseline.taskCommitRelation).toBe('different-commit-same-tree');
+    expect(driver.extensionReceiverPreserved).toBe(true);
     expect(conformance.receipt.baseline.taskTree).toBe(env.taskTree);
     expect(conformance.receipt.workspaces.assigned.removedByRunSuite).toBe(true);
     expect(conformance.receipt.workspaces.control.unchanged).toBe(true);
@@ -235,6 +269,7 @@ describe('task-owned native workspace conformance seam', () => {
     const explicitNoSpawn = new InjectedObservedNativeDriver('fix', 'no-spawn-observed');
     const run = await env.invoke(explicitNoSpawn);
     expect(run.result.taskOutcomes[0]?.outcome.execution?.launched).toBe(false);
+    expect(run.receipt.lifecycle.qualification).toBe('qualified');
 
     const identity: InvocationIdentity = { invocationId: 'inv-1', assignmentId: 'a-1', stageId: 's-1', attemptId: 'try-1' };
     const evidence = {
@@ -246,6 +281,31 @@ describe('task-owned native workspace conformance seam', () => {
     expect(validatedLaunchEvidenceLaunched({ ...evidence, identity: { ...identity, assignmentId: 'other' } }, identity)).toBeNull();
     expect(validatedLaunchEvidenceLaunched(undefined, identity)).toBeUndefined();
 
+  }, 30_000);
+
+  it('reports workspace separation separately and refuses full qualification without native stop and settlement proof', async () => {
+    const env = fixture();
+    const driver = new InjectedObservedNativeDriver('fix', undefined, 'missing');
+    let thrown: unknown;
+    try { await env.invoke(driver); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(WorkspaceConformanceError);
+    const receipt = (thrown as WorkspaceConformanceError).receipt;
+    expect(receipt.workspaceSeparationStatus).toBe('passed');
+    expect(receipt.lifecycle).toMatchObject({ qualification: 'unknown', identityMatched: false, processStatus: null, settlementStatus: null });
+    expect(receipt.failureCodes).toContain('native-lifecycle-evidence-unavailable');
+    expect(receipt.status).toBe('failed');
+  }, 30_000);
+
+  it('rejects stop and settlement references absent from the matching native observation', async () => {
+    const env = fixture();
+    const driver = new InjectedObservedNativeDriver('fix', undefined, 'bad-reference');
+    let thrown: unknown;
+    try { await env.invoke(driver); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(WorkspaceConformanceError);
+    const receipt = (thrown as WorkspaceConformanceError).receipt;
+    expect(receipt.workspaceSeparationStatus).toBe('passed');
+    expect(receipt.lifecycle.qualification).toBe('failed');
+    expect(receipt.failureCodes).toContain('native-lifecycle-evidence-reference-mismatch');
   }, 30_000);
 
   it('rejects control mutation after dispatch and still removes the control copy', async () => {

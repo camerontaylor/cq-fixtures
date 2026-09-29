@@ -490,8 +490,6 @@ function gitPatch(workspace: string, baseline: GitBaseline): string | undefined 
   }
   const env = gitEnvironment(baseline.gitDir, workspace);
   const run = (args: string[]) => spawnSync('git', gitCaptureArgs(baseline.gitDir, workspace, args), { encoding: 'utf8', env });
-  const pinnedTree = run(['rev-parse', `${baseline.commit}^{tree}`]);
-  if (pinnedTree.status !== 0 || pinnedTree.stdout.trim() !== baseline.tree) return undefined;
   if (run(['add', '-A']).status !== 0) return undefined;
   // Explicit a/ b/ prefixes so the published patch is a standard git diff
   // regardless of the operator's git config (diff.mnemonicPrefix produces
@@ -500,7 +498,10 @@ function gitPatch(workspace: string, baseline: GitBaseline): string | undefined 
   // the format regrade re-applies cleanly.
   const res = run([
     'diff', '--cached', '--no-color', '--no-ext-diff', '--no-textconv',
-    '--src-prefix=a/', '--dst-prefix=b/', baseline.commit,
+    // gitBaseline verified the immutable commit/tree pair before dispatch.
+    // Diff the pinned tree directly: Git resolves and validates that object
+    // in this operation, avoiding a redundant commit-to-tree subprocess.
+    '--src-prefix=a/', '--dst-prefix=b/', baseline.tree,
   ]);
   return res.status === 0 ? res.stdout : undefined;
 }
@@ -1003,7 +1004,10 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       const capturedPatch = isFixerCase(c) && workspace !== undefined && workspaceBaseline !== undefined
         ? gitPatch(workspace, workspaceBaseline)
         : undefined;
-      const fixerPatch = capturedPatch === undefined || capturedPatch.length === 0 ? undefined : capturedPatch;
+      // A completed invocation can legitimately leave the pristine workspace correct.
+      // An empty diff after a throw supplies no recoverable candidate evidence.
+      const fixerPatch = capturedPatch === '' && (thrown !== undefined || worker === undefined)
+        ? undefined : capturedPatch;
       if (thrown instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(thrown.message) && isFixerCase(c)) {
         if (fixerPatch === undefined) {
           await append({
@@ -1415,9 +1419,14 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             judgeManifest: taskInput!.judgeManifest, baselineCommit, baselineTree,
             candidateCorrectness, formatConformance, assignedStrategySuccess, operationalStatus,
           };
-          const artifact = artifactStore.writeJudgement(artifactContext, judgementId, candidateSha256, judgePin, { ...judgement, outcome });
-          judgements.push(artifact);
-          taskJudgement = { ...judgement, artifact };
+          try {
+            const artifact = artifactStore.writeJudgement(artifactContext, judgementId, candidateSha256, judgePin, { ...judgement, outcome });
+            judgements.push(artifact);
+            taskJudgement = { ...judgement, artifact };
+          } catch (error) {
+            const why = error instanceof Error ? error.message : String(error);
+            caseDiagnostics.push(`case ${c.id}: judgement persistence failed: ${boundDriverCause(why)}`);
+          }
         }
       }
       if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);

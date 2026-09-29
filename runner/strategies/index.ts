@@ -476,6 +476,19 @@ function raceStage<T>(promise: Promise<T>, ms: number, signal: AbortSignal): Pro
   });
 }
 
+function boundedEpochDeadline(epochNow: number, monotonicDeadline: number, monotonicNow: number): number {
+  if (!Number.isFinite(epochNow) || !Number.isFinite(monotonicDeadline) || !Number.isFinite(monotonicNow)) {
+    throw new Error('Strategy deadline inputs must be finite');
+  }
+  const epochBase = Math.floor(epochNow);
+  const duration = Math.floor(Math.max(0, monotonicDeadline - monotonicNow));
+  const deadline = epochBase + duration;
+  if (!Number.isSafeInteger(epochBase) || !Number.isSafeInteger(duration) || !Number.isSafeInteger(deadline)) {
+    throw new Error('Strategy epoch deadline must be a safe integer');
+  }
+  return deadline;
+}
+
 /** Run one recipe/tier. Calling this once per frozen tier produces comparable bounded cells. */
 export async function runStrategy(
   task: StrategyTask,
@@ -582,11 +595,11 @@ export async function runStrategy(
     const joined = joinSignal(input.kind === 'independent-judge' ? undefined : options.signal);
     const candidateWorkspace = input.workspace ?? (input.inputCandidates?.[0]?.workspace ?? task.workspace);
     const workspaceId = input.workspaceId ?? input.inputCandidates?.[0]?.workspaceId ?? 'task-workspace';
-    const epochNow = options.epochNow ?? Date.now;
+    const deadlineEpochMs = boundedEpochDeadline((options.epochNow ?? Date.now)(), timeoutAt, stageStart);
     const request: StageRequest = Object.freeze({
       assignmentId, stageId, attemptId, stageKey, attemptOrdinal, task, recipeHash: hash, kind: input.kind, purpose: input.purpose,
       route, effort: input.effort ?? input.route?.selectedEffort, tier, deadlineMonotonicMs: timeoutAt,
-      deadlineEpochMs: epochNow() + Math.max(0, timeoutAt - stageStart), monotonicNowMs: stageStart,
+      deadlineEpochMs, monotonicNowMs: stageStart,
       workspace: candidateWorkspace, workspaceId, workspacePolicy: input.workspacePolicy ?? 'task', signal: joined.controller.signal,
       hardTokenCap, tokenCapMode: capMode, inputCandidates: Object.freeze([...(input.inputCandidates ?? [])]), feedback: input.feedback,
       selectionPolicy: input.selectionPolicy, allowedExternalEffects: Object.freeze([] as const),
@@ -769,7 +782,7 @@ export async function runStrategy(
             attemptId: workspaceIdentity.attemptId, stageKey: `candidate-workspace-${index + 1}`, attemptOrdinal: 1,
             task, recipeHash: hash, kind: 'draft' as const,
             purpose: 'candidate-generation' as const, route: recipe.route, tier, deadlineMonotonicMs: workEndAt,
-            deadlineEpochMs: (options.epochNow ?? Date.now)() + Math.max(0, workEndAt - now()), monotonicNowMs: now(),
+            deadlineEpochMs: boundedEpochDeadline((options.epochNow ?? Date.now)(), workEndAt, now()), monotonicNowMs: now(),
             workspacePolicy: 'fresh-independent' as const, signal: allocation.controller.signal, hardTokenCap: null,
             tokenCapMode: 'advisory' as const, inputCandidates: [], allowedExternalEffects: [] as const };
           if (!executor.createCandidateWorkspace) {

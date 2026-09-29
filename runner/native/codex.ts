@@ -134,7 +134,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
         ...(this.spawnAdapter ? { spawnAdapter: this.spawnAdapter } : {}),
         ...(this.spawnAdapterFactory ? { spawnAdapterFactory: this.spawnAdapterFactory } : {}),
         ...(this.cleanupInvocation ? { cleanupInvocation: this.cleanupInvocation } : {}),
-        ...(this.expectedTaskBaselineCommit ? { expectedTaskBaselineCommit: this.expectedTaskBaselineCommit() } : {}),
+        ...(this.expectedTaskBaselineCommit ? { expectedTaskBaselineCommit: this.expectedTaskBaselineCommit } : {}),
       });
       this.reportProcessTree(identity, result.treeStopped);
       if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };
@@ -189,6 +189,8 @@ export class CodexExecDriver extends ObservedNativeDriver {
       processTreeStopped: result.treeStopped,
       boundaryTermination: lifecycle ? (lifecycle.terminated ? 'proven' : 'unproven') : 'not-applicable-or-unavailable',
       boundaryExport: lifecycle ? (lifecycle.finalized ? 'proven' : 'unproven') : 'not-applicable-or-unavailable',
+      ...(lifecycle?.failurePhase ? { failurePhase: lifecycle.failurePhase } : {}),
+      ...(lifecycle?.error ? { failureClass: safeLifecycleErrorClass(lifecycle.error.name) } : {}),
       assignmentDeadlineCrossed: this.assignmentDeadlineEpochMs === undefined
         ? null : Date.parse(result.endedAt) > this.assignmentDeadlineEpochMs,
       exportReceiptPresent: result.launch?.taskExport !== undefined,
@@ -211,6 +213,13 @@ export class CodexExecDriver extends ObservedNativeDriver {
     }
     return 'danger-full-access';
   }
+}
+
+function safeLifecycleErrorClass(name: string): string {
+  // Persist only a small class allowlist. Never copy lifecycle messages or
+  // arbitrary error names into campaign artifacts.
+  return ['Error', 'TypeError', 'RangeError', 'DeadlineExceeded', 'CleanupUnconfigured', 'CleanupUnproven'].includes(name)
+    ? name : 'Error';
 }
 
 function joinSignals(first?: AbortSignal, second?: AbortSignal): AbortSignal | undefined {

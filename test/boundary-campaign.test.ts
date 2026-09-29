@@ -639,3 +639,47 @@ it('private G1 factory leaves quota telemetry to the authenticated native defaul
   const child = spawnSync(process.execPath, ['--experimental-transform-types','--input-type=module','-e',script,factory,JSON.stringify(plan)], { encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024 });
   expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toEqual({ quotaOverride: false, prepare: 'function', cleanup: 'function' });
 }, 20000);
+
+it('records timer stop failure and memoized finalization without secret messages', async () => {
+  const { finalContainerLifecycle } = await import('../runner/boundary/codex-final-profile.ts');
+  const { privateLifecycleRecorder } = await import('../runner/boundary/lifecycle-evidence.ts');
+  const { EventEmitter } = await import('node:events');
+  const { readFileSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'cq-private-lifecycle-test-'));
+  const file = join(root, 'events.jsonl'); writeFileSync(file, '', { mode:0o600 });
+  try {
+    const child = Object.assign(new EventEmitter(), { exitCode:null, signalCode:null });
+    const error = Object.assign(new Error('PRIVATE_SYNTHETIC_CREDENTIAL'), { code:'EPERM' });
+    let stopCalls = 0; let exported = false;
+    let started!: () => void; const timerFired = new Promise<void>(r => { started = r; });
+    const record = privateLifecycleRecorder(file);
+    const life = finalContainerLifecycle({ child, budgetSeconds:0.01,
+      terminate:async()=>{stopCalls++; started(); throw error;}, exportTask:async()=>{exported=true;},cleanup:async()=>{},closeControl:()=>{},record });
+    await timerFired;
+    await expect(life.terminate()).rejects.toBe(error);
+    await expect(life.finalize()).rejects.toBe(error);
+    const raw=readFileSync(file,'utf8');const rows=raw.trim().split('\n').map(line=>JSON.parse(line));
+    expect(raw).not.toContain('PRIVATE_SYNTHETIC_CREDENTIAL');
+    expect(rows.map(r=>r.phase).filter(phase=>phase!=='terminate-reused')).toEqual(['trigger-timer','terminate-start','terminate-error','finalize-start','finalize-error','control-close']);
+    expect(rows.filter(r=>r.phase==='terminate-reused')).toHaveLength(2);
+    expect(rows.find(r=>r.phase==='terminate-error')).toMatchObject({errorClass:'Error',code:'EPERM'});
+    expect(stopCalls).toBe(1);expect(exported).toBe(false);
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
+
+it('refuses redirected private phase evidence and retains only Docker operation metadata', async () => {
+  const { privateLifecycleRecorder } = await import('../runner/boundary/lifecycle-evidence.ts');
+  const { readFileSync } = await import('node:fs');
+  const root=mkdtempSync(join(tmpdir(),'cq-private-phase-test-'));
+  try {
+    const file=join(root,'events');writeFileSync(file,'',{mode:0o600});
+    const alias=join(root,'alias');symlinkSync(file,alias);
+    expect(()=>privateLifecycleRecorder(alias)('terminate-start')).toThrow();
+    const record=privateLifecycleRecorder(file);
+    record('session-stop-error',new Error('bounded Docker operation failed (inspect, 1)'));
+    record('finalize-error',new Error('PRIVATE_SYNTHETIC_OUTPUT'));
+    const raw=readFileSync(file,'utf8');const rows=raw.trim().split('\n').map(line=>JSON.parse(line));
+    expect(rows[0]).toMatchObject({phase:'session-stop-error',operation:'inspect',exitCode:1});
+    expect(rows[1]).not.toHaveProperty('operation');expect(raw).not.toContain('PRIVATE_SYNTHETIC_OUTPUT');
+  } finally {rmSync(root,{recursive:true,force:true});}
+});

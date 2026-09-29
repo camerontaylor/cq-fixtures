@@ -1,3 +1,5 @@
+import { privateLifecycleRecorder } from './lifecycle-evidence.ts';
+import type { LifecycleRecord } from './lifecycle-evidence.ts';
 import { FINAL_BROKER_RUNTIME_IDENTITY } from './broker-toolchain.ts';
 import { publishStoppedTask, validatePublicationPath } from './task-staging.ts';
 /** Boundary implementation only. Importing/preparing this module never calls a model. */
@@ -103,7 +105,7 @@ child.on('error',()=>process.exit(125));child.on('exit',(code)=>process.exit(cod
 export function createFinalCodexSpawnAdapter(input: {
   specification: ContainerBoundarySpec; staging: TaskStageReceipt;
   broker: { containerId: string; imageId: string; configPath: string; publicAssetVolume?: string; runtimeRunId?: string };
-  hostTaskRoot: string; exportRoot: string; budgetSeconds: number;
+  hostTaskRoot: string; exportRoot: string; budgetSeconds: number; lifecycleEvidencePath?: string;
   stage: FinalProfileAdmission['stage'];
   /** REQUIRED authoritative parent service: independently preregister source/assignment,
    * boundary and invocation identities; consume an exclusive wx replay ledger before
@@ -144,11 +146,15 @@ export function createFinalCodexSpawnAdapter(input: {
         catch (error) { await prepared.dispose(); throw error; }
       } });
     const session = containerTaskSession(staging, launched.containerId);
+    const record = input.lifecycleEvidencePath ? privateLifecycleRecorder(input.lifecycleEvidencePath) : undefined;
+    const note: LifecycleRecord = (phase, error) => { try { record?.(phase, error); } catch { /* diagnostic failure never overrides lifecycle proof */ } };
     const lifecycle = finalContainerLifecycle({ child: launched.child, budgetSeconds: budget,
       terminate: async () => {
         let first: unknown; let failed = false;
-        try { await session.terminate(); } catch (error) { first = error; failed = true; }
-        try { await launched.dispose(); } catch (error) { if (!failed) { first = error; failed = true; } }
+        note('session-stop-start');
+        try { await session.terminate(); note('session-stop-done'); } catch (error) { note('session-stop-error', error); first = error; failed = true; }
+        note('dispose-start');
+        try { await launched.dispose(); note('dispose-done'); } catch (error) { note('dispose-error', error); if (!failed) { first = error; failed = true; } }
         if (failed) throw first;
       },
       exportTask: async () => {
@@ -156,9 +162,11 @@ export function createFinalCodexSpawnAdapter(input: {
         const fresh = mkdtempSync(join(dirname(hostTaskRoot), '.cq-stopped-export-'));
         chmodSync(fresh, 0o700);
         const result = await session.finalize(fresh);
+        note('publication-start');
         const publication = publishStoppedTask(staging, fresh, hostTaskRoot, { ...result, namespaceAbsent: true });
+        note('publication-done');
         return { ...result, publication };
-      }, cleanup: () => session.cleanup(), closeControl: session.closeControl,
+      }, cleanup: () => session.cleanup(), closeControl: session.closeControl, record: note,
     });
     return { child: launched.child, boundaryIdentity: launched.boundaryIdentity, launchIdentity: launched.launchIdentity, admissionId: receipt.admissionId,
       environmentNames: ['HOME', 'CODEX_HOME', 'PATH', 'TMPDIR', 'LANG', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL'],
@@ -174,29 +182,32 @@ export function createFinalCodexSpawnAdapter(input: {
 export function finalContainerLifecycle<T>(input: {
   child: { once: (event: 'close' | 'error', listener: () => void) => unknown; exitCode: number | null; signalCode: NodeJS.Signals | null };
   budgetSeconds: number; terminate: () => Promise<void>; exportTask: () => Promise<T>;
-  cleanup: () => Promise<void>; closeControl: () => void;
+  cleanup: () => Promise<void>; closeControl: () => void; record?: LifecycleRecord;
 }) {
+  const note: LifecycleRecord = (phase, error) => { try { input.record?.(phase, error); } catch { /* preserve original lifecycle outcome */ } };
   let stop: Promise<void> | undefined, final: Promise<T> | undefined;
   let firstTerminationError: unknown; let terminationFailed = false;
-  const terminate = () => stop ??= (async () => {
+  const terminate = () => { if (stop) note('terminate-reused'); return stop ??= (async () => {
+    note('terminate-start');
     clearTimeout(timer);
-    try { await input.terminate(); }
-    catch (error) { firstTerminationError = error; terminationFailed = true; throw firstTerminationError; }
-  })();
+    try { await input.terminate(); note('terminate-done'); }
+    catch (error) { note('terminate-error', error); firstTerminationError = error; terminationFailed = true; throw firstTerminationError; }
+  })(); };
   const stopOnClose = () => { void terminate().catch(() => { /* retained original failure; awaited terminate/finalize rethrows */ }); };
-  const timer = setTimeout(stopOnClose, input.budgetSeconds * 1000);
-  input.child.once('close', stopOnClose); input.child.once('error', stopOnClose);
+  const timer = setTimeout(() => { note('trigger-timer'); stopOnClose(); }, input.budgetSeconds * 1000);
+  input.child.once('close', () => { note('trigger-close'); stopOnClose(); }); input.child.once('error', () => { note('trigger-error'); stopOnClose(); });
   // Listener installation alone misses children that exited before receipt creation.
   if (input.child.exitCode !== null || input.child.signalCode !== null) stopOnClose();
   return {
     terminate,
     finalize: () => final ??= (async () => {
       let failed = false;
+      note('finalize-start');
       try {
         await terminate(); if (terminationFailed) throw firstTerminationError;
-        const result = await input.exportTask(); await input.cleanup(); return result;
-      } catch (error) { failed = true; throw error; }
-      finally { try { input.closeControl(); } catch (error) { if (!failed) throw error; } }
+        note('export-start'); const result = await input.exportTask(); note('export-done'); note('cleanup-start'); await input.cleanup(); note('cleanup-done'); return result;
+      } catch (error) { note('finalize-error', error); failed = true; throw error; }
+      finally { note('control-close'); try { input.closeControl(); } catch (error) { if (!failed) throw error; } }
     })(),
   };
 }

@@ -315,10 +315,10 @@ export function analyzeFixedSample(
 ): AnalysisResult {
   validateRegistration(reg);
   const hash = designHash(reg);
-  const evidencePasses = validation === null ? false : validateEvidence(validation);
-  const validated = validation !== null && validation.designHash === validationDesignHash(reg)
-    && validation.perContrastCoverage.length === reg.contrasts.length
-    && reg.contrasts.every(c => validation.perContrastCoverage.some(v => v.contrastId === c.id)) && evidencePasses;
+  if (validation !== null) validateEvidence(validation);
+  // Caller supplied summaries have no frozen archive provenance. They may be
+  // inspected, but cannot activate an inferential claim.
+  const validated = false;
   const registeredStrategies = new Set(reg.contrasts.flatMap(c => [c.strategyId, c.baselineId]));
   for (const row of rows) {
     if (row.cohortId !== reg.cohortId || row.track !== reg.track) throw new Error('observations cannot pool cohorts or tracks');

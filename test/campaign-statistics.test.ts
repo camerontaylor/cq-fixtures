@@ -48,8 +48,8 @@ describe('fixed-sample campaign inference', () => {
     expect(out.contrasts[0]!.tasks).toBe(48);
     expect(out.contrasts[0]!.pairedTasks).toBe(48);
     expect(out.contrasts[0]!.estimate).toBeGreaterThan(0);
-    expect(out.maxStatisticAdjustment).toBe('applied');
-    expect(out.contrasts[0]!.familywise95).not.toBeNull();
+    expect(out.maxStatisticAdjustment).toBe('withheld');
+    expect(out.contrasts[0]!.familywise95).toBeNull();
   });
 
   it('does not infer from fewer than 20 clusters or degenerate cluster variance', () => {
@@ -91,7 +91,7 @@ describe('fixed-sample campaign inference', () => {
     for (const a of reg.assignments) if (a.substrateId === 'sub-0') a.weight = 1000;
     for (const row of rows) if (row.substrateId === 'sub-0') row.weight = 1000;
     const out = analyzeFixedSample(reg, rows, passingValidation(reg));
-    expect(out.maxStatisticAdjustment).toBe('applied');
+    expect(out.maxStatisticAdjustment).toBe('withheld');
     expect(out.contrasts[0]!.bootstrapResamples).toBe(257);
     const [lo, hi] = out.contrasts[0]!.marginal95!;
     expect(hi - lo).toBeGreaterThanOrEqual(2 * Math.abs(out.contrasts[0]!.estimate!));
@@ -118,11 +118,12 @@ describe('fixed-sample campaign inference', () => {
   it('retains launched exhaustion as failure while keeping operational absence missing', () => {
     const { reg, rows } = fixture();
     const exhausted = rows.find(r => r.strategyId === 'candidate')!;
-    exhausted.success = false; exhausted.cause = 'budget-exhausted';
+    exhausted.success = false; exhausted.launchedBudgetFailure = true;
     const missing = rows.find(r => r.strategyId === 'baseline')!;
     missing.success = null; missing.status = 'operational-missing';
     const out = analyzeFixedSample(reg, rows, passingValidation(reg)).contrasts[0]!;
-    expect(out.launchedBudgetFailures).toBe(1);
+    expect(out.launchedBudgetFailures).toBeNull();
+    expect(out.knownLaunchedBudgetFailures).toBe(1);
     expect(out.operationalMissing).toBe(1);
     expect(out.status).toBe('descriptive');
   });
@@ -146,8 +147,7 @@ describe('fixed-sample campaign inference', () => {
       expect(evidence.jointCoverageLower95).toBeGreaterThanOrEqual(0.93);
       expect(evidence.perContrastCoverage).toHaveLength(3);
       expect(evidence.perContrastCoverage.every(c => c.datasets === 2000)).toBe(true);
-      expect(evidence.familywiseErrorUpper95).toBeLessThanOrEqual(0.07);
-      expect(evidence.gatesPassed).toBe(true);
+      expect(evidence.gatesPassed).toBe(false);
       expect(evidence.bootstrapOnly.passesCoverageGates).toBe(false);
     }
   }, 180_000);
@@ -207,7 +207,8 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
     const adapted = selected.flatMap(r => r.strategyId === 'baseline' ? [r] : [1, 2, 3].map(n => ({ ...r, strategyId: `candidate${n}` })));
     const extension = { frozen: true as const, recipe: PRECISION_RECIPE, recipeHash: precisionRecipeHash, calibrationSha256: 'a'.repeat(64), model: CORE_POINTS[0]!, calibrationArtifact: 'calibration/immutable-model.json', baseDesignHash: designHash(reg) } as const;
     const out = analyzePrecisionSample(reg, adapted, extension, validation());
-    expect(out.precision.applied).toBe(true);
+    expect(out.precision.applied).toBe(false);
+    expect(out.precision.reasons).toContain('authenticated empirical role applicability is absent');
     expect(out.maxStatisticAdjustment).toBe('withheld');
     const missing = adapted[0]!;
     missing.status = 'operational-missing'; missing.success = null;
@@ -235,7 +236,7 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
     const extension = { frozen: true as const, recipe: PRECISION_RECIPE, recipeHash: precisionRecipeHash,
       calibrationSha256: 'a'.repeat(64), model, calibrationArtifact: 'visible-calibration', baseDesignHash: designHash(reg) } as const;
     expect(analyzePrecisionSample(reg, rows, extension, validation()).precision.applied).toBe(false);
-    expect(analyzePrecisionSample(reg, rows, extension, validation(), evidence).precision.applied).toBe(true);
+    expect(analyzePrecisionSample(reg, rows, extension, validation(), evidence).precision.applied).toBe(false);
     evidence.cells[0]!.coverage[0]!.jointCovered = 1800;
     expect(precisionForecastPasses(evidence, 'native')).toBe(false);
   });
@@ -366,6 +367,11 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
         expect(c.simultaneousLower95).toBeGreaterThanOrEqual(stratum.coverageLower);
       }
     }
+    expect(() => precisionMonteCarloReport({ ...validation(), seed: 1 })).toThrow(/unpinned/);
+    expect(() => precisionMonteCarloReport({ ...validation(), track: 'diagnostic' })).toThrow(/unpinned/);
+    expect(() => precisionMonteCarloReport({ ...validation(), core: validation().core.slice(1) })).toThrow(/unpinned/);
+    const altered = validation(); altered.core[0]!.jointCovered--;
+    expect(() => precisionMonteCarloReport(altered)).toThrow(/unpinned/);
   });
 
   it('rejects duplicate and nonpositive registration before adapter roster maps', () => {
@@ -390,11 +396,15 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
     }
     outcomes[0]!.execution!.terminalCause = 'budget-exhausted';
     expect(analyze().launchedBudgetFailures).toBe(1);
+    const successfulBudgetRows = adaptTaskOutcomes(reg, join, outcomes).observations;
+    successfulBudgetRows[0]!.success = true;
+    expect(analyzeFixedSample(reg, successfulBudgetRows).contrasts[0]!.knownLaunchedBudgetFailures).toBe(1);
     expect(adaptTaskOutcomes(reg, join, outcomes).audit[0]!.execution).toEqual(outcomes[0]!.execution);
     expect(adaptTaskOutcomes(reg, join, outcomes).observations.every(o => o.success === false)).toBe(true);
     outcomes[1]!.execution!.terminalCause = 'unknown';
     expect(analyze().launchedBudgetFailures).toBeNull();
     expect(analyze().knownLaunchedBudgetFailures).toBe(1);
+    expect(analyzeFixedSample(reg, adaptTaskOutcomes(reg, join, outcomes).observations.slice(1)).contrasts[0]!.launchedBudgetFailures).toBeNull();
     outcomes[1]!.execution = { launched: false, terminalCause: 'prelaunch-failure', sourceInvocationIds: [] };
     expect(analyze().launchedBudgetFailures).toBe(1);
     outcomes[1]!.execution = { launched: null, terminalCause: 'complete', sourceInvocationIds: [] };

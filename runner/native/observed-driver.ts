@@ -108,6 +108,19 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
     }
   }
 
+  /** Record an identity-bound, trusted proof that dispatch never created a process. */
+  protected reportProcessNotStarted(identity: InvocationIdentity, source: string): void {
+    const trustedSources = new Set([
+      'visible-g1-glm-driver:spawn-command-guard-before-child_process.spawn',
+      'node:child_process.ChildProcess:error-before-spawn-event',
+    ]);
+    if (!trustedSources.has(source)) throw new Error('native not-started evidence source is not trusted');
+    const lifecycle = this.lifecycle.get(identity.invocationId);
+    if (!lifecycle || !sameIdentity(lifecycle.identity, identity)) throw new Error('native lifecycle identity mismatch');
+    lifecycle.processStatus = 'not-started';
+    lifecycle.processProofSource = `trusted-launch-evidence:${source}`;
+  }
+
   cancelInvocationAndWait = this.nativeSupervisor.cancelInvocationAndWait.bind(this.nativeSupervisor);
 
   getObservation(invocationId: string): NativeObservation | undefined {
@@ -185,7 +198,10 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
 
   protected failObservation(observation: NativeObservation, error: unknown): void {
     const actual = error instanceof Error ? error : new Error(String(error));
-    observation.terminal.cause = 'transport-exception';
+    // A timeout/cancellation established by the supervisor remains the
+    // terminal cause if cleanup subsequently throws. Keep the cleanup failure
+    // alongside it instead of rewriting the operational outcome.
+    if (observation.terminal.cause === null) observation.terminal.cause = 'transport-exception';
     observation.terminal.transportException = { name: actual.name, message: actual.message };
     observation.timing.endedAt = new Date().toISOString();
     observation.terminal.observedAt = observation.timing.endedAt;

@@ -121,12 +121,15 @@ function stageObservation(observation: NativeStrategyObservation): StageObservat
   const durations = Object.values(observation.timing.stages).filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
   const serviceTimeMs = durations.length ? durations.reduce((sum, value) => sum + value, 0) : null;
   return {
+    invocationId: observation.identity.invocationId,
     usage: observationUsage(observation),
     // S1 does not claim dispatch reachability in its observation schema. The
     // operation result remains authoritative where it can report this.
     launched: null,
     serviceTimeMs,
     baselineCommit: observation.capture.baselineCommit,
+    terminalCause: observation.terminal.cause,
+    transportException: observation.terminal.transportException,
     inclusion: {
       input: observation.usage.inclusion.input,
       output: observation.usage.inclusion.output,
@@ -196,6 +199,10 @@ export function createNativeStrategyExecutor(
         || observation.identity.assignmentId !== request.assignmentId
         || observation.identity.stageId !== request.stageId || observation.identity.attemptId !== request.attemptId) return null;
       return stageObservation(observation);
+    },
+
+    getInvocationId(request) {
+      return identityByAttempt.get(request.attemptId)?.invocationId ?? null;
     },
 
     createCandidateWorkspace(request, index) {

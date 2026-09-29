@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ArtifactStore } from '../../cq-settings-integration/runner/artifacts/index.ts';
 import { judgeManifestHash } from '../../cq-settings-integration/runner/experiment.ts';
-import { runVisibleReviewLoopScreening } from '../runner/strategies/visible-screening.ts';
+import { captureGitCandidatePatch, findS1DependencyRoot, resolveS1DependencyRoot, runVisibleReviewLoopScreening, visibleRunIdentity } from '../runner/strategies/visible-screening.ts';
 import { NativeSupervisorControl } from '../../cq-settings-integration/runner/native/process.ts';
 import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
 import {
@@ -91,7 +91,64 @@ class FakeExecutor implements StageExecutor {
 }
 
 describe('bounded campaign strategy engine', () => {
-  it('runs same-model review and repair into a real S1 TaskOutcome, artifact, row and table', async () => {
+  it('discovers an S1 dependency root from source or a standalone nested checkout', () => {
+    const root = mkdtempSync(join(tmpdir(), 's1-root-discovery-'));
+    const dependencyRoot = join(root, 'pinned-integration');
+    const nested = join(root, 'standalone', 'runner', 'strategies');
+    mkdirSync(join(dependencyRoot, 'campaigns/cq-settings/corpus'), { recursive: true });
+    mkdirSync(join(dependencyRoot, 'runner/workflow-corpus'), { recursive: true });
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(dependencyRoot, 'campaigns/cq-settings/corpus/review-loop-task.ts'), 'pinned task');
+    writeFileSync(join(dependencyRoot, 'runner/workflow-corpus/review-loop-suite.ts'), 'pinned suite');
+    try {
+      expect(findS1DependencyRoot(nested)).toBe(dependencyRoot);
+      expect(findS1DependencyRoot(join(root, 'isolated-checkout'))).toBe(dependencyRoot);
+      expect(resolveS1DependencyRoot(dependencyRoot)).toBe(dependencyRoot);
+      expect(() => resolveS1DependencyRoot(join(root, 'missing-integration'))).toThrow(/S1 integration root unavailable/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('captures committed edits and untracked additions without changing the worker index', () => {
+    const root = mkdtempSync(join(tmpdir(), 'candidate-full-capture-'));
+    const baselineRepo = join(root, 'baseline');
+    const source = join(root, 'source');
+    mkdirSync(baselineRepo);
+    mkdirSync(source);
+    const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+    try {
+      git(baselineRepo, ['init', '-q']);
+      writeFileSync(join(baselineRepo, 'tracked.txt'), 'seed\n');
+      git(baselineRepo, ['add', 'tracked.txt']);
+      git(baselineRepo, ['-c', 'user.name=Capture Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'seed']);
+      const baseline = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: baselineRepo, encoding: 'utf8' }).trim();
+      const baselineTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: baselineRepo, encoding: 'utf8' }).trim();
+      git(source, ['init', '-q']);
+      writeFileSync(join(source, 'tracked.txt'), 'seed\n');
+      git(source, ['add', 'tracked.txt']);
+      git(source, ['-c', 'user.name=Capture Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'worker seed']);
+      const workerSeed = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      writeFileSync(join(source, 'tracked.txt'), 'committed edit\n');
+      git(source, ['add', 'tracked.txt']);
+      git(source, ['-c', 'user.name=Capture Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'candidate edit']);
+      writeFileSync(join(source, 'new-file.txt'), 'untracked addition\n');
+      const indexBefore = execFileSync('git', ['status', '--porcelain'], { cwd: source, encoding: 'utf8' });
+      const patch = captureGitCandidatePatch(source, baseline, baselineTree, baselineRepo);
+      expect(execFileSync('git', ['status', '--porcelain'], { cwd: source, encoding: 'utf8' })).toBe(indexBefore);
+      git(source, ['reset', '--hard', '-q', workerSeed]);
+      git(source, ['clean', '-fdq']);
+      execFileSync('git', ['apply', '--binary', '-'], { cwd: source, input: patch, stdio: ['pipe', 'ignore', 'pipe'] });
+      expect(readFileSync(join(source, 'tracked.txt'), 'utf8')).toBe('committed edit\n');
+      expect(readFileSync(join(source, 'new-file.txt'), 'utf8')).toBe('untracked addition\n');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it('scopes run identities by frozen assignment and run namespace', () => {
+    const first = visibleRunIdentity('experiment-a', 'assignment-a', 'repeat-a');
+    expect(visibleRunIdentity('experiment-a', 'assignment-b', 'repeat-a')).not.toBe(first);
+    expect(visibleRunIdentity('experiment-a', 'assignment-a', 'repeat-b')).not.toBe(first);
+  });
+
+  it('keeps local S1 judge rows separate from same-model pipeline evidence', async () => {
     const root = mkdtempSync(join(tmpdir(), 'visible-strategy-screen-'));
     let active: { invocationId: string; assignmentId: string; stageId: string; attemptId: string } | undefined;
     const observations = new Map<string, unknown>();
@@ -155,11 +212,11 @@ describe('bounded campaign strategy engine', () => {
         route: { id: 'codex-sol-simulated', transport: 'codex-exec', tokenEnforcement: 'unsupported', supportedSettings: { effort: ['high'] } },
         model: 'gpt-6-sol', provider: 'codex', effort: 'high', profileId: 'test-codex-sol', settingsId: 'effort-high',
         evaluationBoundaryHash: 'a'.repeat(64), toolsAssistanceHash: 'b'.repeat(64), tierId: 'visible-small',
-        assignmentId: 'visible-review-assignment-01', outputRoot: join(root, 'run'),
+        assignmentId: 'visible-review-assignment-01', runNamespace: 'review-repeat-01', outputRoot: join(root, 'run'),
       });
       expect(result.status, JSON.stringify({ operationalStatus: result.strategy.operationalStatus,
-        recipeCompleted: result.strategy.recipeCompleted, correctness: result.taskOutcome?.candidateCorrectness,
-        format: result.taskOutcome?.formatConformance, reasons: result.strategy.incompleteReasons,
+        recipeCompleted: result.strategy.recipeCompleted, correctness: result.pipelineEvidence.candidateCorrectness,
+        format: result.pipelineEvidence.formatCompliance, reasons: result.strategy.incompleteReasons,
         stages: result.strategy.stages.map(({ kind, status, detail, operationalError }) => ({ kind, status, detail, operationalError })) })).toBe('complete');
       expect(result.strategy.recipeKind).toBe('same-model-verify-repair');
       expect(result.strategy.stages.map((stage) => stage.kind)).toEqual(['draft', 'verify', 'repair', 'verify', 'independent-judge']);
@@ -167,12 +224,25 @@ describe('bounded campaign strategy engine', () => {
       expect(result.strategy.stages[0]?.baselineCommit).toBe(result.strategy.stages[2]?.baselineCommit);
       expect(result.strategy.stages.filter((stage) => stage.kind !== 'independent-judge')
         .every((stage) => stage.tokenCapMode === 'not-configured')).toBe(true);
-      expect(result.strategy.accounting.usage.tokenTotal).toBe(24);
-      expect(result.taskOutcome?.candidateCorrectness).toBe(true);
-      expect(result.taskOutcome?.formatConformance).toBe(true);
-      expect(result.rows).toHaveLength(1);
-      expect(result.tables.length).toBeGreaterThan(0);
-      const artifact = result.taskOutcome?.judgements[0]?.artifact;
+      expect(result.strategy.accounting.usage.tokenTotal).toBeNull();
+      expect(result.strategy.accounting.knownUsageSubtotals.tokenTotal).toBe(24);
+      expect(result.taskOutcome).toBeNull();
+      expect(result.pipelineEvidence.candidateCorrectness).toBe(result.strategy.candidateCorrectness);
+      expect(result.pipelineEvidence.formatCompliance).toBeNull();
+      expect(result.pipelineEvidence.assignedStrategySuccess).toBe(result.strategy.assignedStrategySuccess);
+      expect(result.pipelineEvidence.execution.sourceInvocationIds).toHaveLength(4);
+      expect(result.pipelineEvidence.stages.every((stage) => stage.invocationId?.startsWith('iv-'))).toBe(true);
+      expect(result.pipelineEvidence.stages[0]?.usage.tokenTotal.value).toBe(6);
+      expect(result.rows).toEqual([]);
+      expect(result.tables).toEqual([]);
+      expect(result.localJudge.pipelineCampaignEvidence).toBe(false);
+      expect(result.localJudge.modelUsage).toBe('not-a-model-observation');
+      expect(result.localJudge.rows).toHaveLength(1);
+      expect(result.localJudge.tables.length).toBeGreaterThan(0);
+      expect(result.localJudge.outcome?.formatConformance).toBe(true);
+      expect(result.runIdentity).toMatch(/^[a-f0-9]{64}$/);
+      expect(result.reportPath).toContain(result.runIdentity);
+      const artifact = result.localJudge.outcome?.judgements[0]?.artifact;
       expect(artifact?.sha256).toMatch(/^[a-f0-9]{64}$/);
       expect(readFileSync(join(root, 'run', 'artifacts', artifact!.path))).toBeTruthy();
       expect(result.limits.totalWallClockEnforced).toBe(false);

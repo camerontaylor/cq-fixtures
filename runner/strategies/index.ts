@@ -88,6 +88,8 @@ export interface StrategyTask {
     sourcePin?: string;
     corpusPin?: string;
     judgePin?: string;
+    /** Frozen repeat/run namespace so retries never reuse another run's stage IDs. */
+    runNamespace?: string;
   }>;
   requireFormatCompliance?: boolean;
 }
@@ -253,6 +255,8 @@ export interface StageExecutor {
   stopAndWait(request: StageRequest, execution: Promise<ExecutorResult>, cause: unknown): Promise<{ stopped: boolean; executionSettled: boolean }>;
   /** Authoritative S1 observation retrieval after return, throw, or timeout. */
   getObservation(request: StageRequest): Promise<StageObservation | null> | StageObservation | null;
+  /** Invocation identity survives unavailable or malformed post-run observations. */
+  getInvocationId?(request: StageRequest): string | null;
   /** Allocate a pristine independent substrate for each candidate draft. */
   createCandidateWorkspace?(request: Omit<StageRequest, 'workspace' | 'workspaceId'>, index: number): Promise<{ id: string; handle: unknown }> | { id: string; handle: unknown };
   /** Called after both return and throw so edits survive transport failures. */
@@ -263,11 +267,14 @@ export interface StageExecutor {
 }
 
 export interface StageObservation {
+  invocationId?: string;
   usage: UsageObservations;
   launched: boolean | null;
   serviceTimeMs: number | null;
   /** Native baseline pin for captured patches, when the S1 workspace supplies it. */
   baselineCommit?: string | null;
+  terminalCause?: string | null;
+  transportException?: { name: string; message: string } | null;
   inclusion?: Readonly<Record<'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'reasoning' | 'tokenTotal', string | null>>;
 }
 
@@ -282,6 +289,8 @@ export interface StrategyEngineOptions {
 }
 
 export interface StageRecord extends InvocationIdentity {
+  /** Native invocation identity is absent for local, non-model stages. */
+  invocationId: string | null;
   kind: StageKind;
   purpose: StagePurpose;
   routeId: string | null;
@@ -299,6 +308,8 @@ export interface StageRecord extends InvocationIdentity {
   operationalError: { name: string; message: string } | null;
   detail: string | null;
   quarantined: boolean;
+  terminalCause: string | null;
+  transportException: { name: string; message: string } | null;
 }
 
 export interface StrategyResult {
@@ -664,6 +675,7 @@ export async function runStrategy(
     if (error) incompleteReasons.push(`stage-threw:${stageId}:${error instanceof Error ? error.message : String(error)}`);
     const record: StageRecord = Object.freeze({
       assignmentId, stageId, attemptId, kind: input.kind, purpose: input.purpose, routeId: route?.id ?? null,
+      invocationId: observation?.invocationId ?? executor.getInvocationId?.(request) ?? null,
       status: normalizedResult.status,
       launched: normalizedResult.launched ?? (route === null ? false : normalizedResult.status === 'completed' ? true : null),
       startedAtMs: stageStart, endedAtMs: stageEnd,
@@ -674,6 +686,8 @@ export async function runStrategy(
       tokenCapMode: capMode, operationalError: normalizedResult.operationalError ?? null,
       detail: normalizedResult.judgement?.detail ?? null,
       quarantined,
+      terminalCause: observation?.terminalCause ?? null,
+      transportException: observation?.transportException ?? null,
     });
     stages.push(record);
     if (tokenCounter.availability === 'observed' && tokenCounter.value !== null) usageTokensKnown += tokenCounter.value;

@@ -1006,7 +1006,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         : undefined;
       // A completed invocation can legitimately leave the pristine workspace correct.
       // An empty diff after a throw supplies no recoverable candidate evidence.
-      const fixerPatch = capturedPatch === '' && (thrown !== undefined || worker === undefined)
+      const fixerPatch = capturedPatch === '' && (thrown !== undefined || worker?.stopReason !== 'complete')
         ? undefined : capturedPatch;
       if (thrown instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(thrown.message) && isFixerCase(c)) {
         if (fixerPatch === undefined) {
@@ -1204,7 +1204,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // Keep the invocation as an explicit missing outcome with nullable
         // correctness; the observation and TaskOutcome remain immutable evidence.
         outcome = zeroOutcome(probeCount);
-        const cause = 'fixer candidate patch unavailable; no independent patch judgement was produced';
+        const captureCause = 'fixer candidate patch unavailable; no independent patch judgement was produced';
+        const cause = thrown === undefined ? captureCause
+          : `driver threw: ${boundDriverCause(String(thrown))}; ${captureCause}`;
         journalResult = thrown === undefined
           ? { status: 'indeterminate', detail: cause }
           : { status: 'failed', error: boundDriverCause(String(thrown)) };
@@ -1229,7 +1231,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // handled earlier and aborts the run entirely.)
         emitRow = false;
         absences.push({ case: c.id, role: suite.role, cause: thrownCause });
-      } else if (worker?.stopReason === 'budget' && !isFixerCase(c) && worker.structuredOutput === undefined) {
+      } else if (worker?.stopReason === 'budget' && (!isFixerCase(c) || fixerPatch === undefined) && worker.structuredOutput === undefined) {
         outcome = zeroOutcome(probeCount); // honest budget-exhausted: no fabricated credit
         candidateCorrectness = false;
         assignedStrategySuccess = false;
@@ -1241,7 +1243,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // marks it incomplete so coverage parity sees the stop (the cell
         // counts it in budgetStops, not in coveredCases).
         stopCause = 'budget';
-      } else if (worker?.stopReason === 'error' && !isFixerCase(c)) {
+      } else if (worker?.stopReason === 'error' && (!isFixerCase(c) || fixerPatch === undefined)) {
         // Post-v1.0.0 toolkit (cq-toolkit #206/#210/#212, pinned 1.0.1)
         // carries the driver's own cause in `WorkerResult.error` (bounded and
         // secret-redacted by the toolkit) with a class token as its second

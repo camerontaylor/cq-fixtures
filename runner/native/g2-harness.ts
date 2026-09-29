@@ -5,6 +5,8 @@ export type G2ToolKind = 'read' | 'search' | 'shell' | 'http' | 'config';
 export type G2ToolOutcome = 'denied' | 'success' | 'unavailable' | 'unknown';
 export type G2DenialKind = 'filesystem-denied' | 'not-found' | 'broker-403' | 'namespace-denied' | 'guardian-not-visible' | 'config-inventory-verified';
 export type G2TerminalState = 'exit' | 'timeout' | 'cancelled' | 'spawn-error';
+export type G2ToolErrorCode = 'EACCES' | 'EPERM' | 'ENOENT';
+export type G2ControlProof = { kind: 'guardian-namespace-absent' | 'native-inventory-verified' | 'namespace-egress-denied'; verified: true };
 
 /** Private stdout/stderr buffers stay attached to the raw receipt, never normalized into public output. */
 export interface NativeToolTraceEvent {
@@ -15,7 +17,20 @@ export interface NativeToolTraceEvent {
   targetOrCommand: string;
   correlationId: string;
   at: string;
-  outcome?: { disposition: G2ToolOutcome; denialKind?: G2DenialKind };
+  /** Raw Codex command_execution status is private protocol evidence, not model prose. */
+  toolStatus?: string;
+  /** Exact item.exit_code including null; null never becomes zero. */
+  toolExitCode?: number | null;
+  /** Codex combines command streams in aggregated_output; retain these bytes privately as stdout slot for boundary scanning. */
+  outputSource?: 'aggregated_output';
+  outcome?: {
+    disposition: G2ToolOutcome;
+    denialKind?: G2DenialKind;
+    exitCode?: number;
+    httpStatus?: number;
+    toolErrorCode?: G2ToolErrorCode;
+    controlProof?: G2ControlProof;
+  };
   stdout?: Uint8Array;
   stderr?: Uint8Array;
 }
@@ -24,11 +39,50 @@ export interface NativeExecutionReceipt {
   identity: SupervisedInvocationIdentity;
   launch: { boundaryIdentity: string; launchIdentity: string; admissionId: string; profileInvocationIdentity?: string };
   terminal: { state: G2TerminalState; code: number | null; signal: string | null };
+  /** Completeness of correlated tool start/result records, independent of invocation terminal/teardown. */
+  toolPhase: { state: 'complete' | 'unavailable'; itemCount: number };
   toolTrace: readonly NativeToolTraceEvent[];
   teardown: {
     processTree: 'stopped-and-reaped' | 'unproven';
     boundary: 'terminated' | 'unproven';
     export: { inventoryHash: string; head: string } | null;
+  };
+}
+
+/** Structural mirror of runner/boundary/g2-harness.ts G2CanonicalNativeReceipt. */
+export interface BoundaryCanonicalNativeReceipt {
+  identity: SupervisedInvocationIdentity;
+  launch: { boundaryIdentity: string; launchIdentity: string; admissionId: string };
+  terminal: { state: G2TerminalState };
+  toolTrace: Array<{
+    eventId: string; invocationId: string; phase: 'start' | 'result'; kind: G2ToolKind;
+    targetOrCommand: string; correlationId: string; stdout?: Uint8Array; stderr?: Uint8Array;
+    outcome?: NonNullable<NativeToolTraceEvent['outcome']>;
+  }>;
+  teardown?: {
+    processTree: 'stopped-and-reaped'; boundary: 'terminated';
+    export?: { inventoryHash: string; head: string };
+  };
+}
+
+/** Copy the private native receipt into the exact boundary canonical field shape. */
+export function toBoundaryCanonicalNativeReceipt(receipt: NativeExecutionReceipt): BoundaryCanonicalNativeReceipt {
+  const teardown = receipt.teardown.processTree === 'stopped-and-reaped' && receipt.teardown.boundary === 'terminated'
+    ? { processTree: 'stopped-and-reaped' as const, boundary: 'terminated' as const,
+      ...(receipt.teardown.export ? { export: { ...receipt.teardown.export } } : {}) }
+    : undefined;
+  return {
+    identity: { ...receipt.identity },
+    launch: { boundaryIdentity: receipt.launch.boundaryIdentity, launchIdentity: receipt.launch.launchIdentity, admissionId: receipt.launch.admissionId },
+    terminal: { state: receipt.terminal.state },
+    toolTrace: receipt.toolTrace.map((event) => ({
+      eventId: event.eventId, invocationId: event.invocationId, phase: event.phase, kind: event.kind,
+      targetOrCommand: event.targetOrCommand, correlationId: event.correlationId,
+      ...(event.stdout === undefined ? {} : { stdout: event.stdout }),
+      ...(event.stderr === undefined ? {} : { stderr: event.stderr }),
+      ...(event.outcome === undefined ? {} : { outcome: { ...event.outcome } }),
+    })),
+    ...(teardown ? { teardown } : {}),
   };
 }
 
@@ -59,6 +113,10 @@ export interface NormalizedG2Event {
   targetOrCommand: string;
   outcome: G2ToolOutcome;
   denialKind?: G2DenialKind;
+  exitCode?: number;
+  httpStatus?: number;
+  toolErrorCode?: G2ToolErrorCode;
+  controlProof?: G2ControlProof;
 }
 
 export interface NormalizedG2Receipt {
@@ -88,6 +146,8 @@ export function normalizeG2NativeReceipt(
   if (receipt?.launch?.boundaryIdentity !== trustedContext.boundaryIdentity) failures.push('boundary-mismatch');
   if (trustedContext.launchIdentity && receipt?.launch?.launchIdentity !== trustedContext.launchIdentity) failures.push('launch-mismatch');
   if (trustedContext.stage !== 'actual-route-G2') failures.push('wrong-stage');
+  if (!receipt?.terminal || !['exit', 'timeout', 'cancelled', 'spawn-error'].includes(receipt.terminal.state)) failures.push('invocation-terminal-unavailable');
+  if (receipt?.toolPhase?.state !== 'complete' || !Number.isInteger(receipt.toolPhase.itemCount) || receipt.toolPhase.itemCount <= 0) failures.push('tool-phase-incomplete');
   if (!receipt?.toolTrace?.length) failures.push('native-tool-channel-unavailable');
   if ((receipt?.toolTrace?.length ?? 0) > 12_000 || (receipt?.toolTrace ?? []).reduce((sum, event) =>
     sum + (event?.stdout?.byteLength ?? 0) + (event?.stderr?.byteLength ?? 0), 0) > 8 * 1024 * 1024) failures.push('native-tool-channel-over-limit');
@@ -115,6 +175,9 @@ export function normalizeG2NativeReceipt(
     if (event.phase === 'result' && event.outcome?.denialKind &&
         !['filesystem-denied', 'not-found', 'broker-403', 'namespace-denied', 'guardian-not-visible', 'config-inventory-verified'].includes(event.outcome.denialKind)) failures.push('result-denial-kind-unavailable');
     if (event.phase === 'start' && event.outcome !== undefined) failures.push('start-frame-has-result-outcome');
+    if (event.phase === 'result' && event.outcome?.disposition === 'success' && event.kind === 'shell' &&
+        (event.toolStatus !== 'completed' || event.toolExitCode !== 0 || event.outcome.exitCode !== 0)) failures.push('shell-success-status-unverified');
+    if (event.phase === 'result' && event.outcome?.disposition === 'denied' && !denialEvidence(event.outcome)) failures.push('denial-status-unverified');
   }
   if (starts.size !== results.size || [...starts.keys()].some((id) => !results.has(id)) || [...results.keys()].some((id) => !starts.has(id))) {
     failures.push('unmatched-tool-start-result');
@@ -128,12 +191,17 @@ export function normalizeG2NativeReceipt(
     if (!result || !expected) { failures.push('unexpected-or-unmatched-tool-correlation'); continue; }
     if (start.kind !== result.kind || start.targetOrCommand !== result.targetOrCommand ||
         start.kind !== expected.kind || start.targetOrCommand !== expected.targetOrCommand) failures.push('tool-target-correlation-mismatch');
+    if (Date.parse(result.at) < Date.parse(start.at)) failures.push('tool-result-before-start');
     if (result.outcome?.disposition !== expected.outcome) failures.push('tool-outcome-mismatch');
+    if (result.kind === 'shell' && (result.toolStatus !== 'completed' && result.toolStatus !== 'failed')) failures.push('shell-result-status-unavailable');
     events.push({ correlationId, kind: result.kind, targetOrCommand: result.targetOrCommand,
-      outcome: result.outcome?.disposition ?? 'unavailable', ...(result.outcome?.denialKind ? { denialKind: result.outcome.denialKind } : {}) });
+      outcome: result.outcome?.disposition ?? 'unavailable', ...(result.outcome?.denialKind ? { denialKind: result.outcome.denialKind } : {}),
+      ...(result.outcome?.exitCode === undefined ? {} : { exitCode: result.outcome.exitCode }),
+      ...(result.outcome?.httpStatus === undefined ? {} : { httpStatus: result.outcome.httpStatus }),
+      ...(result.outcome?.toolErrorCode === undefined ? {} : { toolErrorCode: result.outcome.toolErrorCode }),
+      ...(result.outcome?.controlProof === undefined ? {} : { controlProof: result.outcome.controlProof }) });
   }
   if (events.length !== fixture.expected.length) failures.push('expected-tool-event-set-incomplete');
-  if (receipt?.terminal?.state !== 'exit' || receipt.terminal.code !== 0) failures.push('native-invocation-not-successful');
   return {
     fixtureId: fixture.id, status: failures.length === 0 ? 'complete' : 'unavailable',
     identity: receipt?.identity ?? trustedContext.identity,
@@ -192,4 +260,16 @@ function sameIdentity(a: SupervisedInvocationIdentity, b: SupervisedInvocationId
 }
 function validExport(value: { inventoryHash: string; head: string } | null | undefined): boolean {
   return Boolean(value && /^[a-f0-9]{64}$/iu.test(value.inventoryHash) && /^[a-f0-9]{40,64}$/iu.test(value.head));
+}
+
+function denialEvidence(outcome: NonNullable<NativeToolTraceEvent['outcome']>): boolean {
+  switch (outcome.denialKind) {
+    case 'filesystem-denied': return outcome.toolErrorCode === 'EACCES' || outcome.toolErrorCode === 'EPERM';
+    case 'not-found': return outcome.toolErrorCode === 'ENOENT';
+    case 'broker-403': return outcome.httpStatus === 403;
+    case 'namespace-denied': return outcome.controlProof?.kind === 'namespace-egress-denied' && outcome.controlProof.verified === true;
+    case 'guardian-not-visible': return outcome.controlProof?.kind === 'guardian-namespace-absent' && outcome.controlProof.verified === true;
+    case 'config-inventory-verified': return outcome.controlProof?.kind === 'native-inventory-verified' && outcome.controlProof.verified === true;
+    default: return false;
+  }
 }

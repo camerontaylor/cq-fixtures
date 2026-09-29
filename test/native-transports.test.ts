@@ -1185,17 +1185,20 @@ describe('native G2 receipt normalization', () => {
   const teardown = { invocationId: 'inv-g2', processTree: 'stopped-and-reaped' as const, boundary: 'terminated' as const,
     export: { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) } };
   const receipt = (): NativeExecutionReceipt => ({ identity, launch: { boundaryIdentity: 'boundary-g2', launchIdentity: 'launch-g2', admissionId: 'admission-g2' },
-    terminal: { state: 'exit', code: 0, signal: null }, toolPhase: { state: 'complete', itemCount: 1 }, toolTrace: [
-      { eventId: 'event-start', invocationId: 'inv-g2', phase: 'start', kind: 'read', targetOrCommand: '/protected/sentinel.txt', correlationId: 'tool-1', at: new Date().toISOString() },
-      { eventId: 'event-result', invocationId: 'inv-g2', phase: 'result', kind: 'read', targetOrCommand: '/protected/sentinel.txt', correlationId: 'tool-1', at: new Date().toISOString(), outcome: { disposition: 'denied', denialKind: 'filesystem-denied', toolErrorCode: 'EACCES' }, stdout: new Uint8Array([1]), stderr: new Uint8Array([2]) },
+    terminal: { state: 'exit', code: 0, signal: null }, toolPhase: { state: 'complete', itemCount: 1 }, decoderFailures: [], toolTrace: [
+      { eventId: 'event-start', invocationId: 'inv-g2', collectorSequence: 4, phase: 'start', kind: 'read', targetOrCommand: '/protected/sentinel.txt', correlationId: 'tool-1', at: '2026-09-29T04:00:00.100Z' },
+      { eventId: 'event-result', invocationId: 'inv-g2', collectorSequence: 7, phase: 'result', kind: 'read', targetOrCommand: '/protected/sentinel.txt', correlationId: 'tool-1', at: '2026-09-29T04:00:00.100Z', outcome: { disposition: 'denied', denialKind: 'filesystem-denied', toolErrorCode: 'EACCES' }, stdout: new Uint8Array([1]), stderr: new Uint8Array([2]) },
     ], teardown: { processTree: 'stopped-and-reaped', boundary: 'terminated', export: teardown.export } });
 
-  it('normalizes exact start/result correlation and omits private buffers', () => {
+  it('requires an independent verifier for denials and omits private buffers', () => {
     const normalized = normalizeG2NativeReceipt(fixture, receipt(), context, teardown);
-    expect(normalized).toMatchObject({ status: 'complete', events: [{ correlationId: 'tool-1', targetOrCommand: '/protected/sentinel.txt', outcome: 'denied', denialKind: 'filesystem-denied' }] });
+    expect(normalized).toMatchObject({ status: 'unavailable', failures: expect.arrayContaining(['denial-control-unverified']) });
     expect(JSON.stringify(normalized)).not.toContain('stdout');
-    const canonical = toBoundaryCanonicalNativeReceipt(receipt());
-    expect(canonical.toolTrace[1]?.outcome).toEqual({ disposition: 'denied', denialKind: 'filesystem-denied', toolErrorCode: 'EACCES' });
+    const successfulReceipt = receipt();
+    successfulReceipt.toolTrace = successfulReceipt.toolTrace.map((event) => event.phase === 'result'
+      ? { ...event, outcome: { disposition: 'success' } } : event);
+    const canonical = toBoundaryCanonicalNativeReceipt(successfulReceipt);
+    expect(canonical.toolTrace[1]?.outcome).toEqual({ disposition: 'success' });
   });
 
   it('fails closed on missing, duplicate, unmatched, or unknown outcomes', () => {
@@ -1238,34 +1241,35 @@ describe('Codex JSONL shell-event decoder', () => {
   const teardown = { invocationId, processTree: 'stopped-and-reaped' as const, boundary: 'terminated' as const,
     export: { inventoryHash: 'c'.repeat(64), head: 'd'.repeat(40) } };
   const command = 'printf CQ_SYNTHETIC_SHELL_RESULT';
-  const started = (id = 'item-shell-1', actualCommand = command) => ({ type: 'item.started', item: {
-    id, type: 'command_execution', command: actualCommand, aggregated_output: '', exit_code: null, status: 'in_progress',
+  const started = (id = 'item-shell-1', actualCommand = command, status = 'in_progress') => ({ type: 'item.started', item: {
+    id, type: 'command_execution', command: actualCommand, aggregated_output: '', exit_code: null, status,
   } });
   const completed = (id = 'item-shell-1', actualCommand = command, exitCode: number | null = 0, status = exitCode === 0 ? 'completed' : 'failed', output = 'CQ_SYNTHETIC_SHELL_RESULT') => ({
     type: 'item.completed', item: { id, type: 'command_execution', command: actualCommand,
       aggregated_output: output, exit_code: exitCode, status },
   });
   const frames = (start = started(), result = completed()) => [
-    { frame: start, collectedAt: '2026-09-29T04:00:00.100Z' },
-    { frame: result, collectedAt: '2026-09-29T04:00:00.200Z' },
+    { frame: start, collectorSequence: 0, collectedAt: '2026-09-29T04:00:00.100Z' },
+    { frame: result, collectorSequence: 2, collectedAt: '2026-09-29T04:00:00.200Z' },
   ];
   const shellFixture = (outcome: 'success' | 'denied') => ({ id: `shell-${outcome}`, prompt: 'Run only the named synthetic shell command',
     expected: [{ correlationId: 'item-shell-1', kind: 'shell' as const, targetOrCommand: command, outcome }] });
   const receiptFrom = (decoded: ReturnType<typeof decodeCodexShellEventFrames>): NativeExecutionReceipt => ({
     identity, launch: { boundaryIdentity: 'boundary-shell', launchIdentity: 'launch-shell', admissionId: 'admission-shell' },
     // Invocation timed out after the shell tool had already returned. Preserve that process terminal.
-    terminal: { state: 'timeout', code: null, signal: 'SIGTERM' }, toolPhase: decoded.toolPhase, toolTrace: decoded.toolTrace,
+    terminal: { state: 'timeout', code: null, signal: 'SIGTERM' }, toolPhase: decoded.toolPhase,
+    decoderFailures: decoded.decoderFailures, toolTrace: decoded.toolTrace,
     teardown: { processTree: 'stopped-and-reaped', boundary: 'terminated', export: teardown.export },
   });
 
   it('decodes the saved command_execution item shape and keeps invocation timeout separate', () => {
     const decoded = decodeCodexShellEventFrames({ invocationId, frames: frames() });
-    expect(decoded).toMatchObject({ toolPhase: { state: 'complete', itemCount: 1 }, failures: [],
+    expect(decoded).toMatchObject({ toolPhase: { state: 'complete', itemCount: 1 }, decoderFailures: [],
       channelCoverage: { shell: 'observed', read: 'unobserved', search: 'unobserved', http: 'unobserved', config: 'unobserved' } });
     expect(decoded.toolTrace).toMatchObject([
-      { eventId: 'item-shell-1:start', phase: 'start', correlationId: 'item-shell-1', targetOrCommand: command, at: '2026-09-29T04:00:00.100Z' },
+      { eventId: 'item-shell-1:start', collectorSequence: 0, phase: 'start', correlationId: 'item-shell-1', targetOrCommand: command, at: '2026-09-29T04:00:00.100Z', toolStatus: 'in_progress', toolExitCode: null },
       { eventId: 'item-shell-1:result', phase: 'result', correlationId: 'item-shell-1', targetOrCommand: command,
-        toolStatus: 'completed', toolExitCode: 0, outputSource: 'aggregated_output', outcome: { disposition: 'success', exitCode: 0 } },
+        collectorSequence: 2, toolStatus: 'completed', toolExitCode: 0, outputSource: 'aggregated_output', outcome: { disposition: 'success', exitCode: 0 } },
     ]);
     const receipt = receiptFrom(decoded);
     const normalized = normalizeG2NativeReceipt(shellFixture('success'), receipt, context, teardown);
@@ -1273,41 +1277,55 @@ describe('Codex JSONL shell-event decoder', () => {
     expect(normalized.terminal).toEqual({ state: 'timeout', code: null, signal: 'SIGTERM' });
     const canonical = toBoundaryCanonicalNativeReceipt(receipt);
     expect(canonical.terminal).toEqual({ state: 'timeout' });
+    expect(canonical.toolPhase).toEqual({ state: 'complete', itemCount: 1 });
+    expect(canonical.decoderFailures).toEqual([]);
     expect(Buffer.from(canonical.toolTrace[1]!.stdout!).toString()).toBe('CQ_SYNTHETIC_SHELL_RESULT');
     expect(canonical.toolTrace[1]!.outcome).toEqual({ disposition: 'success', exitCode: 0 });
   });
 
-  it('fails closed on reordered, duplicate, unmatched, command-mismatched, or null-exit records', () => {
+  it('fails closed on invalid order, duplicate, unmatched, mismatched, invalid-status, null-exit, or malformed JSON records', () => {
     const valid = frames();
     const cases = [
-      { name: 'reordered', input: [valid[1]!, valid[0]!], failure: 'collector-frame-order-invalid' },
-      { name: 'duplicate start', input: [valid[0]!, { ...valid[0]!, collectedAt: '2026-09-29T04:00:00.150Z' }, valid[1]!], failure: 'duplicate-command-start' },
+      { name: 'reordered equal-time result first', input: [{ ...valid[1]!, collectedAt: valid[0]!.collectedAt }, { ...valid[0]!, collectorSequence: 3, collectedAt: valid[0]!.collectedAt }], failure: 'command-result-before-start' },
+      { name: 'duplicate start', input: [valid[0]!, { ...valid[0]!, collectorSequence: 1, collectedAt: '2026-09-29T04:00:00.150Z' }, valid[1]!], failure: 'duplicate-command-start' },
       { name: 'unmatched start', input: [valid[0]!], failure: 'unmatched-command-start-result' },
       { name: 'command mismatch', input: frames(started(), completed('item-shell-1', 'printf DIFFERENT')), failure: 'command-item-command-mismatch' },
       { name: 'null exit', input: frames(started(), completed('item-shell-1', command, null, 'in_progress')), failure: 'command-result-terminal-unavailable' },
+      { name: 'invalid start status', input: frames(started('item-shell-1', command, 'starting-ish'), completed()), failure: 'command-start-state-invalid' },
+      { name: 'invalid JSON between valid events', input: [valid[0]!, { frame: '{not-json', collectorSequence: 1, collectedAt: '2026-09-29T04:00:00.150Z' }, valid[1]!], failure: 'event-json-invalid' },
     ];
     for (const item of cases) {
       const decoded = decodeCodexShellEventFrames({ invocationId, frames: item.input });
       expect(decoded.toolPhase.state, item.name).toBe('unavailable');
-      expect(decoded.failures, item.name).toContain(item.failure);
+      expect(decoded.decoderFailures, item.name).toContain(item.failure);
       if (item.name === 'null exit') expect(decoded.toolTrace.find((event) => event.phase === 'result')?.toolExitCode).toBeNull();
+      expect(() => toBoundaryCanonicalNativeReceipt(receiptFrom(decoded)), item.name).toThrow(/not canonically decodable/u);
+      expect(normalizeG2NativeReceipt(shellFixture('success'), receiptFrom(decoded), context, teardown).status, item.name).toBe('unavailable');
     }
   });
 
-  it('does not infer denial from output text and accepts only correlated native control evidence', () => {
+  it('does not infer denial from output text or unverified caller-supplied outcome fields', () => {
     const deniedFrames = frames(started(), completed('item-shell-1', command, 13, 'failed', 'EACCES: synthetic denial'));
     const uncorroborated = decodeCodexShellEventFrames({ invocationId, frames: deniedFrames });
     expect(uncorroborated.toolTrace[1]?.outcome).toEqual({ disposition: 'unknown', exitCode: 13 });
     expect(normalizeG2NativeReceipt(shellFixture('denied'), receiptFrom(uncorroborated), context, teardown).status).toBe('unavailable');
+    const forged = receiptFrom(uncorroborated);
+    const failedEvent = forged.toolTrace[1]!;
+    forged.toolTrace = [forged.toolTrace[0]!, { ...failedEvent,
+      outcome: { disposition: 'denied', denialKind: 'filesystem-denied', exitCode: 13, toolErrorCode: 'EACCES' } }];
+    expect(normalizeG2NativeReceipt(shellFixture('denied'), forged, context, teardown).status).toBe('unavailable');
+    const mismatchedExit = { ...forged, toolTrace: [forged.toolTrace[0]!, { ...forged.toolTrace[1]!, outcome: {
+      disposition: 'denied' as const, denialKind: 'filesystem-denied' as const, exitCode: 12, toolErrorCode: 'EACCES' as const,
+    } }] };
+    expect(normalizeG2NativeReceipt(shellFixture('denied'), mismatchedExit, context, teardown).failures).toContain('shell-result-status-unverified');
+  });
 
-    const corroborated = decodeCodexShellEventFrames({ invocationId, frames: deniedFrames,
-      controls: [{ invocationId, itemId: 'item-shell-1', toolErrorCode: 'EACCES' }] });
-    expect(corroborated.toolTrace[1]?.outcome).toEqual({ disposition: 'denied', denialKind: 'filesystem-denied', exitCode: 13, toolErrorCode: 'EACCES' });
-    expect(normalizeG2NativeReceipt(shellFixture('denied'), receiptFrom(corroborated), context, teardown).status).toBe('complete');
-
-    const namespace = decodeCodexShellEventFrames({ invocationId, frames: deniedFrames,
-      controls: [{ invocationId, itemId: 'item-shell-1', controlProof: { kind: 'namespace-egress-denied', verified: true } }] });
-    expect(namespace.toolTrace[1]?.outcome).toMatchObject({ disposition: 'denied', denialKind: 'namespace-denied', controlProof: { verified: true } });
+  it('requires exact tool-phase result cardinality even when a caller claims decode success', () => {
+    const decoded = decodeCodexShellEventFrames({ invocationId, frames: frames() });
+    const receipt = receiptFrom(decoded);
+    receipt.toolPhase = { state: 'complete', itemCount: 2 };
+    expect(normalizeG2NativeReceipt(shellFixture('success'), receipt, context, teardown).failures).toContain('tool-phase-cardinality-mismatch');
+    expect(() => toBoundaryCanonicalNativeReceipt(receipt)).toThrow(/cardinality-mismatch/u);
   });
 });
 
@@ -1374,8 +1392,11 @@ describe('visible G1 runSuite entrypoint', () => {
       .toContainEqual(expect.objectContaining({ driver: 'pi-json' }));
     expect(report.pins.sourcePins['runner/native/pi.ts']).toBe(createHash('sha256')
       .update(readFileSync(new URL('../runner/native/pi.ts', import.meta.url))).digest('hex'));
+    expect(report.pins.sourcePins['runner/native/visible-g1-pi-driver.ts']).toBe(createHash('sha256')
+      .update(readFileSync(new URL('../runner/native/visible-g1-pi-driver.ts', import.meta.url))).digest('hex'));
     expect(report.pins.sourcePins).toHaveProperty('runner/native/process.ts');
     expect(report.pins.sourcePins).toHaveProperty('runner/native/events.ts');
+    expect(report.pins.sourcePins).not.toHaveProperty('src/settings.mjs');
     expect(report.budget).toMatchObject({ maxAttempts: 1, maxTokens: null, hardTokenCap: false });
   }, 90_000);
 });

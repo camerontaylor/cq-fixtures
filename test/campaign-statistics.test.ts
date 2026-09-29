@@ -122,7 +122,8 @@ describe('fixed-sample campaign inference', () => {
     const missing = rows.find(r => r.strategyId === 'baseline')!;
     missing.success = null; missing.status = 'operational-missing';
     const out = analyzeFixedSample(reg, rows, passingValidation(reg)).contrasts[0]!;
-    expect(out.launchedBudgetFailures).toBe(1);
+    expect(out.launchedBudgetFailures).toBeNull();
+    expect(out.knownLaunchedBudgetFailures).toBe(1);
     expect(out.operationalMissing).toBe(1);
     expect(out.status).toBe('descriptive');
   });
@@ -207,7 +208,8 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
     const adapted = selected.flatMap(r => r.strategyId === 'baseline' ? [r] : [1, 2, 3].map(n => ({ ...r, strategyId: `candidate${n}` })));
     const extension = { frozen: true as const, recipe: PRECISION_RECIPE, recipeHash: precisionRecipeHash, calibrationSha256: 'a'.repeat(64), model: CORE_POINTS[0]!, calibrationArtifact: 'calibration/immutable-model.json', baseDesignHash: designHash(reg) } as const;
     const out = analyzePrecisionSample(reg, adapted, extension, validation());
-    expect(out.precision.applied).toBe(true);
+    expect(out.precision.applied).toBe(false);
+    expect(out.precision.reasons).toContain('authenticated visible role-pilot applicability is absent or mismatched');
     expect(out.maxStatisticAdjustment).toBe('withheld');
     const missing = adapted[0]!;
     missing.status = 'operational-missing'; missing.success = null;
@@ -235,7 +237,7 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
     const extension = { frozen: true as const, recipe: PRECISION_RECIPE, recipeHash: precisionRecipeHash,
       calibrationSha256: 'a'.repeat(64), model, calibrationArtifact: 'visible-calibration', baseDesignHash: designHash(reg) } as const;
     expect(analyzePrecisionSample(reg, rows, extension, validation()).precision.applied).toBe(false);
-    expect(analyzePrecisionSample(reg, rows, extension, validation(), evidence).precision.applied).toBe(true);
+    expect(analyzePrecisionSample(reg, rows, extension, validation(), evidence).precision.applied).toBe(false);
     evidence.cells[0]!.coverage[0]!.jointCovered = 1800;
     expect(precisionForecastPasses(evidence, 'native')).toBe(false);
   });
@@ -403,6 +405,19 @@ describe('bounded precision candidate and S1 outcome adapter', () => {
     expect(() => adaptTaskOutcomes(reg, join, outcomes)).toThrow(/provenance/);
     outcomes[0]!.execution!.sourceInvocationIds = [];
     expect(() => adaptTaskOutcomes(reg, join, outcomes)).toThrow(/provenance/);
+  });
+
+  it('keeps budget accounting unknown for absent rows and counts exhaustion independently of correctness', () => {
+    const { reg, join, outcomes } = outcomeFixture();
+    for (const o of outcomes) o.execution = { launched: true, terminalCause: 'complete', sourceInvocationIds: o.stages.map(s => s.invocationId) };
+    outcomes[0]!.execution!.terminalCause = 'budget-exhausted';
+    const adapted = adaptTaskOutcomes(reg, join, outcomes).observations;
+    adapted[0]!.success = true;
+    expect(analyzeFixedSample(reg, adapted).contrasts[0]!.knownLaunchedBudgetFailures).toBe(1);
+    adapted.pop();
+    const incomplete = analyzeFixedSample(reg, adapted).contrasts[0]!;
+    expect(incomplete.launchedBudgetFailures).toBeNull();
+    expect(incomplete.knownLaunchedBudgetFailures).toBe(1);
   });
 
 });

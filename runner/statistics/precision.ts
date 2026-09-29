@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { analyzeFixedSample, designHash, wilsonBounds, type AnalysisResult, type Observation, type Preregistration } from './inference.js';
 import { EVIDENCE_PINS } from './evidence-pins.js';
 import { studentTCritical } from './student-t.js';
@@ -173,6 +174,19 @@ export interface PrecisionRegistration {
   /** SHA-256 of ordinary registration; binds this extension to exact roster. */
   baseDesignHash: string;
 }
+/** Visible pilot receipt, frozen before held-out observations are inspected. */
+export interface CalibrationApplicability {
+  version: 1;
+  frozen: true;
+  track: 'native' | 'diagnostic';
+  role: string;
+  baseDesignHash: string;
+  recipeHash: string;
+  model: GeneratorPoint;
+  source: 'visible-role-pilot';
+  observedSubstrates: number;
+  selectedBeforeHeldout: true;
+}
 export interface PrecisionAnalysis extends AnalysisResult {
   precision: { recipe: string; applied: boolean; reasons: string[]; extensionHash: string; validationHash: string | null; recipeHash: string; forecastValidationHash: string | null };
 }
@@ -194,6 +208,22 @@ export function analyzePrecisionSample(reg: Preregistration, rows: readonly Obse
   if (extension.frozen !== true || extension.recipe !== PRECISION_RECIPE || extension.recipeHash !== precisionRecipeHash
     || !/^[a-f0-9]{64}$/i.test(extension.calibrationSha256) || extension.baseDesignHash !== designHash(reg)
     || !extension.calibrationArtifact.trim()) throw new Error('precision extension must be frozen and bind the exact registration and calibration source');
+  let applicability: CalibrationApplicability | null = null;
+  try {
+    const bytes = readFileSync(extension.calibrationArtifact);
+    if (createHash('sha256').update(bytes).digest('hex') === extension.calibrationSha256) {
+      applicability = JSON.parse(bytes.toString('utf8')) as CalibrationApplicability;
+    }
+  } catch { /* Missing or unreadable pilot evidence cannot activate inference. */ }
+  if (!applicability || applicability.version !== 1 || applicability.frozen !== true
+    || applicability.source !== 'visible-role-pilot' || applicability.selectedBeforeHeldout !== true
+    || applicability.track !== reg.track || applicability.role !== reg.role
+    || applicability.baseDesignHash !== designHash(reg) || applicability.recipeHash !== precisionRecipeHash
+    || pointId(applicability.model) !== pointId(extension.model)
+    || !Number.isSafeInteger(applicability.observedSubstrates)
+    || applicability.observedSubstrates < extension.model.clusters) {
+    reasons.push('authenticated visible role-pilot applicability is absent or mismatched');
+  }
   if (!validation || !precisionValidationPasses(validation, reg.track)) reasons.push('precision recipe lacks passing validation for every core stratum in this track');
   const corePoint = CORE_POINTS.some(p => pointId(p) === pointId(extension.model));
   const forecastPoint = forecastEvidence !== null && precisionForecastPasses(forecastEvidence, reg.track)

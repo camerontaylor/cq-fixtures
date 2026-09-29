@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** One-route, visible-only G1 calibration through the verified runSuite corpus. */
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -97,6 +97,12 @@ const SOURCE_ENTRYPOINTS = [
   'schema/result-row.schema.json',
   'schema/comparison-table.schema.json',
 ];
+const ROUTE_ADAPTER_ENTRYPOINTS: Readonly<Record<VisibleG1Route, string>> = {
+  codex: 'runner/native/visible-g1-codex-driver.ts',
+  'pi-json': 'runner/native/visible-g1-pi-driver.ts',
+  'pi-rpc': 'runner/native/visible-g1-pi-driver.ts',
+  glm: 'runner/native/visible-g1-glm-driver.ts',
+};
 
 /** Fresh read-only telemetry. This deliberately has no reset-credit consumer. */
 export function freshAggregateQuotaSource(clock: () => number = Date.now): QuotaSource {
@@ -151,7 +157,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
   );
   if (!bridgeProfile || !configuredProfile) throw new Error(`launch inventory could not resolve both selected profiles for ${options.route}`);
 
-  const sourcePins = await hashSourcePins(bundle.oraclePin.dependencies);
+  const sourcePins = await visibleG1SourcePins(options.route, bundle.oraclePin.dependencies);
   const prompt = bundle.suite.cases[0]?.task.prompt;
   if (!prompt) throw new Error('review-loop runSuite bundle has no task prompt');
   const settings = {
@@ -367,12 +373,14 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
   }
 }
 
-async function hashSourcePins(
+export async function visibleG1SourcePins(
+  route: VisibleG1Route,
   oracleDependencies: ReadonlyArray<{ path: string; sha256: string }>,
 ): Promise<Record<string, string>> {
   const pins: Record<string, string> = {};
   const paths = await discoverSourceDependencyClosure([
     ...SOURCE_ENTRYPOINTS,
+    ROUTE_ADAPTER_ENTRYPOINTS[route],
     ...oracleDependencies.map((dependency) => dependency.path),
   ]);
   for (const path of paths) {

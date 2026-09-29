@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { spawnBoundary } from '../boundary/spawn.ts';
 import type { BoundaryLaunch } from '../boundary/spawn.ts';
+import { snapshotTask } from '../boundary/task-tree.ts';
 
 export type ProcessTerminal = 'exit' | 'timeout' | 'cancelled' | 'spawn-error';
 
@@ -33,7 +34,7 @@ export interface NativeLaunchEvidence {
   scope: 'visible-calibration' | 'boundary';
   isolation: 'disabled' | 'unverified';
   heldOut: false;
-  taskExport?: { inventoryHash: string; head: string };
+  taskExport?: NativeTaskExport;
 }
 
 export type NativeInvocationStage = 'visible-calibration-G1' | 'final-profile-G1' | 'actual-route-G2';
@@ -46,7 +47,15 @@ export interface NativeSpawnContext {
   /** Aborted at the assignment deadline; adapters should stop provisioning promptly. */
   signal: AbortSignal;
 }
-export interface NativeTaskExport { inventoryHash: string; head: string }
+export interface NativeTaskPublicationEvidence {
+  destination: string;
+  baselineCommit: string;
+  baselineTree: string;
+  hostUnchanged: true;
+  afterTeardown: true;
+  captureEligible: true;
+}
+export interface NativeTaskExport { inventoryHash: string; head: string; publication?: NativeTaskPublicationEvidence }
 
 export interface NativeSpawnReceipt {
   child: ChildProcess;
@@ -231,6 +240,8 @@ export interface SupervisedProcessOptions {
   spawnAdapter?: NativeSpawnAdapter;
   /** Creates invocation-specific staging/admission inside the same hard deadline. */
   spawnAdapterFactory?: NativeSpawnAdapterFactory;
+  /** Exact S5 baseline captured for this invocation before transport starts. */
+  expectedTaskBaselineCommit?: string;
   /** Explicitly for fake executables in tests; production launches fail closed without a boundary adapter. */
   allowUnconfinedTestProcess?: boolean;
 }
@@ -412,12 +423,27 @@ export async function runSupervised(
       if (!/^[a-f0-9]{64}$/iu.test(taskExport.inventoryHash) || !/^[a-f0-9]{40,64}$/iu.test(taskExport.head)) {
         throw new Error('native boundary task export returned an invalid inventory hash or HEAD');
       }
+      if (options.stage === 'final-profile-G1') {
+        const publication = taskExport.publication;
+        if (!publication || resolve(publication.destination) !== resolve(options.cwd) ||
+            !/^[a-f0-9]{40}$/iu.test(publication.baselineCommit) || !/^[a-f0-9]{40,64}$/iu.test(publication.baselineTree) ||
+            publication.hostUnchanged !== true || publication.afterTeardown !== true || publication.captureEligible !== true) {
+          throw new Error('final-profile G1 export lacks validated post-teardown publication into the exact runSuite workspace');
+        }
+        if (!options.expectedTaskBaselineCommit || publication.baselineCommit !== options.expectedTaskBaselineCommit) {
+          throw new Error('final-profile G1 publication baseline differs from the exact staged runSuite baseline');
+        }
+        const published = snapshotTask(options.cwd, false);
+        if (published.inventoryHash !== taskExport.inventoryHash) {
+          throw new Error('final-profile G1 published workspace differs from the stopped export inventory');
+        }
+      }
       finalized = true;
     } catch (error) {
       if (!lifecycleError) lifecycleError = error instanceof Error ? error : new Error(String(error));
     }
     if (terminated && hostTreeStopped && finalized && taskExport && launch) {
-      launch.taskExport = { inventoryHash: taskExport.inventoryHash, head: taskExport.head };
+      launch.taskExport = { ...taskExport };
     }
     lifecycleResult = {
       terminated,

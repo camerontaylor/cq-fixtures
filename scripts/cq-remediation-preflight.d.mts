@@ -15,6 +15,13 @@ export function verifyImplicitRuntimeAssets(
   expectedPins?: Readonly<Record<string, string>>,
 ): Promise<Record<string, string>>;
 
+/** Require a set of exact runtime asset pins within a larger source pin map. */
+export function assertIncludesPins(
+  expected: Readonly<Record<string, string>>,
+  actual: Readonly<Record<string, string>>,
+  label?: string,
+): void;
+
 /** Resolve and validate the transitive local source/data closure. */
 export function discoverSourceClosure(
   rootPath: string,

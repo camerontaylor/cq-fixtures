@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertSameClosure, assertSamePins, discoverSourceClosure, runPreflight, verifyImplicitRuntimeAssets, type SourcePreflightResult } from '../scripts/cq-remediation-preflight.mjs';
+import { assertIncludesPins, assertSameClosure, assertSamePins, discoverSourceClosure, runPreflight, verifyImplicitRuntimeAssets } from '../scripts/cq-remediation-preflight.mjs';
 
 const roots: string[] = [];
 async function syntheticRoot(): Promise<string> {
@@ -17,20 +17,10 @@ afterEach(async () => {
 });
 
 describe('no-dispatch remediation preflight', () => {
-  it('loads transformed native entrypoints and checks their real source closure', async () => {
-    const result: SourcePreflightResult = await runPreflight();
-    expect(result).toMatchObject({
-      status: 'preflight-green', dispatched: false, provisioned: false,
-      sourceEntryPoint: 'runner/native/run-visible-g1.ts',
-      taskIdExport: 'runner/experiment.ts#suiteTaskId',
-    });
-    expect(result.closureCount).toBeGreaterThan(0);
-    expect(result.closure['runner/experiment.ts']).toMatch(/^[a-f0-9]{64}$/u);
-    expect(result.implicitRuntimeAssets).toEqual({
-      'runner/boundary/broker-public-assets/broker.mjs': expect.stringMatching(/^[a-f0-9]{64}$/u),
-      'runner/boundary/broker-public-assets/config.json': expect.stringMatching(/^[a-f0-9]{64}$/u),
-      'schema/suite.schema.json': expect.stringMatching(/^[a-f0-9]{64}$/u),
-    });
+  it('fails closed when the active final-profile loader omits implicit runtime assets', async () => {
+    await expect(runPreflight()).rejects.toThrow(
+      'final-profile runtime pin loader closure omits required runtime asset: runner/boundary/broker-public-assets/broker.mjs',
+    );
   });
 
   it('includes generated-candidate JavaScript imports through their source convention', async () => {
@@ -66,6 +56,14 @@ describe('no-dispatch remediation preflight', () => {
   it('rejects a loader that reports the right paths with incorrect byte hashes', () => {
     expect(() => assertSamePins({ 'src/entry.ts': 'a'.repeat(64) }, { 'src/entry.ts': '0'.repeat(64) }, 'runtime loader'))
       .toThrow('runtime loader content hash differs for src/entry.ts');
+  });
+
+  it('requires exact asset paths and hashes as a subset of the active runtime pin map', () => {
+    const expected = { 'assets/config.json': 'a'.repeat(64) };
+    expect(() => assertIncludesPins(expected, {})).toThrow('closure omits required runtime asset: assets/config.json');
+    expect(() => assertIncludesPins(expected, { 'assets/config.json': '0'.repeat(64) }))
+      .toThrow('content hash differs for assets/config.json');
+    expect(() => assertIncludesPins(expected, { ...expected, 'src/entry.ts': 'b'.repeat(64) })).not.toThrow();
   });
 
   it('does not count duplicate paths as distinct loader assets', () => {

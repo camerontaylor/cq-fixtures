@@ -7,7 +7,7 @@ import type { InvocationIdentity, NativeObservation } from './observation.ts';
 import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
 import { applyUsageObservation, parseJsonEventLines, toStructuredOutput } from './events.ts';
 import { ObservedNativeDriver, createWorkerResult, usageProjection, type NativeDriverOptions } from './observed-driver.ts';
-import { launchEvidenceStatus, runSupervised, type NativeInvocationStage, type NativeSpawnAdapterFactory, type SupervisedProcessResult } from './process.ts';
+import { launchEvidenceStatus, runSupervised, type NativeInvocationCleanup, type NativeInvocationStage, type NativeSpawnAdapterFactory, type SupervisedProcessResult } from './process.ts';
 import { resolveNativeSession } from './session.ts';
 import type { BoundaryLaunch } from '../boundary/spawn.ts';
 import type { NativeSpawnAdapter } from './process.ts';
@@ -30,6 +30,7 @@ export interface CodexExecOptions {
   boundaryForInvocation?: (identity: InvocationIdentity, invocation: OpInvocation, workspace: string) => Omit<BoundaryLaunch, 'executable' | 'args'>;
   spawnAdapter?: NativeSpawnAdapter;
   spawnAdapterFactory?: NativeSpawnAdapterFactory;
+  cleanupInvocation?: NativeInvocationCleanup;
   invocationStage?: NativeInvocationStage;
   assignmentDeadlineEpochMs?: number;
   signal?: AbortSignal;
@@ -48,6 +49,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
   private readonly boundaryForInvocation: CodexExecOptions['boundaryForInvocation'];
   private readonly spawnAdapter: NativeSpawnAdapter | undefined;
   private readonly spawnAdapterFactory: NativeSpawnAdapterFactory | undefined;
+  private readonly cleanupInvocation: NativeInvocationCleanup | undefined;
   private readonly invocationStage: NativeInvocationStage;
   private readonly assignmentDeadlineEpochMs: number | undefined;
   private readonly assignmentSignal: AbortSignal | undefined;
@@ -73,6 +75,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
     this.boundaryForInvocation = options.boundaryForInvocation;
     this.spawnAdapter = options.spawnAdapter;
     this.spawnAdapterFactory = options.spawnAdapterFactory;
+    this.cleanupInvocation = options.cleanupInvocation;
     this.invocationStage = options.invocationStage ?? 'visible-calibration-G1';
     this.finalProfileContainerPolicy = options.finalProfileContainerPolicy === undefined ? undefined : {
       profile: options.finalProfileContainerPolicy.profile,
@@ -130,6 +133,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
         ...(this.boundaryForInvocation ? { boundary: this.boundaryForInvocation(identity, invocation, cwd) } : {}),
         ...(this.spawnAdapter ? { spawnAdapter: this.spawnAdapter } : {}),
         ...(this.spawnAdapterFactory ? { spawnAdapterFactory: this.spawnAdapterFactory } : {}),
+        ...(this.cleanupInvocation ? { cleanupInvocation: this.cleanupInvocation } : {}),
         ...(this.expectedTaskBaselineCommit ? { expectedTaskBaselineCommit: this.expectedTaskBaselineCommit() } : {}),
       });
       this.reportProcessTree(identity, result.treeStopped);

@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync, watch } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionStore, type OpInvocation, type WorkerResult } from '@camerontaylor/cq-toolkit';
+import type { ChildProcess } from 'node:child_process';
 import { CodexExecDriver } from '../runner/native/codex.ts';
 import { PiNativeDriver } from '../runner/native/pi.ts';
 import { assertPiConfiguredAuthHandoff } from '../runner/native/visible-g1-pi-driver.ts';
@@ -54,26 +57,6 @@ function fakeExecutable(root: string, output: string, exit = 0): string {
   writeFileSync(file, source, { mode: 0o700 });
   chmodSync(file, 0o700);
   return file;
-}
-
-function waitForFile(path: string, timeoutMs: number): Promise<void> {
-  if (existsSync(path)) return Promise.resolve();
-  return new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      watcher.close();
-      if (error) reject(error);
-      else resolve();
-    };
-    const watcher = watch(dirname(path), { persistent: false }, () => {
-      if (existsSync(path)) finish();
-    });
-    const timer = setTimeout(() => finish(new Error(`timed out waiting for fixture readiness: ${path}`)), timeoutMs);
-    if (existsSync(path)) finish();
-  });
 }
 
 function fakeTaskWorkspace(root: string): string {
@@ -174,18 +157,48 @@ describe('native transport event and identity handling', () => {
         input_tokens: 9, output_tokens: 2, cached_input_tokens: 4, total_tokens: 11,
       } }),
     ].join('\n') + '\n';
-    const executable = join(root, 'codex-handles-term');
-    const readiness = join(root, 'stdout-flushed');
-    writeFileSync(executable, `#!/usr/bin/env node\nprocess.on('SIGTERM', () => process.exit(0));\nprocess.stdout.write(${JSON.stringify(events)}, () => require('node:fs').writeFileSync(${JSON.stringify(readiness)}, 'ready'));\nsetInterval(() => {}, 1000);\n`, { mode: 0o700 });
-    chmodSync(executable, 0o700);
-    const driver = new CodexExecDriver({ executable, hardWallClockMs: 250,
-      artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch() });
+    const fakePid = 456_789_123;
+    const stdoutPipe = new PassThrough();
+    const fakeChild = Object.assign(new EventEmitter(), {
+      pid: fakePid, stdout: stdoutPipe, stderr: new PassThrough(), stdin: new PassThrough(),
+      kill: vi.fn(() => true),
+    }) as unknown as ChildProcess;
+    let adapterReady!: () => void;
+    const childReady = new Promise<void>((resolveReady) => { adapterReady = resolveReady; });
+    const driver = new CodexExecDriver({ executable: 'simulated-codex', hardWallClockMs: 250,
+      artifactDirectory: join(root, 'artifacts'), spawnAdapter: async () => {
+        adapterReady();
+        return { child: fakeChild, boundaryIdentity: 'fake-child-timeout', launchIdentity: 'fake-child-timeout',
+          admissionId: 'test-admission-only', environmentNames: ['PATH'], scope: 'visible-calibration',
+          isolation: 'disabled', heldOut: false };
+      } });
     await driver.beginInvocation(identity('timeout-clean-exit'));
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     const execution = driver.run(invocation('retain output after timeout'));
-    await Promise.race([
-      waitForFile(readiness, 3_000),
-      execution.then(() => { throw new Error('Codex fixture settled before confirming its stdout write'); }),
-    ]);
+    let executionSettled = false;
+    void execution.then(() => { executionSettled = true; }, () => { executionSettled = true; });
+    await childReady;
+    await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
+    // Simulate a real startup delay longer than the fixed transport deadline
+    // while the controllable supervisor clock remains frozen.
+    expect(Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300)).toBe('timed-out');
+    const stdoutReady = new Promise<void>((resolveReady) => stdoutPipe.once('data', () => resolveReady()));
+    stdoutPipe.write(events);
+    await stdoutReady;
+    expect(executionSettled).toBe(false);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number | null) => {
+      if (pid !== -fakePid) throw new Error('fake child test received an unexpected process-group signal');
+      if (signal === 0) throw Object.assign(new Error('fake process group is absent'), { code: 'ESRCH' });
+      if (signal === 'SIGTERM' || signal === 'SIGKILL') fakeChild.emit('close', 0, signal);
+      return true;
+    }) as typeof process.kill);
+    try {
+      // Trigger the unchanged 250ms supervisor deadline only after the fake
+      // child's stdout event has passed through the real collection listener.
+      await vi.advanceTimersByTimeAsync(250);
+    } finally {
+      killSpy.mockRestore();
+    }
     const result = await execution;
     const observation = driver.getObservation('timeout-clean-exit')!;
 

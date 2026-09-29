@@ -31,6 +31,7 @@ interface ProcessControl {
   ownership: JudgeOwnershipBindings;
   artifactRoot: string;
   receiptWriteHook?: (path: string) => void;
+  phaseObserver?: (phase: string, fields?: Readonly<Record<string, string | number | boolean>>) => void;
 }
 
 interface JudgeNamespaceIdentity { assignmentId: string; stageId: string; attemptId: string; }
@@ -64,6 +65,14 @@ function sameIdentity(left: JudgeProcessIdentity, right: JudgeProcessIdentity): 
 
 function positiveDeadlineMs(epochMs: number): number {
   return Math.max(0, Math.floor(epochMs - Date.now()));
+}
+
+function recordPhase(
+  control: ProcessControl,
+  phase: string,
+  fields?: Readonly<Record<string, string | number | boolean>>,
+): void {
+  try { control.phaseObserver?.(phase, fields); } catch { /* Diagnostics never change supervisor behavior. */ }
 }
 
 function groupExists(pgid: number): boolean | null {
@@ -191,10 +200,21 @@ async function cleanupNamespace(
   // represented as a stop proof or passed to the namespace cleanup API.
   if (!control.namespace || !hostStopped) return null;
   if (!control.namespaceCleanup) {
-    control.namespaceCleanup = control.ownership.cleanupJudgeNamespace(control.namespace, {
-      hostProcessStopped: hostStopped,
-      deadlineEpochMs: Math.min(deadlineEpochMs, Date.now() + 30_000),
-    }).then((proof) => ({ proof, receipt: persistCleanupReceipt(control, proof) }));
+    recordPhase(control, 'namespace-cleanup-start', { planSha256: control.namespace.planSha256, hostProcessStopped: true });
+    control.namespaceCleanup = (async () => {
+      try {
+        const proof = await control.ownership.cleanupJudgeNamespace(control.namespace!, {
+          hostProcessStopped: hostStopped,
+          deadlineEpochMs: Math.min(deadlineEpochMs, Date.now() + 30_000),
+        });
+        recordPhase(control, 'namespace-cleanup-end', { cleanup: proof.cleanup, containersAbsent: proof.containersAbsent,
+          volumeDisposition: proof.volumeDisposition, planSha256: proof.planSha256 });
+        return { proof, receipt: persistCleanupReceipt(control, proof) };
+      } catch (error) {
+        recordPhase(control, 'namespace-cleanup-failed', { planSha256: control.namespace!.planSha256 });
+        throw error;
+      }
+    })();
   }
   return control.namespaceCleanup;
 }
@@ -247,7 +267,10 @@ function persistCleanupReceipt(
     || parsed.proof.planSha256 !== control.namespace!.planSha256 || !sameIdentity(parsed.proof.identity, control.identity)) {
     throw new Error('protected-oracle cleanup receipt binding is invalid');
   }
-  return { path: `artifacts/${relativePath}`, sha256: hash(bytes), privatePath: absolutePath };
+  const receipt = { path: `artifacts/${relativePath}`, sha256: hash(bytes), privatePath: absolutePath };
+  recordPhase(control, 'cleanup-receipt-persisted', { path: receipt.path, sha256: receipt.sha256,
+    planSha256: control.namespace!.planSha256 });
+  return receipt;
 }
 
 function settlementWithNamespace(
@@ -286,9 +309,15 @@ function terminate(
     // A synchronous throw or Node's pre-spawn error with no pid proves no
     // host child was created. This is the only no-pid case that permits S5
     // exact-plan cleanup.
-    if (control.spawnState === 'failed') return stopProof(control.identity, true);
+    if (control.spawnState === 'failed') {
+      recordPhase(control, 'host-group-stopped', { proof: 'pre-spawn-no-child' });
+      return stopProof(control.identity, true);
+    }
     const pgid = control.child?.pid;
-    if (!pgid) return stopProof(control.identity, false);
+    if (!pgid) {
+      recordPhase(control, 'host-group-unproven', { proof: 'missing-pid-unknown' });
+      return stopProof(control.identity, false);
+    }
     signalGroup(pgid, 'SIGTERM');
     const termDeadline = Math.min(deadlineEpochMs, Date.now() + TERM_GRACE_MS);
     const leaderExited = await waitForExit(control, termDeadline);
@@ -297,12 +326,16 @@ function terminate(
       signalGroup(pgid, 'SIGKILL');
       const finalLeaderExit = await waitForExit(control, deadlineEpochMs);
       const finalGroupGone = await groupGoneProbe(pgid, deadlineEpochMs);
-      return stopProof(control.identity, finalLeaderExit && finalGroupGone);
+      const stopped = finalLeaderExit && finalGroupGone;
+      recordPhase(control, stopped ? 'host-group-stopped' : 'host-group-unproven', { proof: stopped ? 'sigkill-reaped' : 'deadline-or-probe-failed' });
+      return stopProof(control.identity, stopped);
     }
+    recordPhase(control, 'host-group-stopped', { proof: 'natural-exit-and-group-gone' });
     return stopProof(control.identity, true);
     } catch {
       // Probe and termination adapter failures are evidence gaps, never
       // rejections that bypass the caller's bounded cleanup path.
+      recordPhase(control, 'host-group-unproven', { proof: 'settlement-exception' });
       return stopProof(control.identity, false);
     }
   })();
@@ -349,6 +382,8 @@ export interface IndependentJudgeProcessSupervisorOptions {
   readonly spawnChildForTest?: typeof spawn;
   readonly beforeSpawnForTest?: () => Promise<void>;
   readonly receiptWriteHookForTest?: (path: string) => void;
+  /** Synchronous, non-blocking phase timestamps for bounded offline conformance probes. */
+  readonly phaseObserverForTest?: (phase: string, fields?: Readonly<Record<string, string | number | boolean>>) => void;
 }
 
 /**
@@ -366,6 +401,7 @@ export class IndependentJudgeProcessSupervisor {
   private readonly spawnChild: typeof spawn;
   private readonly beforeSpawnForTest: (() => Promise<void>) | undefined;
   private readonly receiptWriteHookForTest: ((path: string) => void) | undefined;
+  private readonly phaseObserverForTest: ((phase: string, fields?: Readonly<Record<string, string | number | boolean>>) => void) | undefined;
 
   constructor(options: IndependentJudgeProcessSupervisorOptions = {}) {
     if (process.platform === 'win32') throw new Error('independent judge process groups require POSIX detached process semantics');
@@ -376,6 +412,7 @@ export class IndependentJudgeProcessSupervisor {
     this.spawnChild = options.spawnChildForTest ?? spawn;
     this.beforeSpawnForTest = options.beforeSpawnForTest;
     this.receiptWriteHookForTest = options.receiptWriteHookForTest;
+    this.phaseObserverForTest = options.phaseObserverForTest;
     mkdirSync(this.privateRoot, { recursive: true, mode: 0o700 });
   }
 
@@ -444,6 +481,7 @@ export class IndependentJudgeProcessSupervisor {
       spawnState: 'pending', proof: null, outputOverflow: false, stdoutBytes: 0, stderrBytes: 0,
       stderrTail: '', namespace, namespaceCleanup: null, ownership, artifactRoot,
       ...(this.receiptWriteHookForTest ? { receiptWriteHook: this.receiptWriteHookForTest } : {}),
+      ...(this.phaseObserverForTest ? { phaseObserver: this.phaseObserverForTest } : {}),
     };
     this.admittedAttempts.add(request.identity.attemptId);
     const finishBeforeSpawn = async (cause: Error): Promise<never> => {
@@ -479,7 +517,7 @@ export class IndependentJudgeProcessSupervisor {
       return finishBeforeSpawn(new Error('independent judge child could not be launched'));
     }
     control.child = child;
-    child.once('spawn', () => { control.spawnState = 'spawned'; });
+    child.once('spawn', () => { control.spawnState = 'spawned'; recordPhase(control, 'host-spawn'); });
     child.once('error', () => {
       // Node emits an asynchronous error for a spawn failure before the
       // `spawn` event and with no pid. Other errors do not prove absence.
@@ -488,7 +526,13 @@ export class IndependentJudgeProcessSupervisor {
         resolveExit({ kind: 'spawn-error' });
       }
     });
-    child.once('exit', (code, signalName) => resolveExit({ kind: 'exit', code, signal: signalName }));
+    child.once('exit', (code, signalName) => {
+      recordPhase(control, 'host-exit', { code: code ?? 'null', signal: signalName ?? 'none' });
+      resolveExit({ kind: 'exit', code, signal: signalName });
+    });
+    child.once('close', (code, signalName) => recordPhase(control, 'host-close', {
+      code: code ?? 'null', signal: signalName ?? 'none',
+    }));
     this.active.set(request.identity.attemptId, control);
     const overflowController = new AbortController();
     const collect = (stream: NodeJS.ReadableStream | null, which: 'stdout' | 'stderr'): void => {

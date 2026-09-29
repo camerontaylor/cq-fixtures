@@ -6,13 +6,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ArtifactStore } from '../../cq-settings-integration/runner/artifacts/index.ts';
 import { judgeManifestHash } from '../../cq-settings-integration/runner/experiment.ts';
 import { captureGitCandidatePatch, resolveS1DependencyRoot, runVisibleReviewLoopScreening, visibleRunIdentity } from '../runner/strategies/visible-screening.ts';
 import { NativeSupervisorControl } from '../../cq-settings-integration/runner/native/process.ts';
 import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
-import { createIndependentJudgeProcessSupervisor } from '../runner/strategies/judge-process.ts';
+import { createIndependentJudgeProcessSupervisor, loadPinnedJudgeOwnership } from '../runner/strategies/judge-process.ts';
 import type { ChildProcess } from 'node:child_process';
 import type { ReviewLoopJudgeProcessRequest } from '../runner/strategies/judge-protocol.ts';
 import {
@@ -203,6 +203,169 @@ class FakeExecutor implements StageExecutor {
 }
 
 describe('bounded campaign strategy engine', () => {
+  it.skipIf(!process.env.S4_SINGLE_JUDGE_PROBE_MODE)('runs one frozen real S1/S5 judge process fixture', async () => {
+    const mode = process.env.S4_SINGLE_JUDGE_PROBE_MODE;
+    const probeRoot = process.env.S4_SINGLE_JUDGE_PROBE_ROOT;
+    const s1Root = process.env.CQ_S1_DEPENDENCY_ROOT;
+    if (!probeRoot || !s1Root || (mode !== 'prepare' && mode !== 'execute')) throw new Error('single-judge probe environment is incomplete');
+    const preparedPath = join(probeRoot, 'frozen-request.json');
+    const reportPath = join(probeRoot, 'single-judge-report.json');
+    const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex');
+
+    if (mode === 'prepare') {
+      mkdirSync(probeRoot, { recursive: false, mode: 0o700 });
+      const pinnedCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: s1Root, encoding: 'utf8' }).trim();
+      if (pinnedCommit !== 'a1d2b6f0d444fcca5985766f8ea5d32181028f10') throw new Error('S1 dependency root is not the authorized frozen integration');
+      const corpus = await import(pathToFileURL(join(s1Root, 'campaigns/cq-settings/corpus/review-loop-task.ts')).href);
+      const suiteModule = await import(pathToFileURL(join(s1Root, 'runner/workflow-corpus/review-loop-suite.ts')).href);
+      const runner = await import(pathToFileURL(join(s1Root, 'runner/index.ts')).href);
+      const experimentModule = await import(pathToFileURL(join(s1Root, 'runner/experiment.ts')).href);
+      const fixtureRoot = join(probeRoot, 'fixture');
+      mkdirSync(fixtureRoot, { mode: 0o700 });
+      const task = await corpus.createReviewLoopRepairTask({ model: 'gpt-6-sol', provider: 'codex' }, fixtureRoot);
+      const bundle = await suiteModule.createReviewLoopRunSuiteBundle(task, fixtureRoot);
+      try {
+        if (bundle.suite.cases.length !== 1) throw new Error('single-judge probe requires exactly one frozen suite case');
+        const candidateRoot = join(probeRoot, 'candidate');
+        execFileSync('git', ['clone', '--quiet', '--no-hardlinks', task.worktreePath, candidateRoot]);
+        const candidateBytes = Buffer.from('export function isValidCampaignLabel(label) { return true; }\n');
+        writeFileSync(join(candidateRoot, 'settings/module.js'), candidateBytes);
+        const baselineTree = execFileSync('git', ['rev-parse', `${task.baselineCommit}^{tree}`], { cwd: task.worktreePath, encoding: 'utf8' }).trim();
+        const patch = captureGitCandidatePatch(candidateRoot, task.baselineCommit, baselineTree, task.worktreePath);
+        const candidateSha256 = hash(patch);
+        const dependencyManifest = { sourcePin: bundle.oraclePin.sha256, dependencies: bundle.oraclePin.dependencies };
+        const ownership = await loadPinnedJudgeOwnership(s1Root, dependencyManifest);
+        const candidateInventoryHash = ownership.stableJudgeCandidateInventory('settings/module.js', candidateBytes).inventoryHash;
+        const sourceTask = readFileSync(join(s1Root, 'campaigns/cq-settings/corpus/review-loop-task.ts'));
+        const sourceSuite = readFileSync(join(s1Root, 'runner/workflow-corpus/review-loop-suite.ts'));
+        const prompt = bundle.suite.cases[0]!.task.prompt;
+        const identityHash = hash(JSON.stringify({ s1: pinnedCommit, baseline: task.baselineCommit,
+          oraclePin: bundle.oraclePin.sha256, candidateSha256, assignment: 's4-single-judge-probe-01' }));
+        const substrateId = `${task.sourceId}:${task.baselineId}:campaign-settings-module-v1`;
+        const identity = { assignmentId: 's4-single-judge-probe-01', stageId: 's4-single-judge-stage-01', attemptId: 's4-single-judge-attempt-01' };
+        const experiment = {
+          campaignId: 'cq-settings-visible-screening', cohortId: 'visible-calibration', experimentId: identityHash,
+          taskId: experimentModule.suiteTaskId(bundle.suite.name, substrateId), repeatId: 's4-probe-repeat-01', ...identity,
+          track: 'visible-review-loop-screening', strategyId: identityHash, settingsId: 'captured-candidate-fixture',
+          budgetId: 'single-judge-45s', profileId: 'offline-captured-fixture', frozenWeight: 1, substrateId,
+          judgeManifest: dependencyManifest,
+        };
+        const taskFixtureFiles = ['package.json', 'settings/module.js', 'settings/display.js', 'test/public-settings.test.mjs']
+          .map((path) => ({ path, sha256: hash(readFileSync(join(task.worktreePath, path))) }));
+        const frozen = {
+          schemaVersion: 1 as const, identity, deadlineEpochMs: 0, shutdownDeadlineEpochMs: 0, s1DependencyRoot: s1Root,
+          task: { id: task.id, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId,
+            substrateFamily: task.substrateFamily, worktreePath: task.worktreePath, baselineCommit: task.baselineCommit,
+            modelSpec: task.modelSpec, operationInput: task.operationInput },
+          model: 'gpt-6-sol', provider: 'codex', driverName: 'codex-exec', checkTimeoutMs: 35_000,
+          taskSourceSha256: hash(sourceTask), suiteSourceSha256: hash(sourceSuite), baselineCommit: task.baselineCommit,
+          baselineTree, sourceId: task.sourceId, baselineId: task.baselineId, suiteName: bundle.suite.name,
+          caseId: bundle.suite.cases[0]!.id, promptSha256: hash(prompt), taskFixtureFiles,
+          oraclePin: bundle.oraclePin.sha256, candidateInventoryHash, namespaceSlotCount: 1,
+          judgeManifest: dependencyManifest, experiment,
+          candidate: { sha256: candidateSha256, patch, baselineCommit: task.baselineCommit, baselineTree },
+        };
+        writeFileSync(preparedPath, `${JSON.stringify(frozen)}\n`, { flag: 'wx', mode: 0o600 });
+      } finally {
+        await bundle.cleanup();
+      }
+      console.log(JSON.stringify({ probe: 'prepared', fixtureSha256: hash(readFileSync(preparedPath)), suiteCases: 1 }));
+      return;
+    }
+
+    const frozen = JSON.parse(readFileSync(preparedPath, 'utf8')) as ReviewLoopJudgeProcessRequest;
+    const ownership = await loadPinnedJudgeOwnership(s1Root, frozen.judgeManifest) as unknown as {
+      stableJudgeCandidateInventory(module: string, bytes: Uint8Array): { inventoryHash: string };
+      createJudgeNamespacePlan(input: { privateParentRoot: string; identity: ReviewLoopJudgeProcessRequest['identity'];
+        candidateSha256: string; oraclePin: string; inventoryHashes: readonly string[] }): { planPath: string; planSha256: string; plan: { identity: ReviewLoopJudgeProcessRequest['identity'] } };
+      cleanupJudgeNamespace(handle: never, input: { hostProcessStopped: boolean; deadlineEpochMs: number }): Promise<{
+        cleanup: string; containersAbsent: boolean; volumeDisposition: string; inventoryContentVerified: false;
+      }>;
+    };
+    let namespace: ReturnType<typeof ownership.createJudgeNamespacePlan> | undefined;
+    const liveOwnership = {
+      stableJudgeCandidateInventory: ownership.stableJudgeCandidateInventory,
+      createJudgeNamespacePlan(input: Parameters<typeof ownership.createJudgeNamespacePlan>[0]) {
+        namespace = ownership.createJudgeNamespacePlan(input);
+        return namespace;
+      },
+      cleanupJudgeNamespace: ownership.cleanupJudgeNamespace,
+    };
+    const phases: { phase: string; timestamp: string; monotonicMs: number; fields?: Readonly<Record<string, string | number | boolean>> }[] = [];
+    const observe = (phase: string, fields?: Readonly<Record<string, string | number | boolean>>): void => {
+      phases.push({ phase, timestamp: new Date().toISOString(), monotonicMs: performance.now(), ...(fields ? { fields } : {}) });
+    };
+    const privateRoot = join(probeRoot, 'process');
+    mkdirSync(privateRoot, { mode: 0o700 });
+    const executionStartEpochMs = Date.now();
+    const request: ReviewLoopJudgeProcessRequest = {
+      ...frozen, deadlineEpochMs: executionStartEpochMs + 45_000,
+      shutdownDeadlineEpochMs: executionStartEpochMs + 75_000,
+    };
+    observe('execution-start', { decisionDeadlineEpochMs: request.deadlineEpochMs,
+      shutdownDeadlineEpochMs: request.shutdownDeadlineEpochMs, fixtureSha256: hash(readFileSync(preparedPath)) });
+    let report: Record<string, unknown> = { executionStartEpochMs, deadlineEpochMs: request.deadlineEpochMs,
+      shutdownDeadlineEpochMs: request.shutdownDeadlineEpochMs, phases };
+    try {
+      const supervisor = createIndependentJudgeProcessSupervisor({ privateRoot,
+        ownershipForTest: liveOwnership as never,
+        phaseObserverForTest: observe,
+      });
+      const execution = await supervisor.run(request, new AbortController().signal);
+      const evidence = execution.evidence;
+      if (!namespace) throw new Error('S5 parent namespace handle was not retained');
+      const planBytes = readFileSync(namespace.planPath);
+      const receipt = evidence.protectedOracleCleanupReceipt;
+      if (!receipt?.privatePath) throw new Error('S5 cleanup receipt reference is missing');
+      const receiptBytes = readFileSync(receipt.privatePath);
+      const receiptRecord = JSON.parse(receiptBytes.toString('utf8')) as {
+        identity: ReviewLoopJudgeProcessRequest['identity']; planSha256: string;
+        proof: { identity: ReviewLoopJudgeProcessRequest['identity']; planSha256: string; daemonVerified: boolean;
+          ownershipVerified: boolean; containersAbsent: boolean; processTree: string; volumeDisposition: string;
+          cleanup: string; inventoryContentVerified: false; resourceIds: string[] };
+      };
+      const identityMatches = JSON.stringify(receiptRecord.identity) === JSON.stringify(request.identity)
+        && JSON.stringify(receiptRecord.proof.identity) === JSON.stringify(request.identity);
+      const receiptSha256 = hash(receiptBytes);
+      const planSha256 = hash(planBytes);
+      const selectionMatches = evidence.selection.candidateSha256 === request.candidate.sha256
+        && evidence.selection.judgePin === request.oraclePin;
+      const childResultPath = join(evidence.processRoot, 'result.json');
+      const childResultSha256 = hash(readFileSync(childResultPath));
+      if (execution.result.status !== 'completed' || planSha256 !== namespace.planSha256
+        || receiptSha256 !== receipt.sha256 || receiptRecord.planSha256 !== namespace.planSha256
+        || receiptRecord.proof.planSha256 !== namespace.planSha256 || !identityMatches
+        || receiptRecord.proof.cleanup !== 'complete' || !receiptRecord.proof.daemonVerified
+        || !receiptRecord.proof.ownershipVerified || !receiptRecord.proof.containersAbsent
+        || receiptRecord.proof.processTree !== 'stopped-and-reaped'
+        || !['quarantined', 'absent'].includes(receiptRecord.proof.volumeDisposition)
+        || receiptRecord.proof.inventoryContentVerified !== false || !selectionMatches) {
+        throw new Error('single-judge conformance evidence failed a frozen reference check');
+      }
+      const phasesView = phases.map(({ phase, timestamp, monotonicMs, fields }) => ({ phase, timestamp, monotonicMs, ...(fields ? { fields } : {}) }));
+      const ordering = ['host-spawn', 'host-exit', 'host-group-stopped', 'namespace-cleanup-start',
+        'namespace-cleanup-end', 'cleanup-receipt-persisted'];
+      if (ordering.some((phase) => !phases.some((entry) => entry.phase === phase))) throw new Error('single-judge phase timeline is incomplete');
+      report = { ...report, status: 'completed', s1DependencyRoot: s1Root, s1Commit: 'a1d2b6f0d444fcca5985766f8ea5d32181028f10',
+        oraclePin: request.oraclePin, candidateSha256: request.candidate.sha256, requestSha256: evidence.requestSha256,
+        payloadSha256: evidence.payloadSha256, childResultSha256, selection: evidence.selection,
+        candidateCorrectness: execution.result.judgement?.correctness ?? null,
+        planPath: namespace.planPath, planSha256: namespace.planSha256, cleanupReceiptPath: receipt.path,
+        cleanupReceiptSha256: receipt.sha256, cleanupProof: receiptRecord.proof,
+        phases: phasesView, hostCloseObserved: phases.some((entry) => entry.phase === 'host-close') };
+    } catch {
+      report = { ...report, status: 'failed-or-incomplete', planSha256: namespace?.planSha256 ?? null,
+        phases: phases.map(({ phase, timestamp, monotonicMs, fields }) => ({ phase, timestamp, monotonicMs, ...(fields ? { fields } : {}) })) };
+      writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { flag: 'wx', mode: 0o600 });
+      console.log(JSON.stringify({ probe: 'incomplete', reportPath, phases: phases.map(({ phase }) => phase) }));
+      throw new Error('single-judge probe did not establish the required S1/S5 evidence');
+    }
+    writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { flag: 'wx', mode: 0o600 });
+    console.log(JSON.stringify({ probe: 'completed', reportPath, candidateSha256: request.candidate.sha256,
+      correctness: report.candidateCorrectness, planSha256: namespace!.planSha256,
+      cleanupReceiptSha256: (report.cleanupReceiptSha256 as string) }));
+  }, 80_000);
+
   it('requires an explicit pinned S1 root outside its own repository', () => {
     const root = mkdtempSync(join(tmpdir(), 's1-root-discovery-'));
     const dependencyRoot = join(root, 'pinned-integration');
@@ -323,7 +486,8 @@ describe('bounded campaign strategy engine', () => {
         model: 'gpt-6-sol', provider: 'codex', effort: 'high', profileId: 'test-codex-sol', settingsId: 'effort-high',
         evaluationBoundaryHash: 'a'.repeat(64), toolsAssistanceHash: 'b'.repeat(64), tierId: 'visible-large',
         assignmentId: 'visible-review-assignment-01', runNamespace: 'review-repeat-01', outputRoot: join(root, 'run'),
-        s1DependencyRoot: resolve(dirname(fileURLToPath(import.meta.url)), '../../cq-settings-integration'),
+        s1DependencyRoot: process.env.CQ_S1_DEPENDENCY_ROOT
+          ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../cq-settings-integration'),
       });
       expect(result.status, JSON.stringify({ operationalStatus: result.strategy.operationalStatus,
         recipeCompleted: result.strategy.recipeCompleted, correctness: result.pipelineEvidence.candidateCorrectness,
@@ -339,6 +503,15 @@ describe('bounded campaign strategy engine', () => {
       expect(result.strategy.accounting.knownUsageSubtotals.tokenTotal).toBe(24);
       expect(result.taskOutcome).not.toBeNull();
       expect(result.pipelineEvidence.candidateCorrectness).toBe(result.strategy.candidateCorrectness);
+      expect(result.pipelineEvidence.protectedOracleCleanup.status).toBe('proven');
+      const cleanupReceipt = result.pipelineEvidence.protectedOracleCleanup.receipt;
+      expect(cleanupReceipt).not.toBeNull();
+      const cleanupBytes = readFileSync(join(root, 'run', cleanupReceipt!.path));
+      expect(createHash('sha256').update(cleanupBytes).digest('hex')).toBe(cleanupReceipt!.sha256);
+      const cleanupRecord = JSON.parse(cleanupBytes.toString('utf8')) as { planSha256: string; proof: Record<string, unknown> };
+      expect(cleanupRecord).toMatchObject({ planSha256: result.pipelineEvidence.protectedOracleCleanup.planSha256,
+        proof: { daemonVerified: true, ownershipVerified: true, containersAbsent: true,
+          processTree: 'stopped-and-reaped', cleanup: 'complete', volumeDisposition: 'quarantined', inventoryContentVerified: false } });
       expect(result.pipelineEvidence.formatCompliance).toBeNull();
       expect(result.pipelineEvidence.assignedStrategySuccess).toBe(result.strategy.assignedStrategySuccess);
       expect(result.pipelineEvidence.execution.sourceInvocationIds).toHaveLength(4);
@@ -640,6 +813,27 @@ describe('bounded campaign strategy engine', () => {
       expect(proof).toMatchObject({ protectedOracleCleanup: 'unobserved', cleanup: 'quarantined' });
       expect(proof.protectedOracleCleanupReceipt).toBeUndefined();
       expect(events).toEqual(['plan-created', 'namespace-cleaned']);
+    });
+  });
+
+  it('keeps the primary cleanup receipt error when phase diagnostics throw', async () => {
+    await withJudgeChild('success', async (childEntrypoint, request, root) => {
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
+        ownershipForTest: fakeJudgeOwnershipForTest(),
+        receiptWriteHookForTest: () => { throw new Error('private recorder detail'); },
+        phaseObserverForTest: (phase) => {
+          if (phase === 'namespace-cleanup-failed') throw new Error('observer sentinel must be ignored');
+        },
+      });
+      let caught: unknown;
+      try { await supervisor.run(request, new AbortController().signal); }
+      catch (error) { caught = error; }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe('protected-oracle cleanup receipt could not be persisted');
+      expect((caught as Error).message).not.toContain('observer sentinel');
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'inspect-observer-failure', deadlineEpochMs: Date.now() + 100 });
+      expect(proof).toMatchObject({ protectedOracleCleanup: 'unobserved', cleanup: 'quarantined' });
+      expect(proof.protectedOracleCleanupReceipt).toBeUndefined();
     });
   });
 

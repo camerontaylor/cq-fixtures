@@ -283,6 +283,8 @@ export interface RunSuiteResult {
   observations: Array<{ observation: NativeObservation; artifact: ImmutableArtifactRef }>;
   /** New immutable judgements, each pinned to its exact candidate and judge. */
   judgements: ImmutableArtifactRef[];
+  /** Persisted campaign outcomes, including launched attempts with no gradeable candidate. */
+  taskOutcomes: Array<{ outcome: TaskOutcome; artifact: ImmutableArtifactRef }>;
 }
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -751,6 +753,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const artifacts: CaseArtifact[] = [];
   const observations: RunSuiteResult['observations'] = [];
   const judgements: ImmutableArtifactRef[] = [];
+  const taskOutcomes: RunSuiteResult['taskOutcomes'] = [];
   const artifactStore = new ArtifactStore(opts.artifactRoot ?? join(tmpdir(), 'cq-harness', 'artifacts'));
   const absences: DriverAbsence[] = [];
   const contaminations: Array<{ case: string; where: string }> = [];
@@ -1189,6 +1192,25 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         emitRow = false;
         absences.push({ case: c.id, role: suite.role, cause });
         contaminations.push({ case: c.id, where: contaminatedAt });
+      } else if (isFixerCase(c) && fixerPatch === undefined &&
+        (thrown !== undefined || worker?.structuredOutput !== undefined)) {
+        // A fixer structuredOutput is not the candidate patch. If the trusted
+        // workspace diff was unavailable, do not promote output from an
+        // observation into candidate bytes or grade the untouched workspace.
+        // Keep the invocation as an explicit missing outcome with nullable
+        // correctness; the observation and TaskOutcome remain immutable evidence.
+        outcome = zeroOutcome(probeCount);
+        const cause = 'fixer candidate patch unavailable; no independent patch judgement was produced';
+        journalResult = thrown === undefined
+          ? { status: 'indeterminate', detail: cause }
+          : { status: 'failed', error: boundDriverCause(String(thrown)) };
+        diagnostics = cause;
+        candidateCorrectness = null;
+        formatConformance = null;
+        assignedStrategySuccess = null;
+        operationalStatus = 'operational-missingness';
+        emitRow = false;
+        absences.push({ case: c.id, role: suite.role, cause });
       } else if (worker === undefined && !(isFixerCase(c) && fixerPatch !== undefined)) {
         outcome = zeroOutcome(probeCount);
         // Same bound/redaction as the stopReason:error path — a driver that
@@ -1366,9 +1388,12 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         diagnostics = diagnostics === undefined ? cause : `${diagnostics}\n${cause}`;
         absences.push({ case: c.id, role: suite.role, cause });
       }
-      if (opts.experiment !== undefined && (fixerPatch !== undefined || worker?.structuredOutput !== undefined)) {
-        const isFixer = isFixerCase(c);
-        const candidateBytes = isFixer ? fixerPatch! : `${JSON.stringify(worker!.structuredOutput, null, 2)}\n`;
+      const isFixer = isFixerCase(c);
+      const hasJudgableCandidate = isFixer ? fixerPatch !== undefined : worker?.structuredOutput !== undefined;
+      if (opts.experiment !== undefined && hasJudgableCandidate) {
+        const candidateBytes = isFixer
+          ? fixerPatch!
+          : `${JSON.stringify(worker!.structuredOutput, null, 2)}\n`;
         const candidateSha256 = sha256(candidateBytes);
         const candidateName = isFixer ? 'candidate.patch' : 'candidate-output.json';
         const artifactKind = isFixer ? 'candidate-patch' : 'worker-output';
@@ -1420,10 +1445,10 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
             : thrown !== undefined ? null
               : worker !== undefined ? true : false,
         terminalCause: launchedBudgetStop ? 'budget-exhausted'
-          : worker?.stopReason === 'complete' ? 'complete'
-            : credentialFailure ? 'prelaunch-failure'
-              : thrown !== undefined || nativeObservation?.terminal.transportException !== null && nativeObservation !== undefined
+          : credentialFailure ? 'prelaunch-failure'
+              : thrown !== undefined || (nativeObservation !== undefined && nativeObservation.terminal.transportException !== null)
                 ? 'transport-error'
+                : worker?.stopReason === 'complete' ? 'complete'
                 : observedTerminal === 'provider-cancelled' ? 'provider-cancelled'
                   : observedTerminal === 'operator-cancelled' || nativeObservation?.terminal.cancelled === true ? 'operator-cancelled'
                     : worker === undefined ? 'prelaunch-failure' : 'unknown',
@@ -1449,6 +1474,15 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         }],
         judgements: taskJudgement === undefined ? [] : [taskJudgement],
       };
+      if (taskOutcome !== undefined) {
+        try {
+          const artifact = artifactStore.write(artifactContext, 'task-outcome.json', `${JSON.stringify(taskOutcome, null, 2)}\n`);
+          taskOutcomes.push({ outcome: taskOutcome, artifact });
+        } catch (error) {
+          const why = error instanceof Error ? error.message : String(error);
+          caseDiagnostics.push(`case ${c.id}: task outcome persistence failed: ${boundDriverCause(why)}`);
+        }
+      }
       if (emitRow) rows.push({
         role: suite.role, suite: suite.name, case: c.id, model, driver: driverName,
         // F6/CQ-4: only a non-default variant rides the row, so the default
@@ -1584,6 +1618,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
     runId,
     observations,
     judgements,
+    taskOutcomes,
   };
 }
 

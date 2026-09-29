@@ -68,6 +68,21 @@ class ThrowsAfterEditing implements Driver {
   }
 }
 
+class ThrowsWithoutPatchCapture implements Driver {
+  private identity?: InvocationIdentity;
+  async beginInvocation(identity: InvocationIdentity): Promise<void> { this.identity = identity; }
+  async run(): Promise<WorkerResult> { throw new Error('transport ended before trusted patch capture'); }
+  getObservation(invocationId: string): NativeObservation | undefined {
+    if (this.identity?.invocationId !== invocationId) return undefined;
+    const observation = fixtureObservation(this.identity, {
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      denials: [], stopReason: 'complete', structuredOutput: { candidate: 'not a patch' },
+    });
+    observation.terminal.transportException = { name: 'Error', message: 'transport ended before trusted patch capture' };
+    return observation;
+  }
+}
+
 class BudgetStop implements Driver {
   private identity?: InvocationIdentity;
   async beginInvocation(identity: InvocationIdentity): Promise<void> { this.identity = identity; }
@@ -483,4 +498,53 @@ describe('campaign envelope', () => {
     });
     expect(budgetResult.rows[0]?.stopCause).toBe('budget');
   }, 35_000);
+
+  it('keeps thrown structured output as observation evidence when trusted fixer patch capture is unavailable', async () => {
+    root = mkdtempSync(join(tmpdir(), 'cq-missing-patch-'));
+    mkdirSync(join(root, 'policy', 'denylist'), { recursive: true });
+    writeFileSync(join(root, 'policy', 'denylist', 'patterns.yml'), readFileSync(new URL('../policy/denylist/patterns.yml', import.meta.url)));
+    mkdirSync(join(root, 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'fixture', 'fix.txt'), 'broken\n');
+    writeFileSync(join(root, 'fixture', 'check.mjs'), 'process.exit(1);\n');
+    const suiteDir = join(root, 'suite');
+    mkdirSync(suiteDir);
+    writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify({
+      name: 'native-fixer', role: 'fixer-worker', provenance: { origin: 'hand-seeded' },
+      cases: [{ id: 'case-1', fixture: 'fixture', task: { prompt: 'Fix the file.' }, probe: { kind: 'check-rerun', check: 'fixture/check.mjs' } }],
+    }));
+    const context = experiment();
+    context.judgeManifest = {
+      sourcePin: 'a'.repeat(64),
+      dependencies: [{ path: 'fixture/check.mjs', sha256: sha256(readFileSync(join(root, 'fixture', 'check.mjs'))) }],
+    };
+    const artifactRoot = join(root, 'artifacts');
+    const result = await runSuite({
+      suiteDir, driver: new ThrowsWithoutPatchCapture(), model: 'gpt-6-luna', provider: 'openai',
+      driverName: 'codex-exec', repoRoot: root, artifactRoot, experiment: context,
+    });
+
+    expect(result.rows).toHaveLength(0);
+    expect(result.absences).toHaveLength(1);
+    expect(result.observations).toHaveLength(1);
+    const observation = result.observations[0]!.observation;
+    expect(observation.workerResult?.structuredOutput).toEqual({ candidate: 'not a patch' });
+    expect(observation.capture.patchSha256).toBeNull();
+    expect(observation.usage.tokenTotal).toMatchObject({ value: null, availability: 'unavailable', semantics: 'unknown' });
+    expect(observation.artifacts.some((item) => item.kind === 'candidate-patch')).toBe(false);
+    expect(result.judgements).toHaveLength(0);
+
+    expect(result.taskOutcomes).toHaveLength(1);
+    const savedAttempt = result.taskOutcomes[0]!;
+    expect(savedAttempt.outcome).toMatchObject({
+      candidateCorrectness: null, formatConformance: null, assignedStrategySuccess: null,
+      operationalStatus: 'operational-missingness',
+      execution: { launched: true, terminalCause: 'transport-error', sourceInvocationIds: [observation.identity.invocationId] },
+      judgements: [],
+      stages: [{ invocationId: observation.identity.invocationId, observation: result.observations[0]!.artifact }],
+    });
+    const envelopePath = join(artifactRoot, savedAttempt.artifact.path);
+    expect(sha256(readFileSync(envelopePath))).toBe(savedAttempt.artifact.sha256);
+    expect(JSON.parse(readFileSync(envelopePath, 'utf8'))).toEqual(savedAttempt.outcome);
+    expect(result.diagnostics.join('\n')).not.toContain('Received undefined');
+  }, 20_000);
 });

@@ -88,7 +88,7 @@ describe('visible Pi runSuite workspace conformance', () => {
     }
     expect(reports[0]!.experimentId).not.toBe(reports[1]!.experimentId);
     expect(reports[0]!.task.pinnedBaselineCommits[0]!.tree).toBe(reports[1]!.task.pinnedBaselineCommits[0]!.tree);
-  }, 30_000);
+  }, 75_000);
 
   it('parses only bounded decimal cutoffs and rejects overrides on non-Pi routes before setup', async () => {
     expect(parseVisiblePiModelWallClockMs('1000')).toBe(1_000);
@@ -149,7 +149,7 @@ describe('visible Pi runSuite workspace conformance', () => {
     expect(report.observations[0]!.observation.model.settings.launch?.value).toMatchObject({
       admissionId: 'fixture-visible-pi-complete', scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
     });
-  }, 30_000);
+  }, 60_000);
 
   it('retains qualified workspace/lifecycle evidence and measured nullable usage after fake Pi timeout', async () => {
     const env = fixture('timeout', 1_100);

@@ -17,12 +17,18 @@ afterEach(async () => {
 });
 
 describe('no-dispatch remediation preflight', () => {
-  it('fails closed when the active final-profile loader omits implicit runtime assets', async () => {
+  it('confirms the active final-profile loader pins every implicit runtime asset', async () => {
     await expect(runPreflight()).resolves.toMatchObject({
-      status: 'preflight-blocked',
+      status: 'preflight-green',
       dispatched: false,
       provisioned: false,
-      blocker: 'final-profile runtime pin loader pins differ (missing: runner/boundary/broker-public-assets/broker.mjs, runner/boundary/broker-public-assets/config.json, schema/suite.schema.json; hash mismatch: none)',
+      sourceEntryPoint: 'runner/native/run-visible-g1.ts',
+      taskIdExport: 'runner/experiment.ts#suiteTaskId',
+      implicitRuntimeAssets: {
+        'runner/boundary/broker-public-assets/broker.mjs': 'f20f5e3e74b8a3c545f417a03f12b144254bf1f27b57293e5419164d80c2fc6d',
+        'runner/boundary/broker-public-assets/config.json': 'c6d8d0b3dba5ac98779663e4cc75b92107fddb14430fc42180f4ec675c0f99b0',
+        'schema/suite.schema.json': 'cf9101552cec3fa2f062f6d56235627fd6441307b64cf5506ef9166937fde5ab',
+      },
     });
   });
 

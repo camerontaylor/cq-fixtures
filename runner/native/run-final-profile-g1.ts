@@ -1,8 +1,8 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --experimental-transform-types
 /** Bounded final HTTP-only Codex G1 through the pinned review-loop runSuite task. */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, open, readFile } from 'node:fs/promises';
+import { mkdir, open, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -49,6 +49,7 @@ const SOURCE_FILES = [
   'runner/boundary/codex-final-profile.ts', 'runner/boundary/container.ts',
   'runner/boundary/container-prepare.ts', 'runner/boundary/task-session.ts',
   'runner/boundary/task-staging.ts', 'runner/campaign/final-profile-admission.ts',
+  'runner/boundary/final-g1-runtime.mjs', 'runner/boundary/prepare-final-g1-runtime.mjs',
   'runner/boundary/evidence/fallback/final-profile-public-inputs.json',
 ];
 
@@ -58,6 +59,20 @@ export interface FinalProfileInvocationSetup {
   broker: { containerId: string; imageId: string; configPath: string };
   hostTaskRoot: string;
   exportRoot: string;
+}
+
+export interface FinalProfileSetupCleanupProof {
+  status: 'stopped-and-reaped' | 'quarantined';
+  /** null means cleanup timed out before the runtime could enumerate its owned resources. */
+  resourceIds: string[] | null;
+  volumeDisposition: 'disposed' | 'quarantined';
+}
+
+export interface FinalProfileSetupCleanupRequest {
+  identity: NativeSpawnContext['identity'];
+  reason: string;
+  deadlineEpochMs: number;
+  signal: AbortSignal;
 }
 
 export interface FinalProfileG1Options {
@@ -73,10 +88,102 @@ export interface FinalProfileG1Options {
   }) => Promise<FrozenFinalProfileApproval>;
   /** Stages the exact runSuite workspace and returns private S5 receipts. Values stay in memory. */
   prepareInvocation: (input: NativeSpawnContext) => Promise<FinalProfileInvocationSetup>;
+  /** Must stop all invocation-owned provisioning and namespaces before disposing or quarantining volumes. */
+  cleanupInvocation: (input: FinalProfileSetupCleanupRequest) => Promise<FinalProfileSetupCleanupProof>;
   quotaSource?: QuotaSource;
   launchInventory?: NativeLaunchInventory;
   executable?: string;
   now?: () => number;
+}
+
+export class FinalProfileSetupFailure extends Error {
+  readonly cleanupProof: FinalProfileSetupCleanupProof | null;
+
+  constructor(message: string, cleanupProof: FinalProfileSetupCleanupProof | null, cause?: unknown) {
+    super(message, { cause });
+    this.name = 'FinalProfileSetupFailure';
+    this.cleanupProof = cleanupProof;
+  }
+}
+
+/**
+ * Bounds provisioning separately from the assignment decision deadline.
+ * On every failure it aborts the exact signal given to S5, then awaits the
+ * runtime's namespace/staging cleanup contract for the remaining shutdown time.
+ */
+export async function runBoundedFinalProfileSetup<T>(input: {
+  context: NativeSpawnContext;
+  setupBudgetMs: number;
+  shutdownBudgetMs: number;
+  run: (context: NativeSpawnContext) => Promise<T>;
+  cleanup: (request: FinalProfileSetupCleanupRequest) => Promise<FinalProfileSetupCleanupProof>;
+}): Promise<T> {
+  if (!Number.isFinite(input.setupBudgetMs) || input.setupBudgetMs < 1 ||
+      !Number.isFinite(input.shutdownBudgetMs) || input.shutdownBudgetMs < 1) throw new RangeError('finite setup and shutdown budgets required');
+  const started = Date.now();
+  const setupDeadlineEpochMs = Math.min(input.context.deadlineEpochMs, started + input.setupBudgetMs);
+  const setupController = new AbortController();
+  const signal = AbortSignal.any([input.context.signal, setupController.signal]);
+  const context: NativeSpawnContext = { ...input.context, deadlineEpochMs: setupDeadlineEpochMs, signal };
+  let rejectSetup!: (error: Error) => void;
+  const setupDeadline = new Promise<never>((_, reject) => { rejectSetup = reject; });
+  void setupDeadline.catch(() => undefined);
+  const rejectForAbort = () => rejectSetup(new Error('final-profile setup cancelled by its assignment signal'));
+  input.context.signal.addEventListener('abort', rejectForAbort, { once: true });
+  const setupTimer = setTimeout(() => {
+    const error = new Error('final-profile setup deadline elapsed');
+    setupController.abort(error);
+    rejectSetup(error);
+  }, Math.max(1, setupDeadlineEpochMs - Date.now()));
+  const work = Promise.resolve().then(() => {
+    if (signal.aborted || Date.now() >= setupDeadlineEpochMs) throw new Error('final-profile setup began after its deadline');
+    return input.run(context);
+  });
+  try {
+    const value = await Promise.race([work, setupDeadline]);
+    if (signal.aborted || Date.now() >= setupDeadlineEpochMs) throw new Error('final-profile setup completed after its deadline');
+    return value;
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    setupController.abort(cause);
+    const shutdownDeadlineEpochMs = Math.min(input.context.deadlineEpochMs, Date.now() + input.shutdownBudgetMs);
+    const cleanupController = new AbortController();
+    const cleanupTimer = setTimeout(() => cleanupController.abort(new Error('final-profile setup cleanup deadline elapsed')),
+      Math.max(1, shutdownDeadlineEpochMs - Date.now()));
+    let proof: FinalProfileSetupCleanupProof | null = null;
+    let cleanupFailure: unknown;
+    const cleanup = Promise.resolve().then(() => input.cleanup({
+      identity: input.context.identity, reason, deadlineEpochMs: shutdownDeadlineEpochMs, signal: cleanupController.signal,
+    }));
+    try {
+      proof = await Promise.race([
+        cleanup,
+        new Promise<never>((_, reject) => cleanupController.signal.addEventListener('abort', () => reject(cleanupController.signal.reason ?? new Error('setup cleanup deadline elapsed')), { once: true })),
+      ]);
+      if (!Array.isArray(proof.resourceIds) || !['disposed', 'quarantined'].includes(proof.volumeDisposition) ||
+          !['stopped-and-reaped', 'quarantined'].includes(proof.status)) {
+        throw new Error('runtime did not prove setup resources stopped before volume disposition');
+      }
+    } catch (error) { cleanupFailure = error; }
+    finally { clearTimeout(cleanupTimer); }
+    if (cleanupFailure) {
+      throw new FinalProfileSetupFailure(
+        `final-profile setup failed and resources are quarantined under invocation ${input.context.identity.invocationId}`,
+        { status: 'quarantined', resourceIds: null, volumeDisposition: 'quarantined' },
+        new AggregateError([cause, cleanupFailure], 'setup and bounded cleanup both failed'),
+      );
+    }
+    if (proof?.status !== 'stopped-and-reaped') {
+      throw new FinalProfileSetupFailure(
+        `final-profile setup failed; runtime quarantined resources for invocation ${input.context.identity.invocationId}`,
+        proof, cause,
+      );
+    }
+    throw new FinalProfileSetupFailure(`final-profile setup aborted after awaited cleanup: ${reason}`, proof, cause);
+  } finally {
+    clearTimeout(setupTimer);
+    input.context.signal.removeEventListener('abort', rejectForAbort);
+  }
 }
 
 export interface FinalProfileG1Result {
@@ -89,10 +196,52 @@ export interface FinalProfileG1Result {
 }
 
 /** Public pin function for independent parent preregistration. */
-export async function finalProfileG1SourcePins(): Promise<{ pins: Record<string, string>; sourcePin: string }> {
+export async function finalProfileG1SourcePins(
+  oracleDependencies: ReadonlyArray<{ path: string; sha256: string }> = [],
+): Promise<{ pins: Record<string, string>; sourcePin: string }> {
   const pins: Record<string, string> = {};
-  for (const path of SOURCE_FILES) pins[path] = sha256(await readFile(join(ROOT, path)));
+  const paths = await discoverSourceDependencyClosure([...SOURCE_FILES, ...oracleDependencies.map((dependency) => dependency.path)]);
+  for (const path of paths) {
+    const bytes = await readFile(join(ROOT, path));
+    const actual = sha256(bytes);
+    const declared = oracleDependencies.find((dependency) => dependency.path === path)?.sha256;
+    if (declared !== undefined && declared !== actual) throw new Error(`oracle manifest source changed: ${path}`);
+    pins[path] = actual;
+  }
   return { pins, sourcePin: sha256(canonicalJson(pins)) };
+}
+
+async function discoverSourceDependencyClosure(initialPaths: readonly string[]): Promise<string[]> {
+  const pending = [...new Set(initialPaths)].map((path) => resolve(ROOT, path));
+  const visited = new Set<string>();
+  while (pending.length) {
+    const candidate = pending.pop()!;
+    const actual = await realpath(candidate);
+    const relative = resolve(ROOT) === actual ? '' : actual.slice(resolve(ROOT).length + 1).replaceAll('\\', '/');
+    if (!relative || relative.startsWith('../') || relative.startsWith('/')) throw new Error('source pin dependency escaped repository root');
+    if (visited.has(relative)) continue;
+    visited.add(relative);
+    const source = await readFile(actual, 'utf8');
+    const imports = new Set<string>();
+    for (const match of source.matchAll(/\b(?:import|export)\s+(?:type\s+)?[^'";]*?\bfrom\s*['"]([^'"]+)['"]/gsu)) {
+      if (match[1]?.startsWith('.')) imports.add(match[1]);
+    }
+    for (const match of source.matchAll(/\bimport\s*['"]([^'"]+)['"]/gu)) {
+      if (match[1]?.startsWith('.')) imports.add(match[1]);
+    }
+    for (const match of source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/gu)) {
+      if (match[1]?.startsWith('.')) imports.add(match[1]);
+    }
+    for (const specifier of imports) {
+      const base = resolve(dirname(actual), specifier);
+      const sourceBase = base.replace(/\.(?:mjs|cjs|js)$/u, '');
+      const candidates = [base, `${sourceBase}.ts`, `${sourceBase}.tsx`, `${sourceBase}.mts`, `${sourceBase}.cts`, `${sourceBase}.js`, `${sourceBase}.json`, join(base, 'index.ts'), join(base, 'index.js')];
+      for (const path of candidates) {
+        try { await realpath(path); pending.push(path); break; } catch { /* try the next source extension */ }
+      }
+    }
+  }
+  return [...visited].sort();
 }
 
 export function finalProfileInvocationIdentity(input: {
@@ -159,7 +308,7 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   } });
   const prompt = bundle.suite.cases[0]?.task.prompt;
   if (!prompt) throw new Error('review-loop corpus did not provide a task prompt');
-  const { pins: sourcePins, sourcePin } = await withinAssignment(finalProfileG1SourcePins());
+  const { pins: sourcePins, sourcePin } = await withinAssignment(finalProfileG1SourcePins(bundle.oraclePin.dependencies));
   const experiment = experimentId({
     track: 'final-profile-G1', sourcePins,
     corpusPin: `${task.sourceId}:${task.baselineId}:${task.baselineCommit}:${bundle.oraclePin.sha256}`,
@@ -210,14 +359,18 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
     systemContext: null, tools: null, extensions: null, assistance: null, sessionBehavior: 'ephemeral Codex turn; runner workspace binding', feedbackBehavior: null,
   };
   const comparison: LaunchComparison = compareLaunchProfiles(configured, effective);
+  let expectedTaskBaselineCommit: string | undefined;
   const driver = new CodexExecDriver({ executable, version: configured.version, profile: configured.label,
     model: 'gpt-6-sol', effort: 'low', hardWallClockMs: MODEL_BUDGET_MS,
     artifactDirectory: join(artifactRoot, 'native-events'), invocationStage: 'final-profile-G1', assignmentDeadlineEpochMs: deadlineEpochMs, signal: abort.signal,
-    spawnAdapterFactory: async (context) => {
-      if (context.identity.assignmentId !== assignmentId || context.identity.attemptId !== attemptId || context.stage !== 'final-profile-G1') throw new Error('native invocation differs from the frozen G1 assignment');
-      if (Date.now() - started > SETUP_BUDGET_MS) throw new Error('final-profile G1 setup budget elapsed before S5 preparation');
-      const setup = await withinAssignment(options.prepareInvocation(context));
-      if (Date.now() - started > SETUP_BUDGET_MS || context.signal.aborted) throw new Error('assignment setup budget elapsed during final-profile preparation');
+    expectedTaskBaselineCommit: () => expectedTaskBaselineCommit,
+    spawnAdapterFactory: (context) => runBoundedFinalProfileSetup({ context,
+      setupBudgetMs: SETUP_BUDGET_MS, shutdownBudgetMs: TEARDOWN_BUDGET_MS,
+      cleanup: options.cleanupInvocation,
+      run: async (setupContext) => {
+      if (setupContext.identity.assignmentId !== assignmentId || setupContext.identity.attemptId !== attemptId || setupContext.stage !== 'final-profile-G1') throw new Error('native invocation differs from the frozen G1 assignment');
+      const setup = await options.prepareInvocation(setupContext);
+      if (setupContext.signal.aborted || Date.now() >= setupContext.deadlineEpochMs) throw new Error('assignment setup budget elapsed during final-profile preparation');
       if (resolve(setup.hostTaskRoot) !== resolve(context.cwd)) throw new Error('S5 staged workspace must be the exact runSuite host workspace');
       if (setup.specification.image !== FINAL_NATIVE_IMAGE || setup.broker.imageId !== FINAL_BROKER_IMAGE ||
           setup.specification.network.brokerIdentity !== FINAL_BROKER_IDENTITY || setup.specification.taskVolume !== setup.staging.taskVolume ||
@@ -226,6 +379,7 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
       }
       const sourceHead = execFileSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], { cwd: context.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
       if (sourceHead !== setup.staging.baselineCommit) throw new Error('S5 stage baseline differs from the runSuite workspace baseline');
+      expectedTaskBaselineCommit = setup.staging.baselineCommit;
       const privateAuth = setup.staging.context.entries.find((entry) => entry.path === 'auth.json');
       if (!privateAuth || privateAuth.kind !== 'file' || typeof privateAuth.data !== 'string') throw new Error('private staged access-only auth is unavailable');
       validateFinalCodexAuth(Buffer.from(privateAuth.data, 'base64').toString('utf8'), Math.ceil((deadlineEpochMs - Date.now()) / 1000));
@@ -239,20 +393,20 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
       const admit = await withinAssignment(freezeFinalProfileAdmission(options.admissionLedgerRoot, approval));
       const finalAdapter = createFinalCodexSpawnAdapter({ ...setup, budgetSeconds: MODEL_BUDGET_MS / 1000,
         stage: 'final-profile-G1', admit: async (request) => {
-      if (context.signal.aborted || Date.now() >= deadlineEpochMs || Date.now() - started > SETUP_BUDGET_MS) throw new Error('assignment deadline elapsed before final-profile admission');
+      if (setupContext.signal.aborted || Date.now() >= setupContext.deadlineEpochMs) throw new Error('assignment deadline elapsed before final-profile admission');
           return admit(request);
         } });
       const adapter: NativeSpawnAdapter = async (command, args, launchContext) => {
-        if (context.signal.aborted || Date.now() >= deadlineEpochMs) throw new Error('assignment deadline elapsed before native transport');
+        if (setupContext.signal.aborted || Date.now() >= deadlineEpochMs) throw new Error('assignment deadline elapsed before native transport');
         return finalAdapter(command, args, launchContext);
       };
       const wrappedAdapter: NativeSpawnAdapter = async (command, args, launchContext) => ({
         ...await adapter(command, args, launchContext), profileInvocationIdentity: computed.invocationIdentity,
       });
       return wrappedAdapter;
-    },
+    } }),
   });
-  const capture = new Map<string, { baselineCommit: string; candidateCommit: string | null }>();
+  const capture = new Map<string, { workspace: string; baselineCommit: string; candidateCommit: string | null }>();
   const corpusWrapped = bundle.wrapDriver(driver);
   const wrapped = new Proxy(corpusWrapped, {
     get(target, property) {
@@ -269,7 +423,7 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
         if (abort.signal.aborted || Date.now() >= deadlineEpochMs) throw new Error('whole-assignment deadline elapsed before runSuite candidate capture');
         const baselineCommit = bundle.pinnedBaselineCommit(workspace);
         if (!baselineCommit) throw new Error('review-loop host baseline pin was not captured');
-        capture.set(workspace, { baselineCommit, candidateCommit: bundle.pinnedCandidateCommit(workspace) ?? null });
+        capture.set(workspace, { workspace, baselineCommit, candidateCommit: bundle.pinnedCandidateCommit(workspace) ?? null });
         return result;
       };
       const value = Reflect.get(target, property, target) as unknown;
@@ -292,10 +446,18 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
       candidateCommit: [...capture.values()][0]?.candidateCommit ?? null }));
     const launchEvidence = observations.map(({ observation }) => observation.model.settings.launch?.value).filter(Boolean);
     for (const item of launchEvidence) {
-      const launch = item as { scope?: unknown; isolation?: unknown; heldOut?: unknown; taskExport?: { inventoryHash?: unknown; head?: unknown } };
+      const launch = item as { scope?: unknown; isolation?: unknown; heldOut?: unknown; taskExport?: {
+        inventoryHash?: unknown; head?: unknown; publication?: { destination?: unknown; baselineCommit?: unknown; baselineTree?: unknown;
+          hostUnchanged?: unknown; afterTeardown?: unknown; captureEligible?: unknown };
+      } };
       if (launch.scope !== 'boundary' || launch.isolation !== 'unverified' || launch.heldOut !== false ||
-          !/^[a-f0-9]{64}$/u.test(String(launch.taskExport?.inventoryHash ?? '')) || !/^[a-f0-9]{40,64}$/u.test(String(launch.taskExport?.head ?? ''))) {
-        throw new Error('final-profile G1 lacks completed boundary stop and task export evidence');
+          !/^[a-f0-9]{64}$/u.test(String(launch.taskExport?.inventoryHash ?? '')) || !/^[a-f0-9]{40,64}$/u.test(String(launch.taskExport?.head ?? '')) ||
+          resolve(String(launch.taskExport?.publication?.destination ?? '')) !== resolve([...capture.values()][0]?.workspace ?? '') ||
+          launch.taskExport?.publication?.baselineCommit !== observations[0]?.baselineCommit ||
+          !/^[a-f0-9]{40,64}$/u.test(String(launch.taskExport?.publication?.baselineTree ?? '')) ||
+          launch.taskExport?.publication?.hostUnchanged !== true || launch.taskExport?.publication?.afterTeardown !== true ||
+          launch.taskExport?.publication?.captureEligible !== true) {
+        throw new Error('final-profile G1 lacks completed stop, exact-workspace publication, and baseline evidence');
       }
     }
     if (launchEvidence.length !== 1) throw new Error('final-profile G1 requires exactly one native boundary observation');
@@ -311,7 +473,9 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
       pins: { sourcePins, sourcePin, promptSha256: sha256(prompt), oracleSha256: bundle.oraclePin.sha256,
         publicFinalProfileInputsSha256: sha256(await readFile(join(ROOT, 'runner/boundary/evidence/fallback/final-profile-public-inputs.json'))) },
       budget: { totalWallClockMs: TOTAL_ASSIGNMENT_MS, setupMs: SETUP_BUDGET_MS, modelMs: MODEL_BUDGET_MS, teardownMs: TEARDOWN_BUDGET_MS, judgeMs: JUDGE_BUDGET_MS,
-        hardWholeAssignmentDeadline: true, schedulerMaxAttempts: 1, maxTokens: null, hardTokenCap: false, usage: 'unknown-usage-no-capacity-claim' },
+        hardDecisionDeadline: true, wholeAssignmentResourceLifetimeEnforced: false,
+        lateWorkDisposition: 'decision-cutoff; assignment quarantined; candidate capture and complete report forbidden after cutoff',
+        frozenLaneEligible: false, schedulerMaxAttempts: 1, maxTokens: null, hardTokenCap: false, usage: 'unknown-usage-no-capacity-claim' },
       quotaReads, profileComparison: comparison,
       launchProfiles: { configured, effective },
       runDirectory, artifactRoot, queueDirectory, rows: result.rows, tables: result.tables,
@@ -364,7 +528,7 @@ export async function runFinalProfileG1Cli(modulePath: string): Promise<FinalPro
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const modulePath = process.argv[2];
-  if (modulePath === undefined) throw new Error('usage: node --experimental-strip-types runner/native/run-final-profile-g1.ts <private-runtime-module.mjs>');
+  if (modulePath === undefined) throw new Error('usage: node --experimental-transform-types runner/native/run-final-profile-g1.ts <private-runtime-module.mjs>');
   runFinalProfileG1Cli(modulePath).then((result) => process.stdout.write(`${JSON.stringify({ ...result, rows: result.rows.length, tables: result.tables.length })}\n`))
     .catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
 }

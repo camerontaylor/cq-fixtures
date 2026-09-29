@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,8 +14,10 @@ import { unavailableObservation, type InvocationIdentity } from '../runner/nativ
 import { RUNNER_SESSION_DIRECTORY } from '../runner/native/session.ts';
 import { ObservedNativeDriver, createWorkerResult } from '../runner/native/observed-driver.ts';
 import { runVisibleG1, visibleG1TestInventory } from '../runner/native/run-visible-g1.ts';
+import { runBoundedFinalProfileSetup } from '../runner/native/run-final-profile-g1.ts';
 import { normalizeG2NativeReceipt, runG2Harness, type G2ProbeFixture, type NativeExecutionReceipt } from '../runner/native/g2-harness.ts';
 import type { LaunchProfile } from '../runner/native/launch-inventory.ts';
+import { SAFE_GIT_CONFIG, snapshotTask } from '../runner/boundary/task-tree.ts';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -32,6 +34,16 @@ function fakeExecutable(root: string, output: string, exit = 0): string {
   writeFileSync(file, source, { mode: 0o700 });
   chmodSync(file, 0o700);
   return file;
+}
+
+function fakeTaskWorkspace(root: string): string {
+  mkdirSync(join(root, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(root, '.git', 'refs', 'heads'), { recursive: true });
+  writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  writeFileSync(join(root, '.git', 'refs', 'heads', 'main'), `${'a'.repeat(40)}\n`);
+  writeFileSync(join(root, '.git', 'config'), SAFE_GIT_CONFIG);
+  writeFileSync(join(root, 'settings.js'), 'export const value = 1;\n');
+  return snapshotTask(root).inventoryHash;
 }
 
 function invocation(prompt = 'simulated task', model = 'gpt-6-luna'): OpInvocation {
@@ -119,7 +131,7 @@ describe('native transport event and identity handling', () => {
     expect(observation.model.requested).toMatchObject({ value: 'opencode-go/space-bunny-free', status: 'requested' });
     expect(readFileSync(observation.artifacts[0]!.path, 'utf8')).not.toContain(hidden);
     expect(observation.usage.counters.input.value).toBe(7);
-  });
+  }, 15_000);
 
   it('stages the configured Pi credential only in the child environment and keeps global extensions enabled', async () => {
     const root = tempRoot();
@@ -316,13 +328,121 @@ describe('supervised native subprocesses', () => {
     expect(cleanup).toEqual(['terminate', 'finalize']);
   });
 
+  it('aborts delayed setup at the setup cutoff, awaits runtime cleanup, and forbids late capture', async () => {
+    const parent = new AbortController();
+    const context = { cwd: process.cwd(), identity: identity('setup-delayed'), stage: 'final-profile-G1' as const,
+      deadlineEpochMs: Date.now() + 2_000, signal: parent.signal };
+    let sawAbort = false;
+    let captured = false;
+    let cleanupFinished = false;
+    await expect(runBoundedFinalProfileSetup({ context, setupBudgetMs: 30, shutdownBudgetMs: 500,
+      async run(setupContext) {
+        expect(setupContext.deadlineEpochMs).toBeLessThanOrEqual(context.deadlineEpochMs);
+        await new Promise<void>((resolve) => setupContext.signal.addEventListener('abort', () => { sawAbort = true; resolve(); }, { once: true }));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { staged: true };
+      },
+      async cleanup(request) {
+        expect(request.identity).toEqual(context.identity);
+        expect(request.deadlineEpochMs).toBeGreaterThan(Date.now());
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        cleanupFinished = true;
+        return { status: 'stopped-and-reaped', resourceIds: ['worker-setup-delayed'], volumeDisposition: 'disposed' };
+      },
+    }).then((value) => { captured = true; return value; })).rejects.toMatchObject({
+      name: 'FinalProfileSetupFailure', cleanupProof: { status: 'stopped-and-reaped' },
+    });
+    expect(sawAbort).toBe(true);
+    expect(cleanupFinished).toBe(true);
+    expect(captured).toBe(false);
+  });
+
+  it('propagates assignment cancellation to setup before awaiting cleanup', async () => {
+    const parent = new AbortController();
+    const context = { cwd: process.cwd(), identity: identity('setup-assignment-cancel'), stage: 'final-profile-G1' as const,
+      deadlineEpochMs: Date.now() + 2_000, signal: parent.signal };
+    let sawAbort = false;
+    let cleaned = false;
+    const pending = runBoundedFinalProfileSetup({ context, setupBudgetMs: 1_000, shutdownBudgetMs: 500,
+      run(setupContext) {
+        return new Promise(() => setupContext.signal.addEventListener('abort', () => { sawAbort = true; }, { once: true }));
+      },
+      async cleanup() {
+        cleaned = true;
+        return { status: 'stopped-and-reaped', resourceIds: ['worker-assignment-cancel'], volumeDisposition: 'disposed' };
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    parent.abort(new Error('assignment cancellation test'));
+    await expect(pending).rejects.toMatchObject({ name: 'FinalProfileSetupFailure', cleanupProof: { status: 'stopped-and-reaped' } });
+    expect(sawAbort).toBe(true);
+    expect(cleaned).toBe(true);
+  });
+
+  it('quarantines stuck setup when runtime cannot prove namespace teardown before shutdown cutoff', async () => {
+    const parent = new AbortController();
+    const context = { cwd: process.cwd(), identity: identity('setup-stuck'), stage: 'final-profile-G1' as const,
+      deadlineEpochMs: Date.now() + 2_000, signal: parent.signal };
+    let sawAbort = false;
+    let captured = false;
+    await expect(runBoundedFinalProfileSetup({ context, setupBudgetMs: 25, shutdownBudgetMs: 500,
+      run(setupContext) {
+        return new Promise(() => setupContext.signal.addEventListener('abort', () => { sawAbort = true; }, { once: true }));
+      },
+      async cleanup() {
+        return { status: 'quarantined', resourceIds: ['worker-setup-stuck'], volumeDisposition: 'quarantined' };
+      },
+    }).then((value) => { captured = true; return value; })).rejects.toMatchObject({
+      name: 'FinalProfileSetupFailure', cleanupProof: { status: 'quarantined', resourceIds: ['worker-setup-stuck'] },
+    });
+    expect(sawAbort).toBe(true);
+    expect(captured).toBe(false);
+  });
+
+  it('aborts timed-out cleanup and does not invent an empty resource inventory', async () => {
+    const context = { cwd: process.cwd(), identity: identity('setup-cleanup-timeout'), stage: 'final-profile-G1' as const,
+      deadlineEpochMs: Date.now() + 2_000, signal: new AbortController().signal };
+    let cleanupAborted = false;
+    let captured = false;
+    await expect(runBoundedFinalProfileSetup({ context, setupBudgetMs: 20, shutdownBudgetMs: 25,
+      run(setupContext) {
+        return new Promise(() => setupContext.signal.addEventListener('abort', () => undefined, { once: true }));
+      },
+      cleanup(request) {
+        return new Promise(() => request.signal.addEventListener('abort', () => { cleanupAborted = true; }, { once: true }));
+      },
+    }).then((value) => { captured = true; return value; })).rejects.toMatchObject({
+      name: 'FinalProfileSetupFailure', cleanupProof: { status: 'quarantined', resourceIds: null, volumeDisposition: 'quarantined' },
+    });
+    expect(cleanupAborted).toBe(true);
+    expect(captured).toBe(false);
+  });
+
+  it('aborts setup before awaiting cleanup when the factory rejects', async () => {
+    const context = { cwd: process.cwd(), identity: identity('setup-rejected'), stage: 'final-profile-G1' as const,
+      deadlineEpochMs: Date.now() + 2_000, signal: new AbortController().signal };
+    let setupSignal: AbortSignal | undefined;
+    let observedAbortDuringCleanup = false;
+    await expect(runBoundedFinalProfileSetup({ context, setupBudgetMs: 500, shutdownBudgetMs: 500,
+      async run(setupContext) { setupSignal = setupContext.signal; throw new Error('simulated setup rejection'); },
+      async cleanup() {
+        observedAbortDuringCleanup = setupSignal?.aborted === true;
+        return { status: 'stopped-and-reaped', resourceIds: [], volumeDisposition: 'disposed' };
+      },
+    })).rejects.toMatchObject({ name: 'FinalProfileSetupFailure', cleanupProof: { status: 'stopped-and-reaped' } });
+    expect(observedAbortDuringCleanup).toBe(true);
+  });
+
   it('awaits boundary stop and export before returning a failed transport envelope', async () => {
     const root = tempRoot();
+    fakeTaskWorkspace(root);
     const script = join(root, 'boundary-cli.cjs');
     writeFileSync(script, "process.stdout.write('partial-result\\n'); process.exit(7);");
+    const inventoryHash = snapshotTask(root, false, false).inventoryHash;
     const order: string[] = [];
     const result = await runSupervised(process.execPath, [script], {
       cwd: root, identity: identity('boundary-failed'), stage: 'final-profile-G1', timeoutMs: 10_000,
+      expectedTaskBaselineCommit: 'c'.repeat(40),
       spawnAdapter: async (command, args, context) => {
         expect(context.identity).toEqual(identity('boundary-failed'));
         expect(context.stage).toBe('final-profile-G1');
@@ -331,14 +451,19 @@ describe('supervised native subprocesses', () => {
           child, boundaryIdentity: 'frozen-boundary', launchIdentity: 'launch-hash', admissionId: 'final-g1-admission',
           environmentNames: ['HOME', 'CODEX_HOME'], scope: 'boundary', isolation: 'unverified', heldOut: false,
           async terminate() { order.push('terminate'); },
-          async finalize() { order.push('finalize'); return { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) }; },
+          async finalize() { order.push('finalize'); return { inventoryHash, head: 'b'.repeat(40), publication: {
+            destination: root, baselineCommit: 'c'.repeat(40), baselineTree: 'd'.repeat(40),
+            hostUnchanged: true, afterTeardown: true, captureEligible: true,
+          } }; },
         };
       },
     });
     expect(order).toEqual(['terminate', 'finalize']);
     expect(result).toMatchObject({ code: 7, stdout: 'partial-result\n', treeStopped: true, terminal: 'exit' });
     expect(result.lifecycle).toEqual({ terminated: true, finalized: true });
-    expect(result.launch).toMatchObject({ scope: 'boundary', isolation: 'unverified', heldOut: false, taskExport: { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) } });
+    expect(result.launch).toMatchObject({ scope: 'boundary', isolation: 'unverified', heldOut: false, taskExport: { inventoryHash, head: 'b'.repeat(40), publication: {
+      destination: root, baselineCommit: 'c'.repeat(40), hostUnchanged: true, afterTeardown: true, captureEligible: true,
+    } } });
   });
 
   it('still awaits finalization and preserves the envelope when boundary shutdown fails', async () => {

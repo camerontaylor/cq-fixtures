@@ -26,6 +26,7 @@ export interface CodexExecOptions {
   invocationStage?: NativeInvocationStage;
   assignmentDeadlineEpochMs?: number;
   signal?: AbortSignal;
+  expectedTaskBaselineCommit?: () => string | undefined;
 }
 
 /** Native subscription route through `codex exec --json`; this never starts a Codex app-server turn. */
@@ -42,6 +43,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
   private readonly invocationStage: NativeInvocationStage;
   private readonly assignmentDeadlineEpochMs: number | undefined;
   private readonly assignmentSignal: AbortSignal | undefined;
+  private readonly expectedTaskBaselineCommit: (() => string | undefined) | undefined;
 
   constructor(options: CodexExecOptions = {}) {
     const executable = options.executable ?? 'codex';
@@ -66,6 +68,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
     this.invocationStage = options.invocationStage ?? 'visible-calibration-G1';
     this.assignmentDeadlineEpochMs = options.assignmentDeadlineEpochMs;
     this.assignmentSignal = options.signal;
+    this.expectedTaskBaselineCommit = options.expectedTaskBaselineCommit;
   }
 
   protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
@@ -100,6 +103,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
         ...(this.boundaryForInvocation ? { boundary: this.boundaryForInvocation(identity, invocation, cwd) } : {}),
         ...(this.spawnAdapter ? { spawnAdapter: this.spawnAdapter } : {}),
         ...(this.spawnAdapterFactory ? { spawnAdapterFactory: this.spawnAdapterFactory } : {}),
+        ...(this.expectedTaskBaselineCommit ? { expectedTaskBaselineCommit: this.expectedTaskBaselineCommit() } : {}),
       });
       this.reportProcessTree(identity, result.treeStopped);
       if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };

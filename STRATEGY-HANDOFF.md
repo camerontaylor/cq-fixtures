@@ -150,16 +150,13 @@ tables come only from that mapper. Raw `runSuite` rows remain grouped under
 `localJudge` as local diagnostics and are marked `pipelineCampaignEvidence:
 false`.
 
-The mapping is fail-closed if the S1 mapper rejects the frozen identity. In the
-currently checked-out S1 integration revision, its identity check compares the
-row and host judgement `judgePin` (the corpus oracle content pin) to
-`judgeManifestHash(context.judgeManifest)`. Those are distinct pins for the
-review-loop bundle, so the real successful `runSuite` path currently raises
-`runSuite judge pin does not match frozen oracle manifest`. The caller does not
-rewrite the historical row or judgement to hide this mismatch. S1 must reconcile
-its host-oracle pin and manifest-hash join before this visible path can emit a
-mapped successful candidate. Until then, the real-store integration test
-reaches and documents this contract failure; no paid provider call is made.
+The mapper joins the row and host judgement `judgePin` to the frozen semantic
+oracle `sourcePin`, and validates the dependency manifest hash separately. This
+preserves the historical `runSuite` row and judgement unchanged while allowing
+the exact host judgement to map. The real-store fake-driver test exercises a
+successful mapping and checks its appended immutable recipe judgement, stage
+references, nullable whole-pipeline usage, and original judgement history.
+No paid provider call is made.
 Pipeline recipe format and assigned success are passed separately from the S1
 host row. The synthetic S1 driver supplies a fixed structured response, so S4
 format compliance remains unknown unless an admitted recipe stage reports it.

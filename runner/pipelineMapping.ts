@@ -103,11 +103,12 @@ function deriveUsage(stages: readonly PipelineStageLedger[]): NonNullable<Result
   for (const counter of counters) {
     let total = 0;
     let known = modelStages.length > 0;
+    const inclusion = modelStages[0]?.usage[counter].inclusion;
     for (const stage of modelStages) {
       const observed = stage.usage[counter];
       const valid = observed.availability === 'observed' && typeof observed.value === 'number'
         && Number.isFinite(observed.value) && observed.value >= 0;
-      if (!valid || (counter === 'tokenTotal'
+      if (!valid || observed.inclusion !== inclusion || (counter === 'tokenTotal'
         ? observed.semantics !== 'authoritative-total'
         : observed.semantics !== counter)) {
         known = false;
@@ -182,7 +183,7 @@ export function mapPipelineCampaignEvidence(input: {
     const key = `${stage.stageId}\0${stage.attemptId}`;
     if (stageKeys.has(key)) throw new Error('pipeline mapping: duplicate stage/attempt in native ledger');
     stageKeys.add(key);
-    if (stage.invocationId === null) throw new Error('pipeline mapping: native stage has no invocation identity');
+    if (stage.invocationId === null || stage.invocationId.trim().length === 0) throw new Error('pipeline mapping: native stage has no invocation identity');
     if (invocations.has(stage.invocationId)) throw new Error('pipeline mapping: native invocation identity is reused');
     invocations.add(stage.invocationId);
     if (!(stage.invocationId in input.stageEvidence)) throw new Error(`pipeline mapping: missing retained evidence refs for invocation '${stage.invocationId}'`);
@@ -195,7 +196,7 @@ export function mapPipelineCampaignEvidence(input: {
   if (matching.length > 1) throw new Error(`pipeline mapping: ambiguous runSuite rows for '${caseId}'`);
   const judgeRow = matching[0];
   const historicalJudgements = judgeRow?.taskOutcome?.judgements ?? [];
-  if (judgeRow && selection !== null) sameIdentity(judgeRow, context);
+  if (judgeRow) sameIdentity(judgeRow, context);
   if (selection !== null && !judgeRow?.taskOutcome) throw new Error('pipeline mapping: selected judgement has no S1 TaskOutcome evidence');
   if (selection !== null && strategy.finalCandidate === null) throw new Error('pipeline mapping: frozen judge selection exists without a final candidate');
   if (strategy.finalCandidate !== null && selection === null && strategy.operationalStatus === 'complete') {

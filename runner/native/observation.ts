@@ -124,7 +124,7 @@ export function campaignUsage(observation: NativeObservation): CampaignUsage {
   const counters = observation.usage.counters;
   const value = (name: UsageCounterName): number | null => {
     const counter = counters[name];
-    return counter.availability === 'observed' && Number.isFinite(counter.value) && counter.value! >= 0
+    return counter.semantics === name && counter.availability === 'observed' && typeof counter.value === 'number' && Number.isFinite(counter.value) && counter.value >= 0
       ? counter.value
       : null;
   };
@@ -174,7 +174,6 @@ export function legacyObservation(identity: InvocationIdentity, result: WorkerRe
     const value = result.usage[name];
     return [name, { value: value ?? null, availability: value === undefined ? 'not-reported' : 'observed', source: 'toolkit-driver', semantics: name }];
   })) as Record<UsageCounterName, CounterObservation>;
-  const total = names.slice(0, 4).reduce((sum, name) => sum + (counters[name].value ?? 0), 0);
   return {
     schemaVersion: 1, identity, transport: 'legacy-driver',
     executable: { path: 'unknown', version: null, profile: 'legacy' }, artifacts: [], withheldArtifacts: [],
@@ -184,7 +183,7 @@ export function legacyObservation(identity: InvocationIdentity, result: WorkerRe
       observed: { value: result.model ?? null, source: result.model === undefined ? null : 'worker-result', status: result.model === undefined ? 'unavailable' : 'observed' },
       settings: {},
     },
-    usage: { counters, tokenTotal: { value: total, availability: 'observed', source: 'toolkit-driver', semantics: 'authoritative-total' }, inclusion: { input: 'driver-defined', output: 'driver-defined', cache: 'driver-defined', reasoning: 'driver-defined' } },
+    usage: { counters, tokenTotal: { value: null, availability: 'not-reported', source: null, semantics: 'unknown' }, inclusion: { input: 'driver-defined', output: 'driver-defined', cache: 'driver-defined', reasoning: 'driver-defined' } },
     terminal: { cause: result.stopReason === 'complete' ? null : result.stopReason, cancelled: result.stopReason === 'aborted', transportException: null, observedAt: endedAt },
     capture: { status: 'pending-runner-capture', baselineCommit: null, baselineTree: null, patchSha256: null, workspaceSha256: null },
     timing: { startedAt, endedAt, stages: {} }, workerResult: result,

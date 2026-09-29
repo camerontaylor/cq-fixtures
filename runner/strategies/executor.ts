@@ -79,8 +79,17 @@ export interface IndependentJudgeSettlementProof {
   attemptId: string;
   processTree: 'stopped-and-reaped' | 'running-or-unknown';
   execution: 'settled' | 'unsettled';
-  /** Process-group proof does not observe protected-oracle daemon/container cleanup. */
-  protectedOracleCleanup: 'unobserved';
+  /** Exact S5 plan proof; absent/invalid proof stays unobserved and cannot authorize evidence. */
+  protectedOracleCleanup: 'unobserved' | 'proven';
+  protectedOracleProof?: {
+    planSha256: string;
+    daemonVerified: boolean;
+    ownershipVerified: boolean;
+    containersAbsent: boolean;
+    volumeDisposition: 'quarantined' | 'absent' | 'unproven';
+    resourceIds: readonly string[];
+    inventoryContentVerified: false;
+  };
   cleanup: 'complete' | 'failed' | 'quarantined';
 }
 
@@ -95,6 +104,15 @@ export interface IndependentJudgeExecution {
     payloadSha256: string;
     artifactRoot: string;
     processRoot: string;
+    protectedOracleProof: {
+      planSha256: string;
+      daemonVerified: boolean;
+      ownershipVerified: boolean;
+      containersAbsent: boolean;
+      volumeDisposition: 'quarantined' | 'absent' | 'unproven';
+      resourceIds: readonly string[];
+      inventoryContentVerified: false;
+    };
   };
 }
 
@@ -238,7 +256,8 @@ export function createNativeStrategyExecutor(
           deadlineEpochMs: request.deadlineEpochMs + request.tier.shutdownAllowanceMs });
         const matches = proof.assignmentId === request.assignmentId && proof.stageId === request.stageId
           && proof.attemptId === request.attemptId && proof.processTree === 'stopped-and-reaped'
-          && proof.execution === 'settled' && proof.cleanup === 'complete';
+          && proof.execution === 'settled' && proof.cleanup === 'complete'
+          && proof.protectedOracleCleanup === 'proven' && proof.protectedOracleProof?.containersAbsent === true;
         await execution.then(() => undefined, () => undefined);
         const settled = state?.settled === true;
         running.delete(request.attemptId);

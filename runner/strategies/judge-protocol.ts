@@ -67,6 +67,11 @@ export interface ReviewLoopJudgeProcessRequest {
   /** Exact files copied from the frozen task baseline into S1's isolated fixer fixture. */
   readonly taskFixtureFiles: readonly { readonly path: string; readonly sha256: string }[];
   readonly oraclePin: string;
+  /** Parent-reconstructed module-only S5 inventory for every expected runSuite host invocation. */
+  readonly candidateInventoryHash: string;
+  readonly namespaceSlotCount: number;
+  /** Added by the parent supervisor and hash-bound into the serialized request. */
+  readonly namespacePlanSha256?: string;
   readonly judgeManifest: FrozenJudgeContext['judgeManifest'];
   readonly experiment: FrozenJudgeContext;
   readonly candidate: {

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { unknownUsage } from './index.ts';
 import type { IndependentJudgeExecution, IndependentJudgeSettlementProof } from './executor.ts';
 import type { JudgeProcessIdentity, ReviewLoopJudgeProcessRequest, ReviewLoopJudgeProcessResult } from './judge-protocol.ts';
@@ -25,6 +25,29 @@ interface ProcessControl {
   stdoutBytes: number;
   stderrBytes: number;
   stderrTail: string;
+  namespace: JudgeNamespaceHandle | null;
+  namespaceCleanup: Promise<JudgeNamespaceCleanupProof> | null;
+}
+
+interface JudgeNamespaceIdentity { assignmentId: string; stageId: string; attemptId: string; }
+interface JudgeNamespaceHandle { planPath: string; planSha256: string; plan: {
+  identity: JudgeNamespaceIdentity; candidateSha256: string; oraclePin: string;
+  slots: readonly { inventoryHash: string }[];
+}; }
+interface JudgeNamespaceCleanupProof {
+  identity: JudgeNamespaceIdentity; planSha256: string; daemonVerified: boolean; ownershipVerified: boolean;
+  containersAbsent: boolean; processTree: 'stopped-and-reaped' | 'unproven';
+  volumeDisposition: 'quarantined' | 'absent' | 'unproven'; resourceIds: string[];
+  cleanup: 'complete' | 'failed'; inventoryContentVerified: false;
+}
+interface JudgeOwnershipBindings {
+  stableJudgeCandidateInventory(module: string, bytes: Uint8Array): { inventoryHash: string };
+  createJudgeNamespacePlan(input: { privateParentRoot: string; identity: JudgeNamespaceIdentity; candidateSha256: string;
+    oraclePin: string; inventoryHashes: readonly string[] }): JudgeNamespaceHandle;
+  cleanupJudgeNamespace(handle: JudgeNamespaceHandle, input: { hostProcessStopped: boolean; deadlineEpochMs: number }): Promise<JudgeNamespaceCleanupProof>;
+}
+export interface PinnedJudgeOwnership {
+  stableJudgeCandidateInventory(module: string, bytes: Uint8Array): { inventoryHash: string };
 }
 
 function hash(value: string | Uint8Array): string {
@@ -85,6 +108,115 @@ function stopProof(identity: JudgeProcessIdentity, stopped: boolean): Independen
   };
 }
 
+const OWNERSHIP_CLOSURE = 'runner/boundary/evidence/fallback/judge-ownership-source-closure.public.json';
+const OWNERSHIP_MODULE = 'runner/boundary/judge-ownership.ts';
+const OWNERSHIP_CLOSURE_ASSETS = [
+  'runner/boundary/broker-toolchain.ts', 'runner/boundary/codex-final-profile.ts',
+  'runner/boundary/container-prepare.ts', 'runner/boundary/container.ts', 'runner/boundary/docker-control.ts',
+  'runner/boundary/egress-broker.ts', 'runner/boundary/judge-child.ts', OWNERSHIP_MODULE,
+  'runner/boundary/lifecycle-evidence.ts', 'runner/boundary/namespace-acl.sh',
+  'runner/boundary/subscription-auth.ts', 'runner/boundary/task-session.ts',
+  'runner/boundary/task-staging.ts', 'runner/boundary/task-tree.ts', 'runner/boundary/volume-io.mjs',
+] as const;
+
+async function loadPinnedOwnership(request: ReviewLoopJudgeProcessRequest): Promise<JudgeOwnershipBindings> {
+  const dependencyHashes = new Map(request.judgeManifest.dependencies.map((entry) => [entry.path, entry.sha256]));
+  if (dependencyHashes.size !== request.judgeManifest.dependencies.length) throw new Error('protected-judge dependency manifest contains duplicate paths');
+  const readAsset = (path: string): Buffer => {
+    const absolute = join(request.s1DependencyRoot, path);
+    const stat = lstatSync(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`protected-judge source is not a pinned regular file: ${path}`);
+    return readFileSync(absolute);
+  };
+  const closurePath = join(request.s1DependencyRoot, OWNERSHIP_CLOSURE);
+  const closureStat = lstatSync(closurePath);
+  if (!closureStat.isFile() || closureStat.isSymbolicLink()) throw new Error('protected-judge source closure is not a regular file');
+  const closureBytes = readFileSync(closurePath);
+  const closurePin = dependencyHashes.get(OWNERSHIP_CLOSURE);
+  if (!closurePin || hash(closureBytes) !== closurePin) throw new Error('pinned protected-judge source closure is missing or changed');
+  const closure = JSON.parse(closureBytes.toString('utf8')) as { schemaVersion?: number; assets?: Record<string, string> };
+  if (closure.schemaVersion !== 1 || !closure.assets || Object.keys(closure.assets).length !== OWNERSHIP_CLOSURE_ASSETS.length) {
+    throw new Error('pinned protected-judge source closure is malformed');
+  }
+  if (JSON.stringify((closure as { entrypoints?: unknown }).entrypoints)
+    !== JSON.stringify([OWNERSHIP_MODULE, 'runner/boundary/judge-child.ts'])) {
+    throw new Error('pinned protected-judge source closure entrypoints are malformed');
+  }
+  for (const path of OWNERSHIP_CLOSURE_ASSETS) {
+    const expected = closure.assets[path];
+    const manifest = dependencyHashes.get(path);
+    if (!expected || expected !== manifest || hash(readAsset(path)) !== expected) {
+      throw new Error(`protected-judge source closure pin mismatch: ${path}`);
+    }
+  }
+  const source = join(request.s1DependencyRoot, OWNERSHIP_MODULE);
+  return await import(pathToFileURL(source).href) as JudgeOwnershipBindings;
+}
+
+export async function loadPinnedJudgeOwnership(
+  s1DependencyRoot: string,
+  judgeManifest: ReviewLoopJudgeProcessRequest['judgeManifest'],
+): Promise<PinnedJudgeOwnership> {
+  return loadPinnedOwnership({ s1DependencyRoot, judgeManifest } as ReviewLoopJudgeProcessRequest);
+}
+
+function samePlanIdentity(plan: JudgeNamespaceIdentity, identity: JudgeProcessIdentity): boolean {
+  return plan.assignmentId === identity.assignmentId && plan.stageId === identity.stageId && plan.attemptId === identity.attemptId;
+}
+
+function validCleanupProof(
+  proof: JudgeNamespaceCleanupProof,
+  handle: JudgeNamespaceHandle,
+  hostStopped: boolean,
+): boolean {
+  return hostStopped && proof.cleanup === 'complete' && proof.planSha256 === handle.planSha256
+    && samePlanIdentity(proof.identity, handle.plan.identity) && proof.daemonVerified && proof.ownershipVerified
+    && proof.containersAbsent && proof.processTree === 'stopped-and-reaped'
+    && (proof.volumeDisposition === 'quarantined' || proof.volumeDisposition === 'absent')
+    && proof.inventoryContentVerified === false && Array.isArray(proof.resourceIds)
+    && proof.resourceIds.length <= 24 && proof.resourceIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256)
+    && new Set(proof.resourceIds).size === proof.resourceIds.length;
+}
+
+async function cleanupNamespace(
+  control: ProcessControl,
+  ownership: JudgeOwnershipBindings,
+  hostStopped: boolean,
+  deadlineEpochMs: number,
+): Promise<JudgeNamespaceCleanupProof | null> {
+  if (!control.namespace) return null;
+  if (!control.namespaceCleanup) {
+    control.namespaceCleanup = ownership.cleanupJudgeNamespace(control.namespace, {
+      hostProcessStopped: hostStopped,
+      deadlineEpochMs: Math.min(deadlineEpochMs, Date.now() + 30_000),
+    });
+  }
+  return control.namespaceCleanup;
+}
+
+function settlementWithNamespace(
+  identity: JudgeProcessIdentity,
+  hostProof: IndependentJudgeSettlementProof,
+  handle: JudgeNamespaceHandle | null,
+  namespaceProof: JudgeNamespaceCleanupProof | null,
+): IndependentJudgeSettlementProof {
+  const valid = !!handle && !!namespaceProof && validCleanupProof(namespaceProof, handle, hostProof.processTree === 'stopped-and-reaped');
+  return {
+    ...hostProof,
+    ...identity,
+    processTree: valid ? 'stopped-and-reaped' : 'running-or-unknown',
+    execution: hostProof.execution,
+    protectedOracleCleanup: valid ? 'proven' : 'unobserved',
+    ...(valid && namespaceProof ? { protectedOracleProof: {
+      planSha256: namespaceProof.planSha256, daemonVerified: true as const,
+      ownershipVerified: true as const, containersAbsent: true as const,
+      volumeDisposition: namespaceProof.volumeDisposition, resourceIds: [...namespaceProof.resourceIds],
+      inventoryContentVerified: false as const,
+    } } : {}),
+    cleanup: valid && hostProof.cleanup === 'complete' ? 'complete' : 'quarantined',
+  };
+}
+
 function terminate(
   control: ProcessControl,
   deadlineEpochMs: number,
@@ -129,6 +261,9 @@ function assertRequest(value: ReviewLoopJudgeProcessRequest): void {
   }
   if (value.identity.assignmentId !== value.experiment.assignmentId || value.identity.stageId !== value.experiment.stageId
     || value.identity.attemptId !== value.experiment.attemptId) throw new Error('independent judge process identity mismatch');
+  if (value.oraclePin !== value.judgeManifest.sourcePin || value.experiment.judgeManifest.sourcePin !== value.oraclePin) {
+    throw new Error('independent judge semantic oracle pin mismatch');
+  }
   if (!isAbsolute(value.s1DependencyRoot)) throw new Error('independent judge S1 dependency root must be absolute');
   if (!/^[a-f0-9]{64}$/i.test(value.candidate.sha256) || hash(value.candidate.patch) !== value.candidate.sha256) {
     throw new Error('independent judge candidate hash mismatch');
@@ -140,6 +275,8 @@ export interface IndependentJudgeProcessSupervisorOptions {
   readonly groupGone?: (pgid: number, deadlineEpochMs: number) => Promise<boolean>;
   readonly childEntrypoint?: string;
   readonly privateRoot?: string;
+  /** Injected only by offline tests. Production loads the exact pinned S1 dependency closure. */
+  readonly ownershipForTest?: JudgeOwnershipBindings;
 }
 
 /**
@@ -153,12 +290,14 @@ export class IndependentJudgeProcessSupervisor {
   private readonly childEntrypoint: string;
   private readonly groupGone: (pgid: number, deadlineEpochMs: number) => Promise<boolean>;
   private readonly privateRoot: string;
+  private readonly ownershipForTest: JudgeOwnershipBindings | undefined;
 
   constructor(options: IndependentJudgeProcessSupervisorOptions = {}) {
     if (process.platform === 'win32') throw new Error('independent judge process groups require POSIX detached process semantics');
     this.childEntrypoint = resolve(options.childEntrypoint ?? CHILD_ENTRYPOINT);
     this.groupGone = options.groupGone ?? waitForGroupGone;
     this.privateRoot = resolve(options.privateRoot ?? tmpdir());
+    this.ownershipForTest = options.ownershipForTest;
     mkdirSync(this.privateRoot, { recursive: true, mode: 0o700 });
   }
 
@@ -183,21 +322,56 @@ export class IndependentJudgeProcessSupervisor {
     const privateOracleSocket = join(processRoot, 'home', '.colima', 'cq-boundary-s5', 'docker.sock');
     mkdirSync(dirname(privateOracleSocket), { recursive: true, mode: 0o700 });
     symlinkSync(protectedOracleSocket, privateOracleSocket);
-    const childRequest = { ...request, processRoot, artifactRoot };
+    if (!/^[a-f0-9]{64}$/i.test(request.candidateInventoryHash)
+      || !Number.isInteger(request.namespaceSlotCount) || request.namespaceSlotCount < 1 || request.namespaceSlotCount > 8) {
+      throw new Error('independent judge request has no bounded S5 inventory plan');
+    }
+    const ownership = this.ownershipForTest ?? await loadPinnedOwnership(request);
+    const namespace = ownership.createJudgeNamespacePlan({
+      privateParentRoot: processRoot,
+      identity: request.identity,
+      candidateSha256: request.candidate.sha256,
+      oraclePin: request.oraclePin,
+      inventoryHashes: Array.from({ length: request.namespaceSlotCount }, () => request.candidateInventoryHash),
+    });
+    try {
+      if (!namespace || !isAbsolute(namespace.planPath) || !/^[a-f0-9]{64}$/.test(namespace.planSha256)
+        || !samePlanIdentity(namespace.plan.identity, request.identity) || namespace.plan.candidateSha256 !== request.candidate.sha256
+        || namespace.plan.oraclePin !== request.oraclePin || namespace.plan.slots.length !== request.namespaceSlotCount
+        || namespace.plan.slots.some((slot) => slot.inventoryHash !== request.candidateInventoryHash)) {
+        throw new Error('protected-judge namespace plan does not match frozen request');
+      }
+      const planStat = lstatSync(namespace.planPath);
+      if (!planStat.isFile() || planStat.isSymbolicLink() || !resolve(namespace.planPath).startsWith(`${processRoot}/`)) {
+        throw new Error('protected-judge plan is not a private child of the parent process root');
+      }
+    } catch {
+      try { await ownership.cleanupJudgeNamespace(namespace, { hostProcessStopped: true, deadlineEpochMs: Date.now() + 30_000 }); }
+      catch { /* Keep S5 recovery state when the preregistered handle cannot be proven clean. */ }
+      throw new Error('protected-judge namespace plan does not match the frozen request');
+    }
+    const childRequest = { ...request, namespacePlanSha256: namespace.planSha256, processRoot, artifactRoot };
     const requestBytes = Buffer.from(`${JSON.stringify(childRequest)}\n`);
     const requestSha256 = hash(requestBytes);
-    writeFileSync(requestPath, requestBytes, { flag: 'wx', mode: 0o600 });
     const startedAt = performance.now();
-    const child = spawn(process.execPath, [
-      '--disable-warning=ExperimentalWarning', '--experimental-strip-types', this.childEntrypoint,
-      requestPath, resultPath, requestSha256,
-    ], {
-      cwd: processRoot,
-      env: privateEnvironment(processRoot),
-      detached: true,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    let child: ChildProcess;
+    try {
+      writeFileSync(requestPath, requestBytes, { flag: 'wx', mode: 0o600 });
+      child = spawn(process.execPath, [
+        '--disable-warning=ExperimentalWarning', '--experimental-strip-types', this.childEntrypoint,
+        requestPath, resultPath, requestSha256,
+      ], {
+        cwd: processRoot,
+        env: { ...privateEnvironment(processRoot), CQ_PROTECTED_JUDGE_PLAN: namespace.planPath },
+        detached: true,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      const proof = await ownership.cleanupJudgeNamespace(namespace, { hostProcessStopped: true, deadlineEpochMs: Date.now() + 30_000 });
+      if (!validCleanupProof(proof, namespace, true)) throw new Error('protected-judge namespace cleanup failed before child launch');
+      throw new Error('independent judge child could not be launched');
+    }
     this.admittedAttempts.add(request.identity.attemptId);
     const control: ProcessControl = {
       identity: request.identity, child, resultPath,
@@ -206,7 +380,7 @@ export class IndependentJudgeProcessSupervisor {
         child.once('exit', (code, signalName) => resolveExit({ code, signal: signalName }));
       }),
       proof: null, outputOverflow: false, stdoutBytes: 0, stderrBytes: 0,
-      stderrTail: '',
+      stderrTail: '', namespace, namespaceCleanup: null,
     };
     this.active.set(request.identity.attemptId, control);
     const overflowController = new AbortController();
@@ -251,9 +425,11 @@ export class IndependentJudgeProcessSupervisor {
         stoppedSignal.then(() => ({ kind: 'stop' as const })),
       ]);
       if (first.kind === 'stop') {
-        const proof = await stopPromise!;
+        const hostProof = await stopPromise!;
+        const namespaceProof = await cleanupNamespace(control, ownership, hostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs);
+        const proof = settlementWithNamespace(request.identity, hostProof, namespace, namespaceProof);
         this.completed.set(request.identity.attemptId, proof);
-        if (proof.cleanup !== 'complete') throw new Error('independent judge process group did not stop within the bounded cleanup window');
+        if (proof.cleanup !== 'complete') throw new Error('independent judge and protected namespace cleanup could not be proven');
         throw stopCause instanceof Error ? stopCause : new Error(String(stopCause));
       }
       const decisionUnavailable = (): string | null => signal.aborted
@@ -264,15 +440,20 @@ export class IndependentJudgeProcessSupervisor {
       const initialDecisionFailure = decisionUnavailable();
       if (initialDecisionFailure) {
         requestStop(signal.reason ?? new Error('independent judge result arrived after its decision deadline'));
-        const proof = await stopPromise!;
+        const hostProof = await stopPromise!;
+        const namespaceProof = await cleanupNamespace(control, ownership, hostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs);
+        const proof = settlementWithNamespace(request.identity, hostProof, namespace, namespaceProof);
         this.completed.set(request.identity.attemptId, proof);
         if (proof.cleanup !== 'complete') throw new Error('late judge process cleanup could not be proven');
         throw new Error(initialDecisionFailure);
       }
 
-      const naturalExitProof = await terminate(control, Math.min(request.shutdownDeadlineEpochMs, Date.now() + 5_000), this.groupGone);
+      const naturalHostProof = await terminate(control, Math.min(request.shutdownDeadlineEpochMs, Date.now() + 5_000), this.groupGone);
+      const naturalNamespaceProof = await cleanupNamespace(control, ownership,
+        naturalHostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs);
+      const naturalExitProof = settlementWithNamespace(request.identity, naturalHostProof, namespace, naturalNamespaceProof);
       this.completed.set(request.identity.attemptId, naturalExitProof);
-      if (naturalExitProof.cleanup !== 'complete') throw new Error('independent judge child left an unreaped process group');
+      if (naturalExitProof.cleanup !== 'complete') throw new Error('independent judge or protected namespace cleanup could not be proven');
       const afterSettlementFailure = decisionUnavailable();
       if (afterSettlementFailure) throw new Error(afterSettlementFailure);
       if (first.exit.code !== 0) {
@@ -305,7 +486,7 @@ export class IndependentJudgeProcessSupervisor {
       const evidence = {
         rows: envelope.payload.rows, tables: envelope.payload.tables, diagnostics: envelope.payload.diagnostics,
         selection: envelope.payload.selection, requestSha256, payloadSha256: envelope.payloadSha256,
-        artifactRoot, processRoot,
+        artifactRoot, processRoot, protectedOracleProof: naturalExitProof.protectedOracleProof!,
       };
       return {
         result: {
@@ -321,7 +502,17 @@ export class IndependentJudgeProcessSupervisor {
       clearTimeout(timer);
       signal.removeEventListener('abort', abortListener);
       overflowController.signal.removeEventListener('abort', stopForOverflow);
-      if (control.proof) this.completed.set(request.identity.attemptId, await control.proof);
+      try {
+        const hostProof = control.proof
+          ? await control.proof
+          : await terminate(control, request.shutdownDeadlineEpochMs, this.groupGone);
+        const namespaceProof = await cleanupNamespace(control, ownership,
+          hostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs);
+        this.completed.set(request.identity.attemptId, settlementWithNamespace(request.identity, hostProof, namespace, namespaceProof));
+      } catch {
+        this.completed.set(request.identity.attemptId, settlementWithNamespace(request.identity,
+          stopProof(request.identity, false), namespace, null));
+      }
       this.active.delete(request.identity.attemptId);
     }
   }
@@ -334,7 +525,15 @@ export class IndependentJudgeProcessSupervisor {
     const control = this.active.get(input.identity.attemptId);
     if (control) {
       if (!sameIdentity(control.identity, input.identity)) return stopProof(input.identity, false);
-      const proof = await terminate(control, input.deadlineEpochMs, this.groupGone);
+      const hostProof = await terminate(control, input.deadlineEpochMs, this.groupGone);
+      let namespaceProof: JudgeNamespaceCleanupProof | null = null;
+      try {
+        const requestPath = join(dirname(control.resultPath), 'request.json');
+        const request = JSON.parse(readFileSync(requestPath, 'utf8')) as ReviewLoopJudgeProcessRequest;
+        const ownership = this.ownershipForTest ?? await loadPinnedOwnership(request);
+        namespaceProof = await cleanupNamespace(control, ownership, hostProof.processTree === 'stopped-and-reaped', input.deadlineEpochMs);
+      } catch { /* Keep the result unobserved and quarantined when pinning or cleanup fails. */ }
+      const proof = settlementWithNamespace(input.identity, hostProof, control.namespace, namespaceProof);
       this.completed.set(input.identity.attemptId, proof);
       return proof;
     }

@@ -74,13 +74,42 @@ function judgeProcessRequest(): ReviewLoopJudgeProcessRequest {
     sourceId: 'source-v1', baselineId: 'baseline-v1', suiteName: 'suite', caseId: 'case', promptSha256: 'f'.repeat(64),
     taskFixtureFiles: ['package.json', 'settings/module.js', 'settings/display.js', 'test/public-settings.test.mjs']
       .map((path) => ({ path, sha256: '1'.repeat(64) })),
-    oraclePin: sourcePin, judgeManifest: manifest,
+    oraclePin: sourcePin, candidateInventoryHash: '9'.repeat(64), namespaceSlotCount: 1, judgeManifest: manifest,
     experiment: {
       campaignId: 'campaign', cohortId: 'calibration', experimentId: 'experiment', taskId: 'task', repeatId: 'repeat',
       ...identity, track: 'native', strategyId: 'strategy', settingsId: 'settings', budgetId: 'tier', profileId: 'profile',
       frozenWeight: 1, substrateId: 'substrate', judgeManifest: manifest,
     },
     candidate: { sha256: candidateSha, patch, baselineCommit: 'd'.repeat(40), baselineTree: 'e'.repeat(64) },
+  };
+}
+
+function fakeJudgeOwnershipForTest(options: { failCleanup?: boolean; events?: string[] } = {}) {
+  return {
+    stableJudgeCandidateInventory(_module: string, bytes: Uint8Array) {
+      return { inventoryHash: createHash('sha256').update(bytes).digest('hex') };
+    },
+    createJudgeNamespacePlan(input: { privateParentRoot: string; identity: ReviewLoopJudgeProcessRequest['identity']; candidateSha256: string;
+      oraclePin: string; inventoryHashes: readonly string[] }) {
+      options.events?.push('plan-created');
+      const plan = { schemaVersion: 1, identity: input.identity, candidateSha256: input.candidateSha256, oraclePin: input.oraclePin,
+        slots: input.inventoryHashes.map((inventoryHash) => ({ inventoryHash })) };
+      const bytes = JSON.stringify(plan);
+      const planPath = join(input.privateParentRoot, 'test-plan.json');
+      writeFileSync(planPath, bytes, { flag: 'wx', mode: 0o600 });
+      return { planPath, planSha256: createHash('sha256').update(bytes).digest('hex'), plan };
+    },
+    async cleanupJudgeNamespace(handle: { planSha256: string; plan: { identity: ReviewLoopJudgeProcessRequest['identity'] } },
+      input: { hostProcessStopped: boolean; deadlineEpochMs: number }) {
+      options.events?.push(input.hostProcessStopped ? 'namespace-cleaned' : 'cleanup-refused');
+      const complete = input.hostProcessStopped && !options.failCleanup && Date.now() < input.deadlineEpochMs;
+      return { identity: handle.plan.identity, planSha256: handle.planSha256,
+        daemonVerified: complete, ownershipVerified: complete, containersAbsent: complete,
+        processTree: complete ? 'stopped-and-reaped' as const : 'unproven' as const,
+        volumeDisposition: complete ? 'quarantined' as const : 'unproven' as const,
+        resourceIds: complete ? ['fake-container', 'fake-volume'] : [],
+        cleanup: complete ? 'complete' as const : 'failed' as const, inventoryContentVerified: false as const };
+    },
   };
 }
 
@@ -93,10 +122,12 @@ async function withJudgeChild<T>(
   const marker = join(root, 'late-descendant.txt');
   const fixture = `import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 const [requestPath, resultPath, requestSha256] = process.argv.slice(2);
 const request = JSON.parse(await (await import('node:fs/promises')).readFile(requestPath, 'utf8'));
 const hash = (value) => createHash('sha256').update(value).digest('hex');
+if (!process.env.CQ_PROTECTED_JUDGE_PLAN || request.namespacePlanSha256 !== hash(readFileSync(process.env.CQ_PROTECTED_JUDGE_PLAN))
+  || JSON.stringify(request).includes(process.env.CQ_PROTECTED_JUDGE_PLAN)) process.exit(8);
 if (${JSON.stringify(mode)} === 'late-descendant') {
   const marker = ${JSON.stringify(marker)};
   const late = "process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(" + JSON.stringify(marker) + ",'late'),1500)";
@@ -482,7 +513,8 @@ describe('bounded campaign strategy engine', () => {
 
   it('runs a serializable judge request in a real child and validates the durable hash-bound result', async () => {
     await withJudgeChild('success', async (childEntrypoint, request, root) => {
-      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root });
+      const events: string[] = [];
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root, ownershipForTest: fakeJudgeOwnershipForTest({ events }) });
       const execution = await supervisor.run(request, new AbortController().signal);
       expect(execution.result.judgement?.correctness).toBe(true);
       expect(execution.evidence.selection).toEqual({ judgementId: 'j-frozen', version: 1,
@@ -490,17 +522,20 @@ describe('bounded campaign strategy engine', () => {
       expect(execution.evidence.requestSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(execution.evidence.payloadSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(execution.evidence.processRoot.startsWith(root)).toBe(true);
+      expect(execution.evidence.protectedOracleProof).toMatchObject({ daemonVerified: true, ownershipVerified: true,
+        containersAbsent: true, volumeDisposition: 'quarantined', inventoryContentVerified: false });
+      expect(events).toEqual(['plan-created', 'namespace-cleaned']);
       const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'post-result-check',
         deadlineEpochMs: Date.now() + 100 });
       expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', execution: 'settled',
-        protectedOracleCleanup: 'unobserved', cleanup: 'complete' });
+        protectedOracleCleanup: 'proven', cleanup: 'complete' });
       await expect(supervisor.run(request, new AbortController().signal)).rejects.toThrow(/already admitted/);
     });
   });
 
   it('does not expose private child stderr in public failures', async () => {
     await withJudgeChild('stderr-failure', async (childEntrypoint, request, root) => {
-      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root });
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root, ownershipForTest: fakeJudgeOwnershipForTest() });
       let message = '';
       try { await supervisor.run(request, new AbortController().signal); }
       catch (error) { message = error instanceof Error ? error.message : String(error); }
@@ -509,11 +544,26 @@ describe('bounded campaign strategy engine', () => {
     });
   });
 
+  it('rejects a valid host result and retains quarantine when exact S5 cleanup proof fails', async () => {
+    await withJudgeChild('success', async (childEntrypoint, request, root) => {
+      const events: string[] = [];
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
+        ownershipForTest: fakeJudgeOwnershipForTest({ failCleanup: true, events }) });
+      await expect(supervisor.run(request, new AbortController().signal)).rejects.toThrow(/protected namespace cleanup could not be proven/);
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'inspect-failed-cleanup',
+        deadlineEpochMs: Date.now() + 100 });
+      expect(proof).toMatchObject({ processTree: 'running-or-unknown', execution: 'settled',
+        protectedOracleCleanup: 'unobserved', cleanup: 'quarantined' });
+      expect(events).toEqual(['plan-created', 'namespace-cleaned']);
+      expect(readdirSync(root).some((name) => name.startsWith('s4-judge-'))).toBe(true);
+    });
+  });
+
   it('rejects a valid result when process settlement crosses the decision deadline', async () => {
     await withJudgeChild('success', async (childEntrypoint, request, root) => {
       let cleanupObserved = false;
       const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
-        groupGone: async () => {
+        ownershipForTest: fakeJudgeOwnershipForTest(), groupGone: async () => {
           cleanupObserved = true;
           await new Promise((resolveWait) => setTimeout(resolveWait, 1_200));
           return true;
@@ -528,7 +578,7 @@ describe('bounded campaign strategy engine', () => {
     await withJudgeChild('success', async (childEntrypoint, request, root) => {
       const controller = new AbortController();
       const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
-        groupGone: async () => {
+        ownershipForTest: fakeJudgeOwnershipForTest(), groupGone: async () => {
           controller.abort(new Error('cancelled during process settlement'));
           return true;
         } });
@@ -538,13 +588,13 @@ describe('bounded campaign strategy engine', () => {
 
   it('kills a timed-out judge process group before a descendant can publish a late result', async () => {
     await withJudgeChild('late-descendant', async (childEntrypoint, request, root, marker) => {
-      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root });
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root, ownershipForTest: fakeJudgeOwnershipForTest() });
       const short = { ...request, deadlineEpochMs: Date.now() + 250, shutdownDeadlineEpochMs: Date.now() + 3_000 };
       await expect(supervisor.run(short, new AbortController().signal)).rejects.toThrow(/deadline/i);
       const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'deadline',
         deadlineEpochMs: Date.now() + 100 });
       expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', execution: 'settled',
-        protectedOracleCleanup: 'unobserved', cleanup: 'complete' });
+        protectedOracleCleanup: 'proven', cleanup: 'complete' });
       await new Promise((resolveWait) => setTimeout(resolveWait, 1_300));
       expect(existsSync(marker)).toBe(false);
       const processDirectory = readdirSync(root).find((name) => name.startsWith('s4-judge-'));
@@ -555,7 +605,7 @@ describe('bounded campaign strategy engine', () => {
 
   it('rejects a child result whose frozen request identity hash does not match', async () => {
     await withJudgeChild('mismatch', async (childEntrypoint, request, root) => {
-      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root });
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root, ownershipForTest: fakeJudgeOwnershipForTest() });
       await expect(supervisor.run(request, new AbortController().signal)).rejects.toThrow(/identity or content hash mismatch/);
       const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'result-mismatch',
         deadlineEpochMs: Date.now() + 100 });
@@ -565,12 +615,15 @@ describe('bounded campaign strategy engine', () => {
 
   it('fails closed when the process-group cleanup proof is unavailable', async () => {
     await withJudgeChild('success', async (childEntrypoint, request, root) => {
+      const events: string[] = [];
       const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
-        groupGone: async () => false });
+        groupGone: async () => false, ownershipForTest: fakeJudgeOwnershipForTest({ events }) });
       const short = { ...request, shutdownDeadlineEpochMs: Date.now() + 700 };
-      await expect(supervisor.run(short, new AbortController().signal)).rejects.toThrow(/unreaped process group/);
+      await expect(supervisor.run(short, new AbortController().signal)).rejects.toThrow(/cleanup could not be proven/);
       const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'cleanup-test', deadlineEpochMs: Date.now() + 1 });
-      expect(proof).toMatchObject({ processTree: 'running-or-unknown', execution: 'unsettled', cleanup: 'failed' });
+      expect(proof).toMatchObject({ processTree: 'running-or-unknown', execution: 'unsettled', cleanup: 'quarantined',
+        protectedOracleCleanup: 'unobserved' });
+      expect(events).toEqual(['plan-created', 'cleanup-refused']);
     });
   }, 10_000);
 

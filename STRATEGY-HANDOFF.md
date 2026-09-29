@@ -215,16 +215,35 @@ invocations; it is not used as proof for the separate host-judge process.
 The process environment keeps a private HOME and exposes only S1's fixed local
 protected-oracle socket through a symlink; provider credentials are not passed.
 
-This proves the OS process group stopped and the child leader exited. It does
-not prove that protected-oracle daemon-side containers were stopped or cleaned
-when the child is killed. `protectedOracleCleanup: unobserved` is explicit in
-the settlement proof. Keep the protected-oracle cleanup admission gate closed
-until a separately bounded daemon cleanup proof is available. It also does not
-enforce lifetime of detached processes that deliberately escape the group, all
-external resources, or a global token cap. Those limits remain unsupported
-and are recorded as such. The bounded cleanup window is separate from the
-decision deadline. Parent cleanup must retain/quarantine roots unless the
-child process group stop proof succeeds.
+The supervisor now preregisters an S5 namespace from the original live parent
+handle before launching the child. The child receives only the private plan
+path in `CQ_PROTECTED_JUDGE_PLAN`; it receives no cleanup handle or caller
+chosen daemon/container names. The request carries the parent-reconstructed
+`settings/module.js` inventory hash and bounded slot count. The source closure
+manifest and all 15 listed assets must match the active S1 oracle dependency
+manifest and exact bytes before either parent or child imports
+`runner/boundary/judge-ownership.ts`. The frozen request also includes the
+namespace plan hash. S1's child claims one write-once slot per protected host
+invocation using its independently reconstructed module-only inventory.
+
+After the parent proves the POSIX host process group stopped and reaped, it
+passes the original live handle to `cleanupJudgeNamespace` and waits up to the
+remaining 30-second cleanup window. S4 accepts the judge result only when the
+returned proof matches the frozen assignment/stage/attempt and plan hash, and
+reports daemon verification, ownership verification, container absence,
+resource IDs, and volume disposition. Retained volumes remain quarantined;
+`inventoryContentVerified` stays false. Missing or mismatched proof suppresses
+the judgement and preserves the recovery root. S5's in-memory handle registry
+does not support parent-crash restoration; recovery after parent crash needs a
+separately reviewed protocol.
+
+The refreshed active `review-loop-pin.ts` must include the S5 source closure,
+`judge-ownership.ts`, and all closure assets in its oracle dependency list.
+S4 checks those entries and bytes before using the API. Historical run16–19
+pins and archives remain unchanged. This still does not enforce lifetime of
+external resources after a successful exact-plan cleanup or a global token
+cap. Those limits remain unsupported and are recorded as such. The bounded
+cleanup window is separate from the decision deadline.
 
 Focused tests use a fake model driver while exercising the real artifact
 store and S1 `runSuite`/host oracle, plus isolated Git capture and root

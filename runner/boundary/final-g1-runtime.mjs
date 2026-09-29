@@ -89,8 +89,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
   return {
     options: {
       runId: plan.runId, outputRoot: join(privateRoot, 'reports'), admissionLedgerRoot: join(privateRoot, 'ledger'),
-      // Unknown quota, no host app-server/auth refresh subprocess. Native scheduler admits one explicit diagnostic.
-      quotaSource: { refresh: async () => null },
+      // Use native authenticated AggregateQuotaSource; never override it with null or fabricate capacity.
       async prepareInvocation(context) {
         if (used || context.stage !== 'final-profile-G1' || context.identity.assignmentId !== assignmentId || context.identity.stageId !== assignmentId + '-stage-1' || context.identity.attemptId !== attemptId || context.signal.aborted || context.deadlineEpochMs <= Date.now()) throw new Error('unexpected or expired single G1 invocation');
         used = true; prepareSettled = new Promise(resolve => { settlePrepare = resolve; }); let aborted = false; const started = Date.now();

@@ -52,7 +52,7 @@
       "pristineBaselineIntegrity": "fresh Git commit SHA captured at materialization; initial module and failure fixture are committed before operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeAnalysisRemediationProposal",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "da1a50fa0968a5fd0cd3f2aac997b8f871daf34f92f102c9648fa722ffb2266d",
+      "oraclePinSha256": "ca6ea71d2f4708344686bbeaafe6deb2bb90284ed3220c8e07a8b03bd440d929",
       "boundedOracle": "candidate module runs in a child process with a 5000ms wall limit; process/host confinement is not claimed"
     },
     {
@@ -71,7 +71,7 @@
       "pristineBaselineIntegrity": "fresh Git commit SHA captured at materialization; source and failure fixture are committed before operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeAnalysisRemediationProposal",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "da1a50fa0968a5fd0cd3f2aac997b8f871daf34f92f102c9648fa722ffb2266d",
+      "oraclePinSha256": "ca6ea71d2f4708344686bbeaafe6deb2bb90284ed3220c8e07a8b03bd440d929",
       "boundedOracle": "candidate module runs in a child process with a 5000ms wall limit; process/host confinement is not claimed"
     },
     {
@@ -90,7 +90,7 @@
       "pristineBaselineIntegrity": "fresh source commit SHA precedes baseline capture; task records the full commit SHA",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeRatchetOutcomes",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "da1a50fa0968a5fd0cd3f2aac997b8f871daf34f92f102c9648fa722ffb2266d"
+      "oraclePinSha256": "ca6ea71d2f4708344686bbeaafe6deb2bb90284ed3220c8e07a8b03bd440d929"
     },
     {
       "id": "ratchet-higher-coverage-01",
@@ -108,7 +108,7 @@
       "pristineBaselineIntegrity": "fresh source commit SHA precedes baseline capture; task records the full commit SHA",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeRatchetOutcomes",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "da1a50fa0968a5fd0cd3f2aac997b8f871daf34f92f102c9648fa722ffb2266d"
+      "oraclePinSha256": "ca6ea71d2f4708344686bbeaafe6deb2bb90284ed3220c8e07a8b03bd440d929"
     },
     {
       "id": "merge-unicode-label-limit-01",

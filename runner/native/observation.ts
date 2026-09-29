@@ -12,6 +12,14 @@ export interface InvocationIdentity {
   attemptId: string;
 }
 
+/** Trusted runner-side evidence about whether a native invocation spawned its provider process. */
+export interface LaunchEvidence {
+  identity: InvocationIdentity;
+  status: 'spawn-observed' | 'no-spawn-observed' | 'unknown';
+  source: string;
+  observedAt: string;
+}
+
 export interface CounterObservation {
   value: number | null;
   availability: CounterAvailability;
@@ -54,6 +62,31 @@ export interface ObservedDriver {
   beginInvocation?(identity: InvocationIdentity): void | Promise<void>;
   setInvocationIdentity?(identity: InvocationIdentity): void | Promise<void>;
   getObservation(invocationId: string): NativeObservation | undefined | Promise<NativeObservation | undefined>;
+  /**
+   * Optional authoritative process-launch evidence. When the method or its
+   * value is absent, S1 retains its legacy WorkerResult-based launched
+   * inference. A returned `unknown` or invalid/mismatched envelope maps to
+   * null and never implies that a provider process launched.
+   */
+  getLaunchEvidence?(invocationId: string): LaunchEvidence | undefined | Promise<LaunchEvidence | undefined>;
+}
+
+/** Validate the evidence envelope and bind it to the exact frozen invocation. */
+export function validatedLaunchEvidenceLaunched(
+  evidence: LaunchEvidence | undefined,
+  expected: InvocationIdentity,
+): boolean | null | undefined {
+  if (evidence === undefined) return undefined;
+  const id = evidence.identity;
+  const validIdentity = id !== undefined && id.invocationId === expected.invocationId &&
+    id.assignmentId === expected.assignmentId && id.stageId === expected.stageId && id.attemptId === expected.attemptId;
+  const validStatus = evidence.status === 'spawn-observed' || evidence.status === 'no-spawn-observed' || evidence.status === 'unknown';
+  const validSource = typeof evidence.source === 'string' && evidence.source.trim().length > 0;
+  const observedAt = typeof evidence.observedAt === 'string' ? Date.parse(evidence.observedAt) : Number.NaN;
+  if (!validIdentity || !validStatus || !validSource || !Number.isFinite(observedAt)) return null;
+  if (evidence.status === 'spawn-observed') return true;
+  if (evidence.status === 'no-spawn-observed') return false;
+  return null;
 }
 
 export interface CampaignUsage {

@@ -22,6 +22,7 @@ export interface SupervisedProcessResult {
   launch?: NativeLaunchEvidence;
   lifecycle?: {
     terminated: boolean; finalized: boolean;
+    failurePhase?: 'terminate' | 'finalize' | 'publication-validation' | 'invocation-cleanup' | 'deadline' | 'setup';
     invocationCleanup?: { status: 'completed' | 'failed' | 'unconfigured'; proof?: NativeInvocationCleanupProof; errorName?: string };
     error?: { name: string; message: string };
   };
@@ -265,7 +266,8 @@ export interface SupervisedProcessOptions {
   /** Bounded cleanup window after the decision deadline; not a hard resource-lifetime guarantee. */
   cleanupTimeoutMs?: number;
   /** Exact S5 baseline captured for this invocation before transport starts. */
-  expectedTaskBaselineCommit?: string;
+  /** Resolve after async staging has completed; values must come from trusted host staging, never the worker. */
+  expectedTaskBaselineCommit?: string | (() => string | undefined);
   /** Explicitly for fake executables in tests; production launches fail closed without a boundary adapter. */
   allowUnconfinedTestProcess?: boolean;
 }
@@ -498,7 +500,7 @@ export async function runSupervised(
       ? { status: cleanupCompleted ? 'completed' : 'failed', ...(cleanupProof ? { proof: cleanupProof } : {}), ...(cleanupErrorName ? { errorName: cleanupErrorName } : {}) }
       : { status: 'unconfigured' };
     const failedLifecycle: SupervisedProcessResult['lifecycle'] = {
-      terminated: lateTerminated, finalized: lateFinalized, invocationCleanup: cleanupStatus,
+      terminated: lateTerminated, finalized: lateFinalized, failurePhase: 'setup', invocationCleanup: cleanupStatus,
       ...((cleanupErrorName || (options.cleanupInvocation && !cleanupCompleted)) ? {
         error: { name: cleanupErrorName ?? 'CleanupUnproven', message: 'native setup failed before receipt handoff; invocation cleanup did not prove stop' },
       } : {}),
@@ -550,11 +552,13 @@ export async function runSupervised(
     let finalized = false;
     let taskExport: NativeTaskExport | undefined;
     let lifecycleError: Error | undefined;
+    let failurePhase: NonNullable<SupervisedProcessResult['lifecycle']>['failurePhase'];
     let cleanupEvidence: NonNullable<SupervisedProcessResult['lifecycle']>['invocationCleanup'];
     try {
       await boundaryLifecycle.terminate!();
       terminated = true;
     } catch (error) {
+      failurePhase = 'terminate';
       lifecycleError = error instanceof Error ? error : new Error(String(error));
     }
     try {
@@ -562,6 +566,7 @@ export async function runSupervised(
       // adapter itself refuses export unless container stop was proven.
       taskExport = await boundaryLifecycle.finalize!();
       if (!/^[a-f0-9]{64}$/iu.test(taskExport.inventoryHash) || !/^[a-f0-9]{40,64}$/iu.test(taskExport.head)) {
+        failurePhase ??= 'finalize';
         throw new Error('native boundary task export returned an invalid inventory hash or HEAD');
       }
       if (options.stage === 'final-profile-G1') {
@@ -569,18 +574,27 @@ export async function runSupervised(
         if (!publication || resolve(publication.destination) !== resolve(options.cwd) ||
             !/^[a-f0-9]{40}$/iu.test(publication.baselineCommit) || !/^[a-f0-9]{40,64}$/iu.test(publication.baselineTree) ||
             publication.hostUnchanged !== true || publication.afterTeardown !== true || publication.captureEligible !== true) {
+          failurePhase ??= 'publication-validation';
           throw new Error('final-profile G1 export lacks validated post-teardown publication into the exact runSuite workspace');
         }
-        if (!options.expectedTaskBaselineCommit || publication.baselineCommit !== options.expectedTaskBaselineCommit) {
+        // A final-profile preparation factory runs asynchronously during
+        // admission. Resolve this trusted host-side getter only after handoff
+        // and finalization, when the staged baseline is available.
+        const expectedBaseline = typeof options.expectedTaskBaselineCommit === 'function'
+          ? options.expectedTaskBaselineCommit() : options.expectedTaskBaselineCommit;
+        if (!expectedBaseline || publication.baselineCommit !== expectedBaseline) {
+          failurePhase ??= 'publication-validation';
           throw new Error('final-profile G1 publication baseline differs from the exact staged runSuite baseline');
         }
         const published = snapshotTask(options.cwd, false);
         if (published.inventoryHash !== taskExport.inventoryHash) {
+          failurePhase ??= 'publication-validation';
           throw new Error('final-profile G1 published workspace differs from the stopped export inventory');
         }
       }
       finalized = true;
     } catch (error) {
+      failurePhase ??= 'finalize';
       if (!lifecycleError) lifecycleError = error instanceof Error ? error : new Error(String(error));
     }
     if (options.cleanupInvocation && options.identity) {
@@ -588,16 +602,23 @@ export async function runSupervised(
         'native boundary lifecycle settled', lifecycleDeadlineEpochMs);
       cleanupEvidence = { status: cleanupOutcome.status, ...(cleanupOutcome.proof ? { proof: cleanupOutcome.proof } : {}),
         ...(cleanupOutcome.errorName ? { errorName: cleanupOutcome.errorName } : {}) };
-      if (cleanupOutcome.status !== 'completed' && !lifecycleError) lifecycleError = new Error('native invocation cleanup did not prove stopped-and-reaped resources');
+      if (cleanupOutcome.status !== 'completed' && !lifecycleError) {
+        failurePhase ??= 'invocation-cleanup';
+        lifecycleError = new Error('native invocation cleanup did not prove stopped-and-reaped resources');
+      }
     } else {
       cleanupEvidence = { status: 'unconfigured' };
-      if (!lifecycleError) lifecycleError = new Error('boundary receipt has no invocation cleanup callback');
+      if (!lifecycleError) {
+        failurePhase ??= 'invocation-cleanup';
+        lifecycleError = new Error('boundary receipt has no invocation cleanup callback');
+      }
     }
     if (terminated && hostTreeStopped && finalized && cleanupEvidence?.status === 'completed' && taskExport && launch) {
       launch.taskExport = { ...taskExport };
     }
     if (!lifecycleResultFrozen) lifecycleResult = {
       terminated, finalized, invocationCleanup: cleanupEvidence,
+      ...(failurePhase ? { failurePhase } : {}),
       ...(lifecycleError ? { error: { name: lifecycleError.name, message: lifecycleError.message } } : {}),
     };
     treeStopped = hostTreeStopped && terminated && finalized && cleanupEvidence?.status === 'completed';
@@ -618,7 +639,7 @@ export async function runSupervised(
         treeStopped = stopped;
         if (stopped === false && !lifecycleResult) {
           lifecycleResultFrozen = true;
-          lifecycleResult = { terminated: false, finalized: false, invocationCleanup: { status: 'failed', errorName: 'DeadlineExceeded' },
+          lifecycleResult = { terminated: false, finalized: false, failurePhase: 'deadline', invocationCleanup: { status: 'failed', errorName: 'DeadlineExceeded' },
             error: { name: 'DeadlineExceeded', message: 'native boundary lifecycle exceeded its bounded cleanup window' } };
         }
         resolve(snapshot(code, signal, stopped));
@@ -648,7 +669,7 @@ export async function runSupervised(
         treeStopped = stopped;
         if (stopped === false && !lifecycleResult) {
           lifecycleResultFrozen = true;
-          lifecycleResult = { terminated: false, finalized: false, invocationCleanup: { status: 'failed', errorName: 'DeadlineExceeded' },
+          lifecycleResult = { terminated: false, finalized: false, failurePhase: 'deadline', invocationCleanup: { status: 'failed', errorName: 'DeadlineExceeded' },
             error: { name: 'DeadlineExceeded', message: 'native boundary lifecycle exceeded its bounded cleanup window' } };
         }
         resolve(snapshot(null, 'SIGKILL', stopped));

@@ -366,6 +366,99 @@ describe('native transport event and identity handling', () => {
     }
   });
 
+  it('resolves final-profile baseline after async Codex staging and quarantines rejected publication', async () => {
+    const root = tempRoot();
+    const workspace = join(root, 'workspace');
+    mkdirSync(workspace, { recursive: true });
+    const inventoryHash = fakeTaskWorkspace(workspace);
+    const store = new SessionStore(RUNNER_SESSION_DIRECTORY);
+    const session = await store.create(workspace);
+    const script = join(root, 'codex-fixture.cjs');
+    writeFileSync(script, 'process.stdout.write("{}\\n"); process.exit(0);');
+    const expectedBaseline = 'c'.repeat(40);
+    const wrongPublishedBaseline = 'd'.repeat(40);
+
+    const runPublication = async (id: string, publishedBaseline: string) => {
+      const invocationIdentity: InvocationIdentity = {
+        invocationId: id, assignmentId: `${id}-assignment`, stageId: `${id}-stage`, attemptId: `${id}-attempt`,
+      };
+      let stagedBaseline: string | undefined;
+      const order: string[] = [];
+      const driver = new CodexExecDriver({
+        executable: '/usr/local/bin/codex', version: 'synthetic-no-launch', profile: 'final-profile-test',
+        model: 'gpt-6-sol', effort: 'low', invocationStage: 'final-profile-G1',
+        finalProfileContainerPolicy: { profile: 'cq-subscription-http', identity: invocationIdentity },
+        artifactDirectory: join(root, `artifacts-${id}`), workspaceForInvocation: () => process.cwd(),
+        expectedTaskBaselineCommit: () => stagedBaseline,
+        cleanupInvocation: async (request) => {
+          order.push('cleanup');
+          expect(request.preserveRecovery).toBe(true);
+          return { status: 'stopped-and-reaped', resourceIds: [`worker-${id}`], volumeDisposition: 'quarantined' };
+        },
+        spawnAdapterFactory: async () => {
+          // Mirrors run-final-profile-g1: the driver has already called
+          // runSupervised when asynchronous staging publishes this value.
+          await Promise.resolve();
+          stagedBaseline = expectedBaseline;
+          return async (command, args, context) => {
+            expect(command).toBe('/usr/local/bin/codex');
+            expect(context.cwd).toBe(workspace);
+            expect(args).toContain('danger-full-access');
+            const child = spawn(process.execPath, [script], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+            return {
+              child, boundaryIdentity: `boundary-${id}`, launchIdentity: `launch-${id}`, admissionId: `admission-${id}`,
+              environmentNames: [], scope: 'boundary', isolation: 'unverified', heldOut: false,
+              async terminate() { order.push('terminate'); },
+              async finalize() {
+                order.push('finalize');
+                return { inventoryHash, head: 'b'.repeat(40), publication: {
+                  destination: workspace, baselineCommit: publishedBaseline, baselineTree: 'e'.repeat(40),
+                  hostUnchanged: true, afterTeardown: true, captureEligible: true,
+                } };
+              },
+            };
+          };
+        },
+      });
+      await driver.beginInvocation(invocationIdentity);
+      const run = driver.run({
+        ...invocation('final profile staging regression', 'gpt-6-sol'),
+        modelSpec: { model: 'gpt-6-sol', provider: 'codex' },
+        sessionRef: session.sessionId,
+      });
+      return { run, driver, invocationIdentity, order, getStagedBaseline: () => stagedBaseline };
+    };
+
+    try {
+      const accepted = await runPublication('deferred-baseline-accepted', expectedBaseline);
+      const acceptedResult = await accepted.run;
+      expect(accepted.getStagedBaseline()).toBe(expectedBaseline);
+      expect(acceptedResult.stopReason).toBe('complete');
+      expect(accepted.order).toEqual(['terminate', 'finalize', 'cleanup']);
+      expect(accepted.driver.getObservation(accepted.invocationIdentity.invocationId)?.model.settings.processTree)
+        .toMatchObject({ value: true, status: 'stopped-and-settled' });
+      expect(accepted.driver.getObservation(accepted.invocationIdentity.invocationId)?.model.settings.launch)
+        .toMatchObject({ status: 'visible-boundary-isolation-unverified' });
+      expect(accepted.driver.getObservation(accepted.invocationIdentity.invocationId)?.model.settings.launch?.value)
+        .toMatchObject({ taskExport: { inventoryHash, publication: { baselineCommit: expectedBaseline, captureEligible: true } } });
+
+      const rejected = await runPublication('deferred-baseline-rejected', wrongPublishedBaseline);
+      await expect(rejected.run).rejects.toThrow(/capture is forbidden/u);
+      expect(rejected.getStagedBaseline()).toBe(expectedBaseline);
+      expect(rejected.order).toEqual(['terminate', 'finalize', 'cleanup']);
+      const rejectedObservation = rejected.driver.getObservation(rejected.invocationIdentity.invocationId)!;
+      expect(rejectedObservation.model.settings.processTree).toMatchObject({ value: false, status: 'stop-unproven-capture-forbidden' });
+      expect(rejectedObservation.model.settings.launch).toMatchObject({ status: 'visible-boundary-isolation-unverified' });
+      expect(rejectedObservation.model.settings.launch?.value).not.toHaveProperty('taskExport');
+      const lifecycleArtifact = expectArtifactWithValidHash(rejectedObservation, 'supervisor-lifecycle');
+      const lifecycle = JSON.parse(readFileSync(lifecycleArtifact.path, 'utf8')) as Record<string, unknown>;
+      expect(lifecycle).toMatchObject({ failurePhase: 'publication-validation', failureClass: 'Error', exportReceiptPresent: false });
+      expect(JSON.stringify(lifecycle)).not.toContain('baseline differs');
+    } finally {
+      unlinkSync(join(RUNNER_SESSION_DIRECTORY, `${session.sessionId}.jsonl`));
+    }
+  }, 15_000);
+
   it('returns stage-matched native stop proof only after cancellation settles and the process group is gone', async () => {
     if (process.platform === 'win32') return;
     const root = tempRoot();

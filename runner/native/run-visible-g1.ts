@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** One-route, visible-only G1 calibration through the verified runSuite corpus. */
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdir, open, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -22,6 +23,8 @@ import { ZcodeAcpDriver } from './zcode.ts';
 import { resolveNativeLaunchInventory, type LaunchProfile, type NativeLaunchInventory } from './index.ts';
 import type { ObservedDriver } from './observation.ts';
 import type { ObservedNativeDriver } from './observed-driver.ts';
+import { runWorkspaceConformance, WorkspaceConformanceError, inventoryTaskWorkspace } from './workspace-conformance.ts';
+import type { LifecycleObservedDriver } from './workspace-conformance.ts';
 import { sha256 } from '../artifacts/index.ts';
 import { assertOutsideGlmBlackout } from './zcode.ts';
 import ts from 'typescript';
@@ -44,6 +47,8 @@ export interface VisibleG1Options {
   /** Tests inject a null quota source; live runs use both native read sources. */
   quotaSource?: QuotaSource;
   launchInventory?: NativeLaunchInventory;
+  /** Native runner deadline override for no-dispatch fixtures; production defaults to 60 seconds. */
+  suiteCheckTimeoutMs?: number;
   configPath?: string;
   now?: () => number;
 }
@@ -93,6 +98,7 @@ const SOURCE_ENTRYPOINTS = [
   'campaigns/cq-settings/corpus/review-loop-task.ts',
   'runner/workflow-corpus/review-loop-suite.ts',
   'runner/native/run-visible-g1.ts',
+  'runner/native/workspace-conformance.ts',
   'runner/index.ts',
   'schema/result-row.schema.json',
   'schema/comparison-table.schema.json',
@@ -168,6 +174,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
     bridgeProfile: bridgeProfile.label,
     profileComparison: comparison.comparison,
     boundary: options.boundary,
+    suiteCheckTimeoutMs: options.suiteCheckTimeoutMs ?? 60_000,
   };
   const budget = { wallClockMs: 240_000, totalWallClockEnforced: false, modelWallClockMs: 120_000, judgeWallClockMs: 60_000, setupAndFinalizationAllowanceMs: 60_000, maxAttempts: 1, maxTokens: null, hardTokenCap: false };
   const identity = experimentId({
@@ -263,26 +270,44 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
       const value = Reflect.get(target, property, target) as unknown;
       return typeof value === 'function' ? value.bind(target) : value;
     },
-  }) as typeof options.driver & Driver & ObservedDriver;
+  }) as typeof options.driver & Driver & ObservedDriver & LifecycleObservedDriver;
 
   let runFinished = false;
+  let workspaceConformance: Awaited<ReturnType<typeof runWorkspaceConformance>> | undefined;
+  let workspaceConformanceFailure: WorkspaceConformanceError | undefined;
   try {
-    const result = await runNativeConformanceSuite({
-      suiteDir: bundle.suiteDir,
-      repoRoot: bundle.repoRoot,
-      artifactRoot,
+    workspaceConformance = await runWorkspaceConformance({
       driver: nativeDriver,
-      hostCheckScoringEnvironment: (workspacePath, baselineCommit) =>
-        bundle.hostCheckScoringEnvironment(workspacePath, baselineCommit),
-      model: spec.model,
-      provider: spec.taskProvider,
-      driverName: spec.rowDriver,
-      checkTimeoutMs: 60_000,
       experiment,
-      expectedCaseIds: [caseId],
-      expectedInvocations: [{ assignmentId, stageId, attemptId }],
-      expectedTransport: spec.transport,
+      suiteName: bundle.suite.name,
+      caseId,
+      frozenJudgePin: bundle.oraclePin.sha256,
+      frozenBaseline: {
+        contentSha256: inventoryTaskWorkspace(task.worktreePath).contentSha256,
+        taskCommit: task.baselineCommit,
+        taskTree: execFileSync('git', ['rev-parse', '--verify', `${task.baselineCommit}^{tree}`], {
+          cwd: task.worktreePath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim(),
+      },
+      artifactRoot,
+      runSuite: (conformanceDriver) => runNativeConformanceSuite({
+        suiteDir: bundle.suiteDir,
+        repoRoot: bundle.repoRoot,
+        artifactRoot,
+        driver: conformanceDriver as typeof nativeDriver,
+        hostCheckScoringEnvironment: (workspacePath, baselineCommit) =>
+          bundle.hostCheckScoringEnvironment(workspacePath, baselineCommit),
+        model: spec.model,
+        provider: spec.taskProvider,
+        driverName: spec.rowDriver,
+        checkTimeoutMs: settings.suiteCheckTimeoutMs,
+        experiment,
+        expectedCaseIds: [caseId],
+        expectedInvocations: [{ assignmentId, stageId, attemptId }],
+        expectedTransport: spec.transport,
+      }),
     });
+    const result = workspaceConformance.result;
     const candidateCommit = [...workspaceEvidence.values()][0]?.candidateCommit ?? null;
     const observations = result.observations.map(({ observation, artifact }) => ({
       observation,
@@ -324,7 +349,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
       },
       judgeManifest,
       pins: { sourcePins, promptSha256: sha256(prompt), judgeSha256: bundle.oraclePin.sha256, launchInventorySha256: sha256(JSON.stringify(launchInventory)) },
-      budget: { ...budget, schedulerDiagnosticMaxAttempts: 1, usagePolicy: 'unknown-usage-no-capacity-claim' },
+      budget: { ...budget, suiteCheckTimeoutMs: settings.suiteCheckTimeoutMs, schedulerDiagnosticMaxAttempts: 1, usagePolicy: 'unknown-usage-no-capacity-claim' },
       quotaReads,
       boundary: { ...options.boundary, status: 'visible-only-unconfined', visibleOnly: true },
       profileComparison: comparison.comparison,
@@ -335,6 +360,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
       rows: result.rows,
       tables: result.tables,
       observations,
+      workspaceConformance: { receipt: workspaceConformance.receipt, artifact: workspaceConformance.artifact },
       absences: result.absences,
       diagnostics: result.diagnostics,
     };
@@ -344,12 +370,19 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
     runFinished = true;
     return { experimentId: identity, route: options.route, runDirectory, reportPath, queueDirectory, rows: result.rows, tables: result.tables };
   } catch (error) {
+    if (error instanceof WorkspaceConformanceError) workspaceConformanceFailure = error;
     if (!runFinished) {
       const failure = {
         schemaVersion: 1, status: 'failed', visibleOnly: true, heldOut: false,
         route: options.route, transport: spec.transport, experimentId: identity, experimentRunId,
         assignment: { assignmentId, stageId, attemptId, admissionReason: admission.reason },
         boundary: { ...options.boundary, status: 'visible-only-unconfined' },
+        ...(workspaceConformanceFailure === undefined ? {} : {
+          workspaceConformance: {
+            receipt: workspaceConformanceFailure.receipt,
+            artifact: workspaceConformanceFailure.artifact,
+          },
+        }),
         quotaReads, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
         artifactDestination: artifactRoot,
       };

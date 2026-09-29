@@ -266,14 +266,12 @@ function prepare(reg: Preregistration, rows: readonly Observation[], c: Contrast
     const rec = taskSide.get(a.taskId) ?? new Map();
     for (const s of [c.strategyId, c.baselineId]) {
       const row = selected.get(pairKey(s, a));
-      if (!row) { reasons.push(`missing assigned row ${s}/${a.taskId}/${a.repeatId}`); missing++; }
-      else if (row.status === 'operational-missing') { reasons.push(`operational missingness ${s}/${a.taskId}/${a.repeatId}`); missing++; }
+      if (!row) { reasons.push(`missing assigned row ${s}/${a.taskId}/${a.repeatId}`); missing++; unknownFailures = true; }
+      else if (row.status === 'operational-missing') { reasons.push(`operational missingness ${s}/${a.taskId}/${a.repeatId}`); missing++; unknownFailures = true; }
       else {
         const outcome = row.success!;
-        if (!outcome) {
-          if (row.launchedBudgetFailure === null) unknownFailures = true;
-          else if (row.launchedBudgetFailure === true || (row.launchedBudgetFailure === undefined && /budget|exhaust/i.test(row.cause ?? ''))) failures++;
-        }
+        if (row.launchedBudgetFailure === true) failures++;
+        else if (row.launchedBudgetFailure !== false) unknownFailures = true;
         const sr = rec.get(s) ?? { substrate: a.substrateId, weight: a.weight, outcomes: {} };
         (sr.outcomes[a.repeatId] ??= []).push(outcome);
         rec.set(s, sr);

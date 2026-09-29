@@ -25,6 +25,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
   if (state.authRoot !== plan.privateAuthRoot || state.network !== plan.network || state.broker.containerId !== plan.brokerContainerId) throw new Error('private infrastructure plan changed');
   const pins = JSON.parse(readFileSync(join(root, 'runner/boundary/evidence/fallback/final-profile-public-inputs.json'), 'utf8'));
   const assignmentId = 'final-profile-g1-' + plan.runId, attemptId = assignmentId + '-attempt-1';
+  let invocationCleanup;
   let used = false, expected, prepareSettled = Promise.resolve(), settlePrepare;
   if (hash(JSON.stringify(plan)) !== privateJson(join(privateRoot, 'plan-hash.json')).sha256) throw new Error('private runtime plan changed');
   async function verifySources() {
@@ -49,24 +50,31 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
       profile.validateFinalCodexAuth(readFileSync(join(state.authRoot, 'payload/auth.json'), 'utf8'), 240);
     } catch (error) { note('runtime-cleanup-error', error); throw error; } finally { c.close(); }
   }
-  async function cleanup({ removeRecovery = false } = {}) {
+  async function cleanup({ removeRecovery = false, dispositionReceiptPath } = {}) {
     note('runtime-cleanup-start');
     const latest = privateJson(statePath), c = new DockerControl();
     if (latest.authRoot !== plan.privateAuthRoot || latest.network !== plan.network || latest.broker.containerId !== plan.brokerContainerId || latest.stage && (!/^cq-s5-task-[a-f0-9]{16}$/.test(latest.stage.taskVolume) || !/^cq-s5-context-[a-f0-9]{16}$/.test(latest.stage.contextVolume) || !/^[a-f0-9]{64}$/.test(latest.stage.receiptHash))) { c.close(); throw new Error('private setup ownership record changed'); }
     try {
       if (await c.run(['info', '--format', '{{.ID}}']) !== pins.daemon.id) throw new Error('cleanup daemon changed');
       if (latest.stage) {
+        if (latest.handedOff && removeRecovery) {
+          const audit = privateJson(dispositionReceiptPath);
+          if (audit.approved !== true || audit.runId !== plan.runId || audit.taskVolume !== latest.stage.taskVolume || audit.contextVolume !== latest.stage.contextVolume || audit.stagingReceiptHash !== latest.stage.receiptHash || !/^[a-f0-9]{64}$/.test(audit.candidateAuditSha256)) throw new Error('explicit parent candidate disposition audit required');
+        }
         const ids = (await c.run(['ps', '-aq', '--no-trunc', '--filter', 'volume=' + latest.stage.taskVolume])).split('\n').filter(Boolean);
         for (const id of ids) {
           const worker = JSON.parse(await c.run(['inspect', id]))[0];
           if (worker.Image !== pins.workerImage || worker.Config.Labels?.['cq.boundary.identity'] !== latest.boundaryIdentity || !worker.Mounts.some(m => m.Name === latest.stage.taskVolume && m.Destination === '/task')) throw new Error('cleanup worker ownership changed');
           await teardownContainer(c, id);
         }
-        if (!latest.handedOff || removeRecovery) for (const volume of [latest.stage.taskVolume, latest.stage.contextVolume]) {
-          if (!(await c.run(['volume', 'ls', '-q'])).split('\n').includes(volume)) continue;
+        for (const volume of [latest.stage.taskVolume, latest.stage.contextVolume]) {
+          if (!(await c.run(['volume', 'ls', '-q'])).split('\n').includes(volume)) {
+            if (latest.handedOff && !removeRecovery) { latest.recoveryRetained = false; save(statePath, latest); throw new Error('handed-off recovery volume missing'); }
+            continue;
+          }
           const v = JSON.parse(await c.run(['volume', 'inspect', volume]))[0];
           if (v.Labels?.['cq.boundary.staging'] !== latest.stage.receiptHash || await c.run(['ps', '-aq', '--filter', 'volume=' + volume])) throw new Error('cleanup volume ownership changed');
-          await c.run(['volume', 'rm', volume]);
+          if (!latest.handedOff || removeRecovery) await c.run(['volume', 'rm', volume]);
         }
       }
       if (await c.run(['ps', '-aq', '--no-trunc', '--filter', 'id=' + latest.broker.containerId])) {
@@ -145,10 +153,12 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
       },
       async cleanupInvocation(request) {
         if (request.identity.assignmentId !== assignmentId || request.identity.attemptId !== attemptId) throw new Error('cleanup invocation identity mismatch');
-        await prepareSettled;
-        if (request.signal.aborted || Date.now() >= request.deadlineEpochMs) throw new Error('cleanup deadline elapsed; private recovery retained');
-        const proof = await cleanup();
-        return { status: 'stopped-and-reaped', resourceIds: [state.broker.containerId, state.network, plan.brokerAssetVolume, ...(state.stage ? [state.stage.taskVolume, state.stage.contextVolume] : [])], volumeDisposition: proof.recoveryRetained ? 'quarantined' : 'disposed' };
+        return invocationCleanup ??= (async () => {
+          await prepareSettled;
+          if (request.signal.aborted || Date.now() >= request.deadlineEpochMs) throw new Error('cleanup deadline elapsed; private recovery retained');
+          const proof = await cleanup();
+          return { status: 'stopped-and-reaped', resourceIds: [state.broker.containerId, state.network, plan.brokerAssetVolume, ...(state.stage ? [state.stage.taskVolume, state.stage.contextVolume] : [])], volumeDisposition: proof.recoveryRetained ? 'quarantined' : 'disposed' };
+        })();
       },
       async approve(request) {
         try {

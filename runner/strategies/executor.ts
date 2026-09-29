@@ -90,6 +90,8 @@ export interface IndependentJudgeSettlementProof {
     resourceIds: readonly string[];
     inventoryContentVerified: false;
   };
+  /** Durable canonical receipt for the exact parent-issued S5 plan proof. */
+  protectedOracleCleanupReceipt?: { path: string; sha256: string; privatePath?: string };
   cleanup: 'complete' | 'failed' | 'quarantined';
 }
 
@@ -113,6 +115,7 @@ export interface IndependentJudgeExecution {
       resourceIds: readonly string[];
       inventoryContentVerified: false;
     };
+    protectedOracleCleanupReceipt: { path: string; sha256: string; privatePath?: string };
   };
 }
 
@@ -136,6 +139,7 @@ export interface NativeStrategyExecutorHooks {
   supervisor: NativeSupervisorControl;
   prepareIndependentJudgeRequest?(request: StageRequest): ReviewLoopJudgeProcessRequest;
   onIndependentJudgeEvidence?(request: StageRequest, evidence: IndependentJudgeExecution['evidence']): void;
+  onIndependentJudgeSettlement?(identity: JudgeProcessIdentity, proof: IndependentJudgeSettlementProof): void;
   independentJudgeSupervisor?: IndependentJudgeSupervisor;
 }
 
@@ -232,9 +236,19 @@ export function createNativeStrategyExecutor(
           if (!hooks.independentJudgeSupervisor) throw new Error('S1 independent judge requires a separate cancellable process supervisor');
           const prepare = hooks.prepareIndependentJudgeRequest;
           if (!prepare) throw new Error('S1 independent judge requires serializable frozen process input');
-          const judged = await hooks.independentJudgeSupervisor.run(prepare(request), request.signal);
-          hooks.onIndependentJudgeEvidence?.(request, judged.evidence);
-          return judged.result;
+          const judgeRequest = prepare(request);
+          try {
+            const judged = await hooks.independentJudgeSupervisor.run(judgeRequest, request.signal);
+            hooks.onIndependentJudgeEvidence?.(request, judged.evidence);
+            return judged.result;
+          } catch (error) {
+            try {
+              const proof = await hooks.independentJudgeSupervisor.cancelAndWait({ identity: judgeRequest.identity, cause: error,
+                deadlineEpochMs: judgeRequest.shutdownDeadlineEpochMs });
+              hooks.onIndependentJudgeSettlement?.(judgeRequest.identity, proof);
+            } catch { /* Preserve the judge failure; absent proof remains unknown. */ }
+            throw error;
+          }
         }
         return await hooks.runStage(request, driver);
       } finally {
@@ -254,6 +268,7 @@ export function createNativeStrategyExecutor(
         };
         const proof = await supervisor.cancelAndWait({ identity: judgeIdentity, cause,
           deadlineEpochMs: request.deadlineEpochMs + request.tier.shutdownAllowanceMs });
+        hooks.onIndependentJudgeSettlement?.(judgeIdentity, proof);
         const matches = proof.assignmentId === request.assignmentId && proof.stageId === request.stageId
           && proof.attemptId === request.attemptId && proof.processTree === 'stopped-and-reaped'
           && proof.execution === 'settled' && proof.cleanup === 'complete'

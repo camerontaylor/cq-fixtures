@@ -299,3 +299,25 @@ Focused verification for this follow-up: `npx tsc --noEmit`, `npx eslint`
 over the owned paths, `npx tsc -p tsconfig.build.json`, the isolated process
 supervisor tests, and the real S1 ArtifactStore/runSuite fake-driver mapping
 test. No paid provider calls are part of these tests.
+
+## S5 supervisor settlement follow-up
+
+The judge supervisor normalizes pre-spawn child errors into a resolved launch
+failure. A missing PID permits exact-plan cleanup only when Node reports the
+authoritative pre-spawn error; missing PID or an error after the `spawn` event
+stays unproven. Termination and process-group probe failures resolve to
+unsettled evidence instead of bypassing `finally` or `cancelAndWait`. S5
+namespace cleanup runs only after proven host absence, including launch
+failure and cancellation during preparation. The abort signal and decision
+deadline are rechecked after pin loading and plan registration, immediately
+before spawn, and again once listeners are installed.
+
+Each returned S5 cleanup proof is written once as canonical JSON beneath the
+private judge artifact tree. The receipt binds the frozen assignment/stage/
+attempt and plan hash, includes the complete S5 fields and content-verification
+false value, and is fsynced, reread, and hash-checked before a judgement can be
+accepted. Settlement and visible-screening reports carry its durable
+`artifacts/...` path and SHA256; report construction verifies/promotes that
+receipt even when the judge result is quarantined. Recorder or integrity
+failure suppresses acceptance, keeps cleanup unobserved, and preserves the
+original cancellation/launch failure.

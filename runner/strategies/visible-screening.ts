@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Driver, OpInvocation } from '@camerontaylor/cq-toolkit';
-import { createNativeStrategyExecutor, type NativeObservedDriver, type NativeSupervisorControl } from './executor.ts';
+import { createNativeStrategyExecutor, type NativeObservedDriver, type NativeSupervisorControl, type IndependentJudgeSettlementProof } from './executor.ts';
 import { createIndependentJudgeProcessSupervisor, loadPinnedJudgeOwnership } from './judge-process.ts';
 import type { IndependentJudgeExecution } from './executor.ts';
 import type { ReviewLoopJudgeProcessRequest } from './judge-protocol.ts';
@@ -88,6 +88,7 @@ export interface VisibleReviewLoopResult {
       volumeDisposition: 'quarantined' | 'absent' | 'unproven';
       resourceIds: readonly string[];
       inventoryContentVerified: false;
+      receipt: { path: string; sha256: string } | null;
     };
     stages: readonly {
       stageId: string; attemptId: string; invocationId: string | null; status: string;
@@ -280,7 +281,9 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
   const workspaceByAttempt = new Map<string, CandidateWorkspace>();
   const judgeResultsByAttempt = new Map<string, S1RunSuiteResult>();
   const judgeArtifactRoots: string[] = [];
-  const judgeResultHashes = new Map<string, { requestSha256: string; payloadSha256: string; protectedOracleProof: IndependentJudgeExecution['evidence']['protectedOracleProof'] }>();
+  const judgeResultHashes = new Map<string, { requestSha256?: string; payloadSha256?: string;
+    protectedOracleProof?: IndependentJudgeExecution['evidence']['protectedOracleProof'];
+    protectedOracleCleanupReceipt?: { path: string; sha256: string; privatePath?: string } }>();
   let seedTree = '';
   let preserveForRecovery = false;
   let cleanupAttempted = false;
@@ -451,7 +454,16 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
         // Retain only the private child artifact root until S1 evidence is promoted below.
         judgeArtifactRoots.push(evidence.artifactRoot);
         judgeResultHashes.set(request.attemptId, { requestSha256: evidence.requestSha256, payloadSha256: evidence.payloadSha256,
-          protectedOracleProof: evidence.protectedOracleProof });
+          protectedOracleProof: evidence.protectedOracleProof,
+          protectedOracleCleanupReceipt: evidence.protectedOracleCleanupReceipt });
+      },
+      onIndependentJudgeSettlement(identity, proof: IndependentJudgeSettlementProof) {
+        judgeResultHashes.set(identity.attemptId, {
+          ...(proof.protectedOracleProof ? { protectedOracleProof: {
+            ...proof.protectedOracleProof, inventoryContentVerified: false as const,
+          } } : {}),
+          ...(proof.protectedOracleCleanupReceipt ? { protectedOracleCleanupReceipt: proof.protectedOracleCleanupReceipt } : {}),
+        });
       },
       independentJudgeSupervisor,
     });
@@ -471,15 +483,17 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
     };
     const strategy = await runStrategy(strategyTask, recipe, tier, executor, { assignmentId: options.assignmentId });
     preserveForRecovery = strategy.stages.some((stage) => stage.quarantined);
+    const judgeStage = strategy.stages.find((stage) => stage.kind === 'independent-judge');
+    const cleanupReceipt = judgeStage ? judgeResultHashes.get(judgeStage.attemptId)?.protectedOracleCleanupReceipt : undefined;
     if (!preserveForRecovery) {
       promoteArtifactTree(privateArtifactRoot, artifactRoot);
       for (const judgeArtifactRoot of judgeArtifactRoots) promoteArtifactTree(judgeArtifactRoot, artifactRoot);
     }
+    if (cleanupReceipt?.privatePath) promoteCleanupReceipt({ ...cleanupReceipt, privatePath: cleanupReceipt.privatePath }, outputRoot);
     const assignedCaseId = bundle!.suite.cases[0]!.id;
     const runIdentity = visibleRunIdentity(identity, options.assignmentId, options.runNamespace);
     const selectedHostJudgement = frozenSelection as { judgementId: string; version: number; judgePin: string; candidateSha256: string } | null;
     const modelStages = strategy.stages.filter((stage) => stage.routeId !== null);
-    const judgeStage = strategy.stages.find((stage) => stage.kind === 'independent-judge');
     const finalResult = judgeStage ? judgeResultsByAttempt.get(judgeStage.attemptId) : undefined;
     const localOutcome = finalResult?.rows.find((row) => row.case === assignedCaseId)?.taskOutcome ?? null;
     const mappingContext: S1ExperimentContext = {
@@ -539,7 +553,10 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
         selectedHostJudgement, formatConformance: strategy.formatCompliance,
         assignedStrategySuccess: strategy.assignedStrategySuccess, operationalStatus: strategy.operationalStatus,
         stageInvocationIds: modelStages.map((stage) => stage.invocationId),
-        judgeProcess: judgeStage ? judgeResultHashes.get(judgeStage.attemptId) ?? null : null,
+        judgeProcess: judgeStage ? (() => {
+          const process = judgeResultHashes.get(judgeStage.attemptId);
+          return process ? { ...process, protectedOracleCleanupReceipt: publicReceipt(process.protectedOracleCleanupReceipt) } : null;
+        })() : null,
       }, null, 2)}\n`;
       const digest = hash(contents);
       const artifact = { path: 'pending-recipe-judgement.json', sha256: digest };
@@ -572,14 +589,17 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
           sourceInvocationIds: modelStages.flatMap((stage) => stage.invocationId ? [stage.invocationId] : []),
         },
         protectedOracleCleanup: (() => {
-          const proof = judgeStage ? judgeResultHashes.get(judgeStage.attemptId)?.protectedOracleProof : undefined;
+          const evidence = judgeStage ? judgeResultHashes.get(judgeStage.attemptId) : undefined;
+          const proof = evidence?.protectedOracleProof;
+          const receipt = publicReceipt(evidence?.protectedOracleCleanupReceipt);
           return proof ? { status: 'proven' as const, planSha256: proof.planSha256,
             daemonVerified: proof.daemonVerified, ownershipVerified: proof.ownershipVerified,
             containersAbsent: proof.containersAbsent, volumeDisposition: proof.volumeDisposition,
-            resourceIds: proof.resourceIds, inventoryContentVerified: false as const }
+            resourceIds: proof.resourceIds, inventoryContentVerified: false as const,
+            receipt }
             : { status: 'unobserved' as const, planSha256: null, daemonVerified: false,
               ownershipVerified: false, containersAbsent: false, volumeDisposition: 'unproven' as const,
-              resourceIds: [], inventoryContentVerified: false as const };
+              resourceIds: [], inventoryContentVerified: false as const, receipt };
         })(),
         stages: modelStages.map(({ stageId, attemptId, invocationId, status: stageStatus, launched, terminalCause, transportException, usage }) => ({
           stageId, attemptId, invocationId, status: stageStatus, launched, terminalCause, transportException, usage,
@@ -666,6 +686,27 @@ function promoteArtifactTree(sourceRoot: string, destinationRoot: string): void 
     }
   };
   copyDirectory(source, destination);
+}
+
+function publicReceipt(receipt: { path: string; sha256: string; privatePath?: string } | undefined): { path: string; sha256: string } | null {
+  return receipt ? { path: receipt.path, sha256: receipt.sha256 } : null;
+}
+
+function promoteCleanupReceipt(
+  receipt: { path: string; sha256: string; privatePath: string },
+  outputRoot: string,
+): void {
+  if (!receipt.path.startsWith('artifacts/') || receipt.path.split('/').some((part) => part === '..')
+    || !/^[a-f0-9]{64}$/.test(receipt.sha256)) throw new Error('protected-oracle cleanup receipt reference is malformed');
+  const bytes = readFileSync(receipt.privatePath);
+  if (hash(bytes) !== receipt.sha256) throw new Error('protected-oracle cleanup receipt source hash mismatch');
+  const destination = resolve(outputRoot, receipt.path);
+  if (!destination.startsWith(`${resolve(outputRoot)}${sep}`)) throw new Error('protected-oracle cleanup receipt escaped the output root');
+  if (!existsSync(destination)) {
+    mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+    writeFileSync(destination, bytes, { flag: 'wx', mode: 0o600 });
+  }
+  if (hash(readFileSync(destination)) !== receipt.sha256) throw new Error('promoted protected-oracle cleanup receipt hash mismatch');
 }
 
 function assertRealDirectory(path: string): void {

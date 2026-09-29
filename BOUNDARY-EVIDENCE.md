@@ -534,3 +534,25 @@ Final validation: five focused protected-parent/input tests passed (58 skipped,
 489 ms); typecheck, owned-file lint and diff-check passed. Final real-daemon
 probe also passed after private-plan authority and fresh-volume ownership checks.
 No full suite was run. Earlier synthetic recovery remains quarantined.
+
+### Final G1 preparer oracle-closure correction
+
+The preparer now canonicalizes the selected checkout root and independently reads
+`createReviewLoopOraclePin(root)`. It verifies each dependency's exact bytes under
+that root, passes the active dependencies into `finalProfileG1SourcePins`, and
+rechecks the oracle pin after derivation. No approval request supplies these pins.
+The exported source-only derivation helper does not create task/auth/infrastructure.
+
+A focused regression loads the actual integration native/runSuite modules with
+Node `--experimental-transform-types`, materializes only the synthetic task/bundle,
+and compares the independent preparer pin/map/oracle with the bundle's native
+source derivation. Against conductor `50a212e`, the old default closure has 59
+assets and the oracle-inclusive closure has 63. All four formerly omitted assets
+are required: operation-oracle-pins.json, judge-ownership-source-closure.public.json,
+namespace-acl.sh, and volume-io.mjs. The workspace-conformance helper is pinned.
+Validation: 1 focused test passed (63 skipped), typecheck and targeted lint passed.
+The isolated older boundary checkout uses `CQ_BOUNDARY_SOURCE_ROOT` to select the
+integration source root; integrated runs default to their own checkout.
+No runtime generation, auth staging, Docker/VM/image, quota, provider CLI or model
+operations occurred. Existing strict argv/factory/timer behavior is unchanged.
+Source freeze and runtime generation must wait for the integrated clean HEAD.

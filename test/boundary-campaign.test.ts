@@ -683,3 +683,32 @@ it('refuses redirected private phase evidence and retains only Docker operation 
     expect(rows[1]).not.toHaveProperty('operation');expect(raw).not.toContain('PRIVATE_SYNTHETIC_OUTPUT');
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+// Explicit opt-in uses only the dedicated pinned S5 daemon, synthetic task/context
+// and network-none worker. It never loads subscription auth or a native model.
+describe.skipIf(process.env.CQ_BOUNDARY_SYNTHETIC_DAEMON !== '1')('actual private factory abort ownership', () => {
+  it.each(['abort', 'control', 'setup-abort'])('preserves ordered cleanup for %s', async mode => {
+    const { fileURLToPath } = await import('node:url');
+    const probe = fileURLToPath(new URL('../runner/boundary/probe-runtime-abort.mjs', import.meta.url));
+    const child = spawnSync(process.execPath, ['--experimental-transform-types', probe, mode], {
+      encoding: 'utf8', timeout: 90000, maxBuffer: 1024 * 1024,
+    });
+    expect(child.status).toBe(0);
+    const proof = JSON.parse(child.stdout);
+    expect(proof.modelCalls).toBe(0);
+    expect(proof.actualRouteQualified).toBe(false);
+    if (mode === 'setup-abort') {
+      expect(proof.setupRejected).toBe(true);
+      expect(proof.cleanupAwaited).toBe(true);
+      expect(proof.handedOff).toBe(false);
+    } else {
+      expect(proof.finalizeFailed).toBe(false);
+      expect(proof.competingRuntimeRemoval).toBe(false);
+      expect(proof.exportPresent).toBe(true);
+      expect(proof.publicationVerified).toBe(true);
+      expect(proof.namespaceAbsent).toBe(true);
+      expect(proof.recoveryPreserved).toBe(true);
+      expect(proof.events.indexOf('runtime-worker-lookup')).toBeGreaterThan(proof.events.indexOf('adapter-finalization-settled'));
+    }
+  }, 95000);
+});

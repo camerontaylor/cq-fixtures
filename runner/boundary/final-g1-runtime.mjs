@@ -103,7 +103,9 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
         used = true; prepareSettled = new Promise(resolve => { settlePrepare = resolve; }); let aborted = false; const started = Date.now();
         const setupCutoff = Math.min(Date.now() + 45000, context.deadlineEpochMs - 5000);
         const timer = setTimeout(() => { aborted = true; }, Math.max(1, setupCutoff - Date.now()));
-        const onAbort = () => { note('runtime-abort'); aborted = true; if (state.handedOff) void cleanup().catch(() => {}); };
+        // Setup cancellation owns preparation only. After handoff, native must await
+        // adapter terminate/finalize before calling cleanupInvocation.
+        const onAbort = () => { note('runtime-abort'); aborted = true; };
         context.signal.addEventListener('abort', onAbort, { once: true });
         try {
           await verifyInfrastructure();
@@ -135,10 +137,11 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
           await verifySources();
           if (aborted || context.signal.aborted || Date.now() >= setupCutoff || Date.now() - started >= 45000) throw new Error('late G1 preparation refused');
           state.handedOff = true; save(statePath, state);
-          const lease = setTimeout(() => { void cleanup().catch(() => {}); }, Math.max(1, started + 240000 - Date.now())); lease.unref();
+          // No independent post-handoff timer may race the active adapter.
+          // The assignment deadline is a decision cutoff, not a lifetime guarantee.
           return { specification, staging: receipt, broker: state.broker, hostTaskRoot: resolve(context.cwd), exportRoot: resolve(context.cwd), lifecycleEvidencePath };
         } catch { await cleanup(); throw new Error('private G1 preparation unavailable; setup disposed or private recovery retained'); }
-        finally { clearTimeout(timer); settlePrepare(); }
+        finally { clearTimeout(timer); context.signal.removeEventListener('abort', onAbort); settlePrepare(); }
       },
       async cleanupInvocation(request) {
         if (request.identity.assignmentId !== assignmentId || request.identity.attemptId !== attemptId) throw new Error('cleanup invocation identity mismatch');

@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "status": "synthetic-lifecycle-only-not-actual-route",
+  "beforeFix": {
+    "provenance": "synthetic-actual-factory-no-auth-no-model",
+    "mode": "abort",
+    "events": [
+      "factory-handed-off",
+      "trigger-timer",
+      "terminate-start",
+      "terminate-reused",
+      "adapter-observed-worker",
+      "setup-signal-aborted",
+      "runtime-worker-lookup",
+      "runtime-worker-removed",
+      "terminate-error",
+      "runtime-worker-lookup"
+    ],
+    "competingRuntimeRemoval": true,
+    "finalizeFailed": true,
+    "recoveryPreserved": true,
+    "namespaceAbsent": true,
+    "exportPresent": false,
+    "modelCalls": 0,
+    "actualRouteQualified": false
+  },
+  "afterFix": {
+    "setup-abort": {
+      "provenance": "synthetic-actual-factory-no-auth-no-model",
+      "mode": "setup-abort",
+      "setupRejected": true,
+      "cleanupAwaited": true,
+      "handedOff": false,
+      "recoveryPreserved": false,
+      "modelCalls": 0,
+      "actualRouteQualified": false
+    },
+    "abort": {
+      "provenance": "synthetic-actual-factory-no-auth-no-model",
+      "mode": "abort",
+      "events": [
+        "factory-handed-off",
+        "trigger-timer",
+        "terminate-start",
+        "terminate-reused",
+        "adapter-observed-worker",
+        "setup-signal-aborted",
+        "terminate-done",
+        "finalize-start",
+        "terminate-reused",
+        "export-start",
+        "export-done",
+        "cleanup-start",
+        "cleanup-done",
+        "control-close",
+        "adapter-finalization-settled",
+        "runtime-worker-lookup"
+      ],
+      "competingRuntimeRemoval": false,
+      "finalizeFailed": false,
+      "failureOperation": null,
+      "recoveryPreserved": true,
+      "namespaceAbsent": true,
+      "exportPresent": true,
+      "publicationVerified": true,
+      "modelCalls": 0,
+      "actualRouteQualified": false
+    },
+    "control": {
+      "provenance": "synthetic-actual-factory-no-auth-no-model",
+      "mode": "control",
+      "events": [
+        "factory-handed-off",
+        "trigger-timer",
+        "terminate-start",
+        "terminate-reused",
+        "terminate-done",
+        "finalize-start",
+        "terminate-reused",
+        "export-start",
+        "export-done",
+        "cleanup-start",
+        "cleanup-done",
+        "control-close",
+        "adapter-finalization-settled",
+        "runtime-worker-lookup"
+      ],
+      "competingRuntimeRemoval": false,
+      "finalizeFailed": false,
+      "failureOperation": null,
+      "recoveryPreserved": true,
+      "namespaceAbsent": true,
+      "exportPresent": true,
+      "publicationVerified": true,
+      "modelCalls": 0,
+      "actualRouteQualified": false
+    }
+  },
+  "historicalRunCauseAttributed": false,
+  "nativeCleanupContractRequired": true,
+  "globalLifetimeGuaranteed": false,
+  "validation": {
+    "focusedTests": 3,
+    "skipped": 49,
+    "durationSeconds": 12.91,
+    "typecheck": "passed",
+    "ownedLint": "passed",
+    "fullSuiteRerun": false
+  }
+}

@@ -125,8 +125,14 @@ export class PiNativeDriver extends ObservedNativeDriver {
         throw error;
       } else if (result.code !== 0) observation.terminal.cause = `exit:${result.code ?? result.signal ?? 'unknown'}`;
       if (!result.treeStopped) observation.terminal.cause = 'process-tree-stop-unproven';
-      const worker = createWorkerResult(usageProjection(observation.usage.counters), result.code === 0 && result.treeStopped ? 'complete' :
-        result.terminal === 'timeout' ? 'budget' : result.terminal === 'cancelled' ? 'aborted' : 'error', {
+      // A clean exit after the supervisor's timeout or cancellation signal
+      // does not complete the invocation. Some CLIs handle SIGTERM, flush a
+      // final response, then exit 0; retain that evidence while preserving
+      // the supervisor's terminal decision.
+      const stopReason: WorkerResult['stopReason'] = result.terminal === 'timeout' ? 'budget' :
+        result.terminal === 'cancelled' ? 'aborted' :
+        result.code === 0 && result.treeStopped ? 'complete' : 'error';
+      const worker = createWorkerResult(usageProjection(observation.usage.counters), stopReason, {
         // Do not infer or reveal the anonymous served identity from the route.
         ...(parsed.finalText ? { structuredOutput: toStructuredOutput(parsed.finalText) } : {}),
         ...(result.code !== 0 || !result.treeStopped ? { error: result.stderr.slice(-2000) || (!result.treeStopped ? 'Pi process tree stop could not be proven; capture is forbidden' : `Pi exited ${result.code ?? result.signal}`) } : {}),

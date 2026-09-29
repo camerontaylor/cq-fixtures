@@ -78,3 +78,41 @@ actual-run evidence. The six expansion tasks remain additive to v2.
 All delivered tasks are calibration. Held-out family names in `workflows.json` are reservations only; no held-out artifact has been materialized or proven inaccessible. The task count is not an adequacy or power claim. The new task substrates do not represent nine independent workflow families.
 
 No model service, paid route, public repository, or remote merge/push is used by these corpus tests. Merge effects remain local mocks.
+
+## Review expansion scope and identity facts (PK11 attempt 2)
+
+`review-task-oracles.ts` now carries three facts that were previously absent
+rather than merely untested:
+
+- Each expansion contract declares `allowedPaths` naming the single task-owned
+  source path, matching the "change only this file" wording of the six-task brief.
+- `judgeReviewTaskCandidateIdentity` decides scope, baseline ancestry, tree
+  cleanliness and non-empty patch bytes entirely on the host, by delegating to
+  the same `judgeLocalCandidateIdentity` used by the merge and fleet families.
+  It never executes candidate code, so these facts stay exact even when the
+  protected judge child is unavailable.
+- `judgeReviewTaskSubmission` composes behavior and identity while keeping them
+  separate, and populates the previously unpopulated `candidatePatchSha256`
+  through `reviewCandidatePatchSha256`, which had no call site. The review and
+  shared identity oracles must agree on that digest.
+
+`integration-task-oracles.ts` and `operation-workflow-judges.ts` now name an
+ancestry violation instead of letting a non-zero `merge-base --is-ancestor`
+exit escape into a shared catch. Previously a rewritten candidate was
+indistinguishable from a scope violation or an environment failure; a candidate
+that is still red is still red, but the reason is now attributable. The residual
+catch is reserved for unreadable repository state.
+
+`review-loop-pin.ts` is the source-generated review oracle dependency list. It
+now covers the full transitive **runtime** import closure of the host judge.
+`assignment-supervisor-owner.ts` and `g2-daemon-contract.ts` were omitted even
+though pinned boundary modules value-import them; `g2-daemon-contract.ts` binds
+the dedicated daemon identity the protected child asserts.
+`assignment-supervisor.ts` remains deliberately unpinned because it is reached
+only through an `import type` edge and is therefore compile-time only.
+
+These three generator additions, and the changed bytes of the PK11 oracle
+modules themselves, make the generated pin disagree with the committed
+`review-loop-oracle-pin.json` and with the operation/integration manifests. That
+disagreement is intentional and is the conductor's pin transaction to complete:
+PK00 owns those JSON manifests and this packet does not edit them.

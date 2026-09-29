@@ -153,18 +153,26 @@ export function judgeLocalCandidateIdentity(input: {
   readonly exactPaths?: boolean;
 }): { readonly passed: boolean; readonly head: string; readonly patchSha256: string; readonly failures: readonly string[] } {
   const failures: string[] = [];
-  try {
-    const git = (args: string[]) => execFileSync('git', args, {
+  const git = (args: string[]): string => execFileSync('git', args, {
       cwd: input.repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
     }).trim();
-    const head = git(['rev-parse', '--verify', 'HEAD^{commit}']);
-    execFileSync('git', ['merge-base', '--is-ancestor', input.baselineCommit, head], {
-      cwd: input.repoRoot, stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
-    });
+  let head = '';
+  try {
+    head = git(['rev-parse', '--verify', 'HEAD^{commit}']);
+    // Ancestry is reported by name instead of falling through to the shared
+    // catch, so a rewritten candidate stays distinguishable from a scope,
+    // cleanliness or environment failure.
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', input.baselineCommit, head], {
+        cwd: input.repoRoot, stdio: ['ignore', 'ignore', 'pipe'],
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+      });
+    } catch {
+      failures.push('recorded baseline commit is not an ancestor of the candidate');
+    }
     const changed = git(['diff', '--name-only', `${input.baselineCommit}..${head}`, '--']).split('\n').filter(Boolean).sort();
     const allowed = [...input.allowedPaths].sort();
     const scopeMatches = input.exactPaths === false
@@ -182,6 +190,8 @@ export function judgeLocalCandidateIdentity(input: {
     });
     return { passed: failures.length === 0, head, patchSha256: createHash('sha256').update(patch).digest('hex'), failures };
   } catch {
-    return { passed: false, head: '', patchSha256: '', failures: ['candidate identity or scope could not be verified'] };
+    // Distinct from the named ancestry, scope and cleanliness failures above.
+    failures.push('candidate identity or scope could not be verified');
+    return { passed: false, head, patchSha256: '', failures };
   }
 }

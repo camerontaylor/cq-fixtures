@@ -3,21 +3,39 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** Pin includes every host module that defines this task's identity and semantics. */
+/**
+ * Pin includes every host module that defines this task's identity and semantics.
+ *
+ * Closure provenance: this list is the transitive *runtime* import closure of the
+ * host-side review judge. `assignment-supervisor-owner.ts` and
+ * `g2-daemon-contract.ts` were missing: both are value-imported by pinned
+ * boundary modules (`codex-final-profile.ts`, `container-prepare.ts`,
+ * `container.ts`, `docker-control.ts`, `judge-child.ts`, `judge-ownership.ts`),
+ * and `g2-daemon-contract.ts` binds the dedicated daemon identity the protected
+ * child asserts. `integration-task-oracles.ts` is reached because the review
+ * expansion oracle now delegates its scope/ancestry fact to
+ * `judgeLocalCandidateIdentity`.
+ *
+ * Deliberately NOT pinned: `runner/boundary/assignment-supervisor.ts`, which is
+ * reached only through an `import type` edge and is therefore compile-time only.
+ */
 export const REVIEW_LOOP_ORACLE_DEPENDENCIES = [
   'runner/workflow-corpus/review-loop-judge.ts',
   'runner/workflow-corpus/review-loop-pin.ts',
   'campaigns/cq-settings/corpus/review-loop-task.ts',
   'campaigns/cq-settings/corpus/review-task-oracles.ts',
+  'campaigns/cq-settings/corpus/integration-task-oracles.ts',
   'campaigns/cq-settings/corpus/protected-candidate-snapshot.ts',
   'campaigns/cq-settings/corpus/operation-oracle-pins.json',
   'runner/boundary/evidence/fallback/judge-ownership-source-closure.public.json',
+  'runner/boundary/assignment-supervisor-owner.ts',
   'runner/boundary/broker-toolchain.ts',
   'runner/boundary/codex-final-profile.ts',
   'runner/boundary/container-prepare.ts',
   'runner/boundary/container.ts',
   'runner/boundary/docker-control.ts',
   'runner/boundary/egress-broker.ts',
+  'runner/boundary/g2-daemon-contract.ts',
   'runner/boundary/judge-child.ts',
   'runner/boundary/judge-ownership.ts',
   'runner/boundary/lifecycle-evidence.ts',

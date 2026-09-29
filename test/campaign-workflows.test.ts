@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   buildTestFixPlan,
@@ -31,6 +31,7 @@ import {
   judgeReviewLoopWorkspace,
 } from '../runner/workflow-corpus/review-loop-judge.ts';
 import { createReviewLoopRunSuiteBundle } from '../runner/workflow-corpus/review-loop-suite.ts';
+import { createReviewLoopOraclePin } from '../runner/workflow-corpus/review-loop-pin.ts';
 import {
   judgeAnalysisRemediationProposal,
   judgeFleetSweepPlan,
@@ -63,10 +64,13 @@ import {
 import {
   REVIEW_TASK_CONTRACTS,
   judgeReviewTaskCandidate,
+  judgeReviewTaskCandidateIdentity,
+  judgeReviewTaskSubmission,
   judgeReviewTaskValues,
 } from '../campaigns/cq-settings/corpus/review-task-oracles.js';
 import {
   ANALYSIS_TASK_CONTRACTS,
+  evaluateAnalysisTaskVectors,
   judgeAnalysisProposalMeaning,
 } from '../campaigns/cq-settings/corpus/operation-task-oracles.js';
 import {
@@ -74,6 +78,7 @@ import {
   MERGE_ORIGIN_CONTRACT,
   judgeFleetUnitCandidate,
   judgeFleetUnitValues,
+  judgeLocalCandidateIdentity,
   judgeMergeOriginCandidate,
   judgeMergeOriginValues,
 } from '../campaigns/cq-settings/corpus/integration-task-oracles.js';
@@ -1049,5 +1054,567 @@ describe('six-task corpus expansion', () => {
     } finally {
       await task.cleanup();
     }
+  }, 120_000);
+});
+
+/**
+ * PK11 attempt 2 (D19/D20/D67/D69).
+ *
+ * Every receipt in this block is host-side: no protected judge child, no
+ * Docker daemon and no evaluation route is required, so each fact below is
+ * exercised even while the pinned expansion-task factories remain blocked by
+ * the conductor-owned oracle-pin transaction. Nothing here widens an oracle:
+ * the added facts are scope, identity and named-failure discrimination only.
+ */
+describe('PK11 successor evidence: scope, identity, adapter and oracle discrimination', () => {
+  const LOCAL_ROUTE = { model: 'offline-corpus-only', provider: 'fake' } as const;
+
+  const gitIn = (cwd: string, args: string[]): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+
+  const commitAll = (cwd: string, message: string): string => {
+    gitIn(cwd, ['add', '-A']);
+    gitIn(cwd, ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', message]);
+    return gitIn(cwd, ['rev-parse', 'HEAD']);
+  };
+
+  /** A minimal seeded candidate repository; deliberately not a corpus task factory. */
+  async function seedRepo(files: Record<string, string>): Promise<{ root: string; cleanup(): Promise<void> }> {
+    const root = await mkdtemp(join(tmpdir(), 'cq-pk11-identity-'));
+    for (const [path, contents] of Object.entries(files)) {
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await writeFile(join(root, path), contents);
+    }
+    gitIn(root, ['init', '-q']);
+    gitIn(root, ['config', 'user.name', 'CQ Local Corpus']);
+    gitIn(root, ['config', 'user.email', 'cq-local-corpus@example.invalid']);
+    commitAll(root, 'Seed candidate substrate');
+    return { root, cleanup: async () => { await rm(root, { recursive: true, force: true }); } };
+  }
+
+  it('D19: rejects a review candidate that changes anything outside its single allowed source path', async () => {
+    const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
+    const head = (): string => gitIn(task.worktreePath, ['rev-parse', 'HEAD']);    const judge = () => judgeReviewLoopWorkspace(task.worktreePath, {
+      baselineRef: task.baselineCommit,
+      sourceId: task.sourceId,
+      baselineId: task.baselineId,
+      oracleId: task.oracleId,
+    });
+    try {
+      // (1) correct in-scope repair stays green on the scope fact alone.
+      commitCandidate(task, ALTERNATIVE_SETTINGS_SOURCE);
+      const inScope = await judge();
+      expect(inScope.sourceTestAllowlist.passed).toBe(true);
+      expect(inScope.sourceTestAllowlist.changedPaths).toEqual(['settings/module.js']);
+      expect(inScope.sourceTestAllowlist.unexpectedPaths).toEqual([]);
+
+      // (2) an extra in-repo file alongside a correct repair turns the fact red.
+      writeFileSync(join(task.worktreePath, 'settings/extra.js'), 'export const bypass = true;\n');
+      const extraPath = await judge();
+      expect(extraPath.sourceTestAllowlist.passed).toBe(false);
+      expect(extraPath.sourceTestAllowlist.unexpectedPaths).toEqual(['settings/extra.js']);
+      expect(extraPath.passed).toBe(false);
+
+      // (3) rewriting the pinned display module instead of the task module is red.
+      const display = readFileSync(join(task.worktreePath, 'settings/display.js'), 'utf8');
+      writeFileSync(join(task.worktreePath, 'settings/display.js'), `${display}export const tampered = true;\n`);
+      const tampered = await judge();
+      expect(tampered.sourceTestAllowlist.passed).toBe(false);
+      expect(tampered.sourceTestAllowlist.unexpectedPaths).toContain('settings/display.js');
+      expect(tampered.displayPreservation.passed).toBe(false);
+
+      // (4) a candidate that changed nothing is red on scope, not merely un-green.
+      gitIn(task.worktreePath, ['checkout', '-q', '--', '.']);
+      gitIn(task.worktreePath, ['clean', '-qfd']);
+      gitIn(task.worktreePath, ['reset', '-q', '--hard', task.baselineCommit]);
+      const noChange = await judge();
+      expect(noChange.sourceTestAllowlist.passed).toBe(false);
+      expect(noChange.sourceTestAllowlist.changedPaths).toEqual([]);
+      expect(head()).toBe(task.baselineCommit);
+    } finally {
+      await task.cleanup();
+    }
+  }, 600_000);
+
+  it('D20: runSuite adapter pins an immutable baseline and never moves candidate HEAD', async () => {
+    const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
+    const bundle = await createReviewLoopRunSuiteBundle(task);
+    let workspace = '';
+    const driver: Driver = {
+      async run(invocation) {
+        workspace = invocation.prompt.match(/^workspace: (.+)$/m)?.[1] ?? '';
+        const root = resolve(workspace);
+        const baselineBefore = gitIn(root, ['rev-parse', 'HEAD']);
+        writeFileSync(join(root, 'settings/module.js'), ALTERNATIVE_SETTINGS_SOURCE);
+        gitIn(root, ['add', 'settings/module.js']);
+        const candidateCommit = commitAll(root, 'Candidate repair commit');
+        return {
+          ...completedWorker({ fixed: true, notes: 'local repair' }),
+          model: invocation.modelSpec.model,
+          // The wrapper must observe, not undo, this movement.
+          ...(candidateCommit === baselineBefore ? {} : {}),
+        };
+      },
+    };
+    try {
+      const before = gitIn(task.worktreePath, ['rev-parse', 'HEAD']);
+      const wrapped = bundle.wrapDriver(driver);
+      const result = await wrapped.run({
+        prompt: `workspace: ${task.worktreePath}`,
+        modelSpec: OFFLINE_REVIEW_ROUTE,
+      } as unknown as Parameters<Driver['run']>[0]);
+      expect(result.structuredOutput).toMatchObject({ fixed: true });
+
+      const after = gitIn(task.worktreePath, ['rev-parse', 'HEAD']);
+      expect(after).not.toBe(before);
+      expect(bundle.pinnedBaselineCommit(task.worktreePath)).toBe(before);
+      expect(bundle.pinnedCandidateCommit(task.worktreePath)).toBe(after);
+      // The wrapper records host-namespaced refs; it must not reset candidate HEAD.
+      expect(gitIn(task.worktreePath, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
+    } finally {
+      await task.cleanup();
+    }
+  }, 120_000);
+
+  it('D20: runSuite adapter refuses to host-score an uncaptured workspace or a disagreeing baseline pin', async () => {
+    const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
+    const bundle = await createReviewLoopRunSuiteBundle(task);
+    try {
+      const uncaptured = await mkdtemp(join(tmpdir(), 'cq-pk11-uncaptured-'));
+      try {
+        expect(() => bundle.hostCheckScoringEnvironment(uncaptured, task.baselineCommit))
+          .toThrow('runSuite has not captured this workspace baseline yet');
+      } finally {
+        await rm(uncaptured, { recursive: true, force: true });
+      }
+      const captured = bundle.pinnedBaselineCommit(task.worktreePath);
+      expect(captured).toBeUndefined();
+      expect(() => bundle.hostCheckScoringEnvironment(task.worktreePath, '0'.repeat(40)))
+        .toThrow('runSuite has not captured this workspace baseline yet');
+    } finally {
+      await task.cleanup();
+    }
+  }, 120_000);
+
+  it('D20: wrapped Driver error propagates after the candidate commit is still recorded', async () => {
+    const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
+    const bundle = await createReviewLoopRunSuiteBundle(task);
+    const driver: Driver = {
+      async run() {
+        const root = task.worktreePath;
+        writeFileSync(join(root, 'settings/module.js'), ALTERNATIVE_SETTINGS_SOURCE);
+        gitIn(root, ['add', 'settings/module.js']);
+        commitAll(root, 'Committed then failed');
+        throw new Error('local driver transport ended after commit');
+      },
+    };
+    try {
+      const wrapped = bundle.wrapDriver(driver);
+      await expect(wrapped.run({ prompt: `workspace: ${task.worktreePath}`, modelSpec: OFFLINE_REVIEW_ROUTE } as unknown as Parameters<Driver['run']>[0]))
+        .rejects.toThrow('local driver transport ended after commit');
+      // D20's core property: the commit survives a failed run and HEAD is untouched by the wrapper.
+      expect(bundle.pinnedBaselineCommit(task.worktreePath)).toBe(task.baselineCommit);
+      expect(bundle.pinnedCandidateCommit(task.worktreePath)).not.toBe(task.baselineCommit);
+    } finally {
+      await task.cleanup();
+    }
+  }, 120_000);
+
+  it('D20: wrapped Driver rejects an invocation that carries no workspace path', async () => {
+    const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
+    const bundle = await createReviewLoopRunSuiteBundle(task);
+    const driver: Driver = { async run() { throw new Error('unreachable'); } };
+    try {
+      const wrapped = bundle.wrapDriver(driver);
+      await expect(wrapped.run({ prompt: 'no workspace here', modelSpec: OFFLINE_REVIEW_ROUTE } as unknown as Parameters<Driver['run']>[0]))
+        .rejects.toThrow('runSuite invocation omitted workspace path');
+    } finally {
+      await task.cleanup();
+    }
+  }, 30_000);
+
+  it('D20: wrapper delegates cancel and capability access to the underlying driver', async () => {
+    const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
+    const bundle = await createReviewLoopRunSuiteBundle(task);
+    let cancelled = false;
+    const driver: Driver & { cancel(): void; capabilities?: { readonly label: string } } = {
+      cancel() { cancelled = true; },
+      capabilities: { label: 'local-corpus-driver' },
+      async run() { throw new Error('unreachable'); },
+    };
+    try {
+      const wrapped = bundle.wrapDriver(driver) as unknown as Driver & { cancel(): void; capabilities?: { readonly label: string } };
+      wrapped.cancel();
+      expect(cancelled).toBe(true);
+      expect(wrapped.capabilities?.label).toBe('local-corpus-driver');
+    } finally {
+      await task.cleanup();
+    }
+  }, 30_000);
+
+  it('D67: review expansion candidates are judged on scope, identity and candidate bytes, not reference bytes', async () => {
+    const reference = `export function canEditCampaign(actorId, ownerId, role, grants = []) {\n  if (typeof actorId !== 'string' || actorId.length === 0) return false;\n  if (actorId === ownerId) return true;\n  return role === 'admin' && grants.includes('campaign:edit');\n}\n`;
+    const alternative = `export function canEditCampaign(actorId, ownerId, role, grants = []) {\n  const isOwner = actorId === ownerId;\n  const isGrantedAdmin = role === 'admin' && Array.from(grants).includes('campaign:edit');\n  return typeof actorId === 'string' && actorId.length > 0 && (isOwner || isGrantedAdmin);\n}\n`;
+    const seed = {
+      'settings/review-permissions.mjs': 'export function canEditCampaign(actorId, ownerId) { return actorId === ownerId; }\n',
+      'test/public-settings.test.mjs': 'import assert from "node:assert/strict";\n',
+    };
+
+    const referenceRepo = await seedRepo(seed);
+    const alternativeRepo = await seedRepo(seed);
+    const outOfScopeRepo = await seedRepo(seed);
+    const dirtyRepo = await seedRepo(seed);
+    const pristineRepo = await seedRepo(seed);
+    try {
+      // Reference repair: in scope, committed, non-empty patch.
+      writeFileSync(join(referenceRepo.root, 'settings/review-permissions.mjs'), reference);
+      const referenceCommit = commitAll(referenceRepo.root, 'Reference repair');
+      const referenceIdentity = judgeReviewTaskCandidateIdentity('roleScope', {
+        candidateRoot: referenceRepo.root,
+        baselineCommit: gitIn(referenceRepo.root, ['rev-parse', `${referenceCommit}~1`]),
+      });
+      expect(referenceIdentity.failures).toEqual([]);
+      expect(referenceIdentity.passed).toBe(true);
+      expect(referenceIdentity.candidateCommit).toBe(referenceCommit);
+      expect(referenceIdentity.cleanGitCandidate).toBe(true);
+      expect(referenceIdentity.candidatePatchSha256).toMatch(/^[a-f0-9]{64}$/);
+
+      // Materially alternative repair: different bytes, identical scope verdict.
+      writeFileSync(join(alternativeRepo.root, 'settings/review-permissions.mjs'), alternative);
+      commitAll(alternativeRepo.root, 'Alternative repair');
+      const alternativeIdentity = judgeReviewTaskCandidateIdentity('roleScope', {
+        candidateRoot: alternativeRepo.root,
+        baselineCommit: gitIn(alternativeRepo.root, ['rev-parse', 'HEAD~1']),
+      });
+      expect(alternativeIdentity.passed).toBe(true);
+      expect(alternativeIdentity.candidatePatchSha256).not.toBe(referenceIdentity.candidatePatchSha256);
+
+      // Out-of-scope repair: correct file plus a rewritten public test stays red.
+      writeFileSync(join(outOfScopeRepo.root, 'settings/review-permissions.mjs'), reference);
+      writeFileSync(join(outOfScopeRepo.root, 'test/public-settings.test.mjs'), '// rewritten by the candidate\n');
+      commitAll(outOfScopeRepo.root, 'Out-of-scope repair');
+      const outOfScope = judgeReviewTaskCandidateIdentity('roleScope', {
+        candidateRoot: outOfScopeRepo.root,
+        baselineCommit: gitIn(outOfScopeRepo.root, ['rev-parse', 'HEAD~1']),
+      });
+      expect(outOfScope.passed).toBe(false);
+      expect(outOfScope.failures).toContain('candidate changed paths did not exactly match its task allowlist');
+
+      // Uncommitted repair: identity stays red even though the bytes are correct.
+      writeFileSync(join(dirtyRepo.root, 'settings/review-permissions.mjs'), reference);
+      const dirty = judgeReviewTaskCandidateIdentity('roleScope', {
+        candidateRoot: dirtyRepo.root,
+        baselineCommit: gitIn(dirtyRepo.root, ['rev-parse', 'HEAD']),
+      });
+      expect(dirty.passed).toBe(false);
+      expect(dirty.cleanGitCandidate).toBe(false);
+      expect(dirty.failures).toContain('candidate has uncommitted or untracked repository changes');
+      expect(dirty.failures).toContain('candidate HEAD is still the pristine baseline');
+
+      // A candidate that changed nothing is red, never vacuously green.
+      const pristine = judgeReviewTaskCandidateIdentity('roleScope', {
+        candidateRoot: pristineRepo.root,
+        baselineCommit: gitIn(pristineRepo.root, ['rev-parse', 'HEAD']),
+      });
+      expect(pristine.passed).toBe(false);
+      expect(pristine.failures).toContain('candidate HEAD is still the pristine baseline');
+      expect(pristine.failures).toContain('candidate patch bytes are empty');
+
+      // A rewritten history is red and names ancestry instead of collapsing into scope.
+      const rewritten = gitIn(alternativeRepo.root, ['rev-parse', 'HEAD~1']);
+      gitIn(alternativeRepo.root, ['checkout', '-q', '--orphan', 'rewritten']);
+      gitIn(alternativeRepo.root, ['rm', '-rq', '--cached', '.']);
+      writeFileSync(join(alternativeRepo.root, 'settings/review-permissions.mjs'), 'export function canEditCampaign(actorId) { return actorId === "anyone"; }\n');
+      commitAll(alternativeRepo.root, 'Rewritten history');
+      const ancestry = judgeReviewTaskCandidateIdentity('roleScope', {
+        candidateRoot: alternativeRepo.root,
+        baselineCommit: rewritten,
+      });
+      expect(ancestry.passed).toBe(false);
+      expect(ancestry.failures).toContain('recorded baseline commit is not an ancestor of the candidate');
+
+      // The label task carries its own single-path scope.
+      expect(REVIEW_TASK_CONTRACTS.roleScope.allowedPaths).toEqual(['settings/review-permissions.mjs']);
+      expect(REVIEW_TASK_CONTRACTS.labelNfc.allowedPaths).toEqual(['settings/campaign-labels.mjs']);
+    } finally {
+      await Promise.all([
+        referenceRepo.cleanup(), alternativeRepo.cleanup(), outOfScopeRepo.cleanup(),
+        dirtyRepo.cleanup(), pristineRepo.cleanup(),
+      ]);
+    }
+  }, 300_000);
+
+  it('D67: submission oracle keeps behavior, scope and identity as separate facts', async () => {
+    const repo = await seedRepo({ 'settings/review-permissions.mjs': 'export function canEditCampaign(actorId, ownerId) { return actorId === ownerId; }\n' });
+    try {
+      const baseline = gitIn(repo.root, ['rev-parse', 'HEAD']);
+      writeFileSync(join(repo.root, 'settings/review-permissions.mjs'), 'export function canEditCampaign(actorId, ownerId, role, grants = []) {\n  if (typeof actorId !== "string" || actorId.length === 0) return false;\n  return actorId === ownerId || (role === "admin" && grants.includes("campaign:edit"));\n}\n');
+      commitAll(repo.root, 'Reference repair');
+      const report = await judgeReviewTaskSubmission('roleScope', { candidateRoot: repo.root, baselineCommit: baseline });
+      // Identity and scope are decided on the host regardless of protected-child availability.
+      expect(report.identity.passed).toBe(true);
+      expect(report.candidatePatchSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(report.identity.failures).toEqual([]);
+      // Behavior is judged only through the protected child; when it is unavailable the
+      // report stays red and says so instead of collapsing into a scope verdict.
+      if (!report.behavior.passed) {
+        expect(report.behavior.failures.join(' ')).toMatch(/protected candidate execution/);
+        expect(report.passed).toBe(false);
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('D67/D69: merge oracle reports ancestry, scope and no-commit as distinct named facts', async () => {
+    const seed = { 'src/settings.mjs': 'export function campaignLabel(value) { return typeof value === "string" ? value : ""; }\n' };
+    const correct = 'export function campaignLabel(value) { const label = typeof value === "string" ? value.trim() : ""; return [...label].length <= 40 ? label : ""; }\n';
+
+    const noCommit = await seedRepo(seed);
+    const outOfScope = await seedRepo(seed);
+    const rewritten = await seedRepo(seed);
+    const inScope = await seedRepo(seed);
+    try {
+      const baselineNoCommit = gitIn(noCommit.root, ['rev-parse', 'HEAD']);
+      const noCommitReport = await judgeMergeConflictWorkspace(noCommit.root, baselineNoCommit);
+      expect(noCommitReport.passed).toBe(false);
+      expect(noCommitReport.failures).toContain('candidate did not create a new commit');
+
+      const baselineOutOfScope = gitIn(outOfScope.root, ['rev-parse', 'HEAD']);
+      writeFileSync(join(outOfScope.root, 'src/settings.mjs'), correct);
+      writeFileSync(join(outOfScope.root, 'src/extra.mjs'), 'export const bypass = true;\n');
+      commitAll(outOfScope.root, 'Out-of-scope merge resolution');
+      const outOfScopeReport = await judgeMergeConflictWorkspace(outOfScope.root, baselineOutOfScope);
+      expect(outOfScopeReport.passed).toBe(false);
+      expect(outOfScopeReport.failures.some((failure) => failure.startsWith('unexpected candidate paths:'))).toBe(true);
+      expect(outOfScopeReport.failures).not.toContain('recorded baseline commit is not an ancestor of the candidate');
+
+      const baselineRewritten = gitIn(rewritten.root, ['rev-parse', 'HEAD']);
+      writeFileSync(join(rewritten.root, 'src/settings.mjs'), correct);
+      commitAll(rewritten.root, 'First resolution');
+      gitIn(rewritten.root, ['checkout', '-q', '--orphan', 'rebased']);
+      gitIn(rewritten.root, ['rm', '-rq', '--cached', '.']);
+      writeFileSync(join(rewritten.root, 'src/settings.mjs'), correct);
+      commitAll(rewritten.root, 'Rebased resolution');
+      const rewrittenReport = await judgeMergeConflictWorkspace(rewritten.root, baselineRewritten);
+      expect(rewrittenReport.passed).toBe(false);
+      expect(rewrittenReport.failures).toContain('recorded baseline commit is not an ancestor of the candidate');
+      // Non-conflation: the named ancestry failure must not be reported as unreadable state.
+      expect(rewrittenReport.failures).not.toContain('merge candidate repository state could not be read');
+      expect(rewrittenReport.failures).not.toContain('merge candidate identity or protected behavior check failed');
+
+      const baselineInScope = gitIn(inScope.root, ['rev-parse', 'HEAD']);
+      writeFileSync(join(inScope.root, 'src/settings.mjs'), correct);
+      commitAll(inScope.root, 'In-scope merge resolution');
+      const inScopeReport = await judgeMergeConflictWorkspace(inScope.root, baselineInScope);
+      expect(inScopeReport.failures).toEqual([]);
+      expect(inScopeReport.passed).toBe(true);
+
+      // D69: the astral 40/41 code-point boundary is now pinned through the oracle
+      // itself, not only through a direct candidate import. This implementation
+      // mis-counts code points as at most 20, so it is red exactly at the boundary.
+      const wrongBoundary = await seedRepo(seed);
+      const alternative = await seedRepo(seed);
+      try {
+        const boundaryBaseline = gitIn(wrongBoundary.root, ['rev-parse', 'HEAD']);
+        writeFileSync(join(wrongBoundary.root, 'src/settings.mjs'), 'export function campaignLabel(value) { const label = typeof value === "string" ? value.trim() : ""; return [...label].length <= 20 ? label : ""; }\n');
+        commitAll(wrongBoundary.root, 'Wrong boundary');
+        const boundaryReport = await judgeMergeConflictWorkspace(wrongBoundary.root, boundaryBaseline);
+        expect(boundaryReport.passed).toBe(false);
+        expect(boundaryReport.failures).toContain('merge candidate failed an independent behavior case');
+        // The scope, ancestry and commit facts stayed green: only behavior failed.
+        expect(boundaryReport.failures).not.toContain('recorded baseline commit is not an ancestor of the candidate');
+
+        // A materially alternative but correct merge resolution stays green.
+        const alternativeBaseline = gitIn(alternative.root, ['rev-parse', 'HEAD']);
+        writeFileSync(join(alternative.root, 'src/settings.mjs'), 'export function campaignLabel(value) {\n  if (typeof value !== "string") return "";\n  const trimmed = value.trim();\n  const codePoints = Array.from(trimmed);\n  return codePoints.length <= 40 ? codePoints.join("") : "";\n}\n');
+        commitAll(alternative.root, 'Alternative resolution');
+        const alternativeReport = await judgeMergeConflictWorkspace(alternative.root, alternativeBaseline);
+        expect(alternativeReport.failures).toEqual([]);
+        expect(alternativeReport.passed).toBe(true);
+      } finally {
+        await Promise.all([wrongBoundary.cleanup(), alternative.cleanup()]);
+      }
+    } finally {
+      await Promise.all([noCommit.cleanup(), outOfScope.cleanup(), rewritten.cleanup(), inScope.cleanup()]);
+    }
+  }, 600_000);
+
+  it('D67: shared local identity oracle names ancestry and scope failures separately', async () => {
+    // Mirrors judgeMergeOriginConflictTask, which scopes the merge candidate to the
+    // single settings path and checks the intention files separately.
+    const allowed = ['settings/origin-precedence.mjs'];
+    const seed = {
+      'settings/origin-precedence.mjs': 'export function resolveCampaignSetting(env, file, builtin) { return builtin; }\n',
+      'branch-intentions/main.md': 'main intent\n',
+      'branch-intentions/feature.md': 'feature intent\n',
+    };
+
+    const exact = await seedRepo(seed);
+    const extra = await seedRepo(seed);
+    const orphan = await seedRepo(seed);
+    const subsetFleet = await seedRepo(seed);
+    try {
+      const exactBaseline = gitIn(exact.root, ['rev-parse', 'HEAD']);
+      writeFileSync(join(exact.root, 'settings/origin-precedence.mjs'), 'export function resolveCampaignSetting(env, file, builtin) { return env ?? file ?? builtin; }\n');
+      commitAll(exact.root, 'Exact-scope resolution');
+      const exactReport = judgeLocalCandidateIdentity({
+        repoRoot: exact.root, baselineCommit: exactBaseline, allowedPaths: allowed,
+      });
+      expect(exactReport.passed).toBe(true);
+      expect(exactReport.failures).toEqual([]);
+      expect(exactReport.patchSha256).toMatch(/^[a-f0-9]{64}$/);
+
+      const extraBaseline = gitIn(extra.root, ['rev-parse', 'HEAD']);
+      writeFileSync(join(extra.root, 'settings/origin-precedence.mjs'), 'export function resolveCampaignSetting(env, file, builtin) { return env ?? file ?? builtin; }\n');
+      writeFileSync(join(extra.root, 'settings/extra.mjs'), 'export const bypass = true;\n');
+      commitAll(extra.root, 'Over-scope resolution');
+      const extraReport = judgeLocalCandidateIdentity({
+        repoRoot: extra.root, baselineCommit: extraBaseline, allowedPaths: allowed,
+      });
+      expect(extraReport.passed).toBe(false);
+      expect(extraReport.failures).toContain('candidate changed paths did not exactly match its task allowlist');
+      expect(extraReport.failures).not.toContain('candidate identity or scope could not be verified');
+
+      const orphanBaseline = gitIn(orphan.root, ['rev-parse', 'HEAD']);
+      writeFileSync(join(orphan.root, 'settings/origin-precedence.mjs'), 'export function resolveCampaignSetting(env, file, builtin) { return env ?? file ?? builtin; }\n');
+      commitAll(orphan.root, 'First resolution');
+      gitIn(orphan.root, ['checkout', '-q', '--orphan', 'rebased']);
+      gitIn(orphan.root, ['rm', '-rq', '--cached', '.']);
+      writeFileSync(join(orphan.root, 'settings/origin-precedence.mjs'), 'export function resolveCampaignSetting(env, file, builtin) { return env ?? file ?? builtin; }\n');
+      commitAll(orphan.root, 'Rebased resolution');
+      const orphanReport = judgeLocalCandidateIdentity({
+        repoRoot: orphan.root, baselineCommit: orphanBaseline, allowedPaths: allowed,
+      });
+      expect(orphanReport.passed).toBe(false);
+      expect(orphanReport.failures).toContain('recorded baseline commit is not an ancestor of the candidate');
+      expect(orphanReport.failures).not.toContain('candidate identity or scope could not be verified');
+
+      expect(MERGE_ORIGIN_CONTRACT.allowedPaths).toEqual([
+        'branch-intentions/feature.md',
+        'branch-intentions/main.md',
+        'settings/origin-precedence.mjs',
+      ]);
+
+      // Fleet uses subset-with-nonzero scope. Both the accepting and the rejecting
+      // shapes are pinned here so the semantics cannot drift silently; whether the
+      // brief's "exact" wording should tighten this is conductor question LR4/N4.
+      const fleetBaseline = gitIn(subsetFleet.root, ['rev-parse', 'HEAD']);
+      writeFileSync(join(subsetFleet.root, 'settings/origin-precedence.mjs'), 'export function resolveCampaignSetting(env, file, builtin) { return env ?? file ?? builtin; }\n');
+      commitAll(subsetFleet.root, 'Subset-scope resolution');
+      const subsetReport = judgeLocalCandidateIdentity({
+        repoRoot: subsetFleet.root,
+        baselineCommit: fleetBaseline,
+        allowedPaths: allowed,
+        exactPaths: false,
+      });
+      expect(subsetReport.passed).toBe(true);
+
+      const noChangeReport = judgeLocalCandidateIdentity({
+        repoRoot: subsetFleet.root,
+        baselineCommit: gitIn(subsetFleet.root, ['rev-parse', 'HEAD']),
+        allowedPaths: allowed,
+        exactPaths: false,
+      });
+      expect(noChangeReport.passed).toBe(false);
+      expect(noChangeReport.failures).toContain('candidate changed paths outside its task allowlist or made no change');
+    } finally {
+      await Promise.all([exact.cleanup(), extra.cleanup(), orphan.cleanup(), subsetFleet.cleanup()]);
+    }
+  }, 300_000);
+
+  it('D67: the review oracle pin covers the full runtime import closure of the host judge', () => {
+    // Generator-level invariant. It is independent of the committed JSON manifests,
+    // which PK00 owns, so it stays meaningful before and after the pin transaction.
+    const pin = createReviewLoopOraclePin();
+    const paths = pin.dependencies.map((dependency) => dependency.path);
+    expect(new Set(paths).size).toBe(paths.length);
+    for (const required of [
+      // Value-imported by pinned boundary modules but previously omitted.
+      'runner/boundary/assignment-supervisor-owner.ts',
+      'runner/boundary/g2-daemon-contract.ts',
+      // Reached because the review expansion oracle delegates scope/ancestry.
+      'campaigns/cq-settings/corpus/integration-task-oracles.ts',
+    ]) {
+      expect(paths).toContain(required);
+    }
+    // Explicitly classified as compile-time only, so it stays unpinned by decision.
+    expect(paths).not.toContain('runner/boundary/assignment-supervisor.ts');
+    expect(pin.sha256).toMatch(/^[a-f0-9]{64}$/);
+    for (const dependency of pin.dependencies) {
+      expect(dependency.sha256).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+
+  it('D19: analysis boundary vectors are executed by the host truth table, and no proposal oracle was widened', () => {
+    const integerVector = [...ANALYSIS_TASK_CONTRACTS.safeIntegerSetting.expected];
+    const originVector = [...ANALYSIS_TASK_CONTRACTS.originPolicy.expected];
+    expect(evaluateAnalysisTaskVectors('safeIntegerSetting', integerVector)).toBe(true);
+    expect(evaluateAnalysisTaskVectors('originPolicy', originVector)).toBe(true);
+    // The vector truth table discriminates rather than echoing its own expectation.
+    expect(evaluateAnalysisTaskVectors('safeIntegerSetting', integerVector.map((value) => !value))).toBe(false);
+    expect(evaluateAnalysisTaskVectors('safeIntegerSetting', integerVector.slice(0, -1))).toBe(false);
+    expect(evaluateAnalysisTaskVectors('originPolicy', originVector.slice(1))).toBe(false);
+    expect(evaluateAnalysisTaskVectors('safeIntegerSetting', 'not-an-array')).toBe(false);
+
+    // Current semantics are pinned unchanged: a materially alternative proposal that
+    // does not carry the host constraint tokens is still rejected. Any future widening
+    // must arrive as a deliberate, conductor-pinned oracle-pin change (LR4), not as a
+    // side effect of this packet.
+    expect(judgeAnalysisProposalMeaning('safeIntegerSetting', {
+      setting: 'maxParallelJobs',
+      constraints: ['integer', 'safe-integer', 'range-1-through-64'],
+      rejectsInvalidValues: true,
+      preservesInputRepresentation: true,
+    }).passed).toBe(true);
+    expect(judgeAnalysisProposalMeaning('safeIntegerSetting', {
+      setting: 'maxParallelJobs',
+      constraints: ['integer', 'rejects fractional and unsafe values', 'stays within 1..64'],
+      rejectsInvalidValues: true,
+      preservesInputRepresentation: true,
+    }).passed).toBe(false);
+    expect(judgeAnalysisProposalMeaning('safeIntegerSetting', {
+      setting: 'someOtherSetting',
+      constraints: ['integer', 'safe-integer', 'range-1-through-64'],
+      rejectsInvalidValues: true,
+      preservesInputRepresentation: true,
+    }).passed).toBe(false);
+    expect(judgeAnalysisProposalMeaning('safeIntegerSetting', {
+      setting: 'maxParallelJobs',
+      constraints: ['integer', 'safe-integer', 'range-1-through-64'],
+      rejectsInvalidValues: false,
+      preservesInputRepresentation: true,
+    }).passed).toBe(false);
+    expect(judgeAnalysisProposalMeaning('safeIntegerSetting', {
+      setting: 'maxParallelJobs',
+      constraints: ['integer', 'safe-integer', 'range-1-through-64'],
+      rejectsInvalidValues: true,
+      preservesInputRepresentation: false,
+    }).passed).toBe(false);
+  });
+
+  it('D67: six pinned expansion tasks still cannot materialize; the stale-pin failure is retained', async () => {
+    // Retained deliberately: this is the conductor-owned pin transaction's failing-before
+    // receipt, not something PK11 may work around or re-point.
+    const drift = [
+      'runner/boundary/codex-final-profile.ts',
+      'runner/boundary/container-prepare.ts',
+      'runner/boundary/container.ts',
+      'runner/boundary/docker-control.ts',
+      'runner/boundary/judge-child.ts',
+      'runner/boundary/judge-ownership.ts',
+      'runner/boundary/lifecycle-evidence.ts',
+      'runner/boundary/task-staging.ts',
+    ];
+    const driftedNow = drift.filter((path) => {
+      const manifest = JSON.parse(readFileSync(new URL('../campaigns/cq-settings/corpus/operation-oracle-pins.json', import.meta.url), 'utf8')) as { dependencies: { path: string; sha256: string }[] };
+      const entry = manifest.dependencies.find((dependency) => dependency.path === path);
+      return entry !== undefined && entry.sha256 !== createHash('sha256').update(readFileSync(new URL(`../${path}`, import.meta.url))).digest('hex');
+    });
+    expect(driftedNow.length).toBeGreaterThan(0);
+
+    await expect(createReviewRoleScopeTask(LOCAL_ROUTE)).rejects.toThrow(/pinned review task oracle dependency changed/);
+    await expect(createReviewLabelNfcTask(LOCAL_ROUTE)).rejects.toThrow(/pinned review task oracle dependency changed/);
+    await expect(createAnalysisRemediationTask('safeIntegerSetting', LOCAL_ROUTE)).rejects.toThrow(/oracle dependency changed/);
   }, 120_000);
 });

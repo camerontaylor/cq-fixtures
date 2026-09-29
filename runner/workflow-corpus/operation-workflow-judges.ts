@@ -82,8 +82,14 @@ export async function judgeMergeConflictWorkspace(
   try {
     const head = git(repoRoot, ['rev-parse', '--verify', 'HEAD^{commit}']).trim();
     if (head === baselineCommit) failures.push('candidate did not create a new commit');
-    if (git(repoRoot, ['merge-base', '--is-ancestor', baselineCommit, 'HEAD']) === '') {
-      // `git merge-base --is-ancestor` normally has empty stdout; successful exit is the assertion.
+    // `git merge-base --is-ancestor` signals only through its exit status, so
+    // the fact is recorded by name instead of by inspecting stdout. A non-zero
+    // exit previously escaped into the shared catch below and was reported as
+    // an undifferentiated identity/protected-behavior failure.
+    try {
+      git(repoRoot, ['merge-base', '--is-ancestor', baselineCommit, 'HEAD']);
+    } catch {
+      failures.push('recorded baseline commit is not an ancestor of the candidate');
     }
     const changed = git(repoRoot, ['diff', '--name-only', `${baselineCommit}..HEAD`, '--']).trim().split('\n').filter(Boolean).sort();
     if (JSON.stringify(changed) !== JSON.stringify(['src/settings.mjs'])) failures.push(`unexpected candidate paths: ${changed.join(',')}`);
@@ -92,7 +98,10 @@ export async function judgeMergeConflictWorkspace(
     if (actual === null) failures.push('protected merge candidate probe failed or returned an invalid bounded result');
     else if (contract.examples.some(({ expected }, index) => actual[index] !== expected)) failures.push('merge candidate failed an independent behavior case');
   } catch {
-    failures.push('merge candidate identity or protected behavior check failed');
+    // Reserved for unreadable/absent Git state. Ancestry, scope and protected
+    // behavior each carry their own named failure above, so this string can no
+    // longer stand in for any of them.
+    failures.push('merge candidate repository state could not be read');
   }
   const identity = contract;
   return { ...identity, passed: failures.length === 0, failures };

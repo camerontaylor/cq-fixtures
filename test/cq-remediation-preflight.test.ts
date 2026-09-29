@@ -18,9 +18,12 @@ afterEach(async () => {
 
 describe('no-dispatch remediation preflight', () => {
   it('fails closed when the active final-profile loader omits implicit runtime assets', async () => {
-    await expect(runPreflight()).rejects.toThrow(
-      'final-profile runtime pin loader pins differ (missing: runner/boundary/broker-public-assets/broker.mjs, runner/boundary/broker-public-assets/config.json, schema/suite.schema.json; hash mismatch: none)',
-    );
+    await expect(runPreflight()).resolves.toMatchObject({
+      status: 'preflight-blocked',
+      dispatched: false,
+      provisioned: false,
+      blocker: 'final-profile runtime pin loader pins differ (missing: runner/boundary/broker-public-assets/broker.mjs, runner/boundary/broker-public-assets/config.json, schema/suite.schema.json; hash mismatch: none)',
+    });
   });
 
   it('includes generated-candidate JavaScript imports through their source convention', async () => {

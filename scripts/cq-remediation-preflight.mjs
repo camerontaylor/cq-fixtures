@@ -203,10 +203,15 @@ export async function runPreflight(rootPath = ROOT) {
     throw new Error('final-profile module is missing its source-pin export');
   }
   const finalProfilePins = await finalProfile.finalProfileG1SourcePins();
-  assertIncludesPins(implicitRuntimeAssets, finalProfilePins.pins, 'final-profile runtime pin loader');
+  let blocker;
+  try {
+    assertIncludesPins(implicitRuntimeAssets, finalProfilePins.pins, 'final-profile runtime pin loader');
+  } catch (error) {
+    blocker = error instanceof Error ? error.message : String(error);
+  }
 
   return {
-    status: 'preflight-green',
+    status: blocker ? 'preflight-blocked' : 'preflight-green',
     dispatched: false,
     provisioned: false,
     sourceEntryPoint: 'runner/native/run-visible-g1.ts',
@@ -214,11 +219,15 @@ export async function runPreflight(rootPath = ROOT) {
     closureCount: independentClosure.length,
     closure: hashes,
     implicitRuntimeAssets,
+    ...(blocker ? { blocker } : {}),
   };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runPreflight().then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)).catch((error) => {
+  runPreflight().then((result) => {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    if (result.status !== 'preflight-green') process.exitCode = 1;
+  }).catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });

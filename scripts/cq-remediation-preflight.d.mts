@@ -1,5 +1,5 @@
 export interface SourcePreflightResult {
-  status: 'preflight-green';
+  status: 'preflight-green' | 'preflight-blocked';
   dispatched: false;
   provisioned: false;
   sourceEntryPoint: 'runner/native/run-visible-g1.ts';
@@ -7,6 +7,7 @@ export interface SourcePreflightResult {
   closureCount: number;
   closure: Record<string, string>;
   implicitRuntimeAssets: Record<string, string>;
+  blocker?: string;
 }
 
 /** Verify required non-import runtime assets against exact SHA-256 pins. */

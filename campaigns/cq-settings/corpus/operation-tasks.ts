@@ -22,8 +22,8 @@ import {
   judgeAnalysisRemediationProposal,
   judgeRatchetOutcomes,
   type WorkflowOracleReport,
-} from '../../../runner/workflow-corpus/operation-workflow-judges.js';
-import { ANALYSIS_TASK_CONTRACTS, judgeAnalysisProposalMeaning } from './operation-task-oracles.js';
+} from '../../../runner/workflow-corpus/operation-workflow-judges.ts';
+import { ANALYSIS_TASK_CONTRACTS, judgeAnalysisProposalMeaning } from './operation-task-oracles.ts';
 
 export const ANALYSIS_TASKS = {
   whitespaceSetting: {
@@ -181,7 +181,7 @@ export async function executeAnalysisRemediationTask(
     oracle: proposal.status === 'ok'
       ? task.variant === 'safeIntegerSetting' || task.variant === 'originPolicy'
         ? judgeAnalysisProposalMeaning(task.variant, proposal.value.structuredOutput as Parameters<typeof judgeAnalysisProposalMeaning>[1])
-        : judgeAnalysisRemediationProposal(proposal.value.structuredOutput, ANALYSIS_REMEDIATION_CONTRACTS[task.variant === 'whitespaceSetting' ? 'emptySetting' : 'unicodeLabelLength'])
+        : await judgeAnalysisRemediationProposal(proposal.value.structuredOutput, ANALYSIS_REMEDIATION_CONTRACTS[task.variant === 'whitespaceSetting' ? 'emptySetting' : 'unicodeLabelLength'])
       : { passed: false, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId, failures: [`operation returned ${proposal.status}`] },
   };
 }
@@ -299,12 +299,12 @@ export async function executeRatchetTask(task: RatchetTask): Promise<RatchetTask
   };
 }
 
-export function judgeAnalysisTask(
+export async function judgeAnalysisTask(
   task: AnalysisRemediationTask,
   proposal: OpResult<WorkerResult>,
-): WorkflowOracleReport {
+): Promise<WorkflowOracleReport> {
   if (proposal.status !== 'ok') return { sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId, passed: false, failures: [`operation returned ${proposal.status}`] };
-  const semantic = judgeAnalysisRemediationProposal(
+  const semantic = await judgeAnalysisRemediationProposal(
     proposal.value.structuredOutput,
     ANALYSIS_REMEDIATION_CONTRACTS[task.variant === 'whitespaceSetting' ? 'emptySetting' : 'unicodeLabelLength'],
   );

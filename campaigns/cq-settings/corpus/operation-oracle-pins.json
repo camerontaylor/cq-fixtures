@@ -13,7 +13,7 @@
   "dependencies": [
     {
       "path": "campaigns/cq-settings/corpus/operation-tasks.ts",
-      "sha256": "67348020922bbd1d4eead2e22760fc28be1c08abb5586513401bdd7423d788fa"
+      "sha256": "7b6465ce063e9752fd08326b99d57ec3cbcb538682d068a7a0cf73af2ce9f6e0"
     },
     {
       "path": "runner/workflow-corpus/operation-workflow-judges.ts",
@@ -25,11 +25,11 @@
     },
     {
       "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
-      "sha256": "d65e482928f9921880f9d25abdff3fb8459baa2c86f492b1add9801e3c17a093"
+      "sha256": "89f3349bf45e26d72cddf618061b4172a54baaf226ec5ff7d0a6357859a3558f"
     },
     {
       "path": "campaigns/cq-settings/corpus/review-task-oracles.ts",
-      "sha256": "0769ced17ae234824194e21fc5bcdbea297f8018ab50dd8456fd25661c86d402"
+      "sha256": "061d1a5fb9158c7d1c350560bf47b4dd8e38f1e53fda73acc6c31b624473c1fe"
     },
     {
       "path": "runner/boundary/judge-child.ts",

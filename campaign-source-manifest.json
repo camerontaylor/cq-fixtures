@@ -47,7 +47,7 @@
     "manifest": "campaigns/cq-settings/corpus/workflows.json",
     "sha256": "758549613233a48840bf6b189b6acd85e18dc4cf55355891ba57807976e2697a",
     "oracleDependencyManifest": "campaigns/cq-settings/corpus/review-loop-oracle-pin.json",
-    "oracleDependencyManifestSha256": "dd5dc26937c55ca39c42f378ddc721f0de55222f80e3dfd4518bc5ea09ad0030",
+    "oracleDependencyManifestSha256": "46330e5a8e311f782d606dc27348ad456d75593e96854dfced1025964f20b663",
     "operationOracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts",
     "operationOracleImplementationSha256": "b6f6383cfac0d810fffa5c81735da7697e2b27dbff58ba3188079cd70ba6a9b6",
     "scenarioCount": 23,

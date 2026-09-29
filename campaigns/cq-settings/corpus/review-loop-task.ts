@@ -12,7 +12,7 @@ import {
   type ModelSpec,
   type OpResult,
 } from '@camerontaylor/cq-toolkit';
-import { REVIEW_TASK_CONTRACTS, type ReviewTaskVariant } from './review-task-oracles.js';
+import { REVIEW_TASK_CONTRACTS, type ReviewTaskVariant } from './review-task-oracles.ts';
 
 export const REVIEW_LOOP_TASK_ID = 'review-loop-label-limit-02' as const;
 export const REVIEW_LOOP_SOURCE_ID = 'cq-settings.settings-module-seed.v2' as const;

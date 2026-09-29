@@ -11,7 +11,7 @@
   "dependencies": [
     {
       "path": "campaigns/cq-settings/corpus/integration-tasks.ts",
-      "sha256": "fa0fd60f52f0c23c7e92c72dab661a191fc5bb546bac50b1641ac20a1f6885a5"
+      "sha256": "a23dcb78c08df4b950edec092cd430eaec96882583ae3ecf4d4e8aed2adf6a8f"
     },
     {
       "path": "runner/workflow-corpus/operation-workflow-judges.ts",
@@ -19,7 +19,7 @@
     },
     {
       "path": "campaigns/cq-settings/corpus/integration-task-oracles.ts",
-      "sha256": "7f9fbc57626d99ce3917ed273126e1a346c67d37a27fad076ccdacc12c13ab0d"
+      "sha256": "955a3b1475f192a3e191857b83f6e2822fb2940af8488885dde3672cdce334cc"
     },
     {
       "path": "runner/boundary/judge-child.ts",

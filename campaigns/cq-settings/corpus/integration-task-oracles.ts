@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { executeProtectedJudgeChild } from '../../../runner/boundary/judge-child.js';
-import { withProtectedCandidateSnapshot } from './protected-candidate-snapshot.js';
+import { executeProtectedJudgeChild } from '../../../runner/boundary/judge-child.ts';
+import { withProtectedCandidateSnapshot } from './protected-candidate-snapshot.ts';
 
 export const MERGE_ORIGIN_CONTRACT = {
   id: 'merge-origin-precedence-01',

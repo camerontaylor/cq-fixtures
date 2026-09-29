@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { executeProtectedJudgeChild } from '../../../runner/boundary/judge-child.js';
-import { withProtectedCandidateSnapshot } from './protected-candidate-snapshot.js';
+import { executeProtectedJudgeChild } from '../../../runner/boundary/judge-child.ts';
+import { withProtectedCandidateSnapshot } from './protected-candidate-snapshot.ts';
 
 export const REVIEW_TASK_CONTRACTS = {
   roleScope: {

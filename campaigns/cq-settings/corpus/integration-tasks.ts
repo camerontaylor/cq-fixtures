@@ -21,8 +21,8 @@ import {
   judgeMergeConflictWorkspace,
   type MergeConflictContract,
   type WorkflowOracleReport,
-} from '../../../runner/workflow-corpus/operation-workflow-judges.js';
-import { FLEET_TEST_UNIT_CONTRACT, MERGE_ORIGIN_CONTRACT, judgeFleetUnitCandidate, judgeLocalCandidateIdentity, judgeMergeOriginCandidate } from './integration-task-oracles.js';
+} from '../../../runner/workflow-corpus/operation-workflow-judges.ts';
+import { FLEET_TEST_UNIT_CONTRACT, MERGE_ORIGIN_CONTRACT, judgeFleetUnitCandidate, judgeLocalCandidateIdentity, judgeMergeOriginCandidate } from './integration-task-oracles.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -160,7 +160,7 @@ export async function executeMergeConflictTask(task: MergeConflictTask, driver: 
   });
 }
 
-export function judgeMergeConflictTask(task: MergeConflictTask): WorkflowOracleReport {
+export async function judgeMergeConflictTask(task: MergeConflictTask): Promise<WorkflowOracleReport> {
   if (task.variant === 'originPrecedence') throw new Error('use judgeMergeOriginConflictTask for the protected origin-precedence oracle');
   const definition = MERGE_CONFLICT_TASKS[task.variant];
   const contract: MergeConflictContract = {

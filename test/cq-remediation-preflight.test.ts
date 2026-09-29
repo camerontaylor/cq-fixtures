@@ -1,8 +1,9 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertSameClosure, assertSamePins, discoverSourceClosure, runPreflight, type SourcePreflightResult } from '../scripts/cq-remediation-preflight.mjs';
+import { assertSameClosure, assertSamePins, discoverSourceClosure, runPreflight, verifyImplicitRuntimeAssets, type SourcePreflightResult } from '../scripts/cq-remediation-preflight.mjs';
 
 const roots: string[] = [];
 async function syntheticRoot(): Promise<string> {
@@ -25,6 +26,11 @@ describe('no-dispatch remediation preflight', () => {
     });
     expect(result.closureCount).toBeGreaterThan(0);
     expect(result.closure['runner/experiment.ts']).toMatch(/^[a-f0-9]{64}$/u);
+    expect(result.implicitRuntimeAssets).toEqual({
+      'runner/boundary/broker-public-assets/broker.mjs': expect.stringMatching(/^[a-f0-9]{64}$/u),
+      'runner/boundary/broker-public-assets/config.json': expect.stringMatching(/^[a-f0-9]{64}$/u),
+      'schema/suite.schema.json': expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
   });
 
   it('includes generated-candidate JavaScript imports through their source convention', async () => {
@@ -64,5 +70,32 @@ describe('no-dispatch remediation preflight', () => {
 
   it('does not count duplicate paths as distinct loader assets', () => {
     expect(() => assertSameClosure(['a.ts', 'a.ts'], ['a.ts'])).not.toThrow();
+  });
+
+  it('rejects an implicit runtime asset that is missing', async () => {
+    const root = await syntheticRoot();
+    await mkdir(join(root, 'assets'));
+    const bytes = 'pinned runtime bytes';
+    const pin = createHash('sha256').update(bytes).digest('hex');
+    await expect(verifyImplicitRuntimeAssets(root, { 'assets/missing.json': pin })).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects changed implicit runtime asset bytes', async () => {
+    const root = await syntheticRoot();
+    await mkdir(join(root, 'assets'));
+    await writeFile(join(root, 'assets', 'config.json'), 'changed bytes');
+    await expect(verifyImplicitRuntimeAssets(root, { 'assets/config.json': 'a'.repeat(64) }))
+      .rejects.toThrow('implicit runtime asset content hash differs for assets/config.json');
+  });
+
+  it('rejects implicit runtime assets that are symlinked outside the checkout', async () => {
+    const root = await syntheticRoot();
+    const outside = await syntheticRoot();
+    await mkdir(join(root, 'assets'));
+    await writeFile(join(outside, 'config.json'), 'outside bytes');
+    await symlink(join(outside, 'config.json'), join(root, 'assets', 'config.json'));
+    const pin = createHash('sha256').update('outside bytes').digest('hex');
+    await expect(verifyImplicitRuntimeAssets(root, { 'assets/config.json': pin }))
+      .rejects.toThrow('implicit runtime asset is symlinked: assets/config.json');
   });
 });

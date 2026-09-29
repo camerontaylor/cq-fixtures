@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { readFile, realpath } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -18,6 +18,11 @@ const VISIBLE_ENTRYPOINTS = [
   'schema/result-row.schema.json',
   'schema/comparison-table.schema.json',
 ];
+const IMPLICIT_RUNTIME_ASSET_SHA256 = Object.freeze({
+  'runner/boundary/broker-public-assets/broker.mjs': 'f20f5e3e74b8a3c545f417a03f12b144254bf1f27b57293e5419164d80c2fc6d',
+  'runner/boundary/broker-public-assets/config.json': 'c6d8d0b3dba5ac98779663e4cc75b92107fddb14430fc42180f4ec675c0f99b0',
+  'schema/suite.schema.json': 'cf9101552cec3fa2f062f6d56235627fd6441307b64cf5506ef9166937fde5ab',
+});
 
 function insideRoot(root, path) {
   const rel = relative(root, path);
@@ -91,6 +96,36 @@ function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/** Pin runtime assets loaded through filesystem/URL conventions, not imports. */
+export async function verifyImplicitRuntimeAssets(rootPath = ROOT, expectedPins = IMPLICIT_RUNTIME_ASSET_SHA256) {
+  const root = await realpath(rootPath);
+  const verified = {};
+  for (const [relativePath, expectedHash] of Object.entries(expectedPins).sort(([left], [right]) => left.localeCompare(right))) {
+    if (isAbsolute(relativePath) || relativePath.split(/[\\/]/u).includes('..') || !/^[a-f0-9]{64}$/u.test(expectedHash)) {
+      throw new Error(`implicit runtime asset pin is invalid: ${relativePath}`);
+    }
+    const target = resolve(root, relativePath);
+    if (!insideRoot(root, target)) throw new Error(`implicit runtime asset escaped trusted checkout: ${relativePath}`);
+    const parts = relativePath.split(/[\\/]/u);
+    let current = root;
+    for (const part of parts) {
+      current = join(current, part);
+      const stat = await lstat(current);
+      if (stat.isSymbolicLink()) throw new Error(`implicit runtime asset is symlinked: ${relativePath}`);
+    }
+    const canonical = await realpath(target);
+    if (!insideRoot(root, canonical) || canonical !== target) {
+      throw new Error(`implicit runtime asset escaped trusted checkout: ${relativePath}`);
+    }
+    const stat = await lstat(canonical);
+    if (!stat.isFile()) throw new Error(`implicit runtime asset is not a regular file: ${relativePath}`);
+    const actualHash = sha256(await readFile(canonical));
+    if (actualHash !== expectedHash) throw new Error(`implicit runtime asset content hash differs for ${relativePath}`);
+    verified[relativePath] = actualHash;
+  }
+  return verified;
+}
+
 export function assertSameClosure(expected, actual, label = 'source loader') {
   const left = [...new Set(expected)].sort();
   const right = [...new Set(actual)].sort();
@@ -128,10 +163,11 @@ export async function runPreflight(rootPath = ROOT) {
       return { format: 'module', source: transformed.outputText, shortCircuit: true };
     },
   });
-  const [independentClosure, sourceEntrypoint, experiment] = await Promise.all([
+  const [independentClosure, sourceEntrypoint, experiment, implicitRuntimeAssets] = await Promise.all([
     discoverSourceClosure(root, VISIBLE_ENTRYPOINTS),
     import(pathToFileURL(join(root, 'runner/native/run-visible-g1.ts')).href),
     import(pathToFileURL(join(root, 'runner/experiment.ts')).href),
+    verifyImplicitRuntimeAssets(root),
   ]);
 
   if (typeof sourceEntrypoint.runVisibleG1 !== 'function' || typeof sourceEntrypoint.visibleG1SourcePins !== 'function') {
@@ -157,6 +193,7 @@ export async function runPreflight(rootPath = ROOT) {
     taskIdExport: 'runner/experiment.ts#suiteTaskId',
     closureCount: independentClosure.length,
     closure: hashes,
+    implicitRuntimeAssets,
   };
 }
 

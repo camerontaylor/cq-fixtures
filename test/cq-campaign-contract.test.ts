@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ArtifactStore, sha256 } from '../runner/artifacts/index.ts';
 import { nativeGovernorUsage } from '../runner/budget.ts';
 import { experimentId, suiteTaskId, type ExperimentContext, type TaskOutcome, type TaskOutcomeJudgement } from '../runner/experiment.ts';
-import type { ResultRow } from '../runner/aggregate.ts';
+import { aggregate, type ResultRow } from '../runner/aggregate.ts';
 import { runSuite } from '../runner/index.ts';
 import { campaignUsage, sanitizeNativeObservation, type NativeObservation, type InvocationIdentity } from '../runner/native/observation.ts';
 import { regradeCampaignCandidate } from '../runner/regrade.ts';
@@ -112,6 +112,71 @@ function experiment(): ExperimentContext {
 }
 
 describe('campaign envelope', () => {
+  it('does not infer observed usage from compatibility counters or promote incomplete observations', () => {
+    const row: ResultRow = {
+      role: 'fixer-worker', suite: 'usage-seam', model: 'no-model', driver: 'synthetic',
+      outcome: { score: 1, passed: 1, total: 1 }, costUSD: null, wallTimeMs: 1,
+      tokens: { input: 12, output: 3, cacheRead: 7 }, runId: 'local', timestamp: '2026-09-29T00:00:00Z',
+    };
+    const legacy = aggregate([row])[0]!.cells[0]!;
+    expect(legacy.tokens).toEqual(row.tokens);
+    expect(legacy.observedUsage).toBeUndefined();
+    const incomplete = aggregate([{ ...row, observedUsage: {
+      input: 12, output: 3, cacheRead: 7, cacheWrite: 0, reasoning: 0, tokenTotal: 15, complete: false,
+    } }])[0]!.cells[0]!;
+    expect(incomplete.observedUsage).toEqual({
+      input: 12, output: 3, cacheRead: 7, cacheWrite: 0, reasoning: 0, tokenTotal: 15, complete: false,
+    });
+    const mixed = aggregate([row, { ...row, observedUsage: {
+      input: 12, output: 3, cacheRead: 7, cacheWrite: 0, reasoning: 0, tokenTotal: 15, complete: true,
+    } }])[0]!.cells[0]!;
+    expect(mixed.observedUsage).toEqual({
+      input: null, output: null, cacheRead: null, cacheWrite: null, reasoning: null, tokenTotal: null, complete: false,
+    });
+  });
+
+  it.each(['valid-json', 'format-miss', 'transport-failure'] as const)(
+    'independently grades the same correct edit with %s', async (mode) => {
+      root = mkdtempSync(join(tmpdir(), 'cq-correctness-format-'));
+      mkdirSync(join(root, 'policy', 'denylist'), { recursive: true });
+      writeFileSync(join(root, 'policy', 'denylist', 'patterns.yml'), readFileSync(new URL('../policy/denylist/patterns.yml', import.meta.url)));
+      mkdirSync(join(root, 'fixture'));
+      writeFileSync(join(root, 'fixture', 'fix.txt'), 'broken\n');
+      const checkPath = join(root, 'fixture', 'check.mjs');
+      writeFileSync(checkPath, "import { readFileSync } from 'node:fs'; process.exit(readFileSync('fix.txt', 'utf8') === 'fixed\\n' ? 0 : 1);\n");
+      const suiteDir = join(root, 'suite');
+      mkdirSync(suiteDir);
+      writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify({
+        name: 'format-independent', role: 'fixer-worker', provenance: { origin: 'hand-seeded' },
+        cases: [{ id: 'case-1', fixture: 'fixture', task: { prompt: 'Fix the file.' }, probe: { kind: 'check-rerun', check: 'fixture/check.mjs' } }],
+      }));
+      const driver: Driver = {
+        async run(invocation) {
+          const workspace = /workspace: (.+)$/.exec(invocation.prompt)?.[1];
+          if (workspace === undefined) throw new Error('test workspace missing');
+          writeFileSync(join(workspace, 'fix.txt'), 'fixed\n');
+          if (mode === 'transport-failure') throw new Error('transport failed after edit');
+          return {
+            usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, denials: [],
+            stopReason: mode === 'format-miss' ? 'error' : 'complete',
+            ...(mode === 'valid-json' ? { structuredOutput: { fixed: true, notes: 'fixed' } }
+              : { error: 'ai-sdk driver: [structured-output-miss] missing JSON' }),
+          };
+        },
+      };
+      const context = experiment();
+      context.judgeManifest = { sourcePin: 'a'.repeat(64), dependencies: [{ path: 'fixture/check.mjs', sha256: sha256(readFileSync(checkPath)) }] };
+      const result = await runSuite({ suiteDir, driver, model: 'test-model', provider: 'openai', repoRoot: root,
+        artifactRoot: join(root, 'artifacts'), experiment: context });
+      const row = result.rows[0]!;
+      expect(row.outcomes).toMatchObject({ candidateCorrectness: true, assignedStrategySuccess: true,
+        formatConformance: mode === 'valid-json', operationalStatus: mode === 'transport-failure' ? 'measured-transport-failure' : 'complete' });
+      expect(row.taskOutcome?.judgements[0]?.candidateCorrectness).toBe(true);
+      expect(result.tables[0]?.cells[0]?.conditionalCorrectness).toBe(1);
+      expect(row.outcome.score).toBe(mode === 'valid-json' ? 1 : 0.5);
+    }, 20_000,
+  );
+
   it('maps only frozen judgements, exact evidence refs, recipe format, budget failure, and unknown totals', () => {
     const context = experiment();
     const candidateSha256 = 'a'.repeat(64);

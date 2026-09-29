@@ -3,10 +3,11 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ArtifactStore } from '../../cq-settings-integration/runner/artifacts/index.ts';
 import { judgeManifestHash } from '../../cq-settings-integration/runner/experiment.ts';
-import { captureGitCandidatePatch, findS1DependencyRoot, resolveS1DependencyRoot, runVisibleReviewLoopScreening, visibleRunIdentity } from '../runner/strategies/visible-screening.ts';
+import { captureGitCandidatePatch, resolveS1DependencyRoot, runVisibleReviewLoopScreening, visibleRunIdentity } from '../runner/strategies/visible-screening.ts';
 import { NativeSupervisorControl } from '../../cq-settings-integration/runner/native/process.ts';
 import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
 import {
@@ -91,20 +92,17 @@ class FakeExecutor implements StageExecutor {
 }
 
 describe('bounded campaign strategy engine', () => {
-  it('discovers an S1 dependency root from source or a standalone nested checkout', () => {
+  it('requires an explicit pinned S1 root outside its own repository', () => {
     const root = mkdtempSync(join(tmpdir(), 's1-root-discovery-'));
     const dependencyRoot = join(root, 'pinned-integration');
-    const nested = join(root, 'standalone', 'runner', 'strategies');
     mkdirSync(join(dependencyRoot, 'campaigns/cq-settings/corpus'), { recursive: true });
     mkdirSync(join(dependencyRoot, 'runner/workflow-corpus'), { recursive: true });
-    mkdirSync(nested, { recursive: true });
     writeFileSync(join(dependencyRoot, 'campaigns/cq-settings/corpus/review-loop-task.ts'), 'pinned task');
     writeFileSync(join(dependencyRoot, 'runner/workflow-corpus/review-loop-suite.ts'), 'pinned suite');
     try {
-      expect(findS1DependencyRoot(nested)).toBe(dependencyRoot);
-      expect(findS1DependencyRoot(join(root, 'isolated-checkout'))).toBe(dependencyRoot);
       expect(resolveS1DependencyRoot(dependencyRoot)).toBe(dependencyRoot);
       expect(() => resolveS1DependencyRoot(join(root, 'missing-integration'))).toThrow(/S1 integration root unavailable/);
+      expect(() => resolveS1DependencyRoot()).toThrow(/pass a pinned s1DependencyRoot/);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -131,6 +129,7 @@ describe('bounded campaign strategy engine', () => {
       git(source, ['add', 'tracked.txt']);
       git(source, ['-c', 'user.name=Capture Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'candidate edit']);
       writeFileSync(join(source, 'new-file.txt'), 'untracked addition\n');
+      writeFileSync(join(source, '.gitattributes'), '* filter=unexpected text eol=crlf\n');
       const indexBefore = execFileSync('git', ['status', '--porcelain'], { cwd: source, encoding: 'utf8' });
       const patch = captureGitCandidatePatch(source, baseline, baselineTree, baselineRepo);
       expect(execFileSync('git', ['status', '--porcelain'], { cwd: source, encoding: 'utf8' })).toBe(indexBefore);
@@ -213,6 +212,7 @@ describe('bounded campaign strategy engine', () => {
         model: 'gpt-6-sol', provider: 'codex', effort: 'high', profileId: 'test-codex-sol', settingsId: 'effort-high',
         evaluationBoundaryHash: 'a'.repeat(64), toolsAssistanceHash: 'b'.repeat(64), tierId: 'visible-small',
         assignmentId: 'visible-review-assignment-01', runNamespace: 'review-repeat-01', outputRoot: join(root, 'run'),
+        s1DependencyRoot: resolve(dirname(fileURLToPath(import.meta.url)), '../../cq-settings-integration'),
       });
       expect(result.status, JSON.stringify({ operationalStatus: result.strategy.operationalStatus,
         recipeCompleted: result.strategy.recipeCompleted, correctness: result.pipelineEvidence.candidateCorrectness,

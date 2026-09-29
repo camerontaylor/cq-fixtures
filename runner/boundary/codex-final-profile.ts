@@ -1,7 +1,8 @@
+import { publishStoppedTask, validatePublicationPath } from './task-staging.ts';
 /** Boundary implementation only. Importing/preparing this module never calls a model. */
 import { createHash } from 'node:crypto';
-import { chmodSync, readFileSync, writeFileSync, constants, openSync, closeSync, fstatSync, mkdirSync, renameSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { chmodSync, readFileSync, writeFileSync, constants, openSync, closeSync, fstatSync, mkdirSync, renameSync, mkdtempSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
 import { privateCodexAuthContext } from './subscription-auth.ts';
 import { compileContainerBoundary, spawnContainerBoundary } from './container.ts';
 import type { ContainerBoundarySpec } from './container.ts';
@@ -122,6 +123,7 @@ export function createFinalCodexSpawnAdapter(input: {
   if (hash(content('config.toml')) !== FINAL_CODEX_CONFIG_HASH) throw new Error('staged config changed');
   validateFinalCodexAuth(content('auth.json'), input.budgetSeconds);
   const hostTaskRoot = resolve(input.hostTaskRoot), exportRoot = resolve(input.exportRoot), stage = input.stage, budget = input.budgetSeconds, admit = input.admit;
+  if (exportRoot === hostTaskRoot) validatePublicationPath(input.hostTaskRoot);
   let used = false;
   return async (command: string, args: readonly string[], options: { cwd: string }) => {
     if (used || command !== '/usr/local/bin/codex' || resolve(options.cwd) !== hostTaskRoot || !args.length || args[0] !== 'exec' || args.some((a) => typeof a !== 'string' || a.includes('\0'))) throw new Error('single exact final-profile native invocation required');
@@ -148,7 +150,14 @@ export function createFinalCodexSpawnAdapter(input: {
         try { await launched.dispose(); } catch (error) { if (!failed) { first = error; failed = true; } }
         if (failed) throw first;
       },
-      exportTask: () => session.finalize(exportRoot), cleanup: () => session.cleanup(), closeControl: session.closeControl,
+      exportTask: async () => {
+        if (exportRoot !== hostTaskRoot) return session.finalize(exportRoot);
+        const fresh = mkdtempSync(join(dirname(hostTaskRoot), '.cq-stopped-export-'));
+        chmodSync(fresh, 0o700);
+        const result = await session.finalize(fresh);
+        publishStoppedTask(staging, fresh, hostTaskRoot, { ...result, namespaceAbsent: true });
+        return result;
+      }, cleanup: () => session.cleanup(), closeControl: session.closeControl,
     });
     return { child: launched.child, boundaryIdentity: launched.boundaryIdentity, launchIdentity: launched.launchIdentity, admissionId: receipt.admissionId,
       environmentNames: ['HOME', 'CODEX_HOME', 'PATH', 'TMPDIR', 'LANG', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL'],

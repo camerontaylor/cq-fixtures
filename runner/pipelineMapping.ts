@@ -85,7 +85,7 @@ function sameIdentity(row: ResultRow, context: ExperimentContext): void {
   for (const key of ['campaignId', 'cohortId', 'experimentId', 'taskId', 'repeatId', 'assignmentId', 'stageId', 'attemptId', 'track', 'strategyId', 'settingsId', 'budgetId', 'profileId', 'substrateId'] as const) {
     if (identity[key] !== context[key]) throw new Error(`pipeline mapping: runSuite ${key} does not match frozen assignment`);
   }
-  if (identity.judgePin !== judgeManifestHash(context.judgeManifest)) throw new Error('pipeline mapping: runSuite judge pin does not match frozen oracle manifest');
+  if (identity.judgePin !== context.judgeManifest.sourcePin) throw new Error('pipeline mapping: runSuite semantic oracle pin does not match frozen oracle source pin');
   const outcome = row.taskOutcome?.identity;
   if (!outcome || outcome.campaignId !== context.campaignId || outcome.cohortId !== context.cohortId
     || outcome.experimentId !== context.experimentId || outcome.taskId !== context.taskId
@@ -208,13 +208,13 @@ export function mapPipelineCampaignEvidence(input: {
 
   let selected: TaskOutcomeJudgement | undefined;
   if (selection !== null) {
-    if (selection.judgePin !== judgeManifestHash(context.judgeManifest)) throw new Error('pipeline mapping: frozen judgement pin differs from the assigned oracle manifest');
+    if (selection.judgePin !== context.judgeManifest.sourcePin) throw new Error('pipeline mapping: frozen judgement semantic oracle pin differs from the assigned oracle source pin');
     if (strategy.finalCandidate!.sha256 === null || selection.candidateSha256 !== strategy.finalCandidate!.sha256) throw new Error('pipeline mapping: frozen judgement candidate hash differs from final candidate');
     const matches = historicalJudgements.filter((entry) => entry.judgementId === selection.judgementId && entry.version === selection.version);
     if (matches.length !== 1) throw new Error('pipeline mapping: frozen judgement ID/version is missing or ambiguous');
     selected = matches[0]!;
     if (selected.judgePin !== selection.judgePin || selected.candidateSha256 !== selection.candidateSha256
-      || judgeManifestHash(selected.judgeManifest) !== selection.judgePin) {
+      || judgeManifestHash(selected.judgeManifest) !== judgeManifestHash(context.judgeManifest)) {
       throw new Error('pipeline mapping: selected judgement pin, manifest, or candidate hash differs from frozen selection');
     }
     if (strategy.candidateCorrectness !== selected.candidateCorrectness) throw new Error('pipeline mapping: independent correctness differs from selected judgement');
@@ -284,7 +284,7 @@ export function mapPipelineCampaignEvidence(input: {
       stageId: context.stageId, attemptId: context.attemptId, track: context.track, strategyId: context.strategyId,
       settingsId: context.settingsId, budgetId: context.budgetId, profileId: context.profileId,
       frozenWeight: context.frozenWeight, substrateId: context.substrateId,
-      judgePin: judgeManifestHash(context.judgeManifest),
+      judgePin: context.judgeManifest.sourcePin,
     },
   };
   const judgeBase = { ...baseRow };

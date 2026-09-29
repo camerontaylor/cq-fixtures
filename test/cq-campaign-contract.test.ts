@@ -6,7 +6,7 @@ import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolk
 import { afterEach, describe, expect, it } from 'vitest';
 import { ArtifactStore, sha256 } from '../runner/artifacts/index.ts';
 import { nativeGovernorUsage } from '../runner/budget.ts';
-import { experimentId, judgeManifestHash, suiteTaskId, type ExperimentContext, type TaskOutcome, type TaskOutcomeJudgement } from '../runner/experiment.ts';
+import { experimentId, suiteTaskId, type ExperimentContext, type TaskOutcome, type TaskOutcomeJudgement } from '../runner/experiment.ts';
 import type { ResultRow } from '../runner/aggregate.ts';
 import { runSuite } from '../runner/index.ts';
 import { campaignUsage, sanitizeNativeObservation, type NativeObservation, type InvocationIdentity } from '../runner/native/observation.ts';
@@ -91,7 +91,7 @@ function experiment(): ExperimentContext {
     track: 'native-primary', strategyId: 'codex-one-shot', settingsId: 'settings-default',
     budgetId: 'budget-small', profileId: 'codex-profile-v1', frozenWeight: 1,
     substrateId: 'substrate-default', judgeManifest: {
-      sourcePin: 'judge-source-v1', dependencies: [{ path: 'fixture/check.mjs', sha256: '0'.repeat(64) }],
+      sourcePin: '1'.repeat(64), dependencies: [{ path: 'fixture/check.mjs', sha256: '0'.repeat(64) }],
     },
   };
 }
@@ -120,7 +120,7 @@ describe('campaign envelope', () => {
       stages: [modelStage, judgeStage], accounting: { endToEndMs: 321 }, ...overrides,
     });
     const judgement: TaskOutcomeJudgement = {
-      judgementId: 'judge-v1', version: 1, judgePin: judgeManifestHash(context.judgeManifest),
+      judgementId: 'judge-v1', version: 1, judgePin: context.judgeManifest.sourcePin,
       judgeManifest: context.judgeManifest, baselineCommit: 'baseline-commit', baselineTree: 'baseline-tree',
       candidateSha256, candidateCorrectness: true, formatConformance: true, assignedStrategySuccess: true,
       operationalStatus: 'complete', artifact: { path: 'campaign/judgement.json', sha256: 'b'.repeat(64) },
@@ -145,7 +145,7 @@ describe('campaign envelope', () => {
         stageId: context.stageId, attemptId: context.attemptId, track: context.track, strategyId: context.strategyId,
         settingsId: context.settingsId, budgetId: context.budgetId, profileId: context.profileId,
         frozenWeight: context.frozenWeight, substrateId: context.substrateId,
-        judgePin: judgeManifestHash(context.judgeManifest),
+        judgePin: context.judgeManifest.sourcePin,
       },
       runId: 'local-judge-run', timestamp: new Date().toISOString(),
     };
@@ -307,7 +307,7 @@ describe('campaign envelope', () => {
     const runExperiment = experiment();
     runExperiment.substrateId = 'repair-task-44';
     runExperiment.judgeManifest = {
-      sourcePin: 'review-loop-judge@v1',
+      sourcePin: 'a'.repeat(64),
       dependencies: [{ path: 'fixture/check.mjs', sha256: sha256(readFileSync(join(root, 'fixture', 'check.mjs'))) }],
     };
     await expect(runSuite({
@@ -348,6 +348,58 @@ describe('campaign envelope', () => {
       baselineCommit: expect.stringMatching(/^[a-f0-9]{40}$/),
       baselineTree: expect.stringMatching(/^[a-f0-9]{40}$/),
     });
+
+    // Map the actual independent runSuite result with the frozen semantic
+    // oracle pin. Its manifest digest is a separate identity.
+    const actualRow = result.rows[0]!;
+    const actualContext = { ...runExperiment, taskId: suiteTaskId('native-fixer', runExperiment.substrateId),
+      stageId: actualRow.experiment!.stageId, attemptId: actualRow.experiment!.attemptId };
+    const hostJudgement = actualRow.taskOutcome!.judgements[0]!;
+    const native = result.observations[0]!;
+    const actualStage: PipelineStageLedger = {
+      assignmentId: actualContext.assignmentId, stageId: 'model-stage',
+      attemptId: 'model-attempt', invocationId: native.observation.identity.invocationId,
+      kind: 'draft', routeId: 'codex-native', status: 'failed', launched: true,
+      terminalCause: 'transport-throw', transportException: { name: 'Error', message: 'transport broke after edit' },
+      usage: fixtureUsage(),
+    };
+    const actualStageEvidence = {
+      [native.observation.identity.invocationId]: {
+        artifacts: [{ kind: 'native-observation', path: native.artifact.path, sha256: native.artifact.sha256 }],
+        observation: { path: native.artifact.path, sha256: native.artifact.sha256 },
+      },
+    };
+    const mapActual = (selection = {
+      judgementId: hostJudgement.judgementId, version: hostJudgement.version,
+      judgePin: hostJudgement.judgePin, candidateSha256: hostJudgement.candidateSha256,
+    }) => mapPipelineCampaignEvidence({
+      strategy: {
+        assignmentId: actualContext.assignmentId, taskId: actualContext.taskId,
+        finalCandidate: { sha256: hostJudgement.candidateSha256 }, candidateCorrectness: hostJudgement.candidateCorrectness,
+        operationalStatus: 'operational-failure', authorizedBudgetStop: false,
+        stages: [actualStage, {
+          assignmentId: actualContext.assignmentId, stageId: actualContext.stageId, attemptId: actualContext.attemptId,
+          invocationId: null, kind: 'independent-judge', routeId: null, status: 'completed', launched: false,
+          terminalCause: null, transportException: null, usage: fixtureUsage(),
+        }], accounting: { endToEndMs: actualRow.wallTimeMs },
+      },
+      judgeResult: { rows: result.rows, tables: result.tables }, caseId: 'case-1', context: actualContext,
+      selection, recipeEvidence: { formatConformance: false, assignedStrategySuccess: true },
+      pipelineJudgementArtifact: { judgementId: 'recipe-judge-v2', version: 2, artifact: { path: 'recipe.json', sha256: 'd'.repeat(64) } },
+      rowMetadata: {
+        role: 'fixer-worker' as const, suite: actualRow.suite ?? 'native-fixer', case: actualRow.case ?? 'case-1', model: actualRow.model ?? 'gpt-6-luna',
+        driver: actualRow.driver, runId: 'actual-runSuite-map', timestamp: actualRow.timestamp, expectedCases: 1,
+      },
+      stageEvidence: actualStageEvidence,
+    });
+    const actualMapped = mapActual();
+    expect(actualMapped.taskOutcome.candidateCorrectness).toBe(true);
+    expect(actualMapped.taskOutcome.judgements[0]).toEqual(hostJudgement);
+    expect(actualMapped.taskOutcome.judgements[1]).toMatchObject({ formatConformance: false, assignedStrategySuccess: true });
+    expect(actualMapped.rows[0]?.experiment?.judgePin).toBe(actualContext.judgeManifest.sourcePin);
+    expect(() => mapActual({ judgementId: hostJudgement.judgementId, version: hostJudgement.version,
+      judgePin: '0'.repeat(64), candidateSha256: hostJudgement.candidateSha256 })).toThrow(/semantic oracle pin/);
+
     const attemptDir = join(root, 'artifacts', 'campaign', 'campaign-test', 'cohort', 'cohort-1', 'experiment', 'exp-test', 'task', suiteTaskId('native-fixer', 'repair-task-44'));
     const candidates = (await import('node:fs/promises')).readdir(join(attemptDir, 'repeat', 'repeat-1', 'assignment'));
     const assignments = await candidates;
@@ -375,5 +427,5 @@ describe('campaign envelope', () => {
       execution: { launched: true, terminalCause: 'budget-exhausted', sourceInvocationIds: [expect.any(String)] },
     });
     expect(budgetResult.rows[0]?.stopCause).toBe('budget');
-  }, 20_000);
+  }, 35_000);
 });

@@ -1838,6 +1838,7 @@ describe('PK05 committed native process receipt adoption', () => {
           if (status.startsWith('wrong-')) receiptIdentity[status.slice(6) as keyof InvocationIdentity] = 'stale';
           const result = this.reconcileSupervisedProcess(bound, {
             command: 'fixture', args: [], cwd: root, stdout: '', stderr: '', code: 0, signal: null,
+            lifecycle: { terminated: true, finalized: false, failurePhase: 'finalize', error: { name: 'Error', message: 'private fixture error detail' }, invocationCleanup: { status: 'completed', proof: { status: 'stopped-and-reaped', resourceIds: ['fixture-owned'], volumeDisposition: 'quarantined' } } },
             terminal: 'exit', treeStopped: true, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
             ...(status === 'missing' ? {} : { processEvidence: { identity: receiptIdentity,
               status: status.startsWith('wrong-') ? 'spawned' : status as 'spawned' | 'trusted-no-spawn' | 'unknown',
@@ -1856,6 +1857,10 @@ describe('PK05 committed native process receipt adoption', () => {
       const evidence = driver.getLifecycleEvidence(target.invocationId)!;
       expect(evidence.identity).toEqual(target);
       expect(evidence.settlement.status).toBe('settled');
+      const recoveryArtifact = driver.getObservation(target.invocationId)!.artifacts.find(item => item.kind === 'supervisor-recovery')!;
+      const recoveryText = readFileSync(recoveryArtifact.path, 'utf8');
+      expect(recoveryText).not.toContain('private fixture error detail');
+      expect(JSON.parse(recoveryText)).toMatchObject({ identity: target, failurePhase: 'finalize', failureClass: 'Error', invocationCleanup: { proof: { resourceIds: ['fixture-owned'], volumeDisposition: 'quarantined' } } });
       expect(evidence.process.status).toBe(status === 'trusted-no-spawn' ? 'not-started' : status === 'spawned' ? 'stopped' : 'unknown');
       const proof = driver.cancelInvocationAndWait({ identity: target, cause: 'fixture audit', deadlineEpochMs: Date.now() + 100 });
       if (status === 'trusted-no-spawn' || status === 'spawned') await expect(proof).resolves.toMatchObject({ processTree: 'stopped-and-reaped' });
@@ -1920,4 +1925,18 @@ describe('outer final native descriptor caller', () => {
     expect(existsSync(join(root, 'preparation-fixture.json'))).toBe(false);
     expect(existsSync(join(root, 'execution-fixture.json'))).toBe(false);
   });
+});
+
+it('actual Codex pre-spawn ownership refusal settles no-start proof with unknown usage', async () => {
+  const root = tempRoot();
+  const spawnAdapter = vi.fn(async () => { throw new Error('unexpected fixture spawn'); });
+  const driver = new CodexExecDriver({ executable: 'synthetic', version: 'fixture-1', invocationStage: 'final-profile-G1', artifactDirectory: root, spawnAdapter });
+  const target = identity('actual-no-start');
+  await driver.beginInvocation(target);
+  await expect(driver.run(invocation())).rejects.toThrow(/cleanup callback/u);
+  expect(spawnAdapter).not.toHaveBeenCalled();
+  expect(driver.getLaunchEvidence(target.invocationId)).toMatchObject({ identity: target, status: 'no-spawn-observed' });
+  expect(driver.getLifecycleEvidence(target.invocationId)).toMatchObject({ identity: target, process: { status: 'not-started' }, settlement: { status: 'settled' } });
+  expect(driver.getObservation(target.invocationId)!.usage.totalTokens).toBeNull();
+  await expect(driver.cancelInvocationAndWait({ identity: target, cause: 'fixture audit', deadlineEpochMs: Date.now() + 100 })).resolves.toMatchObject({ invocationId: target.invocationId, invocation: 'settled', processTree: 'stopped-and-reaped' });
 });

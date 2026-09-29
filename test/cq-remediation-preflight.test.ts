@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertSameClosure, discoverSourceClosure, runPreflight } from '../scripts/cq-remediation-preflight.mjs';
+import { assertSameClosure, assertSamePins, discoverSourceClosure, runPreflight } from '../scripts/cq-remediation-preflight.mjs';
 
 const roots: string[] = [];
 async function syntheticRoot(): Promise<string> {
@@ -55,6 +55,11 @@ describe('no-dispatch remediation preflight', () => {
       .toThrow('runtime loader closure differs (missing: new-dependency.ts; extra: none)');
     expect(() => assertSameClosure(['a.ts'], ['a.ts', 'stale.ts'], 'runtime loader'))
       .toThrow('runtime loader closure differs (missing: none; extra: stale.ts)');
+  });
+
+  it('rejects a loader that reports the right paths with incorrect byte hashes', () => {
+    expect(() => assertSamePins({ 'src/entry.ts': 'a'.repeat(64) }, { 'src/entry.ts': '0'.repeat(64) }, 'runtime loader'))
+      .toThrow('runtime loader content hash differs for src/entry.ts');
   });
 
   it('does not count duplicate paths as distinct loader assets', () => {

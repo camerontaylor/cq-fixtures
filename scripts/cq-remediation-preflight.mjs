@@ -101,6 +101,13 @@ export function assertSameClosure(expected, actual, label = 'source loader') {
   }
 }
 
+export function assertSamePins(expected, actual, label = 'source loader') {
+  assertSameClosure(Object.keys(expected), Object.keys(actual), label);
+  for (const path of Object.keys(expected).sort()) {
+    if (expected[path] !== actual[path]) throw new Error(`${label} content hash differs for ${path}`);
+  }
+}
+
 export async function runPreflight(rootPath = ROOT) {
   const root = await realpath(rootPath);
   registerHooks({
@@ -138,9 +145,9 @@ export async function runPreflight(rootPath = ROOT) {
   // it freezes source pins. Comparing it to an independent AST walk catches
   // stale/omitted prepared assets before any runtime setup can begin.
   const loadedPins = await sourceEntrypoint.visibleG1SourcePins('codex', []);
-  assertSameClosure(independentClosure, Object.keys(loadedPins), 'native/preparer source');
   const hashes = {};
   for (const path of independentClosure) hashes[path] = sha256(await readFile(join(root, path)));
+  assertSamePins(hashes, loadedPins, 'native source-pin loader');
 
   return {
     status: 'preflight-green',

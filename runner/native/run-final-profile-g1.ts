@@ -4,8 +4,9 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, open, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import ts from 'typescript';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import { createReviewLoopRepairTask } from '../../campaigns/cq-settings/corpus/review-loop-task.ts';
 import { AggregateQuotaSource, CodexBarQuotaSource, type CodexBarReader } from '../campaign/codexbar.ts';
@@ -249,46 +250,94 @@ export interface FinalProfileG1Result {
 export async function finalProfileG1SourcePins(
   oracleDependencies: ReadonlyArray<{ path: string; sha256: string }> = [],
 ): Promise<{ pins: Record<string, string>; sourcePin: string }> {
+  const root = await realpath(ROOT);
+  const oraclePaths = new Map<string, string>();
+  const canonicalOraclePaths: string[] = [];
+  const seenOraclePaths = new Set<string>();
+  for (const dependency of oracleDependencies) {
+    if (!dependency || typeof dependency.path !== 'string' || !/^[a-f0-9]{64}$/iu.test(dependency.sha256)) {
+      throw new Error('oracle manifest source path or SHA-256 is malformed');
+    }
+    if (seenOraclePaths.has(dependency.path)) throw new Error(`oracle manifest source path is duplicated: ${dependency.path}`);
+    seenOraclePaths.add(dependency.path);
+    const actual = await canonicalSourcePath(root, resolve(root, dependency.path));
+    const actualHash = sha256(await readFile(actual.absolute));
+    if (actualHash !== dependency.sha256) throw new Error(`oracle manifest source changed: ${dependency.path}`);
+    const prior = oraclePaths.get(actual.relative);
+    if (prior !== undefined && prior !== dependency.sha256) throw new Error(`oracle manifest aliases disagree: ${dependency.path}`);
+    oraclePaths.set(actual.relative, dependency.sha256);
+    canonicalOraclePaths.push(actual.absolute);
+  }
   const pins: Record<string, string> = {};
-  const paths = await discoverSourceDependencyClosure([...SOURCE_FILES, ...oracleDependencies.map((dependency) => dependency.path)]);
+  const paths = await discoverSourceDependencyClosure(root, [...SOURCE_FILES, ...canonicalOraclePaths]);
   for (const path of paths) {
-    const bytes = await readFile(join(ROOT, path));
+    const bytes = await readFile(join(root, path));
     const actual = sha256(bytes);
-    const declared = oracleDependencies.find((dependency) => dependency.path === path)?.sha256;
+    const declared = oraclePaths.get(path);
     if (declared !== undefined && declared !== actual) throw new Error(`oracle manifest source changed: ${path}`);
     pins[path] = actual;
   }
   return { pins, sourcePin: sha256(canonicalJson(pins)) };
 }
 
-async function discoverSourceDependencyClosure(initialPaths: readonly string[]): Promise<string[]> {
-  const pending = [...new Set(initialPaths)].map((path) => resolve(ROOT, path));
+function canonicalSourcePath(root: string, actual: string): Promise<{ absolute: string; relative: string }> {
+  return realpath(actual).then((canonical) => {
+    const relativePath = relative(root, canonical);
+    if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+      throw new Error('source pin dependency escaped repository root');
+    }
+    return { absolute: canonical, relative: relativePath.split(sep).join('/') };
+  });
+}
+
+async function discoverSourceDependencyClosure(rootPath: string, initialPaths: readonly string[]): Promise<string[]> {
+  const root = await realpath(rootPath);
+  const pending: string[] = [];
+  for (const path of new Set(initialPaths)) pending.push((await canonicalSourcePath(root, resolve(root, path))).absolute);
   const visited = new Set<string>();
   while (pending.length) {
     const candidate = pending.pop()!;
-    const actual = await realpath(candidate);
-    const relative = resolve(ROOT) === actual ? '' : actual.slice(resolve(ROOT).length + 1).replaceAll('\\', '/');
-    if (!relative || relative.startsWith('../') || relative.startsWith('/')) throw new Error('source pin dependency escaped repository root');
-    if (visited.has(relative)) continue;
-    visited.add(relative);
+    const canonical = await canonicalSourcePath(root, candidate);
+    const actual = canonical.absolute;
+    const relativePath = canonical.relative;
+    if (visited.has(relativePath)) continue;
+    visited.add(relativePath);
     const source = await readFile(actual, 'utf8');
     const imports = new Set<string>();
-    for (const match of source.matchAll(/\b(?:import|export)\s+(?:type\s+)?[^'";]*?\bfrom\s*['"]([^'"]+)['"]/gsu)) {
-      if (match[1]?.startsWith('.')) imports.add(match[1]);
-    }
-    for (const match of source.matchAll(/\bimport\s*['"]([^'"]+)['"]/gu)) {
-      if (match[1]?.startsWith('.')) imports.add(match[1]);
-    }
-    for (const match of source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/gu)) {
-      if (match[1]?.startsWith('.')) imports.add(match[1]);
-    }
+    const scriptKind = actual.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+    const ast = ts.createSourceFile(actual, source, ts.ScriptTarget.Latest, true, scriptKind);
+    const collectImports = (node: ts.Node): void => {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+          node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+        imports.add(node.moduleSpecifier.text);
+      } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+          node.arguments.length === 1 && ts.isStringLiteralLike(node.arguments[0]!)) {
+        imports.add(node.arguments[0]!.text);
+      }
+      ts.forEachChild(node, collectImports);
+    };
+    collectImports(ast);
     for (const specifier of imports) {
+      // This pin closure is intentionally limited to repository-relative
+      // source dependencies. Node built-ins and installed packages are not
+      // local source files and are governed by their own runtime inputs.
+      if (!specifier.startsWith('./') && !specifier.startsWith('../')) continue;
       const base = resolve(dirname(actual), specifier);
       const sourceBase = base.replace(/\.(?:mjs|cjs|js)$/u, '');
       const candidates = [base, `${sourceBase}.ts`, `${sourceBase}.tsx`, `${sourceBase}.mts`, `${sourceBase}.cts`, `${sourceBase}.js`, `${sourceBase}.json`, join(base, 'index.ts'), join(base, 'index.js')];
+      let resolved: string | undefined;
       for (const path of candidates) {
-        try { await realpath(path); pending.push(path); break; } catch { /* try the next source extension */ }
+        try {
+          resolved = (await canonicalSourcePath(root, path)).absolute;
+          break;
+        } catch (error) {
+          if (error instanceof Error && error.message === 'source pin dependency escaped repository root') throw error;
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+        }
       }
+      if (!resolved) throw new Error(`source pin import could not be resolved: ${specifier} from ${relativePath}`);
+      pending.push(resolved);
     }
   }
   return [...visited].sort();

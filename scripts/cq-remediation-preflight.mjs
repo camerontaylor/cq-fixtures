@@ -143,6 +143,14 @@ export function assertSamePins(expected, actual, label = 'source loader') {
   }
 }
 
+/** Require exact pins for a subset of runtime assets in a larger source loader closure. */
+export function assertIncludesPins(expected, actual, label = 'source loader') {
+  for (const path of Object.keys(expected).sort()) {
+    if (!Object.hasOwn(actual, path)) throw new Error(`${label} closure omits required runtime asset: ${path}`);
+    if (expected[path] !== actual[path]) throw new Error(`${label} content hash differs for ${path}`);
+  }
+}
+
 export async function runPreflight(rootPath = ROOT) {
   const root = await realpath(rootPath);
   registerHooks({
@@ -163,10 +171,11 @@ export async function runPreflight(rootPath = ROOT) {
       return { format: 'module', source: transformed.outputText, shortCircuit: true };
     },
   });
-  const [independentClosure, sourceEntrypoint, experiment, implicitRuntimeAssets] = await Promise.all([
+  const [independentClosure, sourceEntrypoint, experiment, finalProfile, implicitRuntimeAssets] = await Promise.all([
     discoverSourceClosure(root, VISIBLE_ENTRYPOINTS),
     import(pathToFileURL(join(root, 'runner/native/run-visible-g1.ts')).href),
     import(pathToFileURL(join(root, 'runner/experiment.ts')).href),
+    import(pathToFileURL(join(root, 'runner/native/run-final-profile-g1.ts')).href),
     verifyImplicitRuntimeAssets(root),
   ]);
 
@@ -184,6 +193,12 @@ export async function runPreflight(rootPath = ROOT) {
   const hashes = {};
   for (const path of independentClosure) hashes[path] = sha256(await readFile(join(root, path)));
   assertSamePins(hashes, loadedPins, 'native source-pin loader');
+
+  if (typeof finalProfile.finalProfileG1SourcePins !== 'function') {
+    throw new Error('final-profile module is missing its source-pin export');
+  }
+  const finalProfilePins = await finalProfile.finalProfileG1SourcePins();
+  assertIncludesPins(implicitRuntimeAssets, finalProfilePins.pins, 'final-profile runtime pin loader');
 
   return {
     status: 'preflight-green',

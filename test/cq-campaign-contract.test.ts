@@ -256,6 +256,61 @@ describe('campaign envelope', () => {
     rmSync(outside, { recursive: true, force: true });
   });
 
+  it('validates trusted judge source roots independently of a temporary runSuite repo', async () => {
+    root = mkdtempSync(join(tmpdir(), 'cq-trusted-judge-root-'));
+    const repoRoot = join(root, 'temporary-suite-repo');
+    mkdirSync(join(repoRoot, 'policy', 'denylist'), { recursive: true });
+    writeFileSync(join(repoRoot, 'policy', 'denylist', 'patterns.yml'), readFileSync(new URL('../policy/denylist/patterns.yml', import.meta.url)));
+    mkdirSync(join(repoRoot, 'fixture'), { recursive: true });
+    writeFileSync(join(repoRoot, 'fixture', 'fix.txt'), 'unchanged\n');
+    writeFileSync(join(repoRoot, 'fixture', 'check.mjs'), "process.exit(process.env.CQ_REVIEW_LOOP_ORACLE_PIN === 'a'.repeat(64) ? 0 : 1);\n");
+    const suiteDir = join(root, 'suite');
+    mkdirSync(suiteDir);
+    writeFileSync(join(suiteDir, 'suite.json'), JSON.stringify({
+      name: 'trusted-root-suite', role: 'fixer-worker', provenance: { origin: 'local test' },
+      cases: [{ id: 'case-1', fixture: 'fixture', task: { prompt: 'Verify trusted oracle root.' },
+        probe: { kind: 'check-rerun', check: 'fixture/check.mjs' } }],
+    }));
+
+    const trustedDependency = {
+      path: 'runner/index.ts',
+      sha256: sha256(readFileSync(new URL('../runner/index.ts', import.meta.url))),
+    };
+    const context = experiment();
+    context.judgeManifest = {
+      sourcePin: 'a'.repeat(64), sourceRootId: 'cq-settings-native-checkout', dependencies: [trustedDependency],
+    };
+    let dispatches = 0;
+    const driver: Driver = {
+      async run(invocation) {
+        dispatches += 1;
+        const workspace = /workspace: (.+)$/.exec(invocation.prompt)?.[1];
+        if (workspace === undefined) throw new Error('test could not locate candidate workspace');
+        writeFileSync(join(workspace, 'fix.txt'), 'candidate edit\n');
+        return { usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete',
+          structuredOutput: { fixed: true, notes: 'trusted root fixture' } };
+      },
+    };
+    const run = (judgeManifest: ExperimentContext['judgeManifest']) => runSuite({
+      suiteDir, driver, model: 'gpt-6-luna', provider: 'openai', driverName: 'codex-exec',
+      repoRoot, artifactRoot: join(root, 'artifacts'), experiment: { ...context, judgeManifest },
+      hostCheckScoringEnvironment: (_workspace, pinnedBaselineCommit) => ({
+        CQ_REVIEW_LOOP_BASELINE_SHA: pinnedBaselineCommit, CQ_REVIEW_LOOP_ORACLE_PIN: 'a'.repeat(64),
+      }),
+    });
+
+    const result = await run(context.judgeManifest);
+    expect(result.rows[0]?.taskOutcome?.judgements[0]?.judgeManifest.sourceRootId).toBe('cq-settings-native-checkout');
+    expect(result.rows[0]?.outcomes?.candidateCorrectness).toBe(true);
+    expect(dispatches).toBe(1);
+    const unknownRootManifest = { ...context.judgeManifest, sourceRootId: 'unconfigured-checkout' } as unknown as ExperimentContext['judgeManifest'];
+    await expect(run(unknownRootManifest)).rejects.toThrow(/unknown trusted sourceRootId/);
+    await expect(run({ ...context.judgeManifest, dependencies: [{ ...trustedDependency, sha256: '0'.repeat(64) }] })).rejects.toThrow(/hash mismatch/);
+    await expect(run({ ...context.judgeManifest, dependencies: [{ path: '../runner/index.ts', sha256: trustedDependency.sha256 }] })).rejects.toThrow(/unsafe or duplicate path/);
+    expect(dispatches).toBe(1);
+    expect(existsSync(join(repoRoot, 'runner'))).toBe(false);
+  }, 20_000);
+
   it('redacts secret values without erasing usage contract field names', () => {
     const observation = fixtureObservation({ invocationId: 'i', assignmentId: 'a', stageId: 's', attemptId: 't' });
     observation.usage.tokenTotal = { value: 42, availability: 'observed', source: 'event', semantics: 'authoritative-total' };

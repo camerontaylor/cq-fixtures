@@ -1,7 +1,17 @@
 // Per-role aggregation of result rows into comparison tables
 // (schema/comparison-table.schema.json). Pure: rows in, tables out — no I/O.
+//
+// PK14 / D22 correction consumption: `aggregateCorrected` at the bottom of this
+// file is the leased consumption seam (SEAM-1, recorded in the PK14
+// reconciliation handoff and granted by the conductor for D22/D77). It reuses
+// `aggregate` unchanged rather than forking it, so a corrected table's
+// `operationalCompletionRate` is RECOMPUTED by the same lane that produces
+// every other rate, and a historic literal rate is never transplanted. The
+// public row and table schemas are untouched: this function takes a set of
+// derived ROWS and returns ordinary tables beside the original ones.
 
 import { canonicalJson, type TaskOutcome } from './experiment.ts';
+import type { ConsumedRunReport, ReportState } from './reporting/consumer.ts';
 
 export type SuiteRole = 'fixer-worker' | 'review-classifier';
 
@@ -537,4 +547,58 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
     });
   }
   return { role, suite, generatedAt: new Date().toISOString(), cells: out };
+}
+
+export interface CorrectedAggregation {
+  /**
+   * Tables built from the untouched raw rows, exactly as they were before any
+   * correction was considered. Always present, always the published shape.
+   */
+  original: ComparisonTable[];
+  /**
+   * Tables re-aggregated from the DERIVED rows. Present only when a correction
+   * actually qualified for a row-writable field; otherwise an empty array, so a
+   * consumer cannot mistake "no correction" for "a corrected table that
+   * happens to match".
+   */
+  corrected: ComparisonTable[];
+  /**
+   * The authoritative corrected completion rate, recomputed by this lane over
+   * the corrected rows, or null when the claim is withheld. This is the value
+   * a report may publish; `original`'s literal rate is not.
+   */
+  correctedCompletionRate: number | null;
+  /** What was corrected, what was withheld, and what blocked it. */
+  state: ReportState;
+}
+
+/**
+ * PK14 / D22: aggregate a consumed report, preserving the original tables.
+ *
+ * `report.rawRows` and `report.correctedRows` are both passed through the
+ * UNCHANGED aggregate lane, so the two table sets differ only where a
+ * correction actually landed. Nothing here re-derives a rate, applies a
+ * correction, or decides a lifecycle value: it consumes the report's verdict
+ * and re-runs the ordinary aggregation over the derived rows.
+ */
+export function aggregateCorrected(report: ConsumedRunReport<ResultRow>): CorrectedAggregation {
+  const original = aggregate(report.rawRows);
+  const rewroteRows = report.correctedRows.some((row, index) => row !== report.rawRows[index]);
+  const corrected = rewroteRows ? aggregate(report.correctedRows) : [];
+  return {
+    original,
+    corrected,
+    // The lane's own recomputed rate, when it produced a corrected table.
+    // Deliberately not read off `original[0]`: a historic literal is exactly
+    // what must not survive this seam.
+    correctedCompletionRate: corrected.length > 0 ? correctedRateOf(corrected) : report.state.correctedCompletionRate,
+    state: report.state,
+  };
+}
+
+/** The single operationalCompletionRate across a table set, or null if mixed. */
+function correctedRateOf(tables: ComparisonTable[]): number | null {
+  const rates = tables.flatMap((table) => table.cells.map((cell) => cell.operationalCompletionRate)).filter((rate): rate is number => typeof rate === 'number');
+  if (rates.length === 0) return null;
+  return rates.every((rate) => rate === rates[0]) ? rates[0]! : null;
 }

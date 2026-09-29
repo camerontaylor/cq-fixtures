@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "append-only-lifecycle-correction",
+  "runId": "cq-s5-final-20260929-19",
+  "invocationId": "d9cd61ba-3ca3-478e-b275-fefca2a41e05",
+  "assignmentId": "final-profile-g1-cq-s5-final-20260929-19",
+  "sourceEvidence": {
+    "reportSha256": "89995fb89746fb369da06ae6ae7c2e86e52c4078789484b44196f3ac285bc081",
+    "taskOutcomeSha256": "940a11868a8298dfba81885742538ab857745dcb9697bd6f2d6e591b748d5f3d",
+    "judgementSha256": "1e6fa5da9f8d442add7ef8f704ec372bd16ccc674e108ae2b0660551d38125be",
+    "observationSha256": "11b6cb737893102fae1d535f9d07ece249b77d9e796d2e1aedccdcf963fba497",
+    "supervisorLifecycleSha256": "c5e44c5db34f58caaff1126990dcf6758f04837c2a4d4ca5b513ed0ec85e759e",
+    "eventsSha256": "bfad283a5618d732c3d327c0f2cf7f21ec146ca9e8df0c8f09d183a539dd41d7"
+  },
+  "authoritativeNativeTerminal": "timeout",
+  "assignmentDeadlineCrossed": false,
+  "supersededLifecycleProjections": [
+    "execution.terminalCause=complete",
+    "operationalStatus=complete",
+    "table.operationalCompletionRate=1"
+  ],
+  "normalWorkerCompletion": false,
+  "processTreeStopped": true,
+  "boundaryTermination": "proven",
+  "boundaryExport": "proven",
+  "exportReceiptPresent": true,
+  "retainedInventorySha256": "a72e3f37254c6e5a57b27d3cc41ba401a83cdc48bd6d11962b582e05cb71060d",
+  "selectedJudgement": {
+    "id": "96d2cd39-543b-40ca-86cf-c6148d3287e8",
+    "version": 1,
+    "pin": "e178dd958c9371588b8bbedd18d1c0b022863b23a8e8e4539ba0614aae2d97bb",
+    "candidatePatchSha256": "5fa4f53dc637867ac8783c86b81e0ca044d48aa5a88626fab8f94d02c6578f32"
+  },
+  "candidateCorrectness": true,
+  "formatConformance": false,
+  "assignedStrategySuccess": true,
+  "usage": {
+    "input": 61484,
+    "output": 631,
+    "cacheRead": 45312,
+    "cacheWrite": null,
+    "reasoning": null,
+    "tokenTotal": null,
+    "costUSD": null,
+    "inclusion": "unknown"
+  },
+  "originalArtifactsChanged": false,
+  "captureExportQualified": true,
+  "fullRouteG1Qualified": false,
+  "actualRouteG2Qualified": false,
+  "globalHardLifetimeSupported": false,
+  "qualificationLimits": [
+    "G1 second distinguishable workspace and remaining acceptance evidence must be reconciled",
+    "native terminal precedence fixed prospectively; original worker projection remains immutable",
+    "no normal worker completion claim",
+    "no held-out eligibility"
+  ]
+}

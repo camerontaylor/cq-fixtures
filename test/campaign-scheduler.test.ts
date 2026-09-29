@@ -22,6 +22,7 @@ import { buildWorkboard } from '../runner/campaign/workboard.ts';
 import { CodexAppServerQuotaAdapter, type CodexAppServerSession } from '../runner/campaign/codex-app-server.ts';
 import { AggregateQuotaSource, CodexBarQuotaSource } from '../runner/campaign/codexbar.ts';
 import { FileCampaignQueueStore, FileResetJournal } from '../runner/campaign/persistence.ts';
+import { createFinalProfileQuotaSource, estimateFinalProfileAdmission, resolveFinalProfileQuotaSource } from '../runner/native/run-final-profile-g1.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -338,11 +339,13 @@ describe('campaign scheduler admission and durable assignment lane', () => {
         if (entries.has(entry.idempotencyKey)) throw new Error('journal conflict');
         entries.set(entry.idempotencyKey, entry);
       },
-      async recordAction(key, actionOutcome, beforeQuota) {
+      async startAction(key, actionStartedAt) { entries.set(key, { ...entries.get(key)!, state: 'action-executing', actionStartedAt }); },
+      async recordAction(key, actionResponse, beforeQuota) {
         const prior = entries.get(key);
-        if (!prior || prior.state !== 'prepared') throw new Error('no prepared journal entry');
-        entries.set(key, { ...prior, state: 'action-executed/evidence-pending', actionOutcome, beforeQuota });
+        if (!prior || !['prepared', 'action-executing'].includes(prior.state)) throw new Error('no prepared journal entry');
+        entries.set(key, { ...prior, state: 'action-executed/evidence-pending', actionOutcome: actionResponse?.outcome, actionResponse, beforeQuota });
       },
+      async recordEvidence(key, refreshedQuota) { entries.set(key, { ...entries.get(key)!, refreshedQuota }); },
       async complete(key, result) {
         const prior = entries.get(key);
         if (!prior || !['prepared', 'action-executed/evidence-pending'].includes(prior.state)) throw new Error('no incomplete journal entry');
@@ -399,10 +402,12 @@ describe('campaign scheduler admission and durable assignment lane', () => {
     const journal: ResetJournal = {
       async get(key) { return entries.get(key) ?? null; },
       async create(entry) { entries.set(entry.idempotencyKey, entry); },
-      async recordAction(key, actionOutcome, beforeQuota) {
+      async startAction(key, actionStartedAt) { entries.set(key, { ...entries.get(key)!, state: 'action-executing', actionStartedAt }); },
+      async recordAction(key, actionResponse, beforeQuota) {
         const entry = entries.get(key)!;
-        entries.set(key, { ...entry, state: 'action-executed/evidence-pending', actionOutcome, beforeQuota });
+        entries.set(key, { ...entry, state: 'action-executed/evidence-pending', actionOutcome: actionResponse?.outcome, actionResponse, beforeQuota });
       },
+      async recordEvidence(key, refreshedQuota) { entries.set(key, { ...entries.get(key)!, refreshedQuota }); },
       async complete(key, result) { entries.set(key, { ...entries.get(key)!, state: 'completed', result }); },
     };
     const before = quotaSnapshot(Date.parse('2026-09-28T20:30:01Z'), {
@@ -441,17 +446,85 @@ describe('campaign scheduler admission and durable assignment lane', () => {
     expect(entries.get(idempotencyKey)?.state).toBe('completed');
   });
 
-  it('replays a prepared lost-response action with the original pinned credit ID, never the next available credit', async () => {
+  it('serializes concurrent reset journal consumers across scheduler instances', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'campaign-reset-race-'));
+    try {
+      const idempotencyKey = '3de8bba7-381e-4a78-a737-6eb901fb90bc';
+      const before = quotaSnapshot(Date.parse('2026-09-28T20:30:01Z'), {
+        resetCredits: [{ id: 'race-credit', resetType: 'codexRateLimits', expiresAt: '2026-10-04T00:53:20Z', status: 'available' }],
+        windows: [{ id: 'weekly', windowMinutes: 10_080, observedAt: '2026-09-28T20:30:01.000Z', resetsAt: '2026-10-03T21:27:33.000Z', remainingFraction: 0.1, remainingUnits: null, unit: null, binding: true, source: 'native' }],
+      });
+      const after = quotaSnapshot(Date.parse('2026-09-28T20:30:02Z'), {
+        resetCredits: [],
+        windows: [{ id: 'weekly', windowMinutes: 10_080, observedAt: '2026-09-28T20:30:02.000Z', resetsAt: '2026-10-04T00:53:20.000Z', remainingFraction: 1, remainingUnits: null, unit: null, binding: true, source: 'native' }],
+      });
+      let resolveConsume!: (value: ResetCreditConsumeResult) => void;
+      let markStarted!: () => void;
+      const actionStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+      let reads = 0;
+      let consumes = 0;
+      const consumer: SupportedResetCreditConsumer = {
+        route: 'account/rateLimitResetCredit/consume',
+        async consume(request) {
+          consumes += 1;
+          expect(request.creditId).toBe('race-credit');
+          markStarted();
+          return new Promise((resolve) => { resolveConsume = resolve; });
+        },
+        async readRateLimits() { reads += 1; return reads === 1 ? before : after; },
+      };
+      const firstJournal = new FileResetJournal(directory);
+      const first = consumeResetCreditOnce(consumer, firstJournal, { idempotencyKey, resetType: 'codexRateLimits' }, { now: () => Date.parse('2026-09-28T20:30:03Z') });
+      await actionStarted;
+      await expect(consumeResetCreditOnce(consumer, new FileResetJournal(directory), { idempotencyKey, resetType: 'codexRateLimits' }, { now: () => Date.parse('2026-09-28T20:30:03Z') }))
+        .rejects.toThrow('already in flight');
+      resolveConsume({ outcome: 'reset', resetType: 'codexRateLimits', creditId: 'race-credit', beforeAllowance: null, afterAllowance: null, observedAt: before.fetchedAt });
+      await expect(first).resolves.toMatchObject({ outcome: 'reset', creditId: 'race-credit', allowanceChangeVerified: true });
+      expect(consumes).toBe(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('journals a wrong-credit response and fresh allowance evidence without sending the request again', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'campaign-reset-mismatch-'));
+    try {
+      const idempotencyKey = '23a6fd9e-4575-48e2-b480-50f67786a3b2';
+      const journal = new FileResetJournal(directory);
+      const before = quotaSnapshot(Date.parse('2026-09-28T20:30:01Z'), {
+        resetCredits: [{ id: 'credit-requested', resetType: 'codexRateLimits', expiresAt: '2026-10-04T00:53:20Z', status: 'available' }],
+      });
+      const after = quotaSnapshot(Date.parse('2026-09-28T20:30:02Z'), {
+        resetCredits: [{ id: 'credit-requested', resetType: 'codexRateLimits', expiresAt: '2026-10-04T00:53:20Z', status: 'unavailable' }],
+        windows: [{ id: 'weekly', windowMinutes: 10_080, observedAt: '2026-09-28T20:30:02.000Z', resetsAt: '2026-10-04T00:53:20.000Z', remainingFraction: 1, remainingUnits: null, unit: null, binding: true, source: 'native' }],
+      });
+      let reads = 0;
+      let consumes = 0;
+      const consumer: SupportedResetCreditConsumer = {
+        route: 'account/rateLimitResetCredit/consume',
+        async consume(request) {
+          consumes += 1;
+          return { outcome: 'reset', resetType: request.resetType, creditId: 'credit-wrong', beforeAllowance: null, afterAllowance: null, observedAt: before.fetchedAt };
+        },
+        async readRateLimits() { reads += 1; return reads === 1 ? before : after; },
+      };
+      const request = { idempotencyKey, resetType: 'codexRateLimits', creditId: 'credit-requested' };
+      await expect(consumeResetCreditOnce(consumer, journal, request, { now: () => Date.parse('2026-09-28T20:30:03Z') }))
+        .rejects.toThrow('does not match');
+      const persisted = await journal.get(idempotencyKey);
+      expect(persisted).toMatchObject({ state: 'action-executed/evidence-pending', creditId: 'credit-requested', actionResponse: { creditId: 'credit-wrong' }, refreshedQuota: { fetchedAt: after.fetchedAt } });
+      await expect(consumeResetCreditOnce(consumer, journal, request, { now: () => Date.parse('2026-09-28T20:30:03Z') }))
+        .rejects.toThrow('uncertain or mismatched');
+      expect(consumes).toBe(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a lost-response action pinned in the durable journal across restart without retrying', async () => {
     const idempotencyKey = '6d388714-1db5-43fd-9195-f63068bd6217';
-    const entries = new Map<string, ResetJournalEntry>();
-    const journal: ResetJournal = {
-      async get(key) { return entries.get(key) ?? null; },
-      async create(entry) { entries.set(entry.idempotencyKey, entry); },
-      async recordAction(key, actionOutcome, beforeQuota) {
-        entries.set(key, { ...entries.get(key)!, state: 'action-executed/evidence-pending', actionOutcome, beforeQuota });
-      },
-      async complete(key, result) { entries.set(key, { ...entries.get(key)!, state: 'completed', result }); },
-    };
+    const directory = await mkdtemp(join(tmpdir(), 'campaign-reset-lost-response-'));
+    try {
     const before = quotaSnapshot(Date.parse('2026-09-28T20:30:01Z'), {
       resetCredits: [
         { id: 'credit-first', resetType: 'codexRateLimits', expiresAt: '2026-10-04T00:53:20Z', status: 'available' },
@@ -474,21 +547,25 @@ describe('campaign scheduler admission and durable assignment lane', () => {
       async consume(request, options) {
         consumes += 1;
         seenCreditIds.push(request.creditId);
-        expect(options?.replayPrepared).toBe(consumes > 1);
+        expect(options?.replayPrepared).toBe(false);
         if (consumes === 1) throw new Error('connection lost after backend action');
         return { outcome: 'alreadyRedeemed', resetType: request.resetType, creditId: request.creditId!, beforeAllowance: null, afterAllowance: null, observedAt: before.fetchedAt };
       },
       async readRateLimits() { reads += 1; return reads === 1 ? before : after; },
     };
     const request = { idempotencyKey, resetType: 'codexRateLimits' };
-    await expect(consumeResetCreditOnce(consumer, journal, request, { now: () => Date.parse('2026-09-28T20:30:04Z') }))
-      .rejects.toThrow('connection lost after backend action');
-    expect(entries.get(idempotencyKey)).toMatchObject({ state: 'prepared', creditId: 'credit-first', beforeQuota: before });
-    const recovered = await consumeResetCreditOnce(consumer, journal, request, { now: () => Date.parse('2026-09-28T20:30:04Z') });
-    expect(recovered.outcome).toBe('alreadyRedeemed');
-    expect(recovered.allowanceChangeVerified).toBe(true);
-    expect(seenCreditIds).toEqual(['credit-first', 'credit-first']);
-    expect(consumes).toBe(2);
+    await expect(consumeResetCreditOnce(consumer, new FileResetJournal(directory), request, { now: () => Date.parse('2026-09-28T20:30:04Z') }))
+      .rejects.toThrow('uncertain and remains evidence-pending');
+    const restartedJournal = new FileResetJournal(directory);
+    expect(await restartedJournal.get(idempotencyKey)).toMatchObject({ state: 'action-executed/evidence-pending', creditId: 'credit-first', beforeQuota: before, actionResponse: null });
+    await expect(consumeResetCreditOnce(consumer, restartedJournal, request, { now: () => Date.parse('2026-09-28T20:30:04Z') }))
+      .rejects.toThrow('uncertain or mismatched provider response');
+    expect((await restartedJournal.get(idempotencyKey))?.refreshedQuota?.fetchedAt).toBe(after.fetchedAt);
+    expect(seenCreditIds).toEqual(['credit-first']);
+    expect(consumes).toBe(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('leaves successful actions evidence-pending for stale, mismatched, or unchanged post-action windows', async () => {
@@ -512,7 +589,9 @@ describe('campaign scheduler admission and durable assignment lane', () => {
       const journal: ResetJournal = {
         async get(key) { return entries.get(key) ?? null; },
         async create(entry) { entries.set(entry.idempotencyKey, entry); },
-        async recordAction(key, actionOutcome, beforeQuota) { entries.set(key, { ...entries.get(key)!, state: 'action-executed/evidence-pending', actionOutcome, beforeQuota }); },
+        async startAction(key, actionStartedAt) { entries.set(key, { ...entries.get(key)!, state: 'action-executing', actionStartedAt }); },
+        async recordAction(key, actionResponse, beforeQuota) { entries.set(key, { ...entries.get(key)!, state: 'action-executed/evidence-pending', actionOutcome: actionResponse?.outcome, actionResponse, beforeQuota }); },
+        async recordEvidence(key, refreshedQuota) { entries.set(key, { ...entries.get(key)!, refreshedQuota }); },
         async complete(key, result) { entries.set(key, { ...entries.get(key)!, state: 'completed', result }); },
       };
       let read = 0;
@@ -667,6 +746,19 @@ describe('campaign scheduler admission and durable assignment lane', () => {
     expect(board.providers[0]).toMatchObject({ telemetryFresh: false, telemetryAgeMs: 5 * 60_000 });
   });
 
+  it('does not forecast expiring capacity from freshly fetched but stale provider observations', () => {
+    const now = Date.parse('2026-09-29T01:00:00Z');
+    const snapshot = quotaSnapshot(now, { resetCredits: [{ id: 'credit', resetType: 'codexRateLimits', expiresAt: new Date(now + HOUR).toISOString(), status: 'available' }] });
+    const old = new Date(now - 5 * 60_000).toISOString();
+    const provider = snapshot.providers[0]!;
+    const board = buildWorkboard({ nowMs: now, snapshot: { ...snapshot, fetchedAt: new Date(now).toISOString(), providers: [{
+      ...provider, observedAt: old, windows: provider.windows.map((window) => ({ ...window, observedAt: old })),
+    }] }, maxTelemetryAgeMs: 60_000, work: [{ id: 'expires-soon', provider: 'codex', runtimeMs: 30_000,
+      expectedUsageUnits: 1, expectedUsageUnit: 'work-units', confidence: 0.9, valid: true, frozen: false, assignmentIds: [] }] });
+    expect(board.providers[0]?.telemetryFresh).toBe(false);
+    expect(board.providers[0]?.forecasts[0]?.feasibleWorkIds).toEqual([]);
+  });
+
   it('keeps opaque native credit IDs out of the rendered workboard', () => {
     const now = Date.parse('2026-09-29T01:00:00Z');
     const snapshot = quotaSnapshot(now, { resetCredits: [{ id: 'opaque-secret-id', resetType: 'codexRateLimits', expiresAt: '2026-10-04T00:53:20.000Z', status: 'available' }] });
@@ -692,6 +784,7 @@ describe('campaign scheduler admission and durable assignment lane', () => {
     expect(retry?.assignmentId).toBe('left');
     await instance.markRunning('left', retry!.reservation!.id);
     await instance.complete('left', 'artifacts/left/stage/left:stage:1/attempt/left-attempt-2/manifest.json');
+    expect(store.assignments.get('left')).toMatchObject({ stageId: 'left:stage:1', attemptId: 'left-attempt-2', attemptIds: ['left:attempt:1', 'left-attempt-2'] });
     const right = await instance.admitNext();
     expect(right?.assignmentId).toBe('right');
     await instance.markRunning('right', right!.reservation!.id);
@@ -725,6 +818,94 @@ describe('campaign scheduler admission and durable assignment lane', () => {
     const restarted = scheduler({ now, snapshot: null, store, config });
     await restarted.instance.enqueue(assignment('diagnostic-two', { kind: 'validity', estimatedUsageUnits: null, estimatedUsageUnit: undefined, estimatedUsageConfidence: null }));
     expect(await restarted.instance.admitNext()).toBeNull();
+  });
+
+  it('shares one diagnostic reservation limit across concurrent scheduler instances and restarts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'campaign-scheduler-race-'));
+    try {
+      const now = Date.parse('2026-09-29T01:00:00Z');
+      const config = { maxConcurrentPerProvider: 2, reservationTtlMs: HOUR,
+        diagnostic: { maxAttempts: 1, maxEstimatedUnits: 0, usedAttempts: 0, usedEstimatedUnits: 0, allowUnknownUsage: true } };
+      const firstStore = new FileCampaignQueueStore(directory);
+      await firstStore.createAssignment(assignment('race-one', { kind: 'validity', estimatedUsageUnits: null, estimatedUsageUnit: undefined, estimatedUsageConfidence: null }));
+      await firstStore.appendEvent({ id: 'race-one-created', assignmentId: 'race-one', from: 'new', to: 'queued', at: new Date(now).toISOString(), reason: 'assignment-created' });
+      await firstStore.createAssignment(assignment('race-two', { kind: 'validity', estimatedUsageUnits: null, estimatedUsageUnit: undefined, estimatedUsageConfidence: null }));
+      await firstStore.appendEvent({ id: 'race-two-created', assignmentId: 'race-two', from: 'new', to: 'queued', at: new Date(now).toISOString(), reason: 'assignment-created' });
+      const make = () => new CampaignScheduler({ store: new FileCampaignQueueStore(directory), clock: new FakeClock(now),
+        quota: { async refresh() { return null; } }, config });
+      const [left, right] = await Promise.all([make().admitNext(), make().admitNext()]);
+      expect([left, right].filter(Boolean)).toHaveLength(1);
+      expect((await new FileCampaignQueueStore(directory).listAssignments()).filter((item) => item.state === 'reserved')).toHaveLength(1);
+      const afterRestart = make();
+      await afterRestart.enqueue(assignment('race-three', { kind: 'validity', estimatedUsageUnits: null, estimatedUsageUnit: undefined, estimatedUsageConfidence: null }));
+      expect(await afterRestart.admitNext()).toBeNull();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('captures quota time after refresh and denies then resumes across cooldown', async () => {
+    const start = Date.parse('2026-09-29T01:00:00Z');
+    const clock = new FakeClock(start);
+    let cooldown = true;
+    const instance = new CampaignScheduler({ store: new MemoryStore(), clock, config: { maxConcurrentPerProvider: 1, reservationTtlMs: HOUR }, quota: {
+      async refresh() {
+        clock.advance(1_000);
+        const snapshot = quotaSnapshot(clock.now());
+        if (cooldown) snapshot.providers[0]!.cooldownUntil = new Date(clock.now() + 2_000).toISOString();
+        return snapshot;
+      },
+    } });
+    await instance.enqueue(assignment('post-refresh-clock'));
+    expect(await instance.admitNext()).toBeNull();
+    cooldown = false;
+    expect(await instance.admitNext()).toMatchObject({ admitted: true, assignmentId: 'post-refresh-clock' });
+  });
+
+  it('rejects negative and non-finite usage estimates before reserving while retaining explicit zero', async () => {
+    const { instance } = scheduler({ now: Date.parse('2026-09-29T01:00:00Z'), snapshot: quotaSnapshot(Date.parse('2026-09-29T01:00:00Z')) });
+    for (const [id, estimate] of [['negative', -1], ['nan', Number.NaN], ['infinite', Number.POSITIVE_INFINITY]] as const) {
+      await expect(instance.enqueue(assignment(id, { estimatedUsageUnits: estimate }))).rejects.toThrow('finite nonnegative');
+    }
+    await expect(instance.enqueue(assignment('zero', { estimatedUsageUnits: 0 }))).resolves.toBeUndefined();
+  });
+
+  it('admits feasible remaining runway after preflight against the unchanged decision deadline', async () => {
+    const startedAt = Date.parse('2026-09-29T01:00:00Z');
+    const enqueuedAt = startedAt + 15_000;
+    const deadline = startedAt + 240_000;
+    const estimate = estimateFinalProfileAdmission({ startedAt, enqueuedAt, decisionDeadlineEpochMs: deadline, quotaRefreshReserveMs: 5_000 });
+    expect(estimate).toMatchObject({ estimatedRuntimeMs: 220_000, preflightElapsedMs: 15_000, decisionDeadlineAt: new Date(deadline).toISOString() });
+    const clock = new FakeClock(enqueuedAt);
+    const instance = new CampaignScheduler({ store: new MemoryStore(), clock, quota: { async refresh() { return quotaSnapshot(clock.now()); } },
+      config: { maxConcurrentPerProvider: 1, reservationTtlMs: 240_000, diagnostic: { maxAttempts: 1, maxEstimatedUnits: 0, usedAttempts: 0, usedEstimatedUnits: 0, allowUnknownUsage: true } } });
+    await instance.enqueue(assignment('remaining-runway', { estimatedRuntimeMs: estimate.estimatedRuntimeMs,
+      estimatedUsageUnits: null, estimatedUsageUnit: undefined, estimatedUsageConfidence: null,
+      deadlineAt: estimate.decisionDeadlineAt }));
+    expect(await instance.admitNext()).toMatchObject({ admitted: true, assignmentId: 'remaining-runway' });
+    const oldBudgetControl = new CampaignScheduler({ store: new MemoryStore(), clock: new FakeClock(enqueuedAt),
+      quota: { async refresh() { return quotaSnapshot(enqueuedAt); } },
+      config: { maxConcurrentPerProvider: 1, reservationTtlMs: 240_000, diagnostic: { maxAttempts: 1, maxEstimatedUnits: 0, usedAttempts: 0, usedEstimatedUnits: 0, allowUnknownUsage: true } } });
+    await oldBudgetControl.enqueue(assignment('old-full-budget', { estimatedRuntimeMs: 240_000, deadlineAt: estimate.decisionDeadlineAt,
+      estimatedUsageUnits: null, estimatedUsageUnit: undefined, estimatedUsageConfidence: null }));
+    expect(await oldBudgetControl.admitNext()).toBeNull();
+  });
+
+  it('keeps the authenticated quota factory as default and rejects an explicit null override', async () => {
+    let sessionClosed = false;
+    const source = resolveFinalProfileQuotaSource(undefined, () => createFinalProfileQuotaSource({
+      now: () => Date.parse('2026-09-29T01:00:00Z'),
+      appServerSessionFactory: async () => ({
+        async request() { return { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 10_080, resetsAt: 1_791_000_000 } }, rateLimitsByLimitId: {}, rateLimitResetCredits: { availableCount: 0, credits: [] } }; },
+        notify() {}, async close() { sessionClosed = true; },
+      }),
+      codexBarReader: { async read(provider) { return [{ provider, usage: { updatedAt: '2026-09-29T01:00:00.000Z', primary: { usedPercent: 15, windowMinutes: 10_080 } } }]; } },
+    }));
+    const observed = await source.refresh();
+    if (!observed) throw new Error('authenticated default quota source returned no snapshot');
+    expect(observed.providers.some((provider) => provider.provider === 'codex' && provider.telemetryAvailable)).toBe(true);
+    expect(sessionClosed).toBe(true);
+    expect(() => resolveFinalProfileQuotaSource(null, () => source)).toThrow('cannot be null');
   });
 
   it('durably admits one visible unknown-usage diagnostic per Codex, ZCode, and Pi route without capacity claims', async () => {

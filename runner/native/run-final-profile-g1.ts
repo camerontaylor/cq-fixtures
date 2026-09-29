@@ -53,10 +53,13 @@ const SOURCE_FILES = [
   'runner/native/process.ts', 'runner/native/conformance.ts', 'runner/native/workspace-conformance.ts',
   'runner/native/observation.ts',
   'runner/index.ts', 'schema/result-row.schema.json', 'schema/comparison-table.schema.json',
+  'schema/suite.schema.json',
   'runner/boundary/codex-final-profile.ts', 'runner/boundary/container.ts',
   'runner/boundary/container-prepare.ts', 'runner/boundary/task-session.ts',
   'runner/boundary/task-staging.ts', 'runner/campaign/final-profile-admission.ts',
   'runner/boundary/final-g1-runtime.mjs', 'runner/boundary/prepare-final-g1-runtime.mjs',
+  'runner/boundary/broker-public-assets/broker.mjs',
+  'runner/boundary/broker-public-assets/config.json',
   'runner/boundary/evidence/fallback/final-profile-public-inputs.json',
 ];
 

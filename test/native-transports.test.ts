@@ -183,6 +183,12 @@ describe('native transport event and identity handling', () => {
     const observation = driver.getObservation('pi')!;
     expect(result.structuredOutput).toEqual({ answer: 42 });
     expect(observation.model.configuredTarget).toBe('pi-opencode/opencode-go/space-bunny-free');
+    expect(observation.model.settings.launchedTarget).toMatchObject({
+      value: 'opencode-go/space-bunny-free', source: 'PiNativeDriver --model argument', status: 'configured',
+    });
+    expect(observation.model.settings.launchedProvider).toMatchObject({
+      value: 'opencode-go', source: 'PiNativeDriver --provider argument', status: 'configured',
+    });
     expect(observation.model.observed.value).toBeNull();
     expect(observation.model.requested).toMatchObject({ value: 'opencode-go/space-bunny-free', status: 'requested' });
     expect(readFileSync(observation.artifacts[0]!.path, 'utf8')).not.toContain(hidden);
@@ -213,9 +219,15 @@ describe('native transport event and identity handling', () => {
     expect(readFileSync(authStatusFile, 'utf8')).toBe('configured');
     expect(args).toContain('--no-approve');
     expect(args).not.toContain('--no-extensions');
-    expect(driver.getObservation('pi-auth')?.model.settings.extensions).toMatchObject({ status: 'unverified' });
-    expect(JSON.stringify(driver.getObservation('pi-auth'))).not.toContain(secret);
-    expect(readFileSync(driver.getObservation('pi-auth')!.artifacts[0]!.path, 'utf8')).not.toContain(secret);
+    const observation = driver.getObservation('pi-auth')!;
+    expect(args.slice(args.indexOf('--provider'), args.indexOf('--provider') + 2)).toEqual(['--provider', 'opencode-go']);
+    expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'opencode-go/space-bunny-free:high']);
+    expect(observation.model.settings.launchedTarget).toMatchObject({ value: 'opencode-go/space-bunny-free' });
+    expect(observation.model.settings.launchedProvider).toMatchObject({ value: 'opencode-go', status: 'configured' });
+    expect(observation.model.settings.requestedProvider).toMatchObject({ value: 'test-provider', source: 'OpInvocation.modelSpec' });
+    expect(observation.model.settings.extensions).toMatchObject({ status: 'unverified' });
+    expect(JSON.stringify(observation)).not.toContain(secret);
+    expect(readFileSync(observation.artifacts[0]!.path, 'utf8')).not.toContain(secret);
   }, 15_000);
 
   it('folds distinct Pi assistant responses once, preserves reported totals, and selects only the terminal answer', () => {
@@ -230,6 +242,35 @@ describe('native transport event and identity handling', () => {
     const parsed = parseJsonEventLines(raw, 'pi');
     expect(parsed.finalText).toBe('{"answer":true}');
     expect(parsed.usage).toMatchObject({ input: 16, output: 6, cacheRead: 7, tokenTotal: 29 });
+    const observation = unavailableObservation(identity('pi-complete-total'), 'pi-json', null);
+    applyUsageObservation(observation, parsed, 'pi-json-event');
+    expect(observation.usage.tokenTotal).toMatchObject({ value: 29, availability: 'observed', semantics: 'authoritative-total' });
+  });
+
+  it('keeps Pi aggregate tokenTotal unknown when any assistant response omits it', () => {
+    const first = { id: 'msg-total-present', role: 'assistant', stopReason: 'toolUse',
+      usage: { input: 10, output: 2, cacheRead: 5, totalTokens: 17 }, content: [] };
+    const second = { id: 'msg-total-missing', role: 'assistant', stopReason: 'stop',
+      usage: { input: 6, output: 4, cacheRead: 2 }, content: [] };
+    const raw = [
+      { type: 'message_end', message: first },
+      { type: 'agent_end', messages: [first] },
+      { type: 'message_end', message: second },
+      { type: 'agent_end', messages: [first, second] },
+    ].map((event) => JSON.stringify(event)).join('\n');
+
+    const parsed = parseJsonEventLines(raw, 'pi');
+    expect(parsed.usage).toMatchObject({ input: 16, output: 6, cacheRead: 7 });
+    expect(parsed.usage.tokenTotal).toBeUndefined();
+    expect(parsed.usage.cacheWrite).toBeUndefined();
+    expect(parsed.usage.reasoning).toBeUndefined();
+
+    const observation = unavailableObservation(identity('pi-mixed-total'), 'pi-json', null);
+    applyUsageObservation(observation, parsed, 'pi-json-event');
+    expect(observation.usage.tokenTotal).toMatchObject({ value: null, availability: 'unavailable', semantics: 'unknown' });
+    expect(observation.usage.counters.input).toMatchObject({ value: 16, availability: 'observed' });
+    expect(observation.usage.counters.cacheWrite).toMatchObject({ value: null, availability: 'unavailable' });
+    expect(observation.usage.counters.reasoning).toMatchObject({ value: null, availability: 'unavailable' });
   });
 
   it('uses Codex source total without adding cached-input subsets or inventing absent cache-write usage', () => {

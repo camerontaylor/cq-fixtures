@@ -70,7 +70,8 @@ export class PiNativeDriver extends ObservedNativeDriver {
   protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
     const observation = this.newObservation(identity, invocation, new Date().toISOString());
     observation.model.configuredTarget = 'pi-opencode/opencode-go/space-bunny-free';
-    observation.model.settings.launchedTarget = { value: `opencode-go/${this.model}`, source: 'PiNativeDriver configuration', status: 'configured' };
+    observation.model.settings.launchedTarget = { value: this.model, source: 'PiNativeDriver --model argument', status: 'configured' };
+    observation.model.settings.launchedProvider = { value: this.provider, source: 'PiNativeDriver --provider argument', status: 'configured' };
     observation.model.settings.effort = { value: this.thinking, source: 'Paseo pi-opencode profile', status: 'requested-unobservable' };
     observation.model.settings.session = { value: 'ephemeral', source: 'Pi --no-session', status: 'requested' };
     observation.model.settings.toolPolicy = { value: invocation.toolPolicy, source: 'Pi --tools/--no-tools', status: 'requested-unverified' };

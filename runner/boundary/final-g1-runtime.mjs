@@ -22,7 +22,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
   if (state.authRoot !== plan.privateAuthRoot || state.network !== plan.network || state.broker.containerId !== plan.brokerContainerId) throw new Error('private infrastructure plan changed');
   const pins = JSON.parse(readFileSync(join(root, 'runner/boundary/evidence/fallback/final-profile-public-inputs.json'), 'utf8'));
   const assignmentId = 'final-profile-g1-' + plan.runId, attemptId = assignmentId + '-attempt-1';
-  let used = false, expected;
+  let used = false, expected, prepareSettled = Promise.resolve(), settlePrepare;
   if (hash(JSON.stringify(plan)) !== privateJson(join(privateRoot, 'plan-hash.json')).sha256) throw new Error('private runtime plan changed');
   async function verifySources() {
     if (hash(readFileSync(plan.runtimeSource)) !== plan.runtimeSourceSha256 || hash(readFileSync(join(root, 'runner/boundary/evidence/fallback/final-profile-public-inputs.json'))) !== plan.publicInputsSha256) throw new Error('reviewed runtime/public inputs changed');
@@ -93,8 +93,8 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
       quotaSource: { refresh: async () => null },
       async prepareInvocation(context) {
         if (used || context.stage !== 'final-profile-G1' || context.identity.assignmentId !== assignmentId || context.identity.stageId !== assignmentId + '-stage-1' || context.identity.attemptId !== attemptId || context.signal.aborted || context.deadlineEpochMs <= Date.now()) throw new Error('unexpected or expired single G1 invocation');
-        used = true; let aborted = false; const started = Date.now();
-        const setupCutoff = Math.min(Date.now() + 45000, context.deadlineEpochMs - 185000);
+        used = true; prepareSettled = new Promise(resolve => { settlePrepare = resolve; }); let aborted = false; const started = Date.now();
+        const setupCutoff = Math.min(Date.now() + 45000, context.deadlineEpochMs - 5000);
         const timer = setTimeout(() => { aborted = true; }, Math.max(1, setupCutoff - Date.now()));
         const onAbort = () => { aborted = true; if (state.handedOff) void cleanup().catch(() => {}); };
         context.signal.addEventListener('abort', onAbort, { once: true });
@@ -128,10 +128,17 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
           await verifySources();
           if (aborted || context.signal.aborted || Date.now() >= setupCutoff || Date.now() - started >= 45000) throw new Error('late G1 preparation refused');
           state.handedOff = true; save(statePath, state);
-          const lease = setTimeout(() => { void cleanup().catch(() => {}); }, Math.max(1, context.deadlineEpochMs - Date.now())); lease.unref();
+          const lease = setTimeout(() => { void cleanup().catch(() => {}); }, Math.max(1, started + 240000 - Date.now())); lease.unref();
           return { specification, staging: receipt, broker: state.broker, hostTaskRoot: resolve(context.cwd), exportRoot: resolve(context.cwd) };
         } catch { await cleanup(); throw new Error('private G1 preparation unavailable; setup disposed or private recovery retained'); }
-        finally { clearTimeout(timer); }
+        finally { clearTimeout(timer); settlePrepare(); }
+      },
+      async cleanupInvocation(request) {
+        if (request.identity.assignmentId !== assignmentId || request.identity.attemptId !== attemptId) throw new Error('cleanup invocation identity mismatch');
+        await prepareSettled;
+        if (request.signal.aborted || Date.now() >= request.deadlineEpochMs) throw new Error('cleanup deadline elapsed; private recovery retained');
+        const proof = await cleanup();
+        return { status: 'stopped-and-reaped', resourceIds: [state.broker.containerId, state.network, plan.brokerAssetVolume, ...(state.stage ? [state.stage.taskVolume, state.stage.contextVolume] : [])], volumeDisposition: proof.recoveryRetained ? 'quarantined' : 'disposed' };
       },
       async approve(request) {
         try {

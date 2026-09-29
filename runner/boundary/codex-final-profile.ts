@@ -156,8 +156,8 @@ export function createFinalCodexSpawnAdapter(input: {
         const fresh = mkdtempSync(join(dirname(hostTaskRoot), '.cq-stopped-export-'));
         chmodSync(fresh, 0o700);
         const result = await session.finalize(fresh);
-        publishStoppedTask(staging, fresh, hostTaskRoot, { ...result, namespaceAbsent: true });
-        return result;
+        const publication = publishStoppedTask(staging, fresh, hostTaskRoot, { ...result, namespaceAbsent: true });
+        return { ...result, publication };
       }, cleanup: () => session.cleanup(), closeControl: session.closeControl,
     });
     return { child: launched.child, boundaryIdentity: launched.boundaryIdentity, launchIdentity: launched.launchIdentity, admissionId: receipt.admissionId,

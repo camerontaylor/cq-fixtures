@@ -16,6 +16,11 @@ export interface CodexExecOptions {
   profile?: string;
   effort?: string;
   model?: string;
+  /** Explicit S5-only sandbox policy, bound to one frozen final-profile assignment. */
+  finalProfileContainerPolicy?: {
+    profile: 'cq-subscription-http';
+    identity: Pick<InvocationIdentity, 'assignmentId' | 'stageId' | 'attemptId'>;
+  };
   artifactDirectory?: string;
   hardWallClockMs?: number;
   killGraceMs?: number;
@@ -36,6 +41,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
   private readonly killGraceMs: number;
   private readonly effort: string;
   private readonly model: string;
+  private readonly finalProfileContainerPolicy: CodexExecOptions['finalProfileContainerPolicy'];
   private readonly workspaceForInvocation: NonNullable<CodexExecOptions['workspaceForInvocation']>;
   private readonly boundaryForInvocation: CodexExecOptions['boundaryForInvocation'];
   private readonly spawnAdapter: NativeSpawnAdapter | undefined;
@@ -66,6 +72,16 @@ export class CodexExecDriver extends ObservedNativeDriver {
     this.spawnAdapter = options.spawnAdapter;
     this.spawnAdapterFactory = options.spawnAdapterFactory;
     this.invocationStage = options.invocationStage ?? 'visible-calibration-G1';
+    this.finalProfileContainerPolicy = options.finalProfileContainerPolicy === undefined ? undefined : {
+      profile: options.finalProfileContainerPolicy.profile,
+      identity: Object.freeze({ ...options.finalProfileContainerPolicy.identity }),
+    };
+    if (this.finalProfileContainerPolicy && (
+      this.invocationStage !== 'final-profile-G1' || model !== 'gpt-6-sol' || effort !== 'low' ||
+      resolveLaunchExecutable(executable) !== '/usr/local/bin/codex' || !options.spawnAdapterFactory || options.spawnAdapter || options.boundaryForInvocation
+    )) {
+      throw new Error('final-profile container sandbox policy requires the exact Sol/low Codex boundary factory');
+    }
     this.assignmentDeadlineEpochMs = options.assignmentDeadlineEpochMs;
     this.assignmentSignal = options.signal;
     this.expectedTaskBaselineCommit = options.expectedTaskBaselineCommit;
@@ -76,11 +92,20 @@ export class CodexExecDriver extends ObservedNativeDriver {
     const observation = this.newObservation(identity, invocation, startedAt);
     observation.model.settings.launchedTarget = { value: `codex/${this.model}`, source: 'CodexExecDriver configuration', status: 'configured' };
     observation.model.settings.effort = { value: this.effort, source: 'codex exec --config', status: 'requested-unobservable' };
-    observation.model.settings.sandbox = { value: invocation.sandboxPolicy.level, source: 'codex exec --sandbox', status: 'requested' };
     observation.model.settings.toolPolicy = { value: invocation.toolPolicy, source: 'OpInvocation.toolPolicy', status: 'not-enforced-by-codex-exec-flags' };
     observation.model.settings.extensions = { value: [], source: 'codex exec --ignore-user-config', status: 'user-config-disabled' };
     this.observations.set(identity.invocationId, observation);
     try {
+      const sandbox = this.sandboxForInvocation(invocation, identity);
+      if (this.finalProfileContainerPolicy) {
+        observation.model.settings.requestedSandbox = observation.model.settings.sandbox;
+        observation.model.settings.sandbox = {
+          value: sandbox, source: 'identity-bound final-profile S5 container policy',
+          status: 'effective-inside-unverified-boundary',
+        };
+      } else {
+        observation.model.settings.sandbox = { value: sandbox, source: 'codex exec --sandbox', status: 'requested' };
+      }
       this.assertRequestedModel(invocation, this.model);
       const session = await resolveNativeSession(invocation, this.workspaceForInvocation);
       const cwd = resolve(session.cwd);
@@ -89,7 +114,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
         source: 'runner SessionStore + codex exec --ephemeral', status: session.status,
       };
       const args = [
-        'exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', codexSandbox(invocation),
+        'exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', sandbox,
         '-C', cwd, '-m', this.model,
         '-c', `model_reasoning_effort=${JSON.stringify(this.effort)}`, '-',
       ];
@@ -138,6 +163,18 @@ export class CodexExecDriver extends ObservedNativeDriver {
       } else if (!observation.timing.endedAt) this.failObservation(observation, error);
       throw error;
     }
+  }
+
+  private sandboxForInvocation(invocation: OpInvocation, identity: InvocationIdentity): string {
+    const policy = this.finalProfileContainerPolicy;
+    if (!policy) return codexSandbox(invocation);
+    if (identity.assignmentId !== policy.identity.assignmentId || identity.stageId !== policy.identity.stageId ||
+        identity.attemptId !== policy.identity.attemptId || identity.assignmentId.length === 0 ||
+        invocation.modelSpec.model !== 'gpt-6-sol' || invocation.modelSpec.provider !== 'codex' ||
+        invocation.sandboxPolicy.level !== 'workspace-write') {
+      throw new Error('final-profile container sandbox policy does not match the frozen Codex invocation');
+    }
+    return 'danger-full-access';
   }
 }
 

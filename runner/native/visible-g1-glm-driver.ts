@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveNativeLaunchInventory } from './inventory.ts';
+import { readExecutableVersion } from './launch-inventory.ts';
 import { launchEvidenceStatus, type NativeLaunchEvidence } from './process.ts';
 import { assertOutsideGlmBlackout, ZcodeAcpDriver, type ZcodeAcpOptions } from './zcode.ts';
 import type { VisibleG1Route } from './run-visible-g1.ts';
@@ -31,6 +32,10 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
   }
 
   const executable = 'zcode-acp';
+  // Ask the configured launcher itself. The Paseo path may resolve to a mise
+  // shim whose own version is unrelated to the ZCode ACP application.
+  const version = readExecutableVersion(executable);
+  if (!version) throw new Error('configured ZCode ACP launcher did not report an exact CLI version');
   const launchEvidence: NativeLaunchEvidence = {
     boundaryIdentity: 'visible-only-unconfined',
     launchIdentity: createHash('sha256').update(JSON.stringify({ executable, args: ['server'], admissionId })).digest('hex'),
@@ -56,7 +61,7 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
   const driver = new ZcodeAcpDriver({
     executable,
     profile: profile.label,
-    version: null,
+    version,
     artifactDirectory: join(input.outputRoot, 'native-events'),
     hardWallClockMs: 120_000,
     spawn: spawnAcp,

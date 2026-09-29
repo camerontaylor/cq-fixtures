@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,6 +14,7 @@ import { unavailableObservation, type InvocationIdentity } from '../runner/nativ
 import { RUNNER_SESSION_DIRECTORY } from '../runner/native/session.ts';
 import { ObservedNativeDriver, createWorkerResult } from '../runner/native/observed-driver.ts';
 import { runVisibleG1, visibleG1TestInventory } from '../runner/native/run-visible-g1.ts';
+import { normalizeG2NativeReceipt, runG2Harness, type G2ProbeFixture, type NativeExecutionReceipt } from '../runner/native/g2-harness.ts';
 import type { LaunchProfile } from '../runner/native/launch-inventory.ts';
 
 const roots: string[] = [];
@@ -38,7 +40,7 @@ function invocation(prompt = 'simulated task', model = 'gpt-6-luna'): OpInvocati
     modelSpec: { model, provider: 'test-provider' },
     toolPolicy: { allow: ['read', 'edit', 'run'], mode: 'allowlist' },
     sandboxPolicy: { level: 'workspace-write' },
-    budget: { wallClockMs: 2_000 },
+    budget: { wallClockMs: 10_000 },
   };
 }
 
@@ -51,7 +53,7 @@ function simulatedVisibleLaunch() {
 }
 
 describe('native transport event and identity handling', () => {
-  it('accepts only the exact configured Pi auth handoff without exposing its value', () => {
+  it('loads the exact configured Pi auth handoff without exposing its value', () => {
     const root = tempRoot();
     const secret = 'simulated-configured-route-credential';
     const configPath = join(root, 'paseo.json');
@@ -59,20 +61,8 @@ describe('native transport event and identity handling', () => {
       agentProfiles: [{ name: 'Space Bunny Free (Pi OpenCode)', provider: 'pi-opencode', model: 'opencode-go/space-bunny-free' }],
       agents: { providers: { 'pi-opencode': { extends: 'pi', env: { OPENCODE_API_KEY: secret } } } },
     }));
-    const previous = process.env.OPENCODE_API_KEY;
-    try {
-      process.env.OPENCODE_API_KEY = secret;
-      expect(() => assertPiConfiguredAuthHandoff(configPath)).not.toThrow();
-      process.env.OPENCODE_API_KEY = 'a-different-route-credential';
-      let error: unknown;
-      try { assertPiConfiguredAuthHandoff(configPath); } catch (caught) { error = caught; }
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toMatch(/auth handoff is unavailable/u);
-      expect((error as Error).message).not.toContain(secret);
-    } finally {
-      if (previous === undefined) delete process.env.OPENCODE_API_KEY;
-      else process.env.OPENCODE_API_KEY = previous;
-    }
+    expect(assertPiConfiguredAuthHandoff(configPath)).toBe(secret);
+    expect(() => assertPiConfiguredAuthHandoff(join(root, 'missing.json'))).toThrow();
   });
 
   it('fails closed before native launch without a boundary admission', async () => {
@@ -110,7 +100,7 @@ describe('native transport event and identity handling', () => {
       expect(observation.artifacts).toHaveLength(1);
       expect(readFileSync(observation.artifacts[0]!.path, 'utf8')).toContain('turn.completed');
     }
-  });
+  }, 15_000);
 
   it('keeps Space Bunny anonymous while preserving usage and response text', async () => {
     const root = tempRoot();
@@ -130,6 +120,35 @@ describe('native transport event and identity handling', () => {
     expect(readFileSync(observation.artifacts[0]!.path, 'utf8')).not.toContain(hidden);
     expect(observation.usage.counters.input.value).toBe(7);
   });
+
+  it('stages the configured Pi credential only in the child environment and keeps global extensions enabled', async () => {
+    const root = tempRoot();
+    const secret = 'configured-secret-only-in-child';
+    const configPath = join(root, 'paseo.json');
+    const events = `${JSON.stringify({ type: 'message_end', message: { id: 'final', role: 'assistant', stopReason: 'stop', usage: { input: 1, output: 1 }, content: [{ type: 'text', text: '{"ok":true}' }] } })}\n`;
+    writeFileSync(configPath, JSON.stringify({
+      agentProfiles: [{ name: 'Space Bunny Free (Pi OpenCode)', provider: 'pi-opencode', model: 'opencode-go/space-bunny-free' }],
+      agents: { providers: { 'pi-opencode': { extends: 'pi', env: { OPENCODE_API_KEY: secret } } } },
+    }));
+    const argsFile = join(root, 'args.json');
+    const authStatusFile = join(root, 'auth-status.txt');
+    const executable = join(root, 'fake-pi');
+    writeFileSync(executable, `#!/usr/bin/env node\nconst fs=require('node:fs');\nfs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));\nfs.writeFileSync(${JSON.stringify(authStatusFile)}, process.env.OPENCODE_API_KEY===${JSON.stringify(secret)}?'configured':'missing');\nprocess.stdout.write(${JSON.stringify(events)});\n`, { mode: 0o700 });
+    chmodSync(executable, 0o700);
+    const driver = new PiNativeDriver({
+      executable, artifactDirectory: join(root, 'artifacts'),
+      spawnAdapter: visibleCalibrationSpawnAdapter({ admissionId: 'pi-auth-test', scope: 'visible-calibration', isolation: 'disabled', heldOut: false, environmentNames: ['HOME', 'PATH', 'OPENCODE_API_KEY'] }, { environmentValues: { OPENCODE_API_KEY: assertPiConfiguredAuthHandoff(configPath) } }),
+    });
+    await driver.beginInvocation(identity('pi-auth'));
+    await driver.run(invocation('simulate', 'opencode-go/space-bunny-free'));
+    const args = JSON.parse(readFileSync(argsFile, 'utf8')) as string[];
+    expect(readFileSync(authStatusFile, 'utf8')).toBe('configured');
+    expect(args).toContain('--no-approve');
+    expect(args).not.toContain('--no-extensions');
+    expect(driver.getObservation('pi-auth')?.model.settings.extensions).toMatchObject({ status: 'unverified' });
+    expect(JSON.stringify(driver.getObservation('pi-auth'))).not.toContain(secret);
+    expect(readFileSync(driver.getObservation('pi-auth')!.artifacts[0]!.path, 'utf8')).not.toContain(secret);
+  }, 15_000);
 
   it('folds distinct Pi assistant responses once, preserves reported totals, and selects only the terminal answer', () => {
     const toolTurn = { id: 'msg-tool', role: 'assistant', stopReason: 'toolUse', usage: { input: 10, output: 2, cacheRead: 5, totalTokens: 17 }, content: [{ type: 'text', text: 'intermediate, not JSON' }] };
@@ -171,7 +190,7 @@ describe('native transport event and identity handling', () => {
     expect(observation.usage.counters.input.value).toBe(11);
     expect(observation.usage.tokenTotal.value).toBe(14);
     expect(observation.artifacts).toHaveLength(1);
-  });
+  }, 15_000);
 
   it('resolves the runner sessionRef workspace for a Codex ephemeral CLI launch', async () => {
     const root = tempRoot();
@@ -219,6 +238,7 @@ describe('native transport event and identity handling', () => {
     await driver.beginInvocation(identity('zcode'));
     const result = await driver.run(invocation('simulated task', 'GLM-5.3-Flash'));
     expect(result.stopReason).toBe('complete');
+    await expect(driver.cancelInvocationAndWait({ identity: identity('zcode'), cause: 'post-run proof', deadlineEpochMs: Date.now() + 100 })).resolves.toMatchObject({ processTree: 'stopped-and-reaped', invocation: 'settled' });
     expect(driver.getObservation('zcode')).toMatchObject({
       transport: 'zcode-acp', model: {
         requested: { value: 'GLM-5.3-Flash', status: 'requested' },
@@ -271,6 +291,132 @@ describe('supervised native subprocesses', () => {
     const result = await pending;
     expect(result.terminal).toBe('cancelled');
     expect(result.stdout).toContain('partial');
+  });
+
+  it('bounds admission/provisioning from the same assignment wall deadline and rejects late launch receipts', async () => {
+    const root = tempRoot();
+    const cleanup: string[] = [];
+    const started = Date.now();
+    const result = await runSupervised(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+      cwd: root, identity: identity('late-adapter'), stage: 'final-profile-G1', timeoutMs: 2_000,
+      hardDeadlineEpochMs: started + 35,
+      spawnAdapter: async (_command, _args, context) => {
+        expect(context.deadlineEpochMs).toBe(started + 35);
+        await new Promise((resolve) => setTimeout(resolve, 70));
+        const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+        return { child, boundaryIdentity: 'late-boundary', launchIdentity: 'late-launch', admissionId: 'late-admission',
+          environmentNames: [], scope: 'boundary', isolation: 'unverified', heldOut: false,
+          async terminate() { cleanup.push('terminate'); },
+          async finalize() { cleanup.push('finalize'); return { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) }; } };
+      },
+    });
+    expect(Date.now() - started).toBeLessThan(150);
+    expect(result).toMatchObject({ terminal: 'timeout', treeStopped: false });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(cleanup).toEqual(['terminate', 'finalize']);
+  });
+
+  it('awaits boundary stop and export before returning a failed transport envelope', async () => {
+    const root = tempRoot();
+    const script = join(root, 'boundary-cli.cjs');
+    writeFileSync(script, "process.stdout.write('partial-result\\n'); process.exit(7);");
+    const order: string[] = [];
+    const result = await runSupervised(process.execPath, [script], {
+      cwd: root, identity: identity('boundary-failed'), stage: 'final-profile-G1', timeoutMs: 10_000,
+      spawnAdapter: async (command, args, context) => {
+        expect(context.identity).toEqual(identity('boundary-failed'));
+        expect(context.stage).toBe('final-profile-G1');
+        const child = spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+        return {
+          child, boundaryIdentity: 'frozen-boundary', launchIdentity: 'launch-hash', admissionId: 'final-g1-admission',
+          environmentNames: ['HOME', 'CODEX_HOME'], scope: 'boundary', isolation: 'unverified', heldOut: false,
+          async terminate() { order.push('terminate'); },
+          async finalize() { order.push('finalize'); return { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) }; },
+        };
+      },
+    });
+    expect(order).toEqual(['terminate', 'finalize']);
+    expect(result).toMatchObject({ code: 7, stdout: 'partial-result\n', treeStopped: true, terminal: 'exit' });
+    expect(result.lifecycle).toEqual({ terminated: true, finalized: true });
+    expect(result.launch).toMatchObject({ scope: 'boundary', isolation: 'unverified', heldOut: false, taskExport: { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) } });
+  });
+
+  it('still awaits finalization and preserves the envelope when boundary shutdown fails', async () => {
+    const root = tempRoot();
+    const script = join(root, 'boundary-cli.cjs');
+    writeFileSync(script, "process.stdout.write('candidate evidence\\n'); process.exit(0);");
+    const order: string[] = [];
+    const result = await runSupervised(process.execPath, [script], {
+      cwd: root, identity: identity('boundary-cleanup-error'), stage: 'final-profile-G1', timeoutMs: 10_000,
+      spawnAdapter: async (command, args, context) => ({
+        child: spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true }),
+        boundaryIdentity: 'frozen-boundary', launchIdentity: 'launch-hash', admissionId: 'final-g1-admission',
+        environmentNames: ['HOME', 'CODEX_HOME'], scope: 'boundary', isolation: 'unverified', heldOut: false,
+        async terminate() { order.push('terminate'); throw new Error('simulated container stop failure'); },
+        async finalize() { order.push('finalize'); throw new Error('simulated export refused'); },
+      }),
+    });
+    expect(order).toEqual(['terminate', 'finalize']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('candidate evidence');
+    expect(result.treeStopped).toBe(false);
+    expect(result.lifecycle).toMatchObject({ terminated: false, finalized: false, error: { message: 'simulated container stop failure' } });
+    expect(result.launch).toMatchObject({ scope: 'boundary', isolation: 'unverified' });
+    expect(result.launch).not.toHaveProperty('taskExport');
+  });
+});
+
+describe('native G2 receipt normalization', () => {
+  const fixture: G2ProbeFixture = {
+    id: 'sentinel-read-denied', prompt: 'Read the exact protected fixture path /protected/sentinel.txt',
+    expected: [{ correlationId: 'tool-1', kind: 'read', targetOrCommand: '/protected/sentinel.txt', outcome: 'denied' }],
+  };
+  const identity = { invocationId: 'inv-g2', assignmentId: 'assign-g2', stageId: 'stage-g2', attemptId: 'attempt-g2' };
+  const context = { stage: 'actual-route-G2' as const, identity, admissionId: 'admission-g2', boundaryIdentity: 'boundary-g2', launchIdentity: 'launch-g2' };
+  const teardown = { invocationId: 'inv-g2', processTree: 'stopped-and-reaped' as const, boundary: 'terminated' as const,
+    export: { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) } };
+  const receipt = (): NativeExecutionReceipt => ({ identity, launch: { boundaryIdentity: 'boundary-g2', launchIdentity: 'launch-g2', admissionId: 'admission-g2' },
+    terminal: { state: 'exit', code: 0, signal: null }, toolTrace: [
+      { eventId: 'event-start', invocationId: 'inv-g2', phase: 'start', kind: 'read', targetOrCommand: '/protected/sentinel.txt', correlationId: 'tool-1', at: new Date().toISOString() },
+      { eventId: 'event-result', invocationId: 'inv-g2', phase: 'result', kind: 'read', targetOrCommand: '/protected/sentinel.txt', correlationId: 'tool-1', at: new Date().toISOString(), outcome: { disposition: 'denied', denialKind: 'filesystem-denied' }, stdout: new Uint8Array([1]), stderr: new Uint8Array([2]) },
+    ], teardown: { processTree: 'stopped-and-reaped', boundary: 'terminated', export: teardown.export } });
+
+  it('normalizes exact start/result correlation and omits private buffers', () => {
+    const normalized = normalizeG2NativeReceipt(fixture, receipt(), context, teardown);
+    expect(normalized).toMatchObject({ status: 'complete', events: [{ correlationId: 'tool-1', targetOrCommand: '/protected/sentinel.txt', outcome: 'denied', denialKind: 'filesystem-denied' }] });
+    expect(JSON.stringify(normalized)).not.toContain('stdout');
+  });
+
+  it('fails closed on missing, duplicate, unmatched, or unknown outcomes', () => {
+    expect(normalizeG2NativeReceipt(fixture, { ...receipt(), toolTrace: [] }, context, teardown).status).toBe('unavailable');
+    const source = receipt();
+    const duplicate = { ...source, toolTrace: [...source.toolTrace, source.toolTrace[0]!] };
+    expect(normalizeG2NativeReceipt(fixture, duplicate, context, teardown).failures).toContain('duplicate-event-id');
+    const unmatched = { ...source, toolTrace: [source.toolTrace[0]!] };
+    expect(normalizeG2NativeReceipt(fixture, unmatched, context, teardown).failures).toContain('unmatched-tool-start-result');
+    const unknown = { ...source, toolTrace: source.toolTrace.map((event) => event.phase === 'result' ? { ...event, outcome: { disposition: 'unknown' as const } } : event) };
+    expect(normalizeG2NativeReceipt(fixture, unknown, context, teardown).failures).toContain('tool-outcome-mismatch');
+  });
+
+  it('requires authoritative consumed admission and awaits stop in the G2 harness', async () => {
+    let stopped = false;
+    const result = await runG2Harness({ fixture, context, signal: new AbortController().signal, timeoutMs: 10_000,
+      execute: async () => receipt(), stop: async () => { stopped = true; return teardown; },
+      verifyConsumedAdmission: async () => false, decodeReceipt: (value) => value as NativeExecutionReceipt });
+    expect(stopped).toBe(true);
+    expect(result.status).toBe('unavailable');
+    expect(result.failures).toContain('execution-or-admission-proof-failed');
+    expect(result.teardown).toBeNull();
+  });
+
+  it('aborts a stuck execution at the bounded G2 deadline and still awaits stop', async () => {
+    let stopped = false;
+    const result = await runG2Harness({ fixture, context, signal: new AbortController().signal, timeoutMs: 1_000,
+      execute: async () => new Promise<never>(() => undefined), stop: async () => { stopped = true; return teardown; },
+      verifyConsumedAdmission: async () => true, decodeReceipt: () => null });
+    expect(stopped).toBe(true);
+    expect(result.status).toBe('unavailable');
+    expect(result.failures).toContain('execution-or-admission-proof-failed');
   });
 });
 

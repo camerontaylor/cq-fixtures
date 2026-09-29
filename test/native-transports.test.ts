@@ -214,6 +214,36 @@ describe('native transport event and identity handling', () => {
     expect(observation.artifacts).toHaveLength(1);
   }, 15_000);
 
+  it('persists model-timeout and boundary teardown outcomes without creating capture evidence', async () => {
+    const root = tempRoot();
+    const executable = join(root, 'codex-hangs');
+    writeFileSync(executable, '#!/usr/bin/env node\nprocess.stdout.write("partial\\n"); setInterval(()=>{},1000);\n', { mode: 0o700 });
+    chmodSync(executable, 0o700);
+    const driver = new CodexExecDriver({
+      executable, hardWallClockMs: 1_000, artifactDirectory: join(root, 'artifacts'),
+      assignmentDeadlineEpochMs: Date.now() + 15_000,
+      spawnAdapter: async (command, args, context) => ({
+        child: spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' }),
+        boundaryIdentity: 'timeout-boundary', launchIdentity: 'timeout-launch', admissionId: 'timeout-admission',
+        environmentNames: [], scope: 'boundary', isolation: 'unverified', heldOut: false,
+        async terminate() { await new Promise((resolve) => setTimeout(resolve, 25)); throw new Error('synthetic stop failure'); },
+        async finalize() { throw new Error('synthetic export refused'); },
+      }),
+    });
+    await driver.beginInvocation(identity('timeout-boundary'));
+    await expect(driver.run(invocation())).rejects.toThrow(/process tree stop could not be proven/u);
+    const observation = driver.getObservation('timeout-boundary')!;
+    const evidence = observation.artifacts.find((artifact) => artifact.kind === 'supervisor-lifecycle');
+    expect(evidence).toBeDefined();
+    const saved = JSON.parse(readFileSync(evidence!.path, 'utf8')) as Record<string, unknown>;
+    expect(saved).toMatchObject({ terminal: 'timeout', processTreeStopped: false,
+      boundaryTermination: 'unproven', boundaryExport: 'unproven', exportReceiptPresent: false });
+    expect(observation.model.settings.processTree).toMatchObject({ value: false, status: 'stop-unproven-capture-forbidden' });
+    expect(observation.capture.status).toBe('pending-runner-capture');
+    expect(observation.usage.tokenTotal.value).toBeNull();
+    expect(JSON.stringify(saved)).not.toContain('synthetic stop failure');
+  }, 15_000);
+
   it('resolves the runner sessionRef workspace for a Codex ephemeral CLI launch', async () => {
     const root = tempRoot();
     const store = new SessionStore(RUNNER_SESSION_DIRECTORY);
@@ -687,6 +717,42 @@ describe('supervised native subprocesses', () => {
     expect(result.lifecycle).toMatchObject({ terminated: false, finalized: false, error: { message: 'simulated container stop failure' } });
     expect(result.launch).toMatchObject({ scope: 'boundary', isolation: 'unverified' });
     expect(result.launch).not.toHaveProperty('taskExport');
+  });
+
+  it('keeps model timeout separate from delayed boundary stop and export failure', async () => {
+    const root = tempRoot();
+    const script = join(root, 'timed-boundary-cli.cjs');
+    writeFileSync(script, "process.stdout.write('partial model output\\n'); setInterval(()=>{},1000);");
+    const order: string[] = [];
+    const startedAt = Date.now();
+    const result = await runSupervised(process.execPath, [script], {
+      cwd: root, identity: identity('timed-boundary-cleanup'), stage: 'final-profile-G1', timeoutMs: 1_000,
+      hardDeadlineEpochMs: startedAt + 6_000,
+      spawnAdapter: async (command, args, context) => ({
+        child: spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true }),
+        boundaryIdentity: 'frozen-boundary', launchIdentity: 'launch-hash', admissionId: 'final-g1-admission',
+        environmentNames: ['HOME', 'CODEX_HOME'], scope: 'boundary', isolation: 'unverified', heldOut: false,
+        async terminate() {
+          order.push('terminate-start');
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          order.push('terminate-failed');
+          throw new Error('simulated bounded namespace stop failure');
+        },
+        async finalize() { order.push('finalize'); throw new Error('export refused after stop failure'); },
+      }),
+    });
+
+    expect(order).toEqual(['terminate-start', 'terminate-failed', 'finalize']);
+    expect(result.terminal).toBe('timeout');
+    expect(result.code).toBeNull();
+    expect(result.stdout).toContain('partial model output');
+    expect(result.treeStopped).toBe(false);
+    expect(result.lifecycle).toMatchObject({
+      terminated: false, finalized: false,
+      error: { message: 'simulated bounded namespace stop failure' },
+    });
+    expect(result.launch).not.toHaveProperty('taskExport');
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
   });
 });
 

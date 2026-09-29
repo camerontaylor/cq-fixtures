@@ -1,11 +1,13 @@
-import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import { currentJobContext } from '@camerontaylor/cq-toolkit';
-import type { InvocationIdentity } from './observation.ts';
+import type { InvocationIdentity, NativeObservation } from './observation.ts';
 import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
 import { applyUsageObservation, parseJsonEventLines, toStructuredOutput } from './events.ts';
 import { ObservedNativeDriver, createWorkerResult, usageProjection, type NativeDriverOptions } from './observed-driver.ts';
-import { launchEvidenceStatus, runSupervised, type NativeInvocationStage, type NativeSpawnAdapterFactory } from './process.ts';
+import { launchEvidenceStatus, runSupervised, type NativeInvocationStage, type NativeSpawnAdapterFactory, type SupervisedProcessResult } from './process.ts';
 import { resolveNativeSession } from './session.ts';
 import type { BoundaryLaunch } from '../boundary/spawn.ts';
 import type { NativeSpawnAdapter } from './process.ts';
@@ -130,6 +132,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
         ...(this.spawnAdapterFactory ? { spawnAdapterFactory: this.spawnAdapterFactory } : {}),
         ...(this.expectedTaskBaselineCommit ? { expectedTaskBaselineCommit: this.expectedTaskBaselineCommit() } : {}),
       });
+      this.persistSupervisorLifecycle(observation, result);
       this.reportProcessTree(identity, result.treeStopped);
       if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };
       observation.model.settings.processTree = { value: result.treeStopped, source: 'native process-group stop proof', status: result.treeStopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden' };
@@ -163,6 +166,27 @@ export class CodexExecDriver extends ObservedNativeDriver {
       } else if (!observation.timing.endedAt) this.failObservation(observation, error);
       throw error;
     }
+  }
+
+  private persistSupervisorLifecycle(observation: NativeObservation, result: SupervisedProcessResult): void {
+    const lifecycle = result.lifecycle;
+    const evidence = {
+      schemaVersion: 1,
+      terminal: result.terminal,
+      startedAt: result.startedAt,
+      endedAt: result.endedAt,
+      processTreeStopped: result.treeStopped,
+      boundaryTermination: lifecycle ? (lifecycle.terminated ? 'proven' : 'unproven') : 'not-applicable-or-unavailable',
+      boundaryExport: lifecycle ? (lifecycle.finalized ? 'proven' : 'unproven') : 'not-applicable-or-unavailable',
+      assignmentDeadlineCrossed: this.assignmentDeadlineEpochMs === undefined
+        ? null : Date.parse(result.endedAt) > this.assignmentDeadlineEpochMs,
+      exportReceiptPresent: result.launch?.taskExport !== undefined,
+    };
+    const text = `${JSON.stringify(evidence, null, 2)}\n`;
+    const path = join(this.artifactDirectory, observation.identity.invocationId, 'supervisor-lifecycle.json');
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, text, { flag: 'wx', mode: 0o600 });
+    observation.artifacts.push({ kind: 'supervisor-lifecycle', path, sha256: createHash('sha256').update(text).digest('hex') });
   }
 
   private sandboxForInvocation(invocation: OpInvocation, identity: InvocationIdentity): string {

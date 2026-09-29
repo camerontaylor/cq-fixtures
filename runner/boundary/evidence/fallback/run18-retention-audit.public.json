@@ -1,0 +1,24 @@
+{
+  "runId": "cq-s5-final-20260929-18",
+  "fullCandidateAvailable": false,
+  "taskVolumeAvailable": false,
+  "contextVolumeAvailable": false,
+  "publishedHostAvailable": false,
+  "originalBackupInventoryHash": "6c3bf64b1f024df974e2414dc9e0b7a1e750bbb73c24789c496f2720cb79b8a1",
+  "publicationManifestSha256": "37fc07c86342a1636d9300bb823f300c4f54219668e312ac4da62da8f2f72d2d",
+  "survivingArtifacts": [
+    {
+      "kind": "candidate.patch",
+      "sha256": "5fa4f53dc637867ac8783c86b81e0ca044d48aa5a88626fab8f94d02c6578f32",
+      "bytes": 402
+    },
+    {
+      "kind": "judgement",
+      "sha256": "c1bc4feaae1232bcc80eee434ac383890ec9ffad5cc574dbdeccfc31a0569649",
+      "bytes": 1913
+    }
+  ],
+  "nativeExportQualified": false,
+  "retroactiveProof": false,
+  "originalBackupManifestSha256": "762691aa02b4f76f8e24acc632272e00e1c5222dc2c8d74b8591ae5cac70502c"
+}

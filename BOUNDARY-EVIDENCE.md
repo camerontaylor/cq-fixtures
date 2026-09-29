@@ -399,3 +399,41 @@ no production policy relaxation. Final results: **3 passed / 49 skipped**, 12.91
 `git diff --check` passed. Sanitized before/after ordering artifact:
 `runner/boundary/evidence/fallback/runtime-abort-synthetic.json`.
 The full suite was not rerun; historical full-suite timeouts remain unchanged.
+
+### Post-publication recovery retention (run18 follow-up)
+
+The final-profile adapter now closes its private Docker control without deleting
+staged task/context volumes. Boundary publication precedes native receipt validation;
+it does not authorize recovery disposal. Explicit runtime cleanup verifies both
+volumes' staging labels and absence of attached containers before reporting
+`stopped-and-reaped` with `volumeDisposition: quarantined`. Missing retained volumes
+fail closed and record `recoveryRetained: false`; a successful publication alone
+never makes that state true. Invocation cleanup is memoized, including failures.
+
+After handoff, `cleanup({removeRecovery:true, dispositionReceiptPath})` additionally
+requires a parent-owned private 0600 JSON disposition receipt containing `approved:
+true`, exact `runId`, `taskVolume`, `contextVolume`, `stagingReceiptHash`, and a
+64-hex `candidateAuditSha256`. The parent must independently verify and pin its
+candidate audit before issuing this disposal receipt. Runtime cleanup does not
+remove publication backups, candidate exports, or event records. No disposition
+receipt has been issued by this lane for runs16–18.
+
+Runnable no-auth/no-model regression:
+`CQ_BOUNDARY_SYNTHETIC_DAEMON=1 npx vitest run test/boundary-campaign.test.ts -t 'actual factory native recovery retention'`.
+The companion `runner/boundary/probe-recovery-retention.mjs` uses the actual private
+preparer, dedicated pinned nonprivileged network-none worker, session and native
+supervisor from the trusted sibling integration checkout. Broker/auth declarations
+and the child are synthetic. Cases cover accepted publication, rejected baseline,
+and rejected export; after host workspace disposal each independently exports the
+retained stopped volume and checks repaired file bytes. They verify namespace
+absence, closed control, memoized quarantine proof and refusal of unaudited disposal.
+No model, endpoint, subscription auth, or prior recovery is used.
+
+Run18's surviving patch, judgement and original-backup manifest hashes are pinned
+in `runner/boundary/evidence/fallback/run18-retention-audit.public.json`. Its full
+candidate, task/context volumes and published host workspace are unavailable.
+The surviving patch and judgement do not reconstruct or qualify the full candidate.
+The original async baseline error was not persisted in its lifecycle artifact;
+the source timing defect is separately reproducible, not retroactive stop/export
+proof. Resource lifetime remains unsupported beyond the bounded decision/cleanup
+contract. G2 remains pending.

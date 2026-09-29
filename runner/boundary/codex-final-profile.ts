@@ -166,7 +166,9 @@ export function createFinalCodexSpawnAdapter(input: {
         const publication = publishStoppedTask(staging, fresh, hostTaskRoot, { ...result, namespaceAbsent: true });
         note('publication-done');
         return { ...result, publication };
-      }, cleanup: () => session.cleanup(), closeControl: session.closeControl, record: note,
+      }, // Publication is not native acceptance. Only the explicit parent runtime may
+      // dispose recovery volumes after an independently verified candidate audit.
+      cleanup: async () => {}, closeControl: session.closeControl, record: note,
     });
     return { child: launched.child, boundaryIdentity: launched.boundaryIdentity, launchIdentity: launched.launchIdentity, admissionId: receipt.admissionId,
       environmentNames: ['HOME', 'CODEX_HOME', 'PATH', 'TMPDIR', 'LANG', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL'],

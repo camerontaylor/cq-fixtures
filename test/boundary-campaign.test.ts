@@ -712,3 +712,16 @@ describe.skipIf(process.env.CQ_BOUNDARY_SYNTHETIC_DAEMON !== '1')('actual privat
     }
   }, 95000);
 });
+
+describe.skipIf(process.env.CQ_BOUNDARY_SYNTHETIC_DAEMON !== '1')('actual factory native recovery retention', () => {
+  it.each(['accepted', 'rejected-baseline', 'rejected-export'])('retains full stopped candidate after %s and host disposal', async mode => {
+    const { fileURLToPath } = await import('node:url');
+    const probe = fileURLToPath(new URL('../runner/boundary/probe-recovery-retention.mjs', import.meta.url));
+    const child = spawnSync(process.execPath, ['--experimental-transform-types', probe, mode], { encoding: 'utf8', timeout: 90000, maxBuffer: 1024 * 1024 });
+    expect(child.status).toBe(0);
+    const proof = JSON.parse(child.stdout);
+    expect(proof).toMatchObject({ fullCandidateSurvives: true, namespaceAbsent: true, controlClosed: true, hostWorkspaceAbsent: true, missingRecoveryFailsClosed: true, unauditedDispositionRefused: true, cleanupStatus: 'stopped-and-reaped', volumeDisposition: 'quarantined', memoizedSameProof: true, modelCalls: 0, actualRouteQualified: false });
+    expect(mode === 'accepted' ? proof.nativeAccepted : proof.nativeRejected).toBe(true);
+    expect(proof.retainedInventoryHash).toMatch(/^[a-f0-9]{64}$/);
+  }, 95000);
+});

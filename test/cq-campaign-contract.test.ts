@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
-import { afterEach, describe, expect, it } from 'vitest';
+import { openRunLog, type Driver, type OpInvocation, type WorkerResult } from '@camerontaylor/cq-toolkit';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactStore, sha256 } from '../runner/artifacts/index.ts';
 import { nativeGovernorUsage } from '../runner/budget.ts';
 import { experimentId, suiteTaskId, type ExperimentContext, type TaskOutcome, type TaskOutcomeJudgement } from '../runner/experiment.ts';
@@ -14,7 +14,7 @@ import { regradeCampaignCandidate } from '../runner/regrade.ts';
 import { mapPipelineCampaignEvidence, type PipelineStageLedger, type PipelineStrategyLedger } from '../runner/pipelineMapping.ts';
 
 let root = '';
-afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); if (root) rmSync(root, { recursive: true, force: true }); });
 
 function fixtureObservation(identity: InvocationIdentity, workerResult: WorkerResult | null = null): NativeObservation {
   const counter = (semantics: 'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'reasoning') => ({
@@ -135,13 +135,13 @@ describe('campaign envelope', () => {
     });
   });
 
-  it.each(['valid-json', 'format-miss', 'transport-failure'] as const)(
+  it.each(['valid-json', 'format-miss', 'transport-failure', 'valid-empty'] as const)(
     'independently grades the same correct edit with %s', async (mode) => {
       root = mkdtempSync(join(tmpdir(), 'cq-correctness-format-'));
       mkdirSync(join(root, 'policy', 'denylist'), { recursive: true });
       writeFileSync(join(root, 'policy', 'denylist', 'patterns.yml'), readFileSync(new URL('../policy/denylist/patterns.yml', import.meta.url)));
       mkdirSync(join(root, 'fixture'));
-      writeFileSync(join(root, 'fixture', 'fix.txt'), 'broken\n');
+      writeFileSync(join(root, 'fixture', 'fix.txt'), mode === 'valid-empty' ? 'fixed\n' : 'broken\n');
       const checkPath = join(root, 'fixture', 'check.mjs');
       writeFileSync(checkPath, "import { readFileSync } from 'node:fs'; process.exit(readFileSync('fix.txt', 'utf8') === 'fixed\\n' ? 0 : 1);\n");
       const suiteDir = join(root, 'suite');
@@ -159,7 +159,7 @@ describe('campaign envelope', () => {
           return {
             usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, denials: [],
             stopReason: mode === 'format-miss' ? 'error' : 'complete',
-            ...(mode === 'valid-json' ? { structuredOutput: { fixed: true, notes: 'fixed' } }
+            ...((mode === 'valid-json' || mode === 'valid-empty') ? { structuredOutput: { fixed: true, notes: 'fixed' } }
               : { error: 'ai-sdk driver: [structured-output-miss] missing JSON' }),
           };
         },
@@ -170,10 +170,11 @@ describe('campaign envelope', () => {
         artifactRoot: join(root, 'artifacts'), experiment: context });
       const row = result.rows[0]!;
       expect(row.outcomes).toMatchObject({ candidateCorrectness: true, assignedStrategySuccess: true,
-        formatConformance: mode === 'valid-json', operationalStatus: mode === 'transport-failure' ? 'measured-transport-failure' : 'complete' });
+        formatConformance: (mode === 'valid-json' || mode === 'valid-empty'), operationalStatus: mode === 'transport-failure' ? 'measured-transport-failure' : 'complete' });
       expect(row.taskOutcome?.judgements[0]?.candidateCorrectness).toBe(true);
+      if (mode === 'valid-empty') expect(row.taskOutcome?.judgements[0]?.candidateSha256).toBe(sha256(''));
       expect(result.tables[0]?.cells[0]?.conditionalCorrectness).toBe(1);
-      expect(row.outcome.score).toBe(mode === 'valid-json' ? 1 : 0.5);
+      expect(row.outcome.score).toBe((mode === 'valid-json' || mode === 'valid-empty') ? 1 : 0.5);
     }, 20_000,
   );
 
@@ -425,7 +426,7 @@ describe('campaign envelope', () => {
     })).toThrow(/hash mismatch/);
   });
 
-  it('runSuite retrieves the envelope by explicit identity and grades edits after a thrown transport', async () => {
+  it.each([false, true])('runSuite retrieves the envelope and finalizes thrown transport with judgement write failure %s', async (failJudgement) => {
     root = mkdtempSync(join(tmpdir(), 'cq-native-run-'));
     mkdirSync(join(root, 'policy', 'denylist'), { recursive: true });
     writeFileSync(join(root, 'policy', 'denylist', 'patterns.yml'), readFileSync(new URL('../policy/denylist/patterns.yml', import.meta.url)));
@@ -449,9 +450,10 @@ describe('campaign envelope', () => {
       suiteDir, driver, model: 'gpt-6-luna', provider: 'openai', driverName: 'codex-exec',
       repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: runExperiment, maxTokens: 1,
     })).rejects.toThrow(/hard token cap unsupported/);
+    if (failJudgement) vi.spyOn(ArtifactStore.prototype, 'writeJudgement').mockImplementation(() => { throw new Error('injected judgement artifact write failure'); });
     const result = await runSuite({
       suiteDir, driver, model: 'gpt-6-luna', provider: 'openai',
-      driverName: 'codex-exec', repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: runExperiment,
+      driverName: 'codex-exec', repoRoot: root, artifactRoot: join(root, 'artifacts'), experiment: runExperiment, journalPath: join(root, 'journal'),
       hostCheckScoringEnvironment: (_workspace, pinnedBaselineCommit) => ({
         CQ_REVIEW_LOOP_BASELINE_SHA: pinnedBaselineCommit,
         CQ_REVIEW_LOOP_ORACLE_PIN: 'a'.repeat(64),
@@ -472,6 +474,21 @@ describe('campaign envelope', () => {
     expect(result.gatedByBudget).toBe(false);
     expect(result.observations).toHaveLength(1);
     expect(result.observations[0]?.observation.terminal.transportException?.message).toContain('transport broke');
+    if (failJudgement) {
+      expect(result.judgements).toEqual([]);
+      expect(result.taskOutcomes).toHaveLength(1);
+      expect(result.taskOutcomes[0]?.outcome.judgements).toEqual([]);
+      expect(result.rows[0]?.taskOutcome?.judgements).toEqual([]);
+      expect(result.diagnostics.join('\n')).toContain('judgement persistence failed: injected judgement artifact write failure');
+      const log = openRunLog(join(root, 'journal'));
+      const events = await log.read(result.runId);
+      expect(events.some(event => event.type === 'job-finished')).toBe(true);
+      expect(events.some(event => event.type === 'run-finished')).toBe(true);
+      const terminal = events.find(event => event.type === 'job-finished');
+      expect(JSON.stringify(terminal)).toContain('transport broke');
+      expect(JSON.stringify(terminal)).not.toContain('injected judgement');
+      return;
+    }
     expect(result.judgements).toHaveLength(1);
     expect(result.tables).toHaveLength(1);
     expect(result.rows[0]?.experiment?.substrateId).toBe('repair-task-44');

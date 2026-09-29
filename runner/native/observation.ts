@@ -20,6 +20,25 @@ export interface LaunchEvidence {
   observedAt: string;
 }
 
+export interface NativeLifecycleEvidenceRef {
+  kind: string;
+  path: string;
+  sha256: string;
+}
+
+/** Structural lifecycle seam consumed by workspace-conformance without a runtime dependency. */
+export interface NativeLifecycleEvidence {
+  identity: InvocationIdentity;
+  process: {
+    status: 'stopped' | 'not-started' | 'running' | 'unknown';
+    evidence: NativeLifecycleEvidenceRef | null;
+  };
+  settlement: {
+    status: 'settled' | 'unsettled' | 'unknown';
+    evidence: NativeLifecycleEvidenceRef | null;
+  };
+}
+
 export interface CounterObservation {
   value: number | null;
   availability: CounterAvailability;
@@ -69,6 +88,8 @@ export interface ObservedDriver {
    * null and never implies that a provider process launched.
    */
   getLaunchEvidence?(invocationId: string): LaunchEvidence | undefined | Promise<LaunchEvidence | undefined>;
+  /** Hash-pinned stop and driver-settlement proof from the native supervisor. */
+  getLifecycleEvidence?(invocationId: string): NativeLifecycleEvidence | undefined | Promise<NativeLifecycleEvidence | undefined>;
 }
 
 /** Validate the evidence envelope and bind it to the exact frozen invocation. */

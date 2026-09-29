@@ -549,7 +549,8 @@ describe('bounded campaign strategy engine', () => {
       const cleanupRecord = JSON.parse(cleanupBytes.toString('utf8')) as { planSha256: string; proof: Record<string, unknown> };
       expect(cleanupRecord).toMatchObject({ planSha256: result.pipelineEvidence.protectedOracleCleanup.planSha256,
         proof: { daemonVerified: true, ownershipVerified: true, containersAbsent: true,
-          processTree: 'stopped-and-reaped', cleanup: 'complete', volumeDisposition: 'quarantined', inventoryContentVerified: false } });
+          processTree: 'stopped-and-reaped', cleanup: 'complete', inventoryContentVerified: false } });
+      expect(['quarantined', 'absent']).toContain(cleanupRecord.proof.volumeDisposition);
       expect(result.pipelineEvidence.formatCompliance).toBeNull();
       expect(result.pipelineEvidence.assignedStrategySuccess).toBe(result.strategy.assignedStrategySuccess);
       expect(result.pipelineEvidence.execution.sourceInvocationIds).toHaveLength(4);

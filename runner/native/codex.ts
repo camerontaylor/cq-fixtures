@@ -132,10 +132,17 @@ export class CodexExecDriver extends ObservedNativeDriver {
         ...(this.spawnAdapterFactory ? { spawnAdapterFactory: this.spawnAdapterFactory } : {}),
         ...(this.expectedTaskBaselineCommit ? { expectedTaskBaselineCommit: this.expectedTaskBaselineCommit() } : {}),
       });
-      this.persistSupervisorLifecycle(observation, result);
       this.reportProcessTree(identity, result.treeStopped);
       if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };
       observation.model.settings.processTree = { value: result.treeStopped, source: 'native process-group stop proof', status: result.treeStopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden' };
+      try {
+        this.persistSupervisorLifecycle(observation, result);
+        observation.model.settings.supervisorLifecycleArtifact = { value: 'persisted', source: 'native supervisor lifecycle evidence', status: 'persisted' };
+      } catch {
+        // Diagnostic artifact I/O must not replace process-tree status or lose
+        // the primary native observation. The report retains this failure state.
+        observation.model.settings.supervisorLifecycleArtifact = { value: null, source: 'native supervisor lifecycle evidence', status: 'write-failed' };
+      }
       const raw = [result.stdout, result.stderr ? `\n${result.stderr}` : ''].join('');
       this.persistEventArtifact(observation, raw);
       const parsed = parseJsonEventLines(result.stdout, 'codex');

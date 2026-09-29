@@ -4,9 +4,9 @@
   "actualRouteG2": "pending-distinct-parent-admission",
   "wholeWorkflowG2": "blocked-on-native-traces-and-protected-oracle-caller-integration",
   "finalProfilePublicInputs": "final-profile-public-inputs.json",
-  "finalProfilePublicInputsSha256": "0fd605bdf63f056575ef06a1c04e95272b3cd478209d4ddcab3aa5e806539df0",
+  "finalProfilePublicInputsSha256": "febdd1c6df783cccfec34e1123a8025b01d202b357d67d2c512a5920a4478b98",
   "sourceSha256": {
-    "g2-harness.ts": "87e718a172b5d704163acb19b02cf092641e3e0d41081bf5dab636d0cfa7e24f",
+    "g2-harness.ts": "74c5bd3a85ab5e3e5fdb3a0c17670ff7cbf97b97518de8fa856cc21ed37da677",
     "g2-harness-cli.ts": "c9833ee7d7459def2daafdd79b7172a3ba72cabcb400619357cb11e8385d5d2e",
     "judge-child.ts": "62a4c5a49122add1bce86531dfd4e47592db5efe4912b99ecde95ddbe7847d6a",
     "volume-io.mjs": "324ff955dfc89c774232f16d763376b225a4ba866477c5e6adfe4a7a3abe88bd"
@@ -24,5 +24,9 @@
     "native-network"
   ],
   "rawEvidence": "private-only",
-  "offlineJsonQualification": false
+  "offlineJsonQualification": false,
+  "effectiveBrokerIdentity": "a0271b61483a1c253b86884ce054793d58d3e66e42f020d6d0434101ca869fe8",
+  "qualification": "ledger-verified-runG2Harness-only; pure-evaluator-never-grants",
+  "exportIdentity": "canonical-receipt-inventory-and-head compared with independent stopped-tree snapshot and preregistered Git baseline",
+  "denialEvidence": "actual native status/errno/control proof required; no empty-output or asserted-403 inference"
 }

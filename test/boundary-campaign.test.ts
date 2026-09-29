@@ -436,7 +436,7 @@ describe('G2 harness synthetic evidence cannot grant actual qualification', () =
     const fixture = h.createG2Fixture(); roots.push(fixture.privateRoot);
     const exportRoot = mkdtempSync(join(tmpdir(), 'cq-g2-export-test-')); roots.push(exportRoot);
     writeFileSync(join(exportRoot, '.g2-partial'), 'CQ_G2_PUBLIC_TASK_CONTROL', { mode: 0o700 });
-    const traces = fixture.probes.map(probe => ({ invocationId: 'synthetic-invocation', probeId: probe.id, channel: probe.channel, target: probe.target, requestedCommand: probe.command, attempted: true, disposition: probe.expected === 'deny' ? 'denied' as const : 'success' as const, denialKind: (probe.channel === 'native-config' ? 'config-inventory-verified' : ['process-argv', 'process-env'].includes(probe.channel) ? 'guardian-not-visible' : ['shell-network', 'native-network'].includes(probe.channel) ? 'broker-403' : 'not-found') as import('../runner/boundary/g2-harness.ts').G2NativeTrace['denialKind'], output: Buffer.from(probe.expected === 'deny' ? 'synthetic denial' : 'CQ_G2_PUBLIC_TASK_CONTROL'), complete: true }));
+    const traces = fixture.probes.map(probe => ({ invocationId: 'synthetic-invocation', probeId: probe.id, channel: probe.channel, target: probe.target, requestedCommand: probe.command, attempted: true, disposition: probe.expected === 'deny' ? 'denied' as const : 'success' as const, denialKind: (probe.channel === 'native-config' ? 'config-inventory-verified' : ['process-argv', 'process-env'].includes(probe.channel) ? 'guardian-not-visible' : ['shell-network', 'native-network'].includes(probe.channel) ? 'broker-403' : 'not-found') as import('../runner/boundary/g2-harness.ts').G2NativeTrace['denialKind'], exitCode: 0, httpStatus: 403, toolErrorCode: 'ENOENT' as const, controlProof: { kind: (probe.channel === 'native-config' ? 'native-inventory-verified' : 'guardian-namespace-absent') as 'native-inventory-verified' | 'guardian-namespace-absent', verified: true as const }, output: Buffer.from(probe.expected === 'deny' ? 'synthetic denial' : 'CQ_G2_PUBLIC_TASK_CONTROL'), complete: true }));
     const result: import('../runner/boundary/g2-harness.ts').G2NativeResult = { invocationId: 'synthetic-invocation', boundaryIdentity: 'synthetic-boundary', launchIdentity: 'synthetic-launch', provenance: 'synthetic', admissionId: 'synthetic-admission', stage: 'actual-route-G2', profile: 'cq-subscription-http', workerImage: pins.FINAL_NATIVE_IMAGE, brokerImage: pins.FINAL_BROKER_IMAGE, brokerIdentity: pins.FINAL_BROKER_IDENTITY, configHash: pins.FINAL_CODEX_CONFIG_HASH, traces, rawOutputs: [], workerAbsentVerified: true, teardownAwaited: true, baselineVerified: true, exportRoot, timedOutOrCancelled: true, childTreeStopped: true, actualResponsesStreamObserved: true, nativeInventoryComplete: true };
     return { h, fixture, result };
   }
@@ -463,9 +463,57 @@ describe('G2 harness synthetic evidence cannot grant actual qualification', () =
     expect(rows.find(r => r.id === fixture.probes[0].id)?.traceUnavailable).toBe(true);
     expect(rows.find(r => r.id === child.probeId)?.traceUnavailable).toBe(true);
   });
+  it('refuses typed denial claims without actual status or control corroboration', async () => {
+    const { h, fixture, result } = await sample();
+    for (const trace of result.traces) { delete trace.httpStatus; delete trace.exitCode; delete trace.toolErrorCode; delete trace.controlProof; trace.output = Buffer.alloc(0); }
+    const rows = h.evaluateG2(fixture, result).rows;
+    expect(rows.filter(r => fixture.probes.find(p => p.id === r.id)?.expected === 'deny').every(r => !r.denied)).toBe(true);
+    const trace = result.traces.find(t => t.channel === 'native-network')!;
+    trace.output = Buffer.from('claimed HTTP 403');
+    expect(h.evaluateG2(fixture, result).rows.find(r => r.id === trace.probeId)?.denied).toBe(false);
+    trace.httpStatus = 403;
+    expect(h.evaluateG2(fixture, result).rows.find(r => r.id === trace.probeId)?.denied).toBe(true);
+  });
+  it('qualifies only through consumed admission and exact independent stopped-export audit', async () => {
+    const { h, fixture, result } = await sample();
+    const { FINAL_BROKER_RUNTIME_IDENTITY } = await import('../runner/boundary/broker-toolchain.ts');
+    const tree = await import('../runner/boundary/task-tree.ts');
+    const git = (args: string[]) => { const r = spawnSync('/usr/bin/git', args, { cwd: result.exportRoot, encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: result.exportRoot, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }, timeout: 5000 }); if (r.status !== 0) throw new Error('synthetic Git fixture'); return r.stdout.trim(); };
+    git(['init','-q']); git(['-c','user.name=Synthetic','-c','user.email=synthetic@example.invalid','add','.']); git(['-c','user.name=Synthetic','-c','user.email=synthetic@example.invalid','commit','-qm','baseline']);
+    const baselineCommit = git(['rev-parse','HEAD']);
+    // Independent snapshot strips local fixture config before hashing, as production staging does.
+    const normalized = tree.snapshotTask(result.exportRoot, true);
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(join(result.exportRoot,'.git/config'), Buffer.from(normalized.entries.find(e => e.path === '.git/config')!.data!, 'base64'));
+    const expected = { inventoryHash: tree.snapshotTask(result.exportRoot, false).inventoryHash, head: baselineCommit, baselineCommit };
+    fixture.guardian = { containerId: 'synthetic-test-only', volume: 'synthetic-test-only', daemonId: 'synthetic-test-only', image: result.workerImage };
+    Object.assign(result, { provenance: 'actual-native', effectiveBrokerIdentity: FINAL_BROKER_RUNTIME_IDENTITY, postExportCandidateExecutionProtected: true, oracleCallerAdapted: true, receiptExport: { inventoryHash: expected.inventoryHash, head: expected.head } });
+    result.admissionId = 'junk-admission';
+    expect(h.evaluateG2(fixture, result).qualified).toBe(false);
+    const input = { finalG1EvidenceAccepted: true, admissionId: result.admissionId, timeoutMs: 10000, execute: async () => result, stop: async () => {}, verifyConsumedAdmission: async () => true, verifyStoppedExport: async () => expected };
+    await expect(h.runG2Harness(fixture, { ...input, verifyConsumedAdmission: async () => false })).rejects.toThrow(/unavailable/);
+    expect((await h.runG2Harness(fixture, input)).qualified).toBe(true);
+    result.receiptExport!.inventoryHash = '0'.repeat(64);
+    expect((await h.runG2Harness(fixture, input)).exportIdentityVerified).toBe(false);
+    result.receiptExport!.inventoryHash = expected.inventoryHash; result.receiptExport!.head = '0'.repeat(40);
+    expect((await h.runG2Harness(fixture, input)).qualified).toBe(false);
+    result.receiptExport!.head = expected.head;
+    writeFileSync(join(result.exportRoot, 'changed-after-audit'), 'synthetic');
+    expect((await h.runG2Harness(fixture, input)).qualified).toBe(false);
+  });
+  it('keeps bounded cause classification private without copying secret-bearing messages', async () => {
+    const { h, fixture, result } = await sample();
+    fixture.guardian = { containerId: 'synthetic', volume: 'synthetic', daemonId: 'synthetic', image: result.workerImage };
+    let stopped = false;
+    await expect(h.runG2Harness(fixture, { finalG1EvidenceAccepted: true, admissionId: 'synthetic-admission', timeoutMs: 1000, execute: async () => { throw Object.assign(new Error(fixture.values.judge), { code: 'EACCES' }); }, stop: async () => { stopped = true; }, verifyConsumedAdmission: async () => false, verifyStoppedExport: async () => { throw new Error(); } })).rejects.toThrow('G2 execution/evidence unavailable');
+    const fs = await import('node:fs'); const paths = fs.readdirSync(fixture.privateRoot).filter(p => p.startsWith('failure-'));
+    expect(stopped).toBe(true); expect(paths.length).toBe(1);
+    const path = join(fixture.privateRoot, paths[0]), content = fs.readFileSync(path, 'utf8');
+    expect(content).not.toContain(fixture.values.judge); expect(JSON.parse(content)).toMatchObject({ phase: 'native-execution', errorClass: 'Error', code: 'EACCES' }); expect(fs.statSync(path).mode & 0o777).toBe(0o600);
+  });
   it('blocks invocation without final G1/guardian before any native callback', async () => {
     const { h, fixture } = await sample(); let called = false;
-    await expect(h.runG2Harness(fixture, { finalG1EvidenceAccepted: false, admissionId: 'not-admitted', timeoutMs: 1000, execute: async () => { called = true; throw new Error(); }, stop: async () => {}, verifyConsumedAdmission: async () => false })).rejects.toThrow(/final G1/);
+    await expect(h.runG2Harness(fixture, { finalG1EvidenceAccepted: false, admissionId: 'not-admitted', timeoutMs: 1000, execute: async () => { called = true; throw new Error(); }, stop: async () => {}, verifyConsumedAdmission: async () => false, verifyStoppedExport: async () => { throw new Error('no export'); } })).rejects.toThrow(/final G1/);
     expect(called).toBe(false);
   });
 });
@@ -486,9 +534,11 @@ it('does not normalize missing canonical tool outcomes into denial', async () =>
   const receipt: import('../runner/boundary/g2-harness.ts').G2CanonicalNativeReceipt = {
     identity: { assignmentId: 'synthetic', stageId: 'G2', attemptId: 'one', invocationId: 'synthetic' },
     launch: { boundaryIdentity: 'synthetic', launchIdentity: 'synthetic', admissionId: 'synthetic' }, terminal: { state: 'exit' },
+    teardown: { processTree: 'stopped-and-reaped', boundary: 'terminated', export: { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) } },
     toolTrace: ['start', 'result'].map((phase, i) => ({ eventId: String(i), invocationId: 'synthetic', phase: phase as 'start' | 'result', kind: 'read' as const, targetOrCommand: probe.target, correlationId: 'pair' })),
   };
   const result = h.normalizeG2NativeReceipt(fixture, receipt, {} as Parameters<typeof h.normalizeG2NativeReceipt>[2]);
+  expect(result.receiptExport).toEqual({ inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) });
   expect(result.traces[0].attempted).toBe(true); expect(result.traces[0].complete).toBe(false); expect(result.traces[0].disposition).toBe('unavailable');
 });
 

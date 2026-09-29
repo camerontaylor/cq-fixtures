@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync, realpathSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
@@ -20,7 +20,7 @@ import { RUNNER_SESSION_DIRECTORY } from '../runner/native/session.ts';
 import { ObservedNativeDriver, createWorkerResult } from '../runner/native/observed-driver.ts';
 import { runNativeConformanceSuite } from '../runner/native/conformance.ts';
 import { runVisibleG1, visibleG1TestInventory } from '../runner/native/run-visible-g1.ts';
-import { buildFinalProfileLaunchComparison, createFinalProfileQuotaSource, estimateFinalProfileAdmission, finalProfileInvocationIdentity, resolveFinalProfileQuotaSource, runBoundedFinalProfileSetup } from '../runner/native/run-final-profile-g1.ts';
+import { buildFinalProfileLaunchComparison, createFinalProfileQuotaSource, estimateFinalProfileAdmission, finalProfileInvocationIdentity, resolveFinalProfileQuotaSource, runBoundedFinalProfileSetup, runSupervisedFinalProfileG1 } from '../runner/native/run-final-profile-g1.ts';
 import type { CodexAppServerSession } from '../runner/campaign/codex-app-server.ts';
 import { CampaignScheduler, type CampaignAssignment } from '../runner/campaign/scheduler.ts';
 import { FileCampaignQueueStore } from '../runner/campaign/persistence.ts';
@@ -1863,8 +1863,8 @@ describe('PK05 committed native process receipt adoption', () => {
     });
   }
 
-  for (const hook of ['terminate', 'finalize', 'cleanup'] as const) {
-    it(`does not upgrade returned proof when stalled ${hook} finishes late`, async () => {
+  for (const hook of ['terminate', 'finalize', 'cleanup'] as const) for (const primary of ['timeout', 'cancelled'] as const) {
+    it(`does not upgrade ${primary} returned proof when stalled ${hook} finishes late`, async () => {
       const root = tempRoot();
       const fakePid = 456_789_125;
       const child = Object.assign(new EventEmitter(), { pid: fakePid, stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough() }) as unknown as ChildProcess;
@@ -1879,7 +1879,8 @@ describe('PK05 committed native process receipt adoption', () => {
         if (signal === 0) throw Object.assign(new Error('fixture absent'), { code: 'ESRCH' });
         child.emit('close', 0, signal); return true;
       }) as typeof process.kill);
-      const execution = runSupervised('fixture', [], { cwd: root, identity: identity(`late-${hook}`), stage: 'final-profile-G1',
+      const controller = new AbortController();
+      const execution = runSupervised('fixture', [], { signal: controller.signal, cwd: root, identity: identity(`late-${primary}-${hook}`), stage: 'final-profile-G1',
         timeoutMs: 100, hardDeadlineEpochMs: Date.now() + 400, cleanupTimeoutMs: 100, killGraceMs: 10,
         cleanupInvocation: async () => { cleanupCalls++; if (hook === 'cleanup') await stalled;
           return { status: 'stopped-and-reaped', resourceIds: ['fixture'], volumeDisposition: 'quarantined' }; },
@@ -1891,9 +1892,10 @@ describe('PK05 committed native process receipt adoption', () => {
       });
       await handoff;
       await new Promise<void>((resolve) => setImmediate(resolve));
+      if (primary === 'cancelled') controller.abort();
       await vi.advanceTimersByTimeAsync(500);
       const result = await execution;
-      expect(result.terminal).toBe('timeout');
+      expect(result.terminal).toBe(primary);
       expect(result.treeStopped).toBe(false);
       expect(result.launch).not.toHaveProperty('taskExport');
       const before = JSON.stringify(result);
@@ -1904,4 +1906,18 @@ describe('PK05 committed native process receipt adoption', () => {
       expect(cleanupCalls).toBeLessThanOrEqual(1);
     });
   }
+});
+
+
+describe('outer final native descriptor caller', () => {
+  it('refuses hard resource lifetime before descriptors or executor launch', async () => {
+    await expect(runSupervisedFinalProfileG1({ runId: 'fixture', invocationId: 'fixture', privateRoot: '/absent', repositoryHead: '0'.repeat(40), approvedPins: {}, approvedPinHash: '0'.repeat(64), preparationDeadlineEpochMs: 0, resourceDeadlineEpochMs: 0, reapDeadlineEpochMs: 0, quarantineDeadlineEpochMs: 0, requiredGuarantee: 'hard-resource-lifetime' })).rejects.toThrow(/hard resource lifetime unsupported/u);
+  });
+  it('rejects an unfrozen pin manifest without writing descriptors', async () => {
+    const root = realpathSync(tempRoot());
+    const now = Date.now();
+    await expect(runSupervisedFinalProfileG1({ runId: 'fixture', invocationId: 'fixture', privateRoot: root, repositoryHead: '0'.repeat(40), approvedPins: {}, approvedPinHash: '0'.repeat(64), preparationDeadlineEpochMs: now + 1000, resourceDeadlineEpochMs: now + 2000, reapDeadlineEpochMs: now + 3000, quarantineDeadlineEpochMs: now + 4000, requiredGuarantee: 'host-process-group' })).rejects.toThrow(/immutable source\/package pins/u);
+    expect(existsSync(join(root, 'preparation-fixture.json'))).toBe(false);
+    expect(existsSync(join(root, 'execution-fixture.json'))).toBe(false);
+  });
 });

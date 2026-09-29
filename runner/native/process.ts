@@ -19,6 +19,8 @@ export interface SupervisedProcessResult {
   treeStopped: boolean;
   startedAt: string;
   endedAt: string;
+  /** Internal development receipt; admission alone never proves OS creation. */
+  processEvidence?: { identity?: SupervisedInvocationIdentity; status: 'spawned' | 'trusted-no-spawn' | 'unknown'; source: string };
   launch?: NativeLaunchEvidence;
   lifecycle?: {
     terminated: boolean; finalized: boolean;
@@ -146,6 +148,13 @@ export class NativeSupervisorControl {
 
   expectProcessTree(identity: SupervisedInvocationIdentity): void {
     this.require(identity).processTreeStopped = false;
+  }
+
+  reportProcessNotStarted(identity: SupervisedInvocationIdentity, source?: string): void {
+    // Only a trusted identity-bound pre-spawn guard may call this. Driver
+    // settlement remains independently required; unknown must not call it.
+    if (source !== undefined && !source.trim()) throw new Error('trusted no-spawn source required');
+    this.require(identity).processTreeStopped = true;
   }
 
   reportProcessTree(identity: SupervisedInvocationIdentity, stopped: boolean): void {
@@ -305,13 +314,16 @@ export async function runSupervised(
   let lifecycleResultFrozen = false;
   let treeStopped = false;
   let handoffComplete = false;
+  let processStatus: 'spawned' | 'trusted-no-spawn' | 'unknown' = 'trusted-no-spawn';
+  const processEvidence = () => ({ ...(options.identity ? { identity: { ...options.identity } } : {}),
+    status: processStatus, source: processStatus === 'spawned' ? 'OS child PID' : processStatus === 'trusted-no-spawn' ? 'trusted supervisor pre-spawn guard' : 'factory creation unobserved' });
 
   if ((options.stage === 'final-profile-G1' || options.stage === 'actual-route-G2') &&
       (options.spawnAdapter || options.spawnAdapterFactory || options.boundary) && !options.cleanupInvocation) {
-    return spawnFailure(command, args, options.cwd, startedAt,
+    return { ...spawnFailure(command, args, options.cwd, startedAt,
       new Error('final-profile native boundary requires an invocation cleanup callback before dispatch'), 'spawn-error', false,
       { terminated: false, finalized: false, invocationCleanup: { status: 'unconfigured' },
-        error: { name: 'CleanupUnconfigured', message: 'boundary dispatch refused without invocation cleanup ownership' } });
+        error: { name: 'CleanupUnconfigured', message: 'boundary dispatch refused without invocation cleanup ownership' } }), processEvidence: processEvidence() };
   }
 
   let launchTimeoutReject!: (error: Error) => void;
@@ -328,7 +340,7 @@ export async function runSupervised(
   if (remainingAtStart <= 0) {
     options.signal?.removeEventListener('abort', onSetupAbort);
     setupController.abort(new Error('native assignment deadline elapsed before launch'));
-    return spawnFailure(command, args, options.cwd, startedAt, new Error('native assignment deadline elapsed before launch'), 'timeout');
+    return { ...spawnFailure(command, args, options.cwd, startedAt, new Error('native assignment deadline elapsed before launch'), 'timeout'), processEvidence: processEvidence() };
   }
   let launchDeadlineExceeded = false;
   const launchTimeout = setTimeout(() => {
@@ -336,6 +348,9 @@ export async function runSupervised(
     setupController.abort(new Error('native assignment deadline elapsed during admission or provisioning'));
     launchTimeoutReject(new Error('native assignment deadline elapsed during admission or provisioning'));
   }, remainingAtStart);
+  let cleanupOnce: Promise<CleanupOutcome> | undefined;
+  const ownedCleanup = (reason: string, deadline: number) => cleanupOnce ??= invokeBoundedCleanup(
+    options.cleanupInvocation!, options.identity!, reason, deadline);
   let launchPromise: Promise<{ child: ChildProcess; receipt?: NativeSpawnReceipt; launch?: NativeLaunchEvidence }> | undefined;
   try {
     launchPromise = (async () => {
@@ -349,6 +364,7 @@ export async function runSupervised(
       if (resolve(options.boundary.policy.resolved.task) !== resolve(options.cwd)) {
         throw new Error('boundary task directory must match the invocation workspace');
       }
+      processStatus = 'unknown';
       const receipt = await spawnBoundary({ ...options.boundary, executable: command, args: [...args] });
       const launchEvidence: NativeLaunchEvidence = {
         boundaryIdentity: receipt.boundaryIdentity, launchIdentity: receipt.launchIdentity,
@@ -363,6 +379,7 @@ export async function runSupervised(
         deadlineEpochMs: hardDeadlineEpochMs, signal: setupSignal,
       };
       if (setupSignal.aborted || Date.now() >= hardDeadlineEpochMs) throw new Error('native assignment ended before adapter factory began');
+      processStatus = 'unknown';
       const adapter = options.spawnAdapter ?? await options.spawnAdapterFactory!(context);
       if (Date.now() >= hardDeadlineEpochMs || setupSignal.aborted) throw new Error('native assignment deadline elapsed before adapter launch');
       const receipt = await adapter(command, args, context);
@@ -379,6 +396,7 @@ export async function runSupervised(
       };
       return { child: receipt.child, receipt, launch: launchEvidence };
     } else if (options.allowUnconfinedTestProcess) {
+      processStatus = 'unknown';
       return { child: spawn(command, [...args], {
         cwd: options.cwd,
         env: options.env ?? process.env,
@@ -393,6 +411,7 @@ export async function runSupervised(
     })();
     const launched = await Promise.race([launchPromise, launchDeadline]);
     child = launched.child;
+    if (child.pid !== undefined && child.pid > 0) processStatus = 'spawned';
     launch = launched.launch;
     if (launched.receipt?.scope === 'boundary') boundaryLifecycle = { terminate: launched.receipt.terminate, finalize: launched.receipt.finalize };
     handoffComplete = true;
@@ -421,7 +440,7 @@ export async function runSupervised(
       const lateReceipt = late.receipt?.scope === 'boundary' ? late.receipt : undefined;
       const cleanupLater = async () => {
         if (!options.cleanupInvocation || !options.identity) return;
-        await invokeBoundedCleanup(options.cleanupInvocation, options.identity, 'late native setup settled after bounded cleanup', Date.now() + cleanupMs);
+        await ownedCleanup('late native setup settled after bounded cleanup', Date.now() + cleanupMs);
       };
       const finalizeThenCleanupLater = async () => {
         if (lateReceipt) {
@@ -474,14 +493,14 @@ export async function runSupervised(
         }
       }
       if (!lifecycleBlockedByPendingHook && options.cleanupInvocation) {
-        const outcome = options.identity ? await invokeBoundedCleanup(options.cleanupInvocation, options.identity, 'native setup ended before receipt handoff', cleanupDeadline) : { status: 'failed' as const, errorName: 'InvocationIdentityUnavailable' };
+        const outcome = options.identity ? await ownedCleanup('native setup ended before receipt handoff', cleanupDeadline) : { status: 'failed' as const, errorName: 'InvocationIdentityUnavailable' };
         cleanupCompleted = outcome.status === 'completed'; cleanupProof = outcome.proof; cleanupErrorName ??= outcome.errorName;
       }
       // Cleanup evidence is explicit in the returned failed envelope. A late
       // receipt never becomes capture eligible, even when all stop hooks pass.
       lateLifecycleProven = hostStopped && lateTerminated && lateFinalized && !lifecycleBlockedByPendingHook;
     } else if (options.cleanupInvocation && options.identity) {
-      const outcome = await invokeBoundedCleanup(options.cleanupInvocation, options.identity, 'native setup did not settle before receipt handoff', cleanupDeadline);
+      const outcome = await ownedCleanup('native setup did not settle before receipt handoff', cleanupDeadline);
       cleanupCompleted = outcome.status === 'completed'; cleanupProof = outcome.proof; cleanupErrorName = outcome.errorName;
       // A factory that settles after this bounded cleanup window gets one more
       // exact-receipt teardown attempt. This continuation cannot authorize capture.
@@ -489,8 +508,7 @@ export async function runSupervised(
         await stopAndWait(lateReceipt.child, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
         try { await lateReceipt.receipt?.terminate?.(); } catch { /* cleanup proof remains failed */ }
         try { await lateReceipt.receipt?.finalize?.(); } catch { /* recovery is retained */ }
-        try { await options.cleanupInvocation!({ identity: options.identity!, reason: 'late native setup settled after bounded cleanup',
-          deadlineEpochMs: Date.now() + cleanupMs, signal: new AbortController().signal, preserveRecovery: true }); }
+        try { await ownedCleanup('late native setup settled after bounded cleanup', Date.now() + cleanupMs); }
         catch { /* late cleanup has no capture/report path */ }
       }).catch(() => undefined);
     } else {
@@ -505,10 +523,12 @@ export async function runSupervised(
         error: { name: cleanupErrorName ?? 'CleanupUnproven', message: 'native setup failed before receipt handoff; invocation cleanup did not prove stop' },
       } : {}),
     };
-    const setupStopped = launchPromiseSettled && cleanupCompleted && !cleanupErrorName && (late === false || lateLifecycleProven);
-    return spawnFailure(command, args, options.cwd, startedAt, error,
+    if (late !== false && late.child.pid) processStatus = 'spawned';
+    const setupStopped = processEvidence().status !== 'unknown' && launchPromiseSettled && cleanupCompleted && !cleanupErrorName && (late === false || lateLifecycleProven);
+    const failed = spawnFailure(command, args, options.cwd, startedAt, error,
       deadlineExpired ? 'timeout' : launchCancelled ? 'cancelled' : 'spawn-error',
       setupStopped, failedLifecycle, late !== false ? late.launch : undefined);
+    return { ...failed, processEvidence: processEvidence() };
   } finally {
     clearTimeout(launchTimeout);
     options.signal?.removeEventListener('abort', onSetupAbort);
@@ -533,10 +553,11 @@ export async function runSupervised(
     command, args: [...args], cwd: options.cwd,
     stdout: stdoutParts.join(''), stderr: stderrParts.join(''), code, signal,
     treeStopped: stopped,
-    terminal: spawnError ? 'spawn-error' : cancelled ? 'cancelled' : timedOut ? 'timeout' : terminal,
+    terminal: cancelled ? 'cancelled' : timedOut ? 'timeout' : spawnError ? 'spawn-error' : terminal,
     startedAt, endedAt: new Date().toISOString(),
-    ...(launch ? { launch } : {}),
-    ...(lifecycleResult ? { lifecycle: lifecycleResult } : {}),
+    processEvidence: processEvidence(),
+    ...(launch ? { launch: structuredClone(launch) } : {}),
+    ...(lifecycleResult ? { lifecycle: structuredClone(lifecycleResult) } : {}),
     ...(spawnError ? { error: { name: spawnError.name, message: spawnError.message } } : {}),
   });
   let stopCompletion: Promise<boolean> | undefined;
@@ -598,8 +619,7 @@ export async function runSupervised(
       if (!lifecycleError) lifecycleError = error instanceof Error ? error : new Error(String(error));
     }
     if (options.cleanupInvocation && options.identity) {
-      const cleanupOutcome = await invokeBoundedCleanup(options.cleanupInvocation, options.identity,
-        'native boundary lifecycle settled', lifecycleDeadlineEpochMs);
+      const cleanupOutcome = await ownedCleanup('native boundary lifecycle settled', lifecycleDeadlineEpochMs);
       cleanupEvidence = { status: cleanupOutcome.status, ...(cleanupOutcome.proof ? { proof: cleanupOutcome.proof } : {}),
         ...(cleanupOutcome.errorName ? { errorName: cleanupOutcome.errorName } : {}) };
       if (cleanupOutcome.status !== 'completed' && !lifecycleError) {
@@ -613,7 +633,7 @@ export async function runSupervised(
         lifecycleError = new Error('boundary receipt has no invocation cleanup callback');
       }
     }
-    if (terminated && hostTreeStopped && finalized && cleanupEvidence?.status === 'completed' && taskExport && launch) {
+    if (!lifecycleResultFrozen && Date.now() < lifecycleDeadlineEpochMs && terminated && hostTreeStopped && finalized && cleanupEvidence?.status === 'completed' && taskExport && launch) {
       launch.taskExport = { ...taskExport };
     }
     if (!lifecycleResultFrozen) lifecycleResult = {
@@ -742,6 +762,7 @@ function spawnFailure(
     endedAt: new Date().toISOString(),
     ...(lifecycle ? { lifecycle } : {}),
     ...(launch ? { launch } : {}),
+    processEvidence: { status: 'trusted-no-spawn', source: 'trusted supervisor pre-spawn guard' },
     error: { name: error.name, message: error.message },
   };
 }

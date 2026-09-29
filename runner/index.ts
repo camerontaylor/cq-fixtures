@@ -399,18 +399,14 @@ function gitBaseline(workspace: string): GitBaseline | undefined {
 
     if (runWorker(['add', '-A']).status !== 0 ||
         runWorker(['commit', '-q', '-m', 'pristine']).status !== 0) return undefined;
-    // Resolve both worker pins in one invocation, then copy only Git objects
-    // and the immutable ref into the private capture repo. Config, hooks,
-    // attributes, index, and worktree metadata are independently created.
-    const pins = runWorker(['rev-parse', 'HEAD', 'HEAD^{tree}']);
-    if (pins.status !== 0) return undefined;
-    const [commit, tree] = pins.stdout.trim().split(/\s+/);
-    if (commit === undefined || tree === undefined || !/^[a-f0-9]{40,64}$/.test(commit) || !/^[a-f0-9]{40,64}$/.test(tree)) {
-      return undefined;
-    }
+    // The fresh host-created commit has a loose ref. Copy its objects/ref,
+    // then resolve the immutable commit/tree pair once in the private repo.
+    // No worker-controlled metadata is consulted after dispatch.
     const headText = readFileSync(join(workspace, '.git', 'HEAD'), 'utf8');
     const headRef = /^ref: (refs\/heads\/[A-Za-z0-9._/-]+)\n?$/.exec(headText)?.[1];
     if (headRef === undefined || headRef.split('/').includes('..')) return undefined;
+    const commit = readFileSync(join(workspace, '.git', headRef), 'utf8').trim();
+    if (!/^[a-f0-9]{40,64}$/.test(commit)) return undefined;
     const workerObjects = join(workspace, '.git', 'objects');
     const captureObjects = join(gitDir, 'objects');
     for (const entry of readdirSync(workerObjects)) {
@@ -422,7 +418,8 @@ function gitBaseline(workspace: string): GitBaseline | undefined {
     writeFileSync(join(gitDir, 'HEAD'), `ref: ${headRef}\n`);
     prepareTrustedGitMetadata(gitDir);
     const trustedPins = runCapture(gitCaptureArgs(gitDir, workspace, ['rev-parse', 'HEAD', 'HEAD^{tree}']));
-    if (trustedPins.status !== 0 || trustedPins.stdout.trim().split(/\s+/).join(' ') !== `${commit} ${tree}`) return undefined;
+    const [trustedCommit, tree] = trustedPins.stdout.trim().split(/\s+/);
+    if (trustedPins.status !== 0 || trustedCommit !== commit || tree === undefined || !/^[a-f0-9]{40,64}$/.test(tree)) return undefined;
     retained = true;
     return { commit, tree, gitDir };
   } finally {

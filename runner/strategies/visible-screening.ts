@@ -134,36 +134,27 @@ const DRIVER_LABEL: Record<VisibleReviewLoopOptions['route']['transport'], strin
 const S1_TASK_SOURCE = 'campaigns/cq-settings/corpus/review-loop-task.ts';
 const S1_SUITE_SOURCE = 'runner/workflow-corpus/review-loop-suite.ts';
 
-/** Find a sibling/ancestor S1 checkout, or let standalone callers provide its pinned root. */
-export function findS1DependencyRoot(startDirectory: string): string | null {
-  let current = resolve(startDirectory);
-  for (let depth = 0; depth < 12; depth += 1) {
-    if (isS1DependencyRoot(current)) return current;
-    try {
-      for (const child of readdirSync(current, { withFileTypes: true })) {
-        if (child.isDirectory()) {
-          const candidate = join(current, child.name);
-          if (isS1DependencyRoot(candidate)) return candidate;
-        }
-      }
-    } catch { /* Continue toward the filesystem root. */ }
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return null;
-}
-
 function isS1DependencyRoot(root: string): boolean {
   return existsSync(join(root, S1_TASK_SOURCE)) && existsSync(join(root, S1_SUITE_SOURCE));
 }
 
 export function resolveS1DependencyRoot(explicitRoot?: string): string {
-  const root = explicitRoot ? resolve(explicitRoot) : findS1DependencyRoot(dirname(fileURLToPath(import.meta.url)));
+  const ownRoot = findOwnRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
+  const root = explicitRoot ? resolve(explicitRoot) : ownRoot;
   if (!root || !isS1DependencyRoot(root)) {
-    throw new Error('S1 integration root unavailable; pass s1DependencyRoot to the visible runner');
+    throw new Error('S1 integration root unavailable in this repository; pass a pinned s1DependencyRoot');
   }
   return root;
+}
+
+function findOwnRepositoryRoot(startDirectory: string): string | null {
+  let current = resolve(startDirectory);
+  for (;;) {
+    if (existsSync(join(current, '.git')) && existsSync(join(current, 'package.json'))) return current;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
 }
 
 /** Load the sibling S1 integration at runtime so this runner package keeps its own build boundary. */
@@ -487,7 +478,18 @@ export function captureGitCandidatePatch(
     env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
   try {
+    const verifiedCommit = execFileSync('git', ['-C', immutableBaselineWorkspace, 'rev-parse', '--verify', `${baselineCommit}^{commit}`], {
+      env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    const verifiedTree = execFileSync('git', ['-C', immutableBaselineWorkspace, 'rev-parse', '--verify', `${baselineCommit}^{tree}`], {
+      env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    if (verifiedCommit !== baselineCommit || verifiedTree !== expectedBaselineTree) throw new Error('candidate baseline commit/tree does not match the parent-owned seed');
     trustedGit(['init', '-q']);
+    writeFileSync(join(trustedRepo, '.git', 'info', 'attributes'), '* -filter -text -eol\n');
+    trustedGit(['config', 'core.fsmonitor', 'false']);
+    trustedGit(['config', 'core.autocrlf', 'false']);
+    trustedGit(['config', 'core.filemode', 'true']);
     const budget = { files: 0, bytes: 0 };
     copyCandidateTree(immutableBaselineWorkspace, trustedRepo, budget);
     trustedGit(['add', '--all']);
@@ -497,6 +499,7 @@ export function captureGitCandidatePatch(
     copyCandidateTree(workspace, trustedRepo, budget);
     trustedGit(['add', '--all']);
     return execFileSync('git', ['-C', trustedRepo, '-c', 'core.hooksPath=/dev/null', '-c', 'core.attributesFile=/dev/null',
+      '-c', 'core.fsmonitor=false', '-c', 'core.autocrlf=false',
       'diff', '--cached', '--no-color', '--no-ext-diff', '--no-textconv', '--binary', '--src-prefix=a/', '--dst-prefix=b/', 'HEAD', '--'], {
       env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
     });

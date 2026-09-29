@@ -164,15 +164,18 @@ unenforced pending native supervisor support, so this runner makes no hard
 total-bound claim. Caller configuration must attest route effort and supply
 the already admitted driver and native supervisor. The runner performs no
 credential resolution or public calls, and it has no held-out cohort input.
-The S1 checkout is discovered from nearby source/worktree roots or supplied
-through `s1DependencyRoot`; source files and judge dependencies are content
+The S1 checkout is taken from this repository when it contains the required
+sources, or supplied explicitly through `s1DependencyRoot`; the runner never
+searches sibling checkouts. Source files and judge dependencies are content
 pinned in the experiment identity. A required frozen `runNamespace` combines
 with the parent assignment ID to scope stage identities and report paths.
 Candidate capture rebuilds a temporary trusted Git repository from
 parent-owned baseline files, then copies candidate file contents without
 reading mutable worker Git metadata. It preserves committed edits and
 untracked additions and bounds capture to 10,000 files, 8 MiB per file, and
-32 MiB total. S1's trusted capture routine remains private to its runner;
+32 MiB total. It verifies the frozen baseline commit and tree, disables
+autocrlf and fsmonitor, and installs a highest-priority trusted attributes
+rule that disables filters and text conversions. S1's trusted capture routine remains private to its runner;
 exposing it as a shared helper would give both paths one hardened capture
 contract and remove this strategy-local implementation.
 

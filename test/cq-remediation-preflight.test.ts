@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertSameClosure, assertSamePins, discoverSourceClosure, runPreflight } from '../scripts/cq-remediation-preflight.mjs';
+import { assertSameClosure, assertSamePins, discoverSourceClosure, runPreflight, type SourcePreflightResult } from '../scripts/cq-remediation-preflight.mjs';
 
 const roots: string[] = [];
 async function syntheticRoot(): Promise<string> {
@@ -17,7 +17,7 @@ afterEach(async () => {
 
 describe('no-dispatch remediation preflight', () => {
   it('loads transformed native entrypoints and checks their real source closure', async () => {
-    const result = await runPreflight();
+    const result: SourcePreflightResult = await runPreflight();
     expect(result).toMatchObject({
       status: 'preflight-green', dispatched: false, provisioned: false,
       sourceEntryPoint: 'runner/native/run-visible-g1.ts',

@@ -3,9 +3,11 @@
 //
 // These tests are DEVELOPMENT regressions for a source gap. They are not
 // actual-route evidence, not factory/lifecycle evidence, and they satisfy no
-// campaign acceptance criterion. Nothing here proves that a report CONSUMES a
-// correction: that requires the serialized PK02/PK03 wiring lease, and
-// `does not claim wiring into other-owned code` below is the guard for it.
+// campaign acceptance criterion.
+//
+// The sidecar is now WIRED: `wires consumption into the other-owned
+// entrypoints under the granted lease` below is the guard for that, and it
+// asserts the shape of the wiring rather than the old absence of it.
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -28,7 +30,13 @@ import { byteMapResolver, verifyArtifactBinding, verifyCorrectionBinding } from 
 import { projectRetention, retentionIsFullyAccountedFor } from '../runner/reporting/retention.ts';
 import { projectStatusView, renderStatusLines, type DimensionClaim, type StatusViewInput } from '../runner/reporting/status-view.ts';
 import { buildCorrectionAwareBoard, renderBoardMarkdown } from '../runner/reporting/board.ts';
-import { approvedAuthorities, manifestEntry, verifyManifest, type CorrectionsManifest } from '../runner/reporting/manifest.ts';
+import { approvedAuthorities, manifestEntry, verifyManifest, type CorrectionsManifest, type ManifestEntry } from '../runner/reporting/manifest.ts';
+import {
+  consumeRetention,
+  consumeRunReport,
+  loadPinnedCorrections,
+  type CorrectableRow,
+} from '../runner/reporting/consumer.ts';
 import { PINNED_OPERATIONAL_STATUSES, PINNED_TERMINAL_CAUSES } from '../runner/reporting/vocabulary.ts';
 
 const AUTHORITY = 'cq-settings-execution-orchestrator';
@@ -779,15 +787,36 @@ describe('pinned manifest and vocabulary', () => {
     expect(PINNED_OPERATIONAL_STATUSES).toEqual(schema.properties.outcomes.properties.operationalStatus.enum);
   });
 
-  it('does not claim wiring into other-owned code', () => {
+  it('wires consumption into the other-owned entrypoints under the granted lease', () => {
+    // SEAM-1 is granted: the runner entrypoint and the aggregate lane now
+    // consume the sidecar, so the old "not wired anywhere" assertion no longer
+    // describes reality. It is replaced by a statement of HOW it is wired, so
+    // a silent unwiring is still a test failure.
     for (const owned of ['runner/index.ts', 'runner/aggregate.ts']) {
-      expect(repoFile(owned)).not.toContain('reporting/');
+      expect(repoFile(owned)).toContain('reporting/');
     }
-    // And the sidecar does not reach into PK02-owned modules either.
-    for (const file of ['index.ts', 'corrections.ts', 'retention.ts', 'status-view.ts', 'board.ts', 'manifest.ts']) {
+    // The seam is re-exported from the PUBLIC entrypoint, not merely imported,
+    // so a consumer can reach it without importing sidecar internals.
+    expect(repoFile('runner/index.ts')).toMatch(/export\s*\{[^}]*consumeRunReport/s);
+    expect(repoFile('runner/index.ts')).toMatch(/export\s*\{[^}]*aggregateCorrected/s);
+    // And the sidecar still does not reach INTO PK02-owned modules: the
+    // dependency runs one way, so the sidecar stays a pure sidecar.
+    for (const file of ['index.ts', 'consumer.ts', 'corrections.ts', 'retention.ts', 'status-view.ts', 'board.ts', 'manifest.ts']) {
       const source = repoFile(`runner/reporting/${file}`);
       expect(source).not.toContain("../aggregate.ts");
       expect(source).not.toContain("../index.ts");
+    }
+  });
+
+  it('leaves the PK03-owned public schemas untouched', () => {
+    // SEAM-2 is NOT granted. Consumption reaches a report through derived rows
+    // and through the returned correction state, never through a new
+    // schema-owned column. If a future packet widens these files, this fails.
+    for (const schema of ['schema/result-row.schema.json', 'schema/comparison-table.schema.json']) {
+      const text = repoFile(schema);
+      expect(text).not.toContain('correction');
+      expect(text).not.toContain('retention');
+      expect(text).not.toContain('recordSha256');
     }
   });
 });
@@ -803,5 +832,265 @@ describe('artifact binding primitives', () => {
     const verdict = verifyCorrectionBinding(lifecycleRecord({ overrides: [] }), byteMapResolver({}));
     expect(verdict.status).toBe('verified');
     expect(verdict.artifacts).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// D22: the CONSUMER. Selection unit tests above prove which record speaks;
+// these prove what a REPORT may then say, and what it must not.
+// ===========================================================================
+
+const FIXTURE_RUN19 = 'runner/reporting/fixtures/run19-lifecycle-correction.fixture.json';
+
+/** The checked-in fixture must be byte-identical to the pinned corpus record. */
+describe('D22: the in-repo fixture is the pinned record, byte for byte', () => {
+  it('hashes to the manifest pin, so the fixture is not a second source of truth', () => {
+    const pinnedEntry = manifestEntry(manifest, 'run19-lifecycle-correction')!;
+    expect(sha256(repoFile(FIXTURE_RUN19))).toBe(pinnedEntry.sha256);
+    expect(RECORDED_HASHES['run19-lifecycle-correction']).toBe(pinnedEntry.sha256);
+  });
+
+  it('resolves the in-repo run18 retention audit against its own pin', () => {
+    const entry = manifestEntry(manifest, 'run18-retention-audit')!;
+    expect(entry.root).toBe('repo');
+    const verification = verifyManifest(manifest, (candidate) => (candidate.id === 'run18-retention-audit' ? repoFile(candidate.path) : null));
+    const check = verification.entries.find((e) => e.id === 'run18-retention-audit')!;
+    expect(check.status).toBe('verified');
+  });
+
+  it('fails closed on every corpus-rooted record when the corpus is not supplied', () => {
+    // The research corpus is not part of this checkout. Not having a record is
+    // UNRESOLVED, never "verified" and never "does not exist".
+    const verification = verifyManifest(manifest, () => null);
+    expect(verification.ok).toBe(false);
+    for (const check of verification.unverified) {
+      expect(check.status).toBe('unresolvable');
+      expect(check.detail).toMatch(/unresolved, not absent/);
+    }
+  });
+});
+
+describe('D22: fail-closed loading of pinned records', () => {
+  const realManifest = manifest;
+
+  it('loads the run19 lifecycle record and declares its versioned adapter', () => {
+    const pinned = loadPinnedCorrections(realManifest, (entry) => (entry.path.endsWith('run19-lifecycle-correction.json') ? repoFile(FIXTURE_RUN19) : null), {
+      mapping: { terminalCause: 'unknown', operationalStatus: 'interrupted' },
+    });
+    const loaded = pinned.records.find((r) => r.entry.id === 'run19-lifecycle-correction')!;
+    expect(loaded.record).not.toBeNull();
+    expect(loaded.derivation!.adapterVersion).toBe(LIFECYCLE_ADAPTER_VERSION);
+    // The adapter is anchored to the ORIGINAL BYTE hash it read.
+    expect(loaded.derivation!.originalRecordSha256).toBe(loaded.entry.sha256);
+    // A legacy record carries no timestamp, and none is invented.
+    expect(loaded.record!.recordedAt).toBeNull();
+  });
+
+  it('refuses an adapter mapping outside the pinned vocabulary', () => {
+    const pinned = loadPinnedCorrections(realManifest, (entry) => (entry.path.endsWith('run19-lifecycle-correction.json') ? repoFile(FIXTURE_RUN19) : null), {
+      mapping: { terminalCause: 'timeout', operationalStatus: 'interrupted' },
+    });
+    const loaded = pinned.records.find((r) => r.entry.id === 'run19-lifecycle-correction');
+    // 'timeout' is the AUTHORITATIVE string, not a schema terminalCause. The
+    // sidecar keeps it verbatim and refuses to invent a lifecycle label for it.
+    expect(loaded).toBeUndefined();
+    expect(pinned.failures.some((f) => f.entryId === 'run19-lifecycle-correction' && /pinned execution.terminalCause vocabulary/.test(f.disposition.detail ?? ''))).toBe(true);
+  });
+
+  it('refuses an adapter that would assert normal completion', () => {
+    const pinned = loadPinnedCorrections(realManifest, (entry) => (entry.path.endsWith('run19-lifecycle-correction.json') ? repoFile(FIXTURE_RUN19) : null), {
+      mapping: { terminalCause: 'unknown', operationalStatus: 'complete' },
+    });
+    expect(pinned.records.find((r) => r.entry.id === 'run19-lifecycle-correction')).toBeUndefined();
+    expect(pinned.failures.some((f) => f.disposition.reason === 'completion-claim-not-retractable')).toBe(true);
+  });
+
+  it('classifies a legacy retention record by its PIN, since its bytes declare no kind', () => {
+    const bytes = repoFile('runner/boundary/evidence/fallback/run18-retention-audit.public.json');
+    const doc = JSON.parse(bytes) as Record<string, unknown>;
+    expect(doc.kind).toBeUndefined();
+    const single: CorrectionsManifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [{
+        id: 'run18', kind: 'retention-binding', root: 'repo', path: 'x.json',
+        sha256: sha256(bytes), canonicalId: canonicalRecordHash(doc), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    };
+    const pinned = loadPinnedCorrections(single, () => bytes);
+    expect(pinned.ok).toBe(true);
+    const loaded = pinned.records[0]!;
+    // An evidence record is READ, not overridden: it gets no typed record.
+    expect(loaded.record).toBeNull();
+    expect(loaded.document.runId).toBe(RUN18);
+  });
+
+  it('rejects a record whose declared kind disagrees with its pin', () => {
+    const bytes = repoFile(FIXTURE_RUN19);
+    const doc = JSON.parse(bytes) as Record<string, unknown>;
+    const lying: CorrectionsManifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [{
+        id: 'run19', kind: 'retention-binding', root: 'repo', path: 'x.json',
+        sha256: sha256(bytes), canonicalId: canonicalRecordHash(doc), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    };
+    const pinned = loadPinnedCorrections(lying, () => bytes);
+    expect(pinned.ok).toBe(false);
+    expect(pinned.failures[0]!.disposition.reason).toBe('artifact-binding-mismatch');
+  });
+});
+
+describe('D22: what the consumer may publish', () => {
+  /** The real run19 correction, with an evidence resolver the test controls. */
+  function run19Consumer(resolveEvidence: (binding: { path: string }) => string | null) {
+    const bytes = repoFile(FIXTURE_RUN19);
+    const doc = JSON.parse(bytes) as Record<string, unknown>;
+    const single: CorrectionsManifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [{
+        id: 'run19', kind: 'append-only-lifecycle-correction', root: 'repo', path: 'x.json',
+        sha256: sha256(bytes), canonicalId: canonicalRecordHash(doc), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    };
+    const pinned = loadPinnedCorrections(single, () => bytes, {
+      mapping: { terminalCause: 'unknown', operationalStatus: 'interrupted' },
+    });
+    return { pinned, report: consumeRunReport<CorrectableRow>({
+      runId: RUN19,
+      rows: [{
+        runId: RUN19,
+        outcomes: { operationalStatus: 'complete', candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: true },
+        taskOutcome: { operationalStatus: 'complete', execution: { terminalCause: 'complete' } },
+      }],
+      original: { 'execution.terminalCause': 'complete', operationalStatus: 'complete', 'table.operationalCompletionRate': 1 },
+      corrections: pinned,
+      resolveEvidence,
+    }) };
+  }
+
+  it('never republishes the retracted completion rate of 1 when artifacts are unresolvable', () => {
+    // The run19 record names six private native artifacts that were never
+    // exported, so no consumer in this checkout can re-hash them.
+    const { report } = run19Consumer(() => null);
+    expect(report.state.applied).toBe(false);
+    expect(report.state.completionRateWithheld).toBe(true);
+    expect(report.state.correctedCompletionRate).toBeNull();
+    expect(report.state.historicCompletionRate).toBe(1);
+    // The rows are untouched: nothing qualified, so nothing is asserted.
+    expect(report.correctedRows[0]!.outcomes!.operationalStatus).toBe('complete');
+    expect(JSON.stringify(report.rawRows)).toBe(JSON.stringify(report.correctedRows));
+  });
+
+  it('reports the authoritative terminal verbatim beside the mapped value', () => {
+    const { report } = run19Consumer(() => null);
+    const annotation = report.state.annotations.find((a) => a.field === 'execution.authoritativeNativeTerminal');
+    // Withheld here (artifacts unresolvable), so it must NOT be projected as
+    // a value; the selection projection is what carries the origin.
+    expect(annotation).toBeUndefined();
+    expect(report.state.withheld.map((w) => w.field)).toContain('execution.authoritativeNativeTerminal');
+  });
+
+  it('keeps an unverified pin out of the record set entirely', () => {
+    const bytes = repoFile(FIXTURE_RUN19);
+    const doc = JSON.parse(bytes) as Record<string, unknown>;
+    const single: CorrectionsManifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [{
+        id: 'run19', kind: 'append-only-lifecycle-correction', root: 'repo', path: 'x.json',
+        sha256: sha256(bytes), canonicalId: canonicalRecordHash(doc), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    };
+    // Identity drift: the bytes are right, the pinned canonicalId is not.
+    const drifted: CorrectionsManifest = { ...single, entries: [{ ...single.entries[0]!, canonicalId: 'a'.repeat(64) }] };
+    const pinned = loadPinnedCorrections(drifted, () => bytes, { mapping: { terminalCause: 'unknown', operationalStatus: 'interrupted' } });
+    expect(pinned.ok).toBe(false);
+    expect(pinned.records).toHaveLength(0);
+    expect(pinned.failures[0]!.disposition.reason).toBe('artifact-binding-mismatch');
+  });
+
+  it('treats an unapproved authority as unresolved rather than selecting', () => {
+    const bytes = repoFile(FIXTURE_RUN19);
+    const doc = JSON.parse(bytes) as Record<string, unknown>;
+    const single: CorrectionsManifest = {
+      schemaVersion: 1,
+      // An authority that is NOT the manifest-approved one.
+      approvedAuthorities: ['someone-else'],
+      entries: [{
+        id: 'run19', kind: 'append-only-lifecycle-correction', root: 'repo', path: 'x.json',
+        sha256: sha256(bytes), canonicalId: canonicalRecordHash(doc), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    };
+    const pinned = loadPinnedCorrections(single, () => bytes, { mapping: { terminalCause: 'unknown', operationalStatus: 'interrupted' } });
+    const report = consumeRunReport<CorrectableRow>({
+      runId: RUN19,
+      rows: [{ runId: RUN19, outcomes: { operationalStatus: 'complete' } }],
+      original: { 'table.operationalCompletionRate': 1 },
+      corrections: pinned,
+      resolveEvidence: () => null,
+    });
+    expect(report.state.applied).toBe(false);
+    expect(report.state.withheld.length).toBeGreaterThan(0);
+  });
+});
+
+describe('D22: retention consumption reconciles by evidence, never by recency', () => {
+  function retentionCase(state: 'absent' | 'retained') {
+    const doc = { runId: RUN18, fullCandidateAvailable: state === 'absent' ? false : true };
+    const bytes = JSON.stringify(doc);
+    const single: CorrectionsManifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [{
+        id: `r-${state}`, kind: 'retention-binding', root: 'repo', path: `r-${state}.json`,
+        sha256: sha256(bytes), canonicalId: canonicalRecordHash(doc), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    };
+    return { single, state, resolve: (() => bytes) as (entry: ManifestEntry) => string };
+  }
+
+  it('returns null for a run no pinned record covers', () => {
+    const { single, resolve } = retentionCase('absent');
+    const pinned = loadPinnedCorrections(single, resolve);
+    expect(consumeRetention({ runId: RUN21, corrections: pinned }).view).toBeNull();
+  });
+
+  it('fails closed to null when two records contradict each other', () => {
+    const absent = retentionCase('absent');
+    const retained = retentionCase('retained');
+    const merged: CorrectionsManifest = { ...absent.single, entries: [...absent.single.entries, ...retained.single.entries] };
+    const bytesById: Record<string, string> = {
+      'r-absent': JSON.stringify({ runId: RUN18, fullCandidateAvailable: false }),
+      'r-retained': JSON.stringify({ runId: RUN18, fullCandidateAvailable: true }),
+    };
+    const pinned = loadPinnedCorrections(merged, (entry) => bytesById[entry.id] ?? null);
+    const consumed = consumeRetention({ runId: RUN18, corrections: pinned });
+    // retained vs absent is a real contradiction. The consumer does not pick a
+    // winner by timestamp; the resource goes to unknown and the view is null.
+    expect(consumed.view).toBeNull();
+    expect(consumed.blockers.map((b) => b.reason)).toContain('conflicting-successors');
+  });
+
+  it('merges a downgrade to unknown without inventing a conflict', () => {
+    const bytesA = JSON.stringify({ runId: RUN18, fullCandidateAvailable: true });
+    const bytesB = JSON.stringify({ runId: RUN18 });
+    const docA = JSON.parse(bytesA) as Record<string, unknown>;
+    const docB = JSON.parse(bytesB) as Record<string, unknown>;
+    const merged: CorrectionsManifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [
+        { id: 'a', kind: 'retention-binding', root: 'repo', path: 'a.json', sha256: sha256(bytesA), canonicalId: canonicalRecordHash(docA), authorityId: AUTHORITY, recordedAt: null },
+        { id: 'b', kind: 'retention-binding', root: 'repo', path: 'b.json', sha256: sha256(bytesB), canonicalId: canonicalRecordHash(docB), authorityId: AUTHORITY, recordedAt: null },
+      ],
+    };
+    const pinned = loadPinnedCorrections(merged, (entry) => (entry.id === 'a' ? bytesA : bytesB));
+    const consumed = consumeRetention({ runId: RUN18, corrections: pinned });
+    expect(consumed.view).not.toBeNull();
+    // A silent second record does not retract the first, and does not conflict.
+    expect(consumed.view!.resources.fullCandidate.state).toBe('retained');
   });
 });

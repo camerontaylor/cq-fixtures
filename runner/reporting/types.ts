@@ -71,6 +71,12 @@ export type DispositionReason =
   | 'supersession-cycle'
   | 'duplicate-record'
   | 'no-approval-proof'
+  /**
+   * A pinned record retires a lifecycle projection but its declared versioned
+   * adapter declined to emit a replacement. The field is KNOWN to be retracted
+   * and has no qualified value, so the original must not stand in for it.
+   */
+  | 'adapter-unmapped'
   | 'scope-not-campaign-wide';
 
 /** One recorded disposition for a record, field or dimension. */

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +8,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactStore, sha256 } from '../runner/artifacts/index.ts';
 import { nativeGovernorUsage } from '../runner/budget.ts';
 import { experimentId, suiteTaskId, type ExperimentContext, type TaskOutcome, type TaskOutcomeJudgement } from '../runner/experiment.ts';
-import { aggregate, type ResultRow } from '../runner/aggregate.ts';
+import { aggregate, aggregateCorrected, type ResultRow } from '../runner/aggregate.ts';
+// PK14 / D22 + D77 consumption seam, reached through the PUBLIC runner
+// entrypoint rather than by importing the sidecar internals: if this import
+// ever stops resolving, the wiring has been undone.
+import {
+  consumeRetention,
+  consumeRunReport,
+  consumeStatus,
+  loadPinnedCorrections,
+  projectRetention,
+  type CorrectionsManifest,
+  type ManifestResolver,
+} from '../runner/index.ts';
+import { canonicalRecordHash } from '../runner/reporting/corrections.ts';
 import { runSuite } from '../runner/index.ts';
 import { campaignUsage, sanitizeNativeObservation, type NativeObservation, type InvocationIdentity } from '../runner/native/observation.ts';
 import { regradeCampaignCandidate } from '../runner/regrade.ts';
@@ -628,5 +642,308 @@ describe('campaign envelope', () => {
     expect(sha256(readFileSync(envelopePath))).toBe(savedAttempt.artifact.sha256);
     expect(JSON.parse(readFileSync(envelopePath, 'utf8'))).toEqual(savedAttempt.outcome);
     expect(result.diagnostics.join('\n')).not.toContain('Received undefined');
+  }, 20_000);
+});
+
+// ===========================================================================
+// PK14 / D22 + D77: correction-reporting consumption, end to end.
+//
+// This is the caller regression for the wiring seam. It drives the PUBLIC
+// runner entrypoint the way a report consumer does - load the hash-pinned
+// manifest, resolve pinned bytes, consume corrections for a run, re-aggregate
+// through the ordinary lane - and asserts the D22 behaviours end to end:
+//
+//   * the run19 timeout correction can never restore the retracted
+//     operationalCompletionRate of 1, in EITHER direction: when its named
+//     artifacts cannot be re-hashed the claim is withheld (null), and when
+//     they can it is RECOMPUTED from corrected rows (0).
+//   * a stale or mismatched record is rejected and the claim is withheld,
+//     rather than the original value being quietly republished.
+//   * run18's lost full candidate stays absent, and never becomes a retained
+//     auth or patch; an unproven resource stays unknown (null), not false.
+//   * live raw rows survive consumption untouched, and correctness / format
+//     conformance / strategy success are never rewritten by a lifecycle
+//     correction.
+//
+// It is a DEVELOPMENT regression for this seam. It is not actual-route
+// evidence and satisfies no campaign acceptance criterion.
+// ===========================================================================
+
+const PK14_AUTHORITY = 'cq-settings-execution-orchestrator';
+const RUN19 = 'cq-s5-final-20260929-19';
+const RUN18 = 'cq-s5-final-20260929-18';
+
+const readRepo = (relative: string): string => readFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url)), 'utf8');
+
+/** The historic run19 row as it was published: complete, rate 1. */
+function run19Row(): ResultRow {
+  return {
+    role: 'fixer-worker', suite: 'fixer-worker', case: 'case-1', model: 'luna-subscription', driver: 'codex-exec',
+    outcome: { score: 0.5, passed: 1, total: 2 }, costUSD: null, wallTimeMs: 1000,
+    tokens: { input: 100, output: 10 },
+    runId: RUN19, timestamp: '2026-09-29T00:00:00.000Z',
+    // Campaign rows carry the experiment identity, which is what makes the
+    // aggregate lane emit the rate and correctness columns this seam corrects.
+    experiment: {
+      campaignId: 'cq', cohortId: 's5', experimentId: RUN19, taskId: 'task-1', repeatId: '0',
+      assignmentId: 'final-profile-g1-cq-s5-final-20260929-19', stageId: 'final', attemptId: '1',
+      track: 'default', strategyId: 's', settingsId: 'set', budgetId: 'b', profileId: 'p', frozenWeight: 1,
+      substrateId: 'sub', judgePin: 'pin',
+    },
+    outcomes: { candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: true, operationalStatus: 'complete' },
+    taskOutcome: {
+      identity: {
+        campaignId: 'cq', cohortId: 's5', experimentId: RUN19, taskId: 'task-1', substrateId: 'sub', track: 'default',
+        repeatId: '0', assignmentId: 'final-profile-g1-cq-s5-final-20260929-19', strategyId: 's', role: 'fixer-worker',
+        budgetId: 'b', frozenWeight: 1, judgeManifest: { sourcePin: 'pin', dependencies: [] },
+      },
+      candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: true, operationalStatus: 'complete',
+      execution: { launched: true, terminalCause: 'complete', sourceInvocationIds: ['d9cd61ba-3ca3-478e-b275-fefca2a41e05'] },
+      stages: [], judgements: [],
+    },
+  } as ResultRow;
+}
+
+const RUN19_HISTORIC = {
+  'execution.terminalCause': 'complete',
+  'operationalStatus': 'complete',
+  'table.operationalCompletionRate': 1,
+};
+
+/**
+ * A test-local manifest + record for the APPLIED path.
+ *
+ * The real run19 correction names six private native artifacts that were never
+ * exported, so no consumer in this checkout can re-hash them and its claims
+ * are (correctly) withheld. To also exercise the path where a correction DOES
+ * qualify, this builds an equivalent record whose named artifacts are bytes the
+ * test controls, so the hash verification is real rather than stubbed.
+ */
+function appliedCase(): { manifest: CorrectionsManifest; resolve: ManifestResolver; artifacts: Record<string, string> } {
+  const artifacts = {
+    reportSha256: 'test artifact: native report\n',
+    taskOutcomeSha256: 'test artifact: task outcome\n',
+  };
+  const record = {
+    schemaVersion: 1,
+    kind: 'append-only-lifecycle-correction',
+    runId: RUN19,
+    assignmentId: 'final-profile-g1-cq-s5-final-20260929-19',
+    invocationId: 'd9cd61ba-3ca3-478e-b275-fefca2a41e05',
+    sourceEvidence: Object.fromEntries(Object.entries(artifacts).map(([name, bytes]) => [name, sha256(bytes)])),
+    authoritativeNativeTerminal: 'timeout',
+    supersededLifecycleProjections: ['execution.terminalCause=complete', 'operationalStatus=complete', 'table.operationalCompletionRate=1'],
+    normalWorkerCompletion: false,
+    processTreeStopped: true,
+  };
+  const bytes = JSON.stringify(record, null, 2);
+  const manifest: CorrectionsManifest = {
+    schemaVersion: 1,
+    approvedAuthorities: [PK14_AUTHORITY],
+    entries: [{
+      id: 'test-run19-lifecycle', kind: 'append-only-lifecycle-correction', root: 'repo', path: 'test-record.json',
+      sha256: sha256(bytes), canonicalId: canonicalRecordHash(record), authorityId: PK14_AUTHORITY, recordedAt: null,
+    }],
+  };
+  return { manifest, resolve: () => bytes, artifacts };
+}
+
+const MAPPING = { terminalCause: 'unknown', operationalStatus: 'interrupted' } as const;
+
+describe('PK14 D22/D77: correction reporting is consumed end to end', () => {
+  it('publishes the run19 timeout correction and recomputes the rate instead of restoring 1', () => {
+    const row = run19Row();
+    const { manifest, resolve, artifacts } = appliedCase();
+    const pinned = loadPinnedCorrections(manifest, resolve, {
+      mapping: { ...MAPPING, completionRows: [{ operationalStatus: 'complete' }] },
+    });
+    expect(pinned.ok, JSON.stringify(pinned.failures)).toBe(true);
+
+    const report = consumeRunReport({
+      runId: RUN19, rows: [row], original: RUN19_HISTORIC, corrections: pinned,
+      resolveEvidence: (binding) => artifacts[binding.path] ?? null,
+    });
+    const tables = aggregateCorrected(report);
+
+    // The correction qualified and landed on the derived row.
+    expect(report.state.applied).toBe(true);
+    expect(report.state.selectionStatus).toBe('selected');
+    expect(report.correctedRows[0]!.outcomes!.operationalStatus).toBe('interrupted');
+    expect(report.correctedRows[0]!.taskOutcome!.execution!.terminalCause).toBe('unknown');
+
+    // The retracted rate is RECOMPUTED as 0. It is never the literal 1, and
+    // the aggregate lane computes it from the corrected rows, not from the
+    // record's own historic value.
+    expect(report.state.historicCompletionRate).toBe(1);
+    expect(report.state.correctedCompletionRate).toBe(0);
+    expect(tables.correctedCompletionRate).toBe(0);
+    const correctedCells = tables.corrected.flatMap((t) => t.cells);
+    expect(correctedCells.every((c) => c.operationalCompletionRate === 0)).toBe(true);
+
+    // The ORIGINAL tables are still there, still carrying the historic value.
+    // Consumption is additive: it never rewrites what was already published.
+    expect(tables.original.flatMap((t) => t.cells).every((c) => c.operationalCompletionRate === 1)).toBe(true);
+  }, 20_000);
+
+  it('keeps live raw rows, and never rewrites correctness, format or strategy success', () => {
+    const row = run19Row();
+    const { manifest, resolve, artifacts } = appliedCase();
+    const pinned = loadPinnedCorrections(manifest, resolve, {
+      mapping: { ...MAPPING, completionRows: [{ operationalStatus: 'complete' }] },
+    });
+    const before = JSON.stringify(row);
+    const report = consumeRunReport({
+      runId: RUN19, rows: [row], original: RUN19_HISTORIC, corrections: pinned,
+      resolveEvidence: (binding) => artifacts[binding.path] ?? null,
+    });
+
+    expect(JSON.stringify(row)).toBe(before);
+    expect(JSON.stringify(report.rawRows[0])).toBe(before);
+    expect(report.rawRows).toHaveLength(1);
+    // A lifecycle correction retracts COMPLETION. The judged outcome stands.
+    const corrected = report.correctedRows[0]!;
+    expect(corrected.outcomes!.candidateCorrectness).toBe(true);
+    expect(corrected.outcomes!.formatConformance).toBe(false);
+    expect(corrected.outcomes!.assignedStrategySuccess).toBe(true);
+    expect(corrected.taskOutcome!.candidateCorrectness).toBe(true);
+    expect(corrected.taskOutcome!.formatConformance).toBe(false);
+    // And the aggregate lane's correctness columns are untouched by it.
+    const cells = aggregateCorrected(report).corrected.flatMap((t) => t.cells);
+    expect(cells.every((c) => c.conditionalCorrectness === 1)).toBe(true);
+    expect(cells.every((c) => c.assignedStrategySuccess === 1)).toBe(true);
+  }, 20_000);
+
+  it('withholds the rate when a named artifact cannot be re-hashed, and never republishes 1', () => {
+    const { manifest, resolve } = appliedCase();
+    const pinned = loadPinnedCorrections(manifest, resolve, {
+      mapping: { ...MAPPING, completionRows: [{ operationalStatus: 'complete' }] },
+    });
+    // The artifacts are NOT supplied. Unresolvable is unresolved - not
+    // "so the correction is unnecessary" and not "so the original still holds".
+    const report = consumeRunReport({
+      runId: RUN19, rows: [run19Row()], original: RUN19_HISTORIC, corrections: pinned,
+      resolveEvidence: () => null,
+    });
+
+    expect(report.state.applied).toBe(false);
+    expect(report.state.selectionStatus).toBe('unresolved');
+    expect(report.state.completionRateWithheld).toBe(true);
+    expect(report.state.correctedCompletionRate).toBeNull();
+    expect(report.state.correctedCompletionRate).not.toBe(1);
+    expect(report.state.withheld.some((w) => w.field === 'table.operationalCompletionRate')).toBe(true);
+    // And the derived rows are the raw rows, because nothing qualified.
+    expect(JSON.stringify(report.correctedRows[0])).toBe(JSON.stringify(report.rawRows[0]));
+  }, 20_000);
+
+  it('rejects a stale record whose bytes no longer match the pin', () => {
+    const { manifest, artifacts } = appliedCase();
+    // Same pin, different bytes: a record that was edited after it was pinned.
+    const tampered = JSON.stringify({ ...JSON.parse('{}'), note: 'rewritten' });
+    const pinned = loadPinnedCorrections(manifest, () => tampered, {
+      mapping: { ...MAPPING, completionRows: [{ operationalStatus: 'complete' }] },
+    });
+    expect(pinned.ok).toBe(false);
+    expect(pinned.records).toHaveLength(0);
+    expect(pinned.failures[0]!.disposition.reason).toBe('artifact-binding-mismatch');
+
+    const report = consumeRunReport({
+      runId: RUN19, rows: [run19Row()], original: RUN19_HISTORIC, corrections: pinned,
+      resolveEvidence: (binding) => artifacts[binding.path] ?? null,
+    });
+    // Nothing qualified, and the historic 1 is reported as the original only.
+    expect(report.state.applied).toBe(false);
+    expect(report.state.correctedCompletionRate).toBe(1);
+    expect(report.state.historicCompletionRate).toBe(1);
+    expect(report.state.blockers.map((b) => b.reason)).toContain('artifact-binding-mismatch');
+  }, 20_000);
+
+  it('rejects a mismatched artifact and withholds the affected claim', () => {
+    const { manifest, resolve, artifacts } = appliedCase();
+    const pinned = loadPinnedCorrections(manifest, resolve, {
+      mapping: { ...MAPPING, completionRows: [{ operationalStatus: 'complete' }] },
+    });
+    const report = consumeRunReport({
+      runId: RUN19, rows: [run19Row()], original: RUN19_HISTORIC, corrections: pinned,
+      // Right artifact name, WRONG bytes: resolved, but the hash differs.
+      resolveEvidence: (binding) => (artifacts[binding.path] === undefined ? null : 'tampered bytes\n'),
+    });
+    expect(report.state.applied).toBe(false);
+    expect(report.state.completionRateWithheld).toBe(true);
+    expect(report.state.correctedCompletionRate).toBeNull();
+    expect(report.state.blockers.map((b) => b.reason)).toContain('artifact-binding-mismatch');
+  }, 20_000);
+
+  it('never reuses the original rate for a lifecycle projection the adapter declined to map', () => {
+    const { manifest, resolve, artifacts } = appliedCase();
+    // No completionRows: the adapter retires the rate but emits no replacement.
+    const pinned = loadPinnedCorrections(manifest, resolve, { mapping: MAPPING });
+    const report = consumeRunReport({
+      runId: RUN19, rows: [run19Row()], original: RUN19_HISTORIC, corrections: pinned,
+      resolveEvidence: (binding) => artifacts[binding.path] ?? null,
+    });
+    // This is the retracted-1 regression: a field with no speaker must not fall
+    // back to the original value, because the record DID retire it.
+    expect(report.state.completionRateWithheld).toBe(true);
+    expect(report.state.correctedCompletionRate).toBeNull();
+    expect(report.state.withheld.some((w) => w.reason === 'adapter-unmapped')).toBe(true);
+  }, 20_000);
+
+  it('states run18 retention per resource and never restores the lost full candidate', () => {
+    const run18 = projectRetention({
+      runId: RUN18,
+      record: JSON.parse(readRepo('runner/boundary/evidence/fallback/run18-retention-audit.public.json')),
+      recordRef: { path: 'runner/boundary/evidence/fallback/run18-retention-audit.public.json', sha256: sha256(readRepo('runner/boundary/evidence/fallback/run18-retention-audit.public.json')) },
+    });
+    const r = run18.resources;
+    // The D22 finding: recoveryRetained covered auth while the candidate was gone.
+    expect(r.fullCandidate.state).toBe('absent');
+    expect(r.patch.state).toBe('retained');
+    // A surviving patch does NOT make auth retained, and the record never
+    // speaks about auth, so auth stays UNKNOWN - not false, not retained.
+    expect(r.auth.state).toBe('unknown');
+    expect(r.taskVolume.state).toBe('absent');
+    expect(r.contextVolume.state).toBe('absent');
+    expect(r.publishedHost.state).toBe('absent');
+    // The conflated historical field is reported, never used as a state.
+    expect(run18.resources.fullCandidate.reason).toMatch(/fullCandidateAvailable=false/);
+  }, 20_000);
+
+  it('consumes run18 retention through the seam and keeps unknown as null', () => {
+    const bytes = readRepo('runner/boundary/evidence/fallback/run18-retention-audit.public.json');
+    const record = JSON.parse(bytes);
+    const manifest: CorrectionsManifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [PK14_AUTHORITY],
+      entries: [{
+        id: 'run18-retention-audit', kind: 'retention-binding', root: 'repo',
+        path: 'runner/boundary/evidence/fallback/run18-retention-audit.public.json',
+        sha256: sha256(bytes), canonicalId: canonicalRecordHash(record),
+        authorityId: PK14_AUTHORITY, recordedAt: null,
+      }],
+    };
+    const pinned = loadPinnedCorrections(manifest, () => bytes);
+    expect(pinned.ok).toBe(true);
+
+    const consumed = consumeRetention({ runId: RUN18, corrections: pinned });
+    expect(consumed.view).not.toBeNull();
+    expect(consumed.view!.resources.fullCandidate.state).toBe('absent');
+    expect(consumed.view!.resources.auth.state).toBe('unknown');
+    expect(consumed.view!.resources.patch.state).toBe('retained');
+    // A different run is simply not covered: that is unknown, not "absent".
+    expect(consumeRetention({ runId: 'cq-s5-final-20260929-99', corrections: pinned }).view).toBeNull();
+  }, 20_000);
+
+  it('renders the correction-aware board with per-route scope and the remaining criterion', () => {
+    const route = consumeStatus({
+      asOf: '2026-09-29T12:00:00.000Z',
+      corrections: { ok: true, records: [], verifications: [], failures: [], approvedAuthorities: [PK14_AUTHORITY] },
+      scopes: [{ entryId: 'run21-g1-contract-audit', route: 'final-container-codex-g1', lane: 'actual' }],
+    });
+    // An audit that did not verify leaves the route UNKNOWN, not unqualified.
+    expect(route.unreadEntries).toContain('run21-g1-contract-audit');
+    expect(route.view.routes[0]!.dimensions.actualRouteQualified.value).toBeNull();
+    // A route pass never implies campaign completion.
+    expect(route.view.campaignComplete.value).toBeNull();
+    expect(route.view.campaignComplete.reason).toMatch(/route passes do not imply campaign completion/);
   }, 20_000);
 });

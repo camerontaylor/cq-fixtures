@@ -61,6 +61,53 @@ import { campaignUsage, sanitizeNativeObservation, unavailableObservation, valid
 // Public library surface: the suite loader rides along with the runner.
 export { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
 
+// PK14 / D22 + D77 correction-reporting consumption seam (SEAM-1, granted by
+// the conductor for D22/D77 under a serialized lease over this file,
+// runner/aggregate.ts and test/cq-campaign-contract.test.ts).
+//
+// This is the point at which correction selection stops being a sidecar and
+// becomes report input. A caller loads the hash-pinned manifest, resolves the
+// pinned record bytes, consumes the corrections for a run, and re-aggregates
+// through the ordinary lane. Every step is fail-closed: an unverified pin, a
+// drifted record, an unresolvable source artifact or an out-of-vocabulary value
+// withholds the affected claim instead of restoring the original.
+//
+// The public row and table schemas are NOT changed (SEAM-2 remains ungranted):
+// corrections reach a report through derived rows and through the returned
+// correction state, never through a new schema-owned column.
+export { aggregateCorrected, type CorrectedAggregation } from './aggregate.ts';
+export {
+  consumeRetention,
+  consumeRunReport,
+  consumeStatus,
+  loadPinnedCorrections,
+  CONSUMER_SCHEMA_VERSION,
+  ROW_WRITABLE_CORRECTION_FIELDS,
+  type ConsumedRetention,
+  type ConsumedRoute,
+  type ConsumedRunReport,
+  type ConsumedStatus,
+  type CorrectableRow,
+  type LoadPinnedOptions,
+  type PinnedCorrections,
+  type PinnedFailure,
+  type PinnedRecord,
+  type ReportState,
+} from './reporting/consumer.ts';
+export {
+  approvedAuthorities,
+  manifestEntry,
+  verifyManifest,
+  type CorrectionsManifest,
+  type EntryVerification,
+  type ManifestEntry,
+  type ManifestResolver,
+} from './reporting/manifest.ts';
+export { buildCorrectionAwareBoard, renderBoardMarkdown, type CorrectionAwareBoard } from './reporting/board.ts';
+export { projectRetention, retentionIsFullyAccountedFor, type RetentionView } from './reporting/retention.ts';
+export { projectStatusView, renderStatusLines, type StatusView } from './reporting/status-view.ts';
+export type { ArtifactBinding, Disposition, RetentionState, ResourceKind, SelectionStatus } from './reporting/types.ts';
+
 // The toolkit harness tool surface (ToolkitToolName = read | edit | run): a
 // fixer-worker dispatches with this allowlist in workspace-write mode, since
 // a worker that cannot edit files or run a check cannot fix anything.
@@ -98,13 +145,32 @@ function sweepStaleSessionRecords(now = Date.now()): void {
 
 // Schema validation of OUTPUTS (rows/tables) — nothing leaves runSuite
 // unvalidated. Same Ajv setup as test/schema.test.ts.
+//
+// A schema that will not load is a HARD failure and stays one: a runner whose
+// validators never compiled must refuse to run rather than emit unvalidated
+// rows. The try/catch below therefore re-throws — it names which schema failed
+// instead of surfacing a bare parser message, and it never yields a fallback
+// validator. Note that runner/pipelineMapping.ts and runner/regrade.ts read the
+// same two schemas with a bare JSON.parse and are imported earlier in this
+// graph, so in practice THEY throw first; they are PK02-owned and were left
+// untouched. This helper only makes index.ts's own compile site diagnosable.
+function compileOutputSchema(name: string, relativePath: string): ReturnType<typeof ajv.compile> {
+  let source: string;
+  try {
+    source = readFileSync(new URL(relativePath, import.meta.url), 'utf8');
+  } catch (error) {
+    throw new Error(`compileOutputSchema: cannot read ${name} at ${relativePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    return ajv.compile(JSON.parse(source) as object);
+  } catch (error) {
+    throw new Error(`compileOutputSchema: ${name} at ${relativePath} is not a valid JSON Schema: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 const ajv = ajvFormats(new Ajv2020({ allErrors: true }));
-const validateRow = ajv.compile(
-  JSON.parse(readFileSync(new URL('../schema/result-row.schema.json', import.meta.url), 'utf8')) as object,
-);
-const validateTable = ajv.compile(
-  JSON.parse(readFileSync(new URL('../schema/comparison-table.schema.json', import.meta.url), 'utf8')) as object,
-);
+const validateRow = compileOutputSchema('result-row', '../schema/result-row.schema.json');
+const validateTable = compileOutputSchema('comparison-table', '../schema/comparison-table.schema.json');
 
 function validateJudgeManifest(repoRoot: string, manifest: JudgeDependencyManifest): string {
   if (manifest.sourcePin.trim() === '' || manifest.dependencies.length === 0) {

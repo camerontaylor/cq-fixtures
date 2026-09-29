@@ -75,7 +75,7 @@ export function scoreFixerWorker(
     throw new Error(`scoreFixerWorker: probe kind must be 'check-rerun', got '${suiteCase.probe.kind}'`);
   }
   const checkAbs = join(repoRoot, suiteCase.probe.check);
-  const res = spawnSync('node', [checkAbs], {
+  const res = spawnSync('node', ['--experimental-transform-types', checkAbs], {
     cwd: workspace, encoding: 'utf8', timeout: timeoutMs,
     ...(baselineRef !== undefined || hostCheckEnvironment !== undefined
       ? { env: {

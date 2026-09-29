@@ -28,7 +28,7 @@
       "split": "calibration",
       "pristineBaselineIntegrity": "fresh initial Git commit; grader compares candidate against its recorded base SHA and checks only src/settings.mjs changed; task factory's ModelSpec is caller supplied",
       "runSuiteAdapter": "runner/workflow-corpus/review-loop-suite.ts exports a typed FixerSuiteCase adapter and bundle materializer; wrapped native Driver preserves observation/control/capability seams, pins the materialized baseline before delegation, keeps candidate HEAD and index intact, and the independent host probe passes",
-      "boundedOracle": "candidate module import and behavior child has a 5000ms wall limit; visible check is separately limited to 10000ms; process/host confinement is not claimed",
+      "boundedOracle": "Only the candidate settings module is staged into a fresh sanitized Git snapshot and invoked with executeProtectedJudgeChild (5000ms); visible setting regression vectors use that protected result, while display preservation is checked against the pinned unchanged source bytes. Parent expected values stay host-side and stdout is private/untrusted.",
       "oracleImplementation": "runner/workflow-corpus/review-loop-judge.ts#judgeReviewLoopRepairTask and #judgeReviewLoopWorkspace",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/review-loop-oracle-pin.json",
       "candidateIdentity": "full commit SHA, recorded baseline ancestry, clean Git state, and SHA256 of actual binary patch are separately reported from semantic conformance"
@@ -49,8 +49,8 @@
       "pristineBaselineIntegrity": "fresh Git commit SHA captured at materialization; initial module and failure fixture are committed before operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeAnalysisRemediationProposal",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "da1a50fa0968a5fd0cd3f2aac997b8f871daf34f92f102c9648fa722ffb2266d",
-      "boundedOracle": "candidate module runs in a child process with a 5000ms wall limit; process/host confinement is not claimed"
+      "oraclePinSha256": "975487df5a18e33ccc8fc83c037d3a8b0dcc51f8806337dad4a29a0ab93a71e4",
+      "boundedOracle": "Candidate module is staged alone in a fresh sanitized Git snapshot and invoked with executeProtectedJudgeChild (5000ms); parent expected values remain host-side and stdout is private/untrusted."
     },
     {
       "id": "analysis-unicode-label-limit-01",
@@ -68,8 +68,8 @@
       "pristineBaselineIntegrity": "fresh Git commit SHA captured at materialization; source and failure fixture are committed before operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeAnalysisRemediationProposal",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "da1a50fa0968a5fd0cd3f2aac997b8f871daf34f92f102c9648fa722ffb2266d",
-      "boundedOracle": "candidate module runs in a child process with a 5000ms wall limit; process/host confinement is not claimed"
+      "oraclePinSha256": "975487df5a18e33ccc8fc83c037d3a8b0dcc51f8806337dad4a29a0ab93a71e4",
+      "boundedOracle": "Candidate module is staged alone in a fresh sanitized Git snapshot and invoked with executeProtectedJudgeChild (5000ms); parent expected values remain host-side and stdout is private/untrusted."
     },
     {
       "id": "ratchet-lower-error-count-01",
@@ -87,7 +87,7 @@
       "pristineBaselineIntegrity": "fresh source commit SHA precedes baseline capture; task records the full commit SHA",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeRatchetOutcomes",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "da1a50fa0968a5fd0cd3f2aac997b8f871daf34f92f102c9648fa722ffb2266d"
+      "oraclePinSha256": "975487df5a18e33ccc8fc83c037d3a8b0dcc51f8806337dad4a29a0ab93a71e4"
     },
     {
       "id": "ratchet-higher-coverage-01",
@@ -105,7 +105,7 @@
       "pristineBaselineIntegrity": "fresh source commit SHA precedes baseline capture; task records the full commit SHA",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeRatchetOutcomes",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "da1a50fa0968a5fd0cd3f2aac997b8f871daf34f92f102c9648fa722ffb2266d"
+      "oraclePinSha256": "975487df5a18e33ccc8fc83c037d3a8b0dcc51f8806337dad4a29a0ab93a71e4"
     },
     {
       "id": "merge-unicode-label-limit-01",
@@ -117,13 +117,13 @@
       "substrateFamily": "local-merge-worktree-v1",
       "templateFamily": "merge-settings-conflict-v1",
       "faultFamily": "unicode-codepoint-limit-missing-v1",
-      "oracle": "bounded host child process checks task-specific label vectors, exact source allowlist, and baseline ancestry",
+      "oracle": "protected judge child checks task-specific label vectors; host independently checks exact source allowlist and baseline ancestry",
       "adequacyEvidence": "unrepaired baseline is red; task Driver commits repaired source and independent host judge is green",
       "split": "calibration",
       "pristineBaselineIntegrity": "full local Git baseline commit SHA captured before the operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
+      "oraclePinSha256": "7a78440d0e0d9337ac2570fac5f290ed8e5ed8cbb92d564df1cd4630b36f7e05"
     },
     {
       "id": "merge-reserved-prefix-01",
@@ -135,13 +135,13 @@
       "substrateFamily": "local-merge-reserved-prefix-v1",
       "templateFamily": "merge-settings-conflict-v1",
       "faultFamily": "reserved-system-prefix-accepted-v1",
-      "oracle": "bounded host child process checks ordinary, whitespace, reserved-prefix, and non-string behavior plus source scope",
+      "oracle": "protected judge child checks ordinary, whitespace, reserved-prefix, and non-string behavior; host independently checks source scope",
       "adequacyEvidence": "unrepaired baseline accepts sys: labels and fails the independent oracle; repaired committed candidate passes",
       "split": "calibration",
       "pristineBaselineIntegrity": "full local Git baseline commit SHA captured before the operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
+      "oraclePinSha256": "7a78440d0e0d9337ac2570fac5f290ed8e5ed8cbb92d564df1cd4630b36f7e05"
     },
     {
       "id": "fleet-nested-test-unit-01",
@@ -159,7 +159,7 @@
       "pristineBaselineIntegrity": "baseline commit captured before changed-file commit",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeFleetSweepPlan",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
+      "oraclePinSha256": "7a78440d0e0d9337ac2570fac5f290ed8e5ed8cbb92d564df1cd4630b36f7e05"
     },
     {
       "id": "fleet-service-leaf-test-01",
@@ -177,7 +177,7 @@
       "pristineBaselineIntegrity": "baseline commit captured before changed-file commit",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeFleetSweepPlan",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
+      "oraclePinSha256": "7a78440d0e0d9337ac2570fac5f290ed8e5ed8cbb92d564df1cd4630b36f7e05"
     }
   ],
   "operationIntegrationOnly": [
@@ -186,8 +186,12 @@
       "scenario": "merge-conflict-local-repair",
       "substrate": "fresh temporary Git repository",
       "modelAction": "injected Driver edits and commits the conflict worktree source",
-      "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace checks pinned baseline ancestry, exact source allowlist, and Unicode label behavior in a bounded child process",
-      "identity": { "sourceId": "cq-settings.merge-worktree-seed.v1", "baselineId": "cq-settings.merge-conflict.baseline.v1", "oracleId": "cq-settings.merge-label-limit.oracle.v1" },
+      "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace uses executeProtectedJudgeChild for Unicode label behavior and host Git checks for pinned baseline ancestry and exact source allowlist",
+      "identity": {
+        "sourceId": "cq-settings.merge-worktree-seed.v1",
+        "baselineId": "cq-settings.merge-conflict.baseline.v1",
+        "oracleId": "cq-settings.merge-label-limit.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     },
@@ -197,7 +201,11 @@
       "substrate": "fresh temporary Git monorepo with changed test file and untouched CLI package",
       "action": "exported planner consumes actual git diff evidence and selects the deepest package owner",
       "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeFleetSweepPlan independently checks captured changed paths and deepest package ownership",
-      "identity": { "sourceId": "cq-settings.fleet-nested-package-seed.v1", "baselineId": "cq-settings.fleet-dirty-test.baseline.v1", "oracleId": "cq-settings.fleet-deepest-owner.oracle.v1" },
+      "identity": {
+        "sourceId": "cq-settings.fleet-nested-package-seed.v1",
+        "baselineId": "cq-settings.fleet-dirty-test.baseline.v1",
+        "oracleId": "cq-settings.fleet-deepest-owner.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     },
@@ -207,7 +215,11 @@
       "substrate": "fresh temporary package tree with product source and test files",
       "action": "exported test-fix plan builder emits a test-fix unit from test and product files",
       "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeTestFixScopePlan independently reproduces and identifies the broad package-prefix staging leak; passed means the fault was detected, not that the unsafe plan is accepted",
-      "identity": { "sourceId": "cq-settings.testfix-scope-seed.v1", "baselineId": "cq-settings.testfix-broad-scope.baseline.v1", "oracleId": "cq-settings.testfix-scope-risk.oracle.v1" },
+      "identity": {
+        "sourceId": "cq-settings.testfix-scope-seed.v1",
+        "baselineId": "cq-settings.testfix-broad-scope.baseline.v1",
+        "oracleId": "cq-settings.testfix-scope-risk.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     },
@@ -217,14 +229,18 @@
       "substrate": "host-authored failure set with repeated signature",
       "modelAction": "injected Driver returns a concrete remediation proposal",
       "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeAnalysisRemediationProposal checks proposal content against the empty-setting defect; operation policy assertions remain separate",
-      "identity": { "sourceId": "cq-settings.analysis-setting-failures.v1", "baselineId": "cq-settings.analysis-duplicate-errors.baseline.v1", "oracleId": "cq-settings.analysis-remediation.oracle.v1" },
+      "identity": {
+        "sourceId": "cq-settings.analysis-setting-failures.v1",
+        "baselineId": "cq-settings.analysis-duplicate-errors.baseline.v1",
+        "oracleId": "cq-settings.analysis-remediation.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     },
     {
       "family": "analyze-remediate",
       "scenario": "alternative-remediation-behavior-oracle",
-      "substrate": "bounded child process evaluating host-supplied candidate module bytes",
+      "substrate": "protected judge child evaluating host-supplied candidate module bytes; parent expected values remain outside the candidate snapshot",
       "action": "host judge evaluates a distinct remediation implementation without requiring reference patch identity",
       "oracle": "same exported analysis oracle checks empty, whitespace-only, non-string, and valid settings behavior with a five-second child-process limit",
       "campaignTask": false,
@@ -236,7 +252,11 @@
       "substrate": "fresh temporary workspace with an on-disk captured baseline",
       "action": "exported capture/check ops compare live metric evidence; monotonic guard examines baseline diff",
       "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeRatchetOutcomes checks live tightened/regressed verdicts and monotonicity results for both directions",
-      "identity": { "sourceId": "cq-settings.ratchet-metric-seed.v1", "baselineId": "cq-settings.ratchet-captured-metric.baseline.v1", "oracleId": "cq-settings.ratchet-monotonicity.oracle.v1" },
+      "identity": {
+        "sourceId": "cq-settings.ratchet-metric-seed.v1",
+        "baselineId": "cq-settings.ratchet-captured-metric.baseline.v1",
+        "oracleId": "cq-settings.ratchet-monotonicity.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     }
@@ -272,18 +292,30 @@
     "campaignDisposition": "Keep dd247ca and its tarball unchanged for the first G1 epoch. A future package claim must identify a new version and source epoch."
   },
   "wholeWorkflowG2Readiness": {
-    "status": "blocked",
-    "blocker": "Host-side execFileSync(node) evaluation of candidate code is not protected execution.",
-    "dependency": "Boundary owner is implementing runner/boundary/judge-child.ts with an exact pinned native image and dedicated VM/daemon; candidate volume is the only read-only mount; execution is nonroot with no credentials, host mounts, or network; timeout kills and awaits the container namespace before volume disposal.",
-    "expectedCallerApi": "executeProtectedJudgeChild({candidateRoot, module, exportName, requests}) -> private {stdout: Buffer, exitCode, timedOut, containerAbsentVerified, scope:'protected-candidate-execution'}; module is a relative js/mjs/cjs/ts path; requests are unknown[][] with at most 128 cases and 64 KiB total; timeoutMs is at most 15000.",
-    "callerAdaptation": "Wait for the boundary implementation commit and published exact contract. Do not edit oracle code or run candidate-code/model evaluation before adapting callers to the protected executor.",
-    "stdoutPolicy": "The generic bootstrap imports the candidate module and invokes the named export with each request tuple. Protected child stdout remains private/untrusted; parse bounded behavior results into host booleans/logs and never put raw stdout in model context."
+    "status": "pending",
+    "blocker": "The post-export candidate oracle calls are protected, but whole actual-route G2 is not established.",
+    "dependency": "Actual Responses/native route and complete native provider/tool/extension inventory; exact correlated native start/result receipts with typed outcomes; authoritative consumed-ledger verification; distinct actual-route G2 admission after final-container G1; awaited namespace teardown/reap evidence.",
+    "protectedCandidateOracleCallers": "Adapted in review-loop-judge.ts and operation-workflow-judges.ts using executeProtectedJudgeChild from runner/boundary/judge-child.ts; only candidate module bytes are staged into sanitized temporary Git snapshots.",
+    "callerAdaptation": "Complete for delivered review, analyze/remediate, and merge semantic judges. This local adaptation and worker-only success do not grant whole-workflow G2.",
+    "stdoutPolicy": "Protected child stdout is private/untrusted. Callers parse bounded vectors, compare them against parent-side expected values, and report only fixed failure labels; raw stdout is never returned in task/model context."
   },
   "heldoutReserve": {
     "reservedBeforeTuning": true,
-    "completeSubstrateFamilies": ["campaign-settings-module-v2", "analysis-semver-config-v2", "ratchet-missing-baseline-v2"],
-    "completeTemplateFamilies": ["review-anchored-limit-v2", "analysis-tsconfig-fixture-v2", "ratchet-config-proposal-v2"],
-    "completeFaultFamilies": ["missing-grapheme-bound-v2", "duplicate-analysis-signature-v2", "ratchet-direction-change-v2"],
+    "completeSubstrateFamilies": [
+      "campaign-settings-module-v2",
+      "analysis-semver-config-v2",
+      "ratchet-missing-baseline-v2"
+    ],
+    "completeTemplateFamilies": [
+      "review-anchored-limit-v2",
+      "analysis-tsconfig-fixture-v2",
+      "ratchet-config-proposal-v2"
+    ],
+    "completeFaultFamilies": [
+      "missing-grapheme-bound-v2",
+      "duplicate-analysis-signature-v2",
+      "ratchet-direction-change-v2"
+    ],
     "heldoutSubstratesMaterialized": 0,
     "heldoutOracleContentIncluded": false,
     "isolationClaim": false,
@@ -291,13 +323,13 @@
   },
   "evidence": {
     "redGreen": "test/campaign-workflows.test.ts: review seed fails and two committed repairs pass; two analyze/remediate seeds fail independent semantic probes and behaviorally distinct alternatives pass; two merge seeds fail and committed candidates pass; both ratchet directions accept improvements and reject regressions; both fleet plans select independently expected owners",
-    "independentOracle": "exported host judge; expected behavior and scope assertions are absent from the task worktree; candidate patch hash identifies captured bytes but is not compared with a reference solution",
+    "independentOracle": "exported host judge; expected behavior and scope assertions are absent from the task worktree; candidate behavior runs only through the protected judge child; candidate patch hash identifies captured bytes but is not compared with a reference solution",
     "outputFormatIndependence": "valid no-op claim grades incorrect; malformed/throwing Drivers with correct committed edits grade correct",
     "testDiscovery": "npx vitest run test/campaign-workflows.test.ts",
     "scenarioCountMeaning": "23 expanded Vitest workflow cases including review output-fault cases, runSuite adaptation, two analysis tasks, two deterministic ratchet tasks, two merge tasks, and two fleet tasks; this count is not 23 independent model tasks",
     "independentSubstrates": "thirteen fresh local Git/filesystem substrates across six workflow families; nine have independently judged task bundles (one review, two analysis, two ratchet, two merge, two fleet); test-fix remains an integration check",
     "hostOracleExpansion": "all five non-review operations invoke family-specific host judges; analyze/remediate and merge each have two runnable local Driver tasks; ratchet and fleet each have two deterministic operation tasks; test-fix remains no-role-call evidence because the selected plan has a source-scope leak",
-    "reviewLoopPin": "review-loop-oracle-pin.json pins review-loop-judge.ts and review-loop-task.ts by content SHA256; review-loop-pin.ts exposes the equivalent API and the bundle supplies materialized baseline SHA plus oracle pin for S1 host-check scoring",
+    "reviewLoopPin": "review-loop-oracle-pin.json pins review-loop-judge.ts, the protected judge-child implementation, and review-loop-task.ts by content SHA256; the bundle supplies materialized baseline SHA plus oracle pin for S1 host-check scoring",
     "scopeLimit": "five model Driver calibration tasks across three families and four deterministic operation tasks; these are visible calibration only, with no held-out isolation claim; test-fix scope remains unsafe and is recorded as a detected toolkit limitation"
   }
 }

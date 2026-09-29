@@ -142,7 +142,7 @@ export async function executeMergeConflictTask(task: MergeConflictTask, driver: 
   });
 }
 
-export function judgeMergeConflictTask(task: MergeConflictTask): WorkflowOracleReport {
+export async function judgeMergeConflictTask(task: MergeConflictTask): Promise<WorkflowOracleReport> {
   const definition = MERGE_CONFLICT_TASKS[task.variant];
   const contract: MergeConflictContract = {
     sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId,

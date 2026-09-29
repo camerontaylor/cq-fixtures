@@ -192,7 +192,7 @@ describe('cq-settings bounded workflow corpus', () => {
     }
   }, 120_000);
 
-  it('bounds arbitrary candidate-module execution in the host judge', async () => {
+  it('runs arbitrary candidate-module probes only through the protected judge child', async () => {
     const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
     try {
       await writeFile(join(task.worktreePath, 'src/settings.mjs'), 'while (true) {}\n');
@@ -203,7 +203,7 @@ describe('cq-settings bounded workflow corpus', () => {
         oracleId: task.oracleId,
       });
       expect(report.passed).toBe(false);
-      expect(report.behavior.failures.some((failure) => failure.includes('bounded candidate module probe failed'))).toBe(true);
+      expect(report.behavior.failures.some((failure) => failure.includes('protected candidate module probe failed'))).toBe(true);
       expect(report.visibleTests.passed).toBe(false);
     } finally {
       await task.cleanup();
@@ -293,7 +293,7 @@ describe('cq-settings bounded workflow corpus', () => {
         model: bundle.modelSpec.model,
         provider: bundle.modelSpec.provider,
         driverName: 'subprocess',
-        checkTimeoutMs: 20_000,
+        checkTimeoutMs: 60_000,
         artifactRoot: join(bundle.repoRoot, 'artifacts'),
         experiment,
         hostCheckScoringEnvironment: bundle.hostCheckScoringEnvironment,
@@ -331,7 +331,9 @@ describe('cq-settings bounded workflow corpus', () => {
         oracleId: REVIEW_LOOP_ORACLE_ID,
         dependencies: expect.arrayContaining([
           expect.objectContaining({ path: 'runner/workflow-corpus/review-loop-judge.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+          expect.objectContaining({ path: 'runner/workflow-corpus/review-loop-pin.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
           expect.objectContaining({ path: 'campaigns/cq-settings/corpus/review-loop-task.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+          expect.objectContaining({ path: 'runner/boundary/judge-child.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
         ]),
       });
       expect(bundle.oraclePin.sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -473,7 +475,7 @@ describe('cq-settings bounded workflow corpus', () => {
       });
 
       expect(expectOk(result).decision).toBe('acted');
-      const mergeReport = judgeMergeConflictWorkspace(repoRoot, baseline);
+      const mergeReport = await judgeMergeConflictWorkspace(repoRoot, baseline);
       expect(mergeReport.failures, JSON.stringify(mergeReport)).toEqual([]);
       expect(mergeReport).toMatchObject({
         passed: true,
@@ -630,7 +632,7 @@ describe('cq-settings bounded workflow corpus', () => {
       modelSpec: { model: 'offline-analysis', provider: 'fake' },
     });
 
-    expect(judgeAnalysisRemediationProposal(expectOk(proposal).structuredOutput)).toMatchObject({
+    expect(await judgeAnalysisRemediationProposal(expectOk(proposal).structuredOutput)).toMatchObject({
       passed: true,
       oracleId: 'cq-settings.analysis-remediation.oracle.v1',
     });
@@ -700,8 +702,8 @@ describe('cq-settings bounded workflow corpus', () => {
     }
   }, 30_000);
 
-  it('accepts a distinct behaviorally correct remediation implementation', () => {
-    const report = judgeAnalysisRemediationProposal({
+  it('accepts a distinct behaviorally correct remediation implementation', async () => {
+    const report = await judgeAnalysisRemediationProposal({
       summary: 'Reject blank settings at the shared validation boundary.',
       patch: 'update isValidSetting in src/settings.ts to reject trimmed empty text',
       candidateSource: `export function isValidSetting(value) {
@@ -710,7 +712,7 @@ describe('cq-settings bounded workflow corpus', () => {
 `,
     });
     expect(report).toMatchObject({ passed: true, oracleId: 'cq-settings.analysis-remediation.oracle.v1' });
-  }, 10_000);
+  }, 60_000);
 
   it.each([
     {
@@ -753,13 +755,13 @@ describe('cq-settings bounded workflow corpus', () => {
       expect(invocations[0]?.modelSpec).toEqual(modelSpec);
       expect(invocations[0]?.toolPolicy).toEqual({ allow: [], mode: 'none' });
       expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'read-only' });
-      const baseline = judgeAnalysisRemediationProposal({
+      const baseline = await judgeAnalysisRemediationProposal({
         summary: 'Keep existing source behavior.',
         patch: 'src/settings.ts: no-op',
         candidateSource: readFileSync(join(task.workspacePath, 'src/settings.ts'), 'utf8'),
       }, contract);
       expect(baseline.passed).toBe(false);
-      const alternative = judgeAnalysisRemediationProposal({
+      const alternative = await judgeAnalysisRemediationProposal({
         summary: 'Validate after normalizing at the boundary.',
         patch: 'src/settings.ts: use a helper that checks normalized setting semantics',
         candidateSource: variant === 'whitespaceSetting'
@@ -771,7 +773,7 @@ describe('cq-settings bounded workflow corpus', () => {
     } finally {
       await task.cleanup();
     }
-  }, 30_000);
+  }, 120_000);
 
   it.each(['lowerErrorCount', 'higherCoverage'] as const)(
     'runs captured-baseline/check/monotonicity exports for $variant with independent direction oracle', async (variant) => {
@@ -820,18 +822,18 @@ describe('cq-settings bounded workflow corpus', () => {
         },
       };
       try {
-        expect(judgeMergeConflictTask(task).passed).toBe(false);
+        expect((await judgeMergeConflictTask(task)).passed).toBe(false);
         expect(task.oraclePin).toMatch(/^[a-f0-9]{64}$/);
         const outcome = await executeMergeConflictTask(task, driver);
         expect(expectOk(outcome).decision).toBe('acted');
-        const report = judgeMergeConflictTask(task);
+        const report = await judgeMergeConflictTask(task);
         expect(report).toMatchObject({ passed: true, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId });
         expect(task.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
       } finally {
         await task.cleanup();
       }
     },
-    30_000,
+    90_000,
   );
 
   it.each(['nestedUnit', 'serviceLeaf'] as const)(

@@ -4,12 +4,24 @@
   "dependencies": [
     {
       "path": "runner/workflow-corpus/review-loop-judge.ts",
-      "sha256": "4c82554f628e0b7a7ea0b3acca71ad43228cdee4839b5e87f641642c4af03cc4"
+      "sha256": "3919784b7d0820e97698b519877e9db156812f28f2d725d9f48ba0c78a606223"
+    },
+    {
+      "path": "runner/workflow-corpus/review-loop-pin.ts",
+      "sha256": "b9bfae8d0839ca73b36023b42ccf156d9946868faec139dee5478cdd24b339f3"
     },
     {
       "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
       "sha256": "b07b57dc59db92d18d5f93621ed9db202b3c057c72c5cacca5f4177d4ef7984c"
+    },
+    {
+      "path": "runner/boundary/judge-child.ts",
+      "sha256": "62a4c5a49122add1bce86531dfd4e47592db5efe4912b99ecde95ddbe7847d6a"
+    },
+    {
+      "path": "runner/boundary/task-tree.ts",
+      "sha256": "2baca75b07bbb185753f80c4db83f5405586c33788bb0a52ae8f31538259179f"
     }
   ],
-  "sha256": "1401ce8e2e1f52845fcfbd10f4f191537a6afd979582b5f0568697313dba8552"
+  "sha256": "eba81317198a52dff7fceba98a9c96b310ace7b992e6d984e52c8bc39b44292e"
 }

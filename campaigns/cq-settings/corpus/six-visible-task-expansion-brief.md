@@ -9,13 +9,16 @@ oracle independent of task text and candidate output formatting. These are
 not six role-adequacy claims and must not be produced by renaming current
 variants.
 
-**Execution is gated.** The whole-workflow G2 blocker is the existing
-host-side `execFileSync(node)` execution of candidate code. Wait for the
-boundary owner's protected judge-child implementation, then adapt corpus
-callers to its typed API. Do not edit `runner/boundary`, shared runner judges,
-oracles in `runner/workflow-corpus`, and do not run model/candidate evaluations
-before that integration is available. Never pass reference code, hidden tests,
-oracle data, or raw protected-child stdout into the task or model context.
+**Execution status.** Existing review, analyze/remediate, and merge semantic
+oracle callers now evaluate candidate code through the protected judge-child
+API. Parent-side expected values and references remain outside candidate
+snapshots, and protected stdout remains private/untrusted. This removes the
+unrestricted host candidate-execution blocker for delivered corpus oracles.
+Whole actual-route G2 remains pending on final native-route admission,
+correlated native receipts, the authoritative consumed ledger, and
+final-container G1. Do not run model calls for this local corpus work. Never
+pass reference code, hidden tests, oracle data, or raw protected-child stdout
+into task or model context.
 
 ## Six substrate designs
 

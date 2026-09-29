@@ -1,6 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
-import { join } from 'node:path';
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { executeProtectedJudgeChild } from '../boundary/judge-child.ts';
+import { SAFE_GIT_CONFIG } from '../boundary/task-tree.ts';
 
 export const OPERATION_WORKFLOW_IDENTITIES = {
   merge: { sourceId: 'cq-settings.merge-worktree-seed.v1', baselineId: 'cq-settings.merge-conflict.baseline.v1', oracleId: 'cq-settings.merge-label-limit.oracle.v1' },
@@ -22,6 +25,37 @@ function git(cwd: string, args: readonly string[]): string {
   return execFileSync('git', [...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
+/** Execute only candidate code in the protected namespace; stdout stays private and untrusted. */
+async function protectedCandidateResults(
+  candidateSource: string,
+  module: string,
+  exportName: string,
+  requests: unknown[][],
+): Promise<unknown[] | null> {
+  let candidateRoot: string | undefined;
+  try {
+    // Isolate only the candidate module in a fresh safe Git root. This avoids
+    // copying task-local Git config, prompts, and parent-side expected values.
+    candidateRoot = await mkdtemp(join(tmpdir(), 'cq-protected-candidate-'));
+    const candidatePath = join(candidateRoot, module);
+    await mkdir(dirname(candidatePath), { recursive: true });
+    await writeFile(candidatePath, candidateSource, { flag: 'wx', mode: 0o600 });
+    execFileSync('git', ['init', '-q'], { cwd: candidateRoot, stdio: 'ignore' });
+    await writeFile(join(candidateRoot, '.git/config'), SAFE_GIT_CONFIG, { mode: 0o600 });
+    execFileSync('git', ['add', module], { cwd: candidateRoot, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=CQ Protected Judge', '-c', 'user.email=cq-protected-judge@example.invalid', 'commit', '-q', '-m', 'Candidate snapshot'], { cwd: candidateRoot, stdio: 'ignore' });
+    const result = await executeProtectedJudgeChild({ candidateRoot, module, exportName, requests, timeoutMs: 5_000 });
+    if (result.scope !== 'protected-candidate-execution' || !result.containerAbsentVerified || result.timedOut || result.exitCode !== 0) return null;
+    const output: unknown = JSON.parse(result.stdout.toString('utf8'));
+    return Array.isArray(output) && output.length === requests.length ? output : null;
+  } catch {
+    // Do not place untrusted stdout or executor diagnostics into report/model-visible text.
+    return null;
+  } finally {
+    if (candidateRoot !== undefined) await rm(candidateRoot, { recursive: true, force: true });
+  }
+}
+
 /** Independent behavior/scope check for a locally committed conflict repair. */
 export interface MergeConflictContract {
   readonly sourceId: string;
@@ -39,11 +73,11 @@ const DEFAULT_MERGE_CONTRACT: MergeConflictContract = {
   ],
 };
 
-export function judgeMergeConflictWorkspace(
+export async function judgeMergeConflictWorkspace(
   repoRoot: string,
   baselineCommit: string,
   contract: MergeConflictContract = DEFAULT_MERGE_CONTRACT,
-): WorkflowOracleReport {
+): Promise<WorkflowOracleReport> {
   const failures: string[] = [];
   try {
     const head = git(repoRoot, ['rev-parse', '--verify', 'HEAD^{commit}']).trim();
@@ -53,25 +87,12 @@ export function judgeMergeConflictWorkspace(
     }
     const changed = git(repoRoot, ['diff', '--name-only', `${baselineCommit}..HEAD`, '--']).trim().split('\n').filter(Boolean).sort();
     if (JSON.stringify(changed) !== JSON.stringify(['src/settings.mjs'])) failures.push(`unexpected candidate paths: ${changed.join(',')}`);
-    const moduleUrl = pathToFileURL(join(repoRoot, 'src/settings.mjs')).href;
-    const probe = `const m = await import(${JSON.stringify(moduleUrl)} + '?judge=' + Date.now());
-const cases = ${JSON.stringify(contract.examples)};
-const values = cases.map(({ input }) => input);
-const expected = cases.map(({ expected }) => expected);
-const actual = values.map((value) => m.campaignLabel(value));
-if (actual.some((value, index) => value !== expected[index])) {
-  console.error(JSON.stringify({ actual, expected }));
-  process.exitCode = 1;
-}`;
-    execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
-      cwd: repoRoot, stdio: 'pipe', timeout: 5_000, maxBuffer: 64 * 1024,
-    });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    const stderr = error !== null && typeof error === 'object' && 'stderr' in error
-      ? String((error as { stderr?: unknown }).stderr ?? '').trim()
-      : '';
-    failures.push(`merge candidate check failed: ${detail}${stderr.length > 0 ? `; stderr: ${stderr}` : ''}`);
+    const candidateSource = await readFile(join(repoRoot, 'src/settings.mjs'), 'utf8');
+    const actual = await protectedCandidateResults(candidateSource, 'src/settings.mjs', 'campaignLabel', contract.examples.map(({ input }) => [input]));
+    if (actual === null) failures.push('protected merge candidate probe failed or returned an invalid bounded result');
+    else if (contract.examples.some(({ expected }, index) => actual[index] !== expected)) failures.push('merge candidate failed an independent behavior case');
+  } catch {
+    failures.push('merge candidate identity or protected behavior check failed');
   }
   const identity = contract;
   return { ...identity, passed: failures.length === 0, failures };
@@ -143,10 +164,10 @@ const LABEL_LENGTH_CONTRACT: AnalysisBehaviorContract = {
 };
 
 /** Independently probes proposed source behavior; multiple valid implementations pass. */
-export function judgeAnalysisRemediationProposal(
+export async function judgeAnalysisRemediationProposal(
   value: unknown,
   contract: AnalysisBehaviorContract = EMPTY_SETTING_CONTRACT,
-): WorkflowOracleReport {
+): Promise<WorkflowOracleReport> {
   const failures: string[] = [];
   const output = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
   const summary = typeof output.summary === 'string' ? output.summary : '';
@@ -155,21 +176,14 @@ export function judgeAnalysisRemediationProposal(
   if (summary.trim().length === 0 || patch.trim().length === 0) failures.push('proposal must explain and locate its remediation');
   if (!patch.includes('src/settings.ts') && !patch.includes('validate')) failures.push('proposal does not anchor its change to settings validation');
   if (candidateSource.length === 0 || candidateSource.length > 32 * 1024) {
-    failures.push('proposal candidate source is missing or exceeds the host judge limit');
+    failures.push('proposal candidate source is missing or exceeds the bounded judge limit');
   } else {
-    const examples = JSON.stringify(contract.examples);
-    const probe = `const source = Buffer.from(process.env.CQ_REMEDIATION_SOURCE ?? '', 'base64').toString('utf8');
-const module = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
-const check = typeof module.isValidSetting === 'function' ? module.isValidSetting : null;
-const cases = ${examples};
-if (!check || cases.some(({ input, expected }) => check(input) !== expected)) process.exitCode = 1;`;
     try {
-      execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
-        env: { ...process.env, CQ_REMEDIATION_SOURCE: Buffer.from(candidateSource).toString('base64') },
-        stdio: 'pipe', timeout: 5_000, maxBuffer: 64 * 1024,
-      });
-    } catch (error) {
-      failures.push(`remediation candidate failed bounded behavior checks: ${error instanceof Error ? error.message : String(error)}`);
+      const actual = await protectedCandidateResults(candidateSource, 'candidate.mjs', 'isValidSetting', contract.examples.map(({ input }) => [input]));
+      if (actual === null) failures.push('protected remediation probe failed or returned an invalid bounded result');
+      else if (contract.examples.some(({ expected }, index) => actual[index] !== expected)) failures.push('remediation candidate failed an independent behavior case');
+    } catch {
+      failures.push('protected remediation candidate snapshot could not be evaluated');
     }
   }
   return { sourceId: contract.sourceId, baselineId: contract.baselineId, oracleId: contract.oracleId, passed: failures.length === 0, failures };

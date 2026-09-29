@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url';
 /** Pin includes every host module that defines this task's identity and semantics. */
 export const REVIEW_LOOP_ORACLE_DEPENDENCIES = [
   'runner/workflow-corpus/review-loop-judge.ts',
+  'runner/workflow-corpus/review-loop-pin.ts',
   'campaigns/cq-settings/corpus/review-loop-task.ts',
+  'runner/boundary/judge-child.ts',
+  'runner/boundary/task-tree.ts',
 ] as const;
 
 export interface ReviewLoopOracleDependency {

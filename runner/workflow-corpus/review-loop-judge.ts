@@ -1,7 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { executeProtectedJudgeChild } from '../boundary/judge-child.ts';
+import { SAFE_GIT_CONFIG } from '../boundary/task-tree.ts';
 import {
   REVIEW_LOOP_BASELINE_ID,
   REVIEW_LOOP_ORACLE_ID,
@@ -12,7 +16,6 @@ import {
 
 export const REVIEW_LOOP_JUDGE_VERSION = REVIEW_LOOP_ORACLE_ID;
 export const REVIEW_LOOP_MODULE_PROBE_TIMEOUT_MS = 5_000;
-export const REVIEW_LOOP_VISIBLE_TEST_TIMEOUT_MS = 10_000;
 
 export interface ReviewLoopWorkspaceOptions {
   readonly baselineRef: string;
@@ -170,68 +173,62 @@ export async function judgeReviewLoopWorkspace(
     { label: 'e\u0301'.repeat(20), expected: true, name: '40 combining-sequence code points' },
     { label: 'e\u0301'.repeat(21), expected: false, name: '42 combining-sequence code points' },
   ];
-  const candidateSettingsUrl = pathToFileURL(join(worktreePath, 'src/settings.mjs')).href;
-  const candidateDisplayUrl = pathToFileURL(join(worktreePath, 'src/display.mjs')).href;
-  const moduleProbe = `
-const behaviorFailures = [];
-const displayFailures = [];
-let settings;
-let display;
-try {
-  const nonce = 'judge=' + Date.now() + '-' + Math.random();
-  settings = await import(${JSON.stringify(candidateSettingsUrl)} + '?' + nonce);
-  display = await import(${JSON.stringify(candidateDisplayUrl)} + '?' + nonce);
-} catch (error) {
-  behaviorFailures.push('candidate modules could not be loaded: ' + String(error?.message ?? error));
-}
-if (settings !== undefined) {
-  for (const testCase of ${JSON.stringify(cases)}) {
+  let actualSettings: unknown[] | null = null;
+  const protectedProbe = async (module: string, exportName: string, requests: unknown[][]): Promise<unknown[] | null> => {
+    let candidateRoot: string | undefined;
     try {
-      if (settings.isValidCampaignLabel(testCase.label) !== testCase.expected) behaviorFailures.push('semantic case failed: ' + testCase.name);
-    } catch (error) {
-      behaviorFailures.push('semantic case threw (' + testCase.name + '): ' + String(error?.message ?? error));
+      // Stage just the candidate module into a fresh, safe Git snapshot. The task
+      // repo's local Git identity/config is not copied into the judge namespace.
+      candidateRoot = await mkdtemp(join(tmpdir(), 'cq-review-candidate-'));
+      const candidateFile = join(candidateRoot, module);
+      await mkdir(dirname(candidateFile), { recursive: true });
+      await writeFile(candidateFile, await readFile(join(worktreePath, module)), { flag: 'wx', mode: 0o600 });
+      execFileSync('git', ['init', '-q'], { cwd: candidateRoot, stdio: 'ignore' });
+      await writeFile(join(candidateRoot, '.git/config'), SAFE_GIT_CONFIG, { mode: 0o600 });
+      execFileSync('git', ['add', module], { cwd: candidateRoot, stdio: 'ignore' });
+      execFileSync('git', ['-c', 'user.name=CQ Protected Judge', '-c', 'user.email=cq-protected-judge@example.invalid', 'commit', '-q', '-m', 'Candidate snapshot'], { cwd: candidateRoot, stdio: 'ignore' });
+      const result = await executeProtectedJudgeChild({
+        candidateRoot,
+        module,
+        exportName,
+        requests,
+        timeoutMs: REVIEW_LOOP_MODULE_PROBE_TIMEOUT_MS,
+      });
+      if (result.scope !== 'protected-candidate-execution' || !result.containerAbsentVerified || result.timedOut || result.exitCode !== 0) return null;
+      const parsed: unknown = JSON.parse(result.stdout.toString('utf8'));
+      return Array.isArray(parsed) && parsed.length === requests.length ? parsed : null;
+    } catch {
+      // Candidate stdout and protected-executor errors are private; expose only a fixed failure.
+      return null;
+    } finally {
+      if (candidateRoot !== undefined) await rm(candidateRoot, { recursive: true, force: true });
     }
-  }
-}
-if (display !== undefined) {
-  for (const label of ['  Campaign A  ', '\\u2003😀 label  ']) {
-    try {
-      if (display.displayCampaignLabel(label) !== label) displayFailures.push('display changed original label ' + JSON.stringify(label));
-    } catch (error) {
-      displayFailures.push('display threw for ' + JSON.stringify(label) + ': ' + String(error?.message ?? error));
-    }
-  }
-}
-process.stdout.write(JSON.stringify({ behaviorFailures, displayFailures }));
-`;
+  };
   try {
-    const probeOutput = execFileSync(process.execPath, ['--input-type=module', '-e', moduleProbe], {
-      cwd: worktreePath,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: REVIEW_LOOP_MODULE_PROBE_TIMEOUT_MS,
-      maxBuffer: 64 * 1024,
+    actualSettings = await protectedProbe('src/settings.mjs', 'isValidCampaignLabel', cases.map(({ label }) => [label]));
+    if (actualSettings === null) behaviorFailures.push('protected candidate module probe failed or returned an invalid bounded result');
+    else cases.forEach(({ expected, name }, index) => {
+      if (actualSettings?.[index] !== expected) behaviorFailures.push(`semantic case failed: ${name}`);
     });
-    const probe = JSON.parse(probeOutput) as { behaviorFailures: string[]; displayFailures: string[] };
-    behaviorFailures.push(...probe.behaviorFailures);
-    displayFailures.push(...probe.displayFailures);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    behaviorFailures.push(`bounded candidate module probe failed: ${detail.slice(0, 500)}`);
+  } catch {
+    behaviorFailures.push('protected candidate module probe failed');
   }
 
-  let visibleTests: ReviewLoopConformance['visibleTests'];
+  const visibleCases = [cases[2]!, cases[3]!, cases[4]!, cases[7]!];
+  const visibleSettings = actualSettings === null ? null : visibleCases.map((testCase) => actualSettings![cases.indexOf(testCase)]);
+  let displaySourcePreserved = false;
   try {
-    execFileSync(process.execPath, ['test/public-settings.test.mjs'], {
-      cwd: worktreePath,
-      stdio: 'pipe',
-      timeout: REVIEW_LOOP_VISIBLE_TEST_TIMEOUT_MS,
-    });
-    visibleTests = { passed: true };
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    visibleTests = { passed: false, detail: detail.slice(0, 500) };
+    displaySourcePreserved = readFileSync(join(worktreePath, 'src/display.mjs'), 'utf8') === EXPECTED_DISPLAY_SOURCE;
+  } catch {
+    displaySourcePreserved = false;
   }
+  const visibleTests: ReviewLoopConformance['visibleTests'] = {
+    passed: visibleSettings !== null && visibleCases.every(({ expected }, index) => visibleSettings[index] === expected)
+      && displaySourcePreserved,
+    ...((visibleSettings === null || !displaySourcePreserved) ? { detail: 'protected visible behavior probes or pinned display-source check failed' } : {}),
+  };
+
+  if (!displaySourcePreserved) displayFailures.push('display implementation differs from the pinned preserving implementation');
 
   let changedPaths: string[] = [];
   let unexpectedPaths: string[] = [];

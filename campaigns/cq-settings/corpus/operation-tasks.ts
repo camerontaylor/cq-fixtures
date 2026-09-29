@@ -162,7 +162,7 @@ export async function executeAnalysisRemediationTask(
     clusterSize: cluster.size,
     proposal,
     oracle: proposal.status === 'ok'
-      ? judgeAnalysisRemediationProposal(proposal.value.structuredOutput, ANALYSIS_REMEDIATION_CONTRACTS[task.variant === 'whitespaceSetting' ? 'emptySetting' : 'unicodeLabelLength'])
+      ? await judgeAnalysisRemediationProposal(proposal.value.structuredOutput, ANALYSIS_REMEDIATION_CONTRACTS[task.variant === 'whitespaceSetting' ? 'emptySetting' : 'unicodeLabelLength'])
       : { passed: false, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId, failures: [`operation returned ${proposal.status}`] },
   };
 }
@@ -280,12 +280,12 @@ export async function executeRatchetTask(task: RatchetTask): Promise<RatchetTask
   };
 }
 
-export function judgeAnalysisTask(
+export async function judgeAnalysisTask(
   task: AnalysisRemediationTask,
   proposal: OpResult<WorkerResult>,
-): WorkflowOracleReport {
+): Promise<WorkflowOracleReport> {
   if (proposal.status !== 'ok') return { sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId, passed: false, failures: [`operation returned ${proposal.status}`] };
-  const semantic = judgeAnalysisRemediationProposal(
+  const semantic = await judgeAnalysisRemediationProposal(
     proposal.value.structuredOutput,
     ANALYSIS_REMEDIATION_CONTRACTS[task.variant === 'whitespaceSetting' ? 'emptySetting' : 'unicodeLabelLength'],
   );

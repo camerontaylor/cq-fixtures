@@ -10,10 +10,14 @@
 // asserts the shape of the wiring rather than the old absence of it.
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import type { ResultRow } from '../runner/aggregate.ts';
 import {
   adaptCorrectionRecord,
   canonicalJson,
@@ -35,9 +39,13 @@ import {
   consumeRetention,
   consumeRunReport,
   loadPinnedCorrections,
+  ROW_WRITABLE_CORRECTION_FIELDS,
   type CorrectableRow,
 } from '../runner/reporting/consumer.ts';
 import { PINNED_OPERATIONAL_STATUSES, PINNED_TERMINAL_CAUSES } from '../runner/reporting/vocabulary.ts';
+import { produceCorrectionAwareReport } from '../runner/reporting/producer.ts';
+
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 const AUTHORITY = 'cq-settings-execution-orchestrator';
 const RUN19 = 'cq-s5-final-20260929-19';
@@ -1092,5 +1100,613 @@ describe('D22: retention consumption reconciles by evidence, never by recency', 
     expect(consumed.view).not.toBeNull();
     // A silent second record does not retract the first, and does not conflict.
     expect(consumed.view!.resources.fullCandidate.state).toBe('retained');
+  });
+});
+
+// ===========================================================================
+// D22 + D77: the PRODUCER path.
+//
+// Everything above exercises a projection function in process. These tests
+// exercise the PRODUCER: the non-test functions that read a pinned manifest
+// from DISK, re-verify every pin against real bytes, resolve the artifacts a
+// correction names from a real evidence directory, consume a run's report,
+// re-aggregate the derived rows through the unchanged aggregate lane, and write
+// their output exclusively.
+//
+// They are DEVELOPMENT regressions for the consumption seam. They are not
+// actual-route evidence, not factory/lifecycle evidence, and they satisfy no
+// campaign acceptance criterion. In particular nothing here makes run19's six
+// private native artifacts available, and nothing here upgrades the historic
+// literal completion rate of 1 to a corrected claim.
+// ===========================================================================
+
+/** A fresh, empty producer workspace: a corpus root, an evidence dir, an out. */
+function producerWorkspace(): { corpus: string; evidence: string; out: string } {
+  const root = mkdtempSync(join(tmpdir(), 'cq-pk14-producer-'));
+  const corpus = join(root, 'corpus');
+  const evidence = join(root, 'private-native-artifacts');
+  const out = join(root, 'out');
+  mkdirSync(join(corpus, 'evidence'), { recursive: true });
+  mkdirSync(evidence, { recursive: true });
+  return { corpus, evidence, out };
+}
+
+const REPORT_ARTIFACT = 'private native report bytes\n';
+const OUTCOME_ARTIFACT = 'private native task outcome bytes\n';
+
+/**
+ * A lifecycle correction in the same legacy shape as the real run19 record:
+ * bare-hash `sourceEvidence`, and a set of superseded lifecycle projections
+ * that name exactly the D22 problem — a `complete` terminal cause, a `complete`
+ * operational status and a table rate of 1.
+ */
+function producerRecord(): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    kind: 'append-only-lifecycle-correction',
+    runId: RUN19,
+    assignmentId: 'final-profile-g1-cq-s5-final-20260929-19',
+    invocationId: 'd9cd61ba-3ca3-478e-b275-fefca2a41e05',
+    sourceEvidence: { reportSha256: sha256(REPORT_ARTIFACT), taskOutcomeSha256: sha256(OUTCOME_ARTIFACT) },
+    authoritativeNativeTerminal: 'timeout',
+    supersededLifecycleProjections: ['execution.terminalCause=complete', 'operationalStatus=complete', 'table.operationalCompletionRate=1'],
+    normalWorkerCompletion: false,
+    processTreeStopped: true,
+    boundaryTermination: 'proven',
+    boundaryExport: 'proven',
+    candidateCorrectness: true,
+    formatConformance: false,
+    assignedStrategySuccess: true,
+  };
+}
+
+/** The immutable original rows.jsonl a producing run reads. Campaign rows. */
+function producerRows(): string {
+  const row = {
+    role: 'fixer-worker', suite: 'fixer-worker', case: 'case-1', model: 'luna-subscription', driver: 'codex-exec',
+    outcome: { score: 0.5, passed: 1, total: 2 }, costUSD: null, wallTimeMs: 1000,
+    tokens: { input: 100, output: 10 },
+    runId: RUN19, timestamp: '2026-09-29T00:00:00.000Z',
+    experiment: {
+      campaignId: 'cq', cohortId: 's5', experimentId: RUN19, taskId: 'task-1', repeatId: '0',
+      assignmentId: 'final-profile-g1-cq-s5-final-20260929-19', stageId: 'final', attemptId: '1',
+      track: 'default', strategyId: 's', settingsId: 'set', budgetId: 'b', profileId: 'p', frozenWeight: 1,
+      substrateId: 'sub', judgePin: 'pin',
+    },
+    outcomes: { candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: true, operationalStatus: 'complete' },
+    taskOutcome: {
+      identity: {
+        campaignId: 'cq', cohortId: 's5', experimentId: RUN19, taskId: 'task-1', substrateId: 'sub', track: 'default',
+        repeatId: '0', assignmentId: 'final-profile-g1-cq-s5-final-20260929-19', strategyId: 's', role: 'fixer-worker',
+        budgetId: 'b', frozenWeight: 1, judgeManifest: { sourcePin: 'pin', dependencies: [] },
+      },
+      candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: true, operationalStatus: 'complete',
+      execution: { launched: true, terminalCause: 'complete', sourceInvocationIds: ['d9cd61ba-3ca3-478e-b275-fefca2a41e05'] },
+      stages: [], judgements: [],
+    },
+  } as unknown as ResultRow;
+  return `${JSON.stringify(row)}\n`;
+}
+
+/** The immutable original published projection, verbatim. Rate 1, as recorded. */
+const HISTORIC_PROJECTION = `${JSON.stringify({
+  'execution.terminalCause': 'complete',
+  'operationalStatus': 'complete',
+  'table.operationalCompletionRate': 1,
+}, null, 2)}\n`;
+
+/**
+ * A workspace with a real manifest, a real record, real private evidence and
+ * real original rows/projection on disk — everything the producer needs, and
+ * nothing that could be satisfied by an in-memory stand-in.
+ */
+function seededProducer(dir: { corpus: string; evidence: string; out: string }): {
+  corpus: string; evidence: string; out: string; manifestPath: string;
+  rowsPath: string; projectionPath: string; rowsBytes: string; projectionBytes: string;
+} {
+  const record = producerRecord();
+  const recordBytes = JSON.stringify(record, null, 2);
+  writeFileSync(join(dir.corpus, 'evidence/run19-lifecycle-correction.json'), recordBytes);
+  writeFileSync(join(dir.evidence, 'reportSha256'), REPORT_ARTIFACT);
+  writeFileSync(join(dir.evidence, 'taskOutcomeSha256'), OUTCOME_ARTIFACT);
+
+  const manifest = {
+    schemaVersion: 1,
+    approvedAuthorities: [AUTHORITY],
+    entries: [{
+      id: 'run19-lifecycle-correction', kind: 'append-only-lifecycle-correction', root: 'corpus' as const,
+      path: 'evidence/run19-lifecycle-correction.json',
+      sha256: sha256(recordBytes), canonicalId: canonicalRecordHash(record), authorityId: AUTHORITY, recordedAt: null,
+    }],
+  };
+  const manifestPath = join(dir.corpus, 'manifest.json');
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const rowsPath = join(dir.corpus, 'rows.jsonl');
+  const rowsBytes = producerRows();
+  writeFileSync(rowsPath, rowsBytes);
+  const projectionPath = join(dir.corpus, 'original-projection.json');
+  writeFileSync(projectionPath, HISTORIC_PROJECTION);
+
+  return { ...dir, manifestPath, rowsPath, projectionPath, rowsBytes, projectionBytes: HISTORIC_PROJECTION };
+}
+
+describe('D22: the producer reads and re-verifies the real pinned manifest', () => {
+  const REAL_MANIFEST = join(REPO_ROOT, 'runner/reporting/corrections.manifest.json');
+
+  it('verifies the repo-rooted pin against real bytes and fails the corpus closed', () => {
+    // The corpus was NOT supplied, so every corpus-rooted record is
+    // `unresolvable`. That is reported, never read as agreement — and the
+    // repo-rooted run18 audit, which really is in this checkout, verifies.
+    const report = produceCorrectionAwareReport({
+      manifestPath: REAL_MANIFEST,
+      repoRoot: REPO_ROOT,
+      corpusRoot: null,
+      runs: [{ runId: RUN19 }, { runId: RUN18 }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+    });
+
+    expect(report.manifest.verified).toContain('run18-retention-audit');
+    const unverified = report.manifest.unverified.map((entry) => entry.id);
+    expect(unverified).toContain('run19-lifecycle-correction');
+    for (const entry of report.manifest.unverified) expect(entry.status).toBe('unresolvable');
+    expect(report.pinnedOk).toBe(false);
+
+    // run19 is therefore NOT publishable, and its claims are withheld rather
+    // than asserted. Withheld is null, not 0 and not 1.
+    const run19 = report.runs.find((run) => run.runId === RUN19)!;
+    expect(run19.publishable).toBe(false);
+    expect(run19.rateClaim.value).toBeNull();
+    expect(run19.rateClaim.published).toBe(false);
+    // The record never loaded, so it never spoke about the rate: the
+    // field-level `completionRateWithheld` is therefore false while the
+    // run-level `rateClaim.published` is the answer a publisher must read.
+    expect(run19.state.correctedCompletionRate).toBeNull();
+    expect(run19.rateClaim.reason).toMatch(/pinned set is not whole/);
+    // No rows were supplied, so re-aggregation is SKIPPED and says why. A
+    // fabricated empty denominator is never produced.
+    expect(run19.reaggregation.status).toBe('skipped');
+    expect(run19.reaggregation.reason).toMatch(/no qualified denominator/);
+  });
+
+  it('reports a byte-mismatch when the supplied record drifts from its pin', () => {
+    // A record with the right MEANING but different bytes: the pin binds the
+    // original bytes, so this is a binding failure, not a re-interpretation.
+    const dir = producerWorkspace();
+    const record = producerRecord();
+    const bytes = JSON.stringify(record, null, 2);
+    writeFileSync(join(dir.corpus, 'evidence/run19-lifecycle-correction.json'), `${bytes} `);
+    const manifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [{
+        id: 'drifted', kind: 'append-only-lifecycle-correction', root: 'corpus' as const,
+        path: 'evidence/run19-lifecycle-correction.json',
+        sha256: sha256(bytes), canonicalId: canonicalRecordHash(record), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    };
+    const manifestPath = join(dir.corpus, 'manifest.json');
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const report = produceCorrectionAwareReport({
+      manifestPath, repoRoot: REPO_ROOT, corpusRoot: dir.corpus,
+      runs: [{ runId: RUN19 }], asOf: '2026-09-29T21:47:07Z', scopes: [],
+    });
+
+    expect(report.pinnedOk).toBe(false);
+    const check = report.manifest.unverified.find((entry) => entry.id === 'drifted')!;
+    expect(check.status).toBe('byte-mismatch');
+    expect(check.observedSha256).not.toBe(check.expectedSha256);
+    // The drifted record is not believed, so nothing about it is published.
+    const run19 = report.runs.find((run) => run.runId === RUN19)!;
+    expect(run19.state.applied).toBe(false);
+    expect(run19.state.correctedCompletionRate).toBeNull();
+    expect(run19.state.blockers.map((b) => b.reason)).toContain('artifact-binding-mismatch');
+  });
+
+  it('refuses a manifest path that escapes the root it is pinned against', () => {
+    // A pinned path is data, not a licence to read outside the named root.
+    const dir = producerWorkspace();
+    const record = producerRecord();
+    const bytes = JSON.stringify(record, null, 2);
+    writeFileSync(join(dir.corpus, 'real-record.json'), bytes);
+    const manifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [{
+        id: 'escaping', kind: 'append-only-lifecycle-correction', root: 'corpus' as const,
+        path: '../real-record.json',
+        sha256: sha256(bytes), canonicalId: canonicalRecordHash(record), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    };
+    const manifestPath = join(dir.corpus, 'manifest.json');
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const report = produceCorrectionAwareReport({
+      manifestPath, repoRoot: REPO_ROOT, corpusRoot: dir.corpus,
+      runs: [{ runId: RUN19 }], asOf: '2026-09-29T21:47:07Z', scopes: [],
+    });
+    expect(report.manifest.unverified.find((entry) => entry.id === 'escaping')?.status).toBe('unresolvable');
+  });
+});
+
+describe('D22: the producer consumes, re-aggregates and writes exclusively', () => {
+  it('rewrites only the derived rows, recomputes the rate, and preserves the originals', () => {
+    const dir = producerWorkspace();
+    const { corpus, evidence, out, rowsPath, projectionPath, rowsBytes, projectionBytes } = seededProducer(dir);
+
+    const report = produceCorrectionAwareReport({
+      manifestPath: join(corpus, 'manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: corpus,
+      evidenceRoots: [evidence],
+      runs: [{ runId: RUN19, rowsPath, originalPath: projectionPath }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+      adapter: { terminalCause: 'unknown', operationalStatus: 'interrupted', completionRows: [{ operationalStatus: 'complete' }] },
+      outDir: out,
+    });
+
+    // The pin was verified from real bytes, so the correction qualified.
+    expect(report.pinnedOk, JSON.stringify(report.manifest.unverified)).toBe(true);
+    const run = report.runs[0]!;
+    expect(run.publishable).toBe(true);
+    expect(run.state.selectionStatus).toBe('selected');
+
+    // The DERIVED rows carry the correction; the original ones do not. Both
+    // hashes are reported, and they differ.
+    expect(run.rowsPreserved.identical).toBe(false);
+    expect(run.state.correctedFields).toEqual(expect.arrayContaining([
+      'execution.authoritativeNativeTerminal', 'execution.terminalCause', 'normalWorkerCompletion', 'operationalStatus',
+    ]));
+
+    // The rate is RECOMPUTED by the aggregate lane over the corrected rows. It
+    // is never the historic literal 1, and re-aggregation genuinely ran.
+    expect(run.state.historicCompletionRate).toBe(1);
+    expect(run.reaggregation.status).toBe('reaggregated');
+    expect(run.reaggregation.originalTables).toBeGreaterThan(0);
+    expect(run.reaggregation.correctedCompletionRate).toBe(0);
+    expect(run.reaggregation.correctedCompletionRate).not.toBe(1);
+
+    // The ORIGINAL historical evidence is byte-for-byte untouched by a
+    // producing run. This is the immutability guarantee, asserted on the
+    // bytes on disk rather than on a claim.
+    expect(readFileSync(rowsPath, 'utf8')).toBe(rowsBytes);
+    expect(readFileSync(projectionPath, 'utf8')).toBe(projectionBytes);
+
+    // The produced report, the board and a manifest of what was written all
+    // exist beside the evidence, not in place of it.
+    expect(report.outputs.map((output) => basename(output.path)).sort()).toEqual([
+      'correction-board.md', 'correction-report.json', 'producer-manifest.json',
+    ]);
+    for (const output of report.outputs) expect(sha256(readFileSync(output.path))).toBe(output.sha256);
+    const written = JSON.parse(readFileSync(join(out, 'producer-manifest.json'), 'utf8')) as {
+      runs: Array<{ runId: string; historicCompletionRate: number; correctedCompletionRate: number; completionRateWithheld: boolean }>;
+    };
+    expect(written.runs[0]!.historicCompletionRate).toBe(1);
+    expect(written.runs[0]!.correctedCompletionRate).toBe(0);
+    expect(written.runs[0]!.completionRateWithheld).toBe(false);
+  });
+
+  it('keeps correctness, compliance and completion separate in the produced report', () => {
+    const dir = producerWorkspace();
+    const { corpus, evidence, rowsPath, projectionPath } = seededProducer(dir);
+    const report = produceCorrectionAwareReport({
+      manifestPath: join(corpus, 'manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: corpus,
+      evidenceRoots: [evidence],
+      runs: [{ runId: RUN19, rowsPath, originalPath: projectionPath }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+      adapter: { terminalCause: 'unknown', operationalStatus: 'interrupted', completionRows: [{ operationalStatus: 'complete' }] },
+    });
+
+    const run = report.runs[0]!;
+    // A lifecycle correction retracts an OPERATIONAL completion claim. The
+    // judged outcomes it did not speak about are not touched, and the record's
+    // own declarations are surfaced separately rather than merged into a row.
+    expect(run.recordDeclaredOutcomes).toEqual({
+      candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: true, normalWorkerCompletion: false,
+    });
+    // The record speaks to OPERATIONAL completion only. Nothing it did not
+    // speak about was projected, and no correctness value was rewritten.
+    const projection = run.selection.projection;
+    expect(Object.keys(projection).some((field) => /correctness|conformance|strategy/i.test(field))).toBe(false);
+    expect(projection['operationalStatus']!.origin).toBe('correction');
+    expect(projection['operationalStatus']!.value).toBe('interrupted');
+    // Only the two row-writable lifecycle fields may reach a ROW. Everything
+    // else the record spoke about is kept as a sidecar annotation, so a fact
+    // the schema has no column for is visible rather than forced into one.
+    const rowWritten = run.state.correctedFields.filter((field) => ROW_WRITABLE_CORRECTION_FIELDS.includes(field)).sort();
+    expect(rowWritten).toEqual(['execution.terminalCause', 'operationalStatus']);
+    expect(run.state.annotations.map((a) => a.field)).toContain('normalWorkerCompletion');
+    // A completion claim may be retracted but never asserted.
+    expect(run.state.correctedFields).toContain('normalWorkerCompletion');
+    expect(projection['normalWorkerCompletion']!.value).toBe(false);
+  });
+
+  it('withholds the corrected rate when a named artifact cannot be re-hashed', () => {
+    // The run19 six private native artifacts are not in the public checkout.
+    // They are NOT supplied, so the binding is unresolved: the claim is
+    // withheld, the historic 1 is not republished, and nothing is zeroed.
+    const dir = producerWorkspace();
+    const { corpus, rowsPath, projectionPath, out } = seededProducer(dir);
+    const report = produceCorrectionAwareReport({
+      manifestPath: join(corpus, 'manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: corpus,
+      // No evidence roots at all.
+      runs: [{ runId: RUN19, rowsPath, originalPath: projectionPath }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+      adapter: { terminalCause: 'unknown', operationalStatus: 'interrupted', completionRows: [{ operationalStatus: 'complete' }] },
+      outDir: out,
+    });
+
+    const run = report.runs[0]!;
+    expect(run.state.applied).toBe(false);
+    expect(run.state.selectionStatus).toBe('unresolved');
+    expect(run.state.completionRateWithheld).toBe(true);
+    expect(run.rateClaim.published).toBe(false);
+    expect(run.rateClaim.value).toBeNull();
+    expect(run.state.correctedCompletionRate).toBeNull();
+    expect(run.state.correctedCompletionRate).not.toBe(0);
+    expect(run.state.correctedCompletionRate).not.toBe(1);
+    expect(run.state.withheld.map((field) => field.field)).toContain('table.operationalCompletionRate');
+    expect(run.state.blockers.map((b) => b.reason)).toContain('artifact-binding-unresolved');
+    expect(run.publishable).toBe(false);
+    expect(run.rateClaim.reason).toMatch(/retracted the rate and could not replace it/);
+    // The rows are untouched, so re-aggregation produces no corrected table
+    // rather than a corrected table that happens to equal the original.
+    expect(run.rowsPreserved.identical).toBe(true);
+    expect(run.reaggregation.correctedTables).toBe(0);
+    // The withheld claim is on the board, in the words of the record.
+    const board = readFileSync(join(out, 'correction-board.md'), 'utf8');
+    expect(board).toContain('withheld table.operationalCompletionRate');
+  });
+
+  it('withholds a claim whose named artifact resolves with DIFFERENT bytes', () => {
+    // A resolved-but-different artifact is an integrity failure, reported as
+    // loudly as an unreadable one. Neither becomes a zero.
+    const dir = producerWorkspace();
+    const { corpus, evidence, rowsPath, projectionPath } = seededProducer(dir);
+    writeFileSync(join(evidence, 'reportSha256'), 'tampered native report\n');
+    const report = produceCorrectionAwareReport({
+      manifestPath: join(corpus, 'manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: corpus,
+      evidenceRoots: [evidence],
+      runs: [{ runId: RUN19, rowsPath, originalPath: projectionPath }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+      adapter: { terminalCause: 'unknown', operationalStatus: 'interrupted', completionRows: [{ operationalStatus: 'complete' }] },
+    });
+
+    const run = report.runs[0]!;
+    expect(run.state.applied).toBe(false);
+    expect(run.state.correctedCompletionRate).toBeNull();
+    expect(run.state.blockers.map((b) => b.reason)).toContain('artifact-binding-mismatch');
+    expect(run.state.blockers.some((b) => b.detail?.includes('reportSha256'))).toBe(true);
+  });
+
+  it('never overwrites an existing output, and reports only what it actually wrote', () => {
+    const dir = producerWorkspace();
+    const { corpus, evidence, out, rowsPath, projectionPath } = seededProducer(dir);
+    const options = {
+      manifestPath: join(corpus, 'manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: corpus,
+      evidenceRoots: [evidence],
+      runs: [{ runId: RUN19, rowsPath, originalPath: projectionPath }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+      adapter: { terminalCause: 'unknown', operationalStatus: 'interrupted', completionRows: [{ operationalStatus: 'complete' }] },
+    };
+
+    const first = produceCorrectionAwareReport({ ...options, outDir: out });
+    expect(first.outputs).toHaveLength(3);
+    const boardBytes = readFileSync(join(out, 'correction-board.md'), 'utf8');
+
+    // A second run over the same evidence produces identical BYTES, and
+    // refuses to overwrite what is already there rather than racing it.
+    const second = produceCorrectionAwareReport({ ...options, outDir: out });
+    expect(second.outputs).toEqual([]);
+    expect(readFileSync(join(out, 'correction-board.md'), 'utf8')).toBe(boardBytes);
+  });
+
+  it('requires an explicit as-of and refuses an implicit clock', () => {
+    const dir = producerWorkspace();
+    const { corpus, manifestPath } = seededProducer(dir);
+    expect(() => produceCorrectionAwareReport({
+      manifestPath, repoRoot: REPO_ROOT, corpusRoot: corpus,
+      runs: [{ runId: RUN19 }], asOf: 'today', scopes: [],
+    })).toThrow(/explicit RFC3339/);
+  });
+
+  it('refuses an original projection that is not a flat projection object', () => {
+    // A published table ARRAY would have to be reduced to a single historic
+    // rate, and that reduction is a decision the producer does not make for
+    // the operator. It fails loud instead of picking one cell.
+    const dir = producerWorkspace();
+    const { corpus, manifestPath } = seededProducer(dir);
+    const tablePath = join(corpus, 'table.json');
+    writeFileSync(tablePath, JSON.stringify([{ role: 'fixer-worker', suite: 'fixer-worker', generatedAt: 'x', cells: [] }]));
+    expect(() => produceCorrectionAwareReport({
+      manifestPath, repoRoot: REPO_ROOT, corpusRoot: corpus,
+      runs: [{ runId: RUN19, originalPath: tablePath }], asOf: '2026-09-29T21:47:07Z', scopes: [],
+    })).toThrow(/flat object/);
+  });
+});
+
+describe('D77: the producer renders a per-route board with cited status', () => {
+  it('keeps route scope, remaining criterion and campaign completion distinct', () => {
+    const dir = producerWorkspace();
+    const audit = {
+      schemaVersion: 1, kind: 'g1-contract-audit', scope: 'final-container Codex',
+      // The G1 evidence lives under `g1Evidence`, which is the shape
+      // `consumeStatus` reads. A record that states no G1 field leaves
+      // actualRouteQualified UNKNOWN, never false.
+      g1Evidence: {
+        workspaceSeparation: true, frozenBaselineTree: true, independentJudgement: true,
+        timeoutStopSettlementExport: true, nullableUsagePreserved: true,
+      },
+      actualPiTimeoutCancellationLeg: 'not-run: no second distinguishable workspace',
+      campaignComplete: false,
+    };
+    const auditBytes = JSON.stringify(audit, null, 2);
+    mkdirSync(join(dir.corpus, 'evidence'), { recursive: true });
+    writeFileSync(join(dir.corpus, 'evidence/run21-g1-contract-audit.json'), auditBytes);
+    const manifest = {
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [{
+        id: 'run21-g1-contract-audit', kind: 'g1-contract-audit', root: 'corpus' as const,
+        path: 'evidence/run21-g1-contract-audit.json',
+        sha256: sha256(auditBytes), canonicalId: canonicalRecordHash(audit), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    };
+    const manifestPath = join(dir.corpus, 'manifest.json');
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const report = produceCorrectionAwareReport({
+      manifestPath, repoRoot: REPO_ROOT, corpusRoot: dir.corpus,
+      runs: [{ runId: RUN21 }],
+      asOf: '2026-09-29T21:47:07Z',
+      // The scope is DECLARED by the operator. An audit with no declared scope
+      // qualifies nothing and is listed as unread.
+      scopes: [{ entryId: 'run21-g1-contract-audit', route: 'final-container Codex', lane: 'actual' }],
+    });
+
+    expect(report.pinnedOk, JSON.stringify(report.manifest.unverified)).toBe(true);
+    const route = report.status.routes[0]!;
+    expect(route.scope).toBe('final-container Codex');
+    expect(route.remainingCriterion).toBe('not-run: no second distinguishable workspace');
+    expect(report.status.unreadEntries).toEqual([]);
+
+    const markdown = renderBoardMarkdown(report.board);
+    // A route pass is not a campaign pass, and the board says which is which.
+    expect(markdown).toContain('| actualRouteQualified | final-container Codex | — | — |');
+    expect(markdown).toContain('| campaignComplete | — | campaign |');
+    expect(markdown).toContain('Campaign complete: false');
+    // Uncited dimensions are UNKNOWN, never a confident "no".
+    expect(markdown).toMatch(/\| codeFixed \| — \| — \| final-container Codex \(no cited record\)/);
+    expect(markdown).toContain('| campaignComplete | — | — | final-container Codex (no cited record)');
+  });
+
+  it('lists a route whose audit never verified as unread rather than unqualified', () => {
+    const report = produceCorrectionAwareReport({
+      manifestPath: join(REPO_ROOT, 'runner/reporting/corrections.manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: null,
+      runs: [{ runId: RUN19 }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [{ entryId: 'run21-g1-contract-audit', route: 'final-container Codex', lane: 'actual' }],
+    });
+    expect(report.status.unreadEntries).toEqual(['run21-g1-contract-audit']);
+    const route = report.status.routes[0]!;
+    // An unread route claims nothing. The reason is carried on the report's
+    // blockers, because the route itself asserted no dimension at all.
+    expect(route.claims).toEqual([]);
+    expect(route.scope).toBeNull();
+    expect(route.remainingCriterion).toBeNull();
+    expect(report.status.blockers.map((b) => b.reason)).toContain('no-approval-proof');
+    // An unread route is unknown on the board, not "no".
+    const dimensions = report.board.dimensions.find((d) => d.dimension === 'actualRouteQualified')!;
+    expect(dimensions.yes).toEqual([]);
+    expect(dimensions.no).toEqual([]);
+    expect(dimensions.unknown.map((u) => u.route)).toContain('final-container Codex');
+  });
+});
+
+describe('D22: the producer RUNTIME entry point', () => {
+  it('produces a report from a real child process, fail-closed on the unavailable run19 artifacts', () => {
+    const dir = producerWorkspace();
+    const { corpus, rowsPath, projectionPath, out } = seededProducer(dir);
+    const rowsBefore = readFileSync(rowsPath);
+    const projectionBefore = readFileSync(projectionPath);
+
+    // Run the SCRIPT, not the exported function. This is the non-test caller
+    // the independent acceptance found missing, invoked exactly as an operator
+    // would invoke it.
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        join(REPO_ROOT, 'runner/reporting/produce-correction-report.ts'),
+        '--as-of', '2026-09-29T21:47:07Z',
+        '--manifest', join(corpus, 'manifest.json'),
+        '--repo-root', REPO_ROOT,
+        '--corpus-root', corpus,
+        '--run', RUN19,
+        '--rows', `${RUN19}=${rowsPath}`,
+        '--original', `${RUN19}=${projectionPath}`,
+        '--adapter-terminal-cause', 'unknown',
+        '--adapter-operational-status', 'interrupted',
+        '--out', out,
+      ],
+      { encoding: 'utf8' },
+    );
+
+    // Producing a report that WITHHELDS is a successful run. The withheld
+    // claim is not a producer failure and is never reported as a zero.
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain(`${RUN19}: selection=unresolved`);
+    expect(child.stdout).toContain('corrected completion rate WITHHELD (null, not 0)');
+    expect(child.stdout).not.toContain('rate 0');
+    // The unresolvable artifacts are named on stderr, loudly, and the retracted
+    // rate is withdrawn rather than restated. The adapter declared no
+    // `completionRows` here, so the rate is `adapter-unmapped`: KNOWN to be
+    // retracted with no qualified replacement. The historic 1 is not reused.
+    expect(child.stderr).toContain('reportSha256');
+    expect(child.stderr).toContain('table.operationalCompletionRate withheld (adapter-unmapped)');
+    expect(child.stderr).toContain('the original value is not reused for a retracted projection');
+
+    // The historical originals are byte-identical after a producing run.
+    expect(readFileSync(rowsPath)).toEqual(rowsBefore);
+    expect(readFileSync(projectionPath)).toEqual(projectionBefore);
+
+    // And the report it wrote says the same thing the exit code implied.
+    const written = JSON.parse(readFileSync(join(out, 'correction-report.json'), 'utf8')) as {
+      pinnedOk: boolean;
+      runs: Array<{ runId: string; state: { correctedCompletionRate: number | null; completionRateWithheld: boolean } }>;
+    };
+    expect(written.runs[0]!.state.correctedCompletionRate).toBeNull();
+    expect(written.runs[0]!.state.completionRateWithheld).toBe(true);
+  });
+
+  it('exits 2 on a usage error and 1 under --require-publishable with a withheld claim', () => {
+    const usage = spawnSync(
+      process.execPath,
+      ['--experimental-strip-types', join(REPO_ROOT, 'runner/reporting/produce-correction-report.ts'), '--as-of', '2026-09-29T21:47:07Z'],
+      { encoding: 'utf8' },
+    );
+    expect(usage.status).toBe(2);
+    expect(usage.stderr).toContain('--run is required');
+
+    const dir = producerWorkspace();
+    const { corpus, rowsPath, projectionPath, out } = seededProducer(dir);
+    const gate = spawnSync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        join(REPO_ROOT, 'runner/reporting/produce-correction-report.ts'),
+        '--as-of', '2026-09-29T21:47:07Z',
+        '--manifest', join(corpus, 'manifest.json'),
+        '--repo-root', REPO_ROOT,
+        '--corpus-root', corpus,
+        '--run', RUN19,
+        '--rows', `${RUN19}=${rowsPath}`,
+        '--original', `${RUN19}=${projectionPath}`,
+        '--out', out,
+        '--require-publishable',
+      ],
+      { encoding: 'utf8' },
+    );
+    // A run whose claims are all withheld satisfies a gate that demands a
+    // publishable claim. It does not pass as a zero.
+    expect(gate.status).toBe(1);
+    expect(gate.stderr).toContain('--require-publishable');
   });
 });

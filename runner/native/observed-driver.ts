@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
-import type { InvocationIdentity, NativeObservation, ObservedDriver } from './observation.ts';
+import type { InvocationIdentity, NativeLifecycleEvidence, NativeLifecycleEvidenceRef, NativeObservation, ObservedDriver } from './observation.ts';
 import { NativeSupervisorControl } from './process.ts';
 
 export interface NativeDriverOptions {
@@ -21,6 +21,14 @@ export interface NativeCampaignBudgetCapabilities {
   authoritativeTokenTotal: boolean;
 }
 
+interface NativeLifecycleState {
+  identity: InvocationIdentity;
+  processStatus: NativeLifecycleEvidence['process']['status'];
+  processProofSource: string | null;
+  settlementStatus: NativeLifecycleEvidence['settlement']['status'];
+  artifact: NativeLifecycleEvidenceRef | null;
+}
+
 /**
  * Base class for fixtures-local native bridges. The shared S1 seam performs a
  * serialized identity handoff immediately before Driver.run(). Serializing
@@ -35,6 +43,7 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
   private identityQueue: Promise<void> = Promise.resolve();
   private activeIdentity: InvocationIdentity | undefined;
   private releaseIdentity: (() => void) | undefined;
+  private readonly lifecycle = new Map<string, NativeLifecycleState>();
   protected readonly nativeSupervisor = new NativeSupervisorControl();
 
   protected constructor(protected readonly options: NativeDriverOptions) {
@@ -57,14 +66,31 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
     }
     const identity = this.activeIdentity!;
     this.nativeSupervisor.beginInvocation(identity);
+    const lifecycle: NativeLifecycleState = {
+      identity: { ...identity }, processStatus: 'unknown', processProofSource: null,
+      settlementStatus: 'unsettled', artifact: null,
+    };
+    this.lifecycle.set(identity.invocationId, lifecycle);
     const release = this.releaseIdentity;
     this.activeIdentity = undefined;
     this.releaseIdentity = undefined;
     try {
       return await this.runObserved(invocation, identity);
     } finally {
-      this.nativeSupervisor.settleInvocation(identity);
-      release?.();
+      try {
+        this.nativeSupervisor.settleInvocation(identity);
+        lifecycle.settlementStatus = 'settled';
+      } catch {
+        lifecycle.settlementStatus = 'unknown';
+      }
+      try { this.persistLifecycleEvidence(lifecycle); }
+      catch {
+        // Lifecycle persistence is diagnostic evidence and must never replace
+        // the native driver's primary WorkerResult or transport exception.
+        lifecycle.artifact = null;
+      } finally {
+        release?.();
+      }
     }
   }
 
@@ -75,12 +101,35 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
 
   protected reportProcessTree(identity: InvocationIdentity, stopped: boolean): void {
     this.nativeSupervisor.reportProcessTree(identity, stopped);
+    const lifecycle = this.lifecycle.get(identity.invocationId);
+    if (lifecycle && sameIdentity(lifecycle.identity, identity)) {
+      lifecycle.processStatus = stopped ? 'stopped' : 'unknown';
+      lifecycle.processProofSource = 'runSupervised.treeStopped';
+    }
   }
 
   cancelInvocationAndWait = this.nativeSupervisor.cancelInvocationAndWait.bind(this.nativeSupervisor);
 
   getObservation(invocationId: string): NativeObservation | undefined {
     return this.observations.get(invocationId);
+  }
+
+  getLifecycleEvidence(invocationId: string): NativeLifecycleEvidence | undefined {
+    const state = this.lifecycle.get(invocationId);
+    if (!state) return undefined;
+    // Status is meaningful to the shared helper only when the immutable
+    // private artifact was written and joined to this exact observation.
+    if (!state.artifact) return {
+      identity: { ...state.identity },
+      process: { status: 'unknown', evidence: null },
+      settlement: { status: 'unknown', evidence: null },
+    };
+    const evidence = { ...state.artifact };
+    return {
+      identity: { ...state.identity },
+      process: { status: state.processStatus, evidence: { ...evidence } },
+      settlement: { status: state.settlementStatus, evidence: { ...evidence } },
+    };
   }
 
   protected abstract runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult>;
@@ -152,6 +201,31 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
       sha256: createHash('sha256').update(text).digest('hex'),
     });
   }
+
+  private persistLifecycleEvidence(state: NativeLifecycleState): void {
+    const observation = this.observations.get(state.identity.invocationId);
+    if (!observation || !sameIdentity(observation.identity, state.identity)) return;
+    const text = `${JSON.stringify({
+      schemaVersion: 1,
+      identity: state.identity,
+      process: { status: state.processStatus, proofSource: state.processProofSource },
+      settlement: { status: state.settlementStatus, proofSource: 'ObservedNativeDriver.run finally' },
+    }, null, 2)}\n`;
+    const path = join(this.artifactDirectory, state.identity.invocationId, 'native-lifecycle.json');
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, text, { flag: 'wx', mode: 0o600 });
+    const artifact = {
+      kind: 'native-lifecycle', path,
+      sha256: createHash('sha256').update(text).digest('hex'),
+    };
+    observation.artifacts.push(artifact);
+    state.artifact = artifact;
+  }
+}
+
+function sameIdentity(left: InvocationIdentity, right: InvocationIdentity): boolean {
+  return left.invocationId === right.invocationId && left.assignmentId === right.assignmentId &&
+    left.stageId === right.stageId && left.attemptId === right.attemptId;
 }
 
 

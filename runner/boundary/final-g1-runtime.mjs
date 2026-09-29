@@ -109,7 +109,8 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true, prereg
           recovery.resources.push({ kind:'volume', id:volume, inventoryHash:tree.inventoryHash, ...(baseline ? { head:baseline.head, baselineTree:baseline.baselineTree } : {}) }); save(recoveryPath,recovery);
         }
         const { snapshotTask } = await load('runner/boundary/task-tree.ts');
-        for (const path of [latest.authRoot, latest.hostTaskRoot].filter(Boolean)) recovery.resources.push({ kind:'private-tree', path, inventoryHash:snapshotTask(path, false).inventoryHash });
+        recovery.resources.push({ kind:'private-tree', path:latest.authRoot, inventoryHash:snapshotTask(latest.authRoot, false, false).inventoryHash });
+        if (latest.hostTaskRoot) recovery.resources.push({ kind:'private-tree', path:latest.hostTaskRoot, inventoryHash:snapshotTask(latest.hostTaskRoot, false, true).inventoryHash });
         const { existsSync, lstatSync } = await import('node:fs');
         const publicationPath = join(privateRoot, 'publication-recovery.json');
         if (existsSync(publicationPath)) {
@@ -216,9 +217,11 @@ export async function executePreparedFinalG1Assignment(context) {
   const assignmentId='final-profile-g1-' + plan.runId;
   if(context.identity.assignmentId!==assignmentId || context.identity.attemptId!==assignmentId+'-attempt-1') throw Error('outer assignment identity differs from native plan');
   const runtime = await createPreparedFinalG1Runtime(plan, { preregister: context.preregister });
-  const native = await import(pathToFileURL(join(plan.repoRoot, 'runner/native/run-final-profile-g1.ts')).href);
   let primary;
-  try { return await native.runFinalProfileG1(runtime.options); }
+  try {
+    const native = await import(pathToFileURL(join(plan.repoRoot, 'runner/native/run-final-profile-g1.ts')).href);
+    return await native.runFinalProfileG1(runtime.options);
+  }
   catch(error) { primary=error; throw error; }
   finally { try { await runtime.cleanup(); } catch(error) { if(!primary) throw error; } }
 }

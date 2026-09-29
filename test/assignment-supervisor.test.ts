@@ -1,9 +1,12 @@
+import { pathToFileURL } from 'node:url';
+import { snapshotTask, SAFE_GIT_CONFIG } from '../runner/boundary/task-tree.ts';
+import { brokerAssetTree, FINAL_BROKER_ASSET_INVENTORY, FINAL_BROKER_RUNTIME_IDENTITY } from '../runner/boundary/broker-toolchain.ts';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { withAssignmentResourceOwner } from '../runner/boundary/assignment-supervisor-owner.ts';
 import { DockerControl } from '../runner/boundary/docker-control.ts';
 import { superviseAssignment } from '../runner/boundary/assignment-supervisor.ts';
@@ -113,3 +116,48 @@ it('binds ordered preparation and shutdown private results to one outer identity
   expect(receipt.terminal).toBe('completed');expect(receipt.results.map(r=>r.phase)).toEqual(['preparation','shutdown']);
   expect(JSON.parse(readFileSync(receipt.results[1].path,'utf8'))).toEqual({prior:1});
 });
+
+function recoveryFactoryFixture() {
+  const f=fixture('export function execute(){}'); const root=f.root, repoRoot=join(root,'repo'), privateRoot=join(root,'private');
+  const authRoot=join(root,'auth'),taskRoot=join(root,'task');
+  for(const path of [privateRoot,join(authRoot,'payload'),taskRoot,join(repoRoot,'runner/boundary/evidence/fallback')]) mkdirSync(path,{recursive:true,mode:0o700});
+  writeFileSync(join(authRoot,'payload/config.toml'),'synthetic-config',{mode:0o600});writeFileSync(join(authRoot,'payload/auth.json'),'synthetic-no-secret-auth',{mode:0o600});
+  execFileSync('/usr/bin/git',['init','-q',taskRoot]);writeFileSync(join(taskRoot,'candidate'),'retained candidate');
+  execFileSync('/usr/bin/git',['add','.'],{cwd:taskRoot});execFileSync('/usr/bin/git',['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','Fixture'],{cwd:taskRoot});
+  const baseline=execFileSync('/usr/bin/git',['rev-parse','HEAD'],{cwd:taskRoot,encoding:'utf8'}).trim();
+  writeFileSync(join(taskRoot,'.git/config'),SAFE_GIT_CONFIG);
+  const task=snapshotTask(taskRoot),context=snapshotTask(join(authRoot,'payload'),false,false);
+  const state={authRoot,network:'cq-s5-test-network',broker:{containerId:'a'.repeat(64)},handedOff:true,hostTaskRoot:taskRoot,boundaryIdentity:'boundary',stage:{taskVolume:'cq-s5-task-'+'b'.repeat(16),contextVolume:'cq-s5-context-'+'c'.repeat(16),receiptHash:'d'.repeat(64),baselineCommit:baseline,contextInventoryHash:context.inventoryHash}};
+  const sha=(v:string|Buffer)=>createHash('sha256').update(v).digest('hex');const vmPath=join(root,'vm');writeFileSync(vmPath,'vm');
+  const pins={daemon:{id:'synthetic-daemon'},vm:{configPath:vmPath,configHash:sha('vm')},workerImage:'sha256:'+'e'.repeat(64),brokerImage:'sha256:a0af04214c67a25e4c5ab01b20f6e6deea98fc664b65ae5532576949234adfe3',brokerIdentity:'broker',network:{internalSubnet:'subnet',brokerIP:'1.2.3.4'},nativeConfigHash:sha('synthetic-config')};
+  const brokerAssetVolume='cq-s5-broker-assets-'+'f'.repeat(16),runId='recovery-test';
+  const broker={State:{Running:true},Image:pins.brokerImage,Config:{User:'1000:1000',Entrypoint:['/usr/local/bin/node'],Cmd:['/opt/broker.mjs','/opt/config.json'],Labels:{'cq.boundary.runtime':runId,'cq.boundary.broker':'broker','cq.boundary.broker-runtime':FINAL_BROKER_RUNTIME_IDENTITY}},HostConfig:{ReadonlyRootfs:true,Privileged:false,PidMode:'',CapDrop:['ALL'],CapAdd:null,Binds:null,PortBindings:{}},Mounts:[{Type:'volume',Name:brokerAssetVolume,Destination:'/opt',RW:false}],NetworkSettings:{Networks:{bridge:{},[state.network]:{}}}};
+  const data={state,pins,broker,brokerAssetVolume,runId,task:task.entries,context:context.entries,assets:brokerAssetTree().entries,assetHash:FINAL_BROKER_ASSET_INVENTORY};
+  const dataPath=join(root,'mock-docker.json'),callsPath=join(root,'docker-calls.jsonl');writeFileSync(dataPath,JSON.stringify(data));
+  const code=String.raw`import {readFileSync,appendFileSync} from 'node:fs';const d=JSON.parse(readFileSync(${JSON.stringify(dataPath)},'utf8'));export class DockerControl {async run(a){appendFileSync(${JSON.stringify(callsPath)},JSON.stringify(a)+'\n');if(a[0]==='info')return d.pins.daemon.id;if(a[0]==='image')return JSON.stringify([{Id:a[2]}]);if(a[0]==='inspect')return JSON.stringify([d.broker]);if(a[0]==='ps')return a.at(-1)==='volume='+d.brokerAssetVolume?d.state.broker.containerId:'';if(a[0]==='volume'&&a[1]==='ls')return d.state.stage.taskVolume+'\n'+d.state.stage.contextVolume;if(a[0]==='volume'&&a[1]==='inspect')return JSON.stringify([{Driver:'local',Options:{},Labels:a[2]===d.brokerAssetVolume?{'cq.boundary.runtime':d.runId,'cq.boundary.public-assets':d.assetHash}:{'cq.boundary.staging':d.state.stage.receiptHash}}]);if(a[0]==='network'&&a[1]==='ls')return '';if(a[0]==='network')return JSON.stringify([{Internal:true,EnableIPv6:false,Labels:{'cq.boundary.runtime':d.runId},IPAM:{Config:[{Subnet:d.pins.network.internalSubnet}]},Containers:{[d.state.broker.containerId]:{IPv4Address:d.pins.network.brokerIP+'/24'}}}]);if(a[0]==='exec')return a.at(-1).includes('readdirSync')?JSON.stringify(d.assets):'{}';throw Error('unexpected mock operation '+a[0])}async utility(a){return JSON.stringify(a.some(x=>x.includes('source='+d.state.stage.taskVolume))?d.task:d.context)}close(){appendFileSync(${JSON.stringify(callsPath)},JSON.stringify(['close'])+'\n')}}export async function teardownContainer(){throw Error('unexpected teardown')}`;
+  const files:Record<string,string>={'docker-control.ts':code,'codex-final-profile.ts':'export function validateFinalCodexAuth(){}','container.ts':'export function compileContainerBoundary(){}','egress-broker.ts':"export function compileBroker(){return {identity:'broker'}}",'task-staging.ts':`export {verifyGitBaseline} from ${JSON.stringify(pathToFileURL(join(process.cwd(),'runner/boundary/task-staging.ts')).href)}`,'task-tree.ts':`export * from ${JSON.stringify(pathToFileURL(join(process.cwd(),'runner/boundary/task-tree.ts')).href)}`,'volume-io.mjs':'synthetic mocked volume read'};
+  for(const [name,bytes] of Object.entries(files))writeFileSync(join(repoRoot,'runner/boundary',name),bytes);
+  const pinsPath=join(repoRoot,'runner/boundary/evidence/fallback/final-profile-public-inputs.json');writeFileSync(pinsPath,JSON.stringify(pins));
+  const plan={repoRoot,privateRoot,privateAuthRoot:authRoot,network:state.network,brokerContainerId:state.broker.containerId,runId,brokerAssetVolume,utilityImage:'sha256:'+'1'.repeat(64),runtimeSource:join(root,'operation.mjs'),runtimeSourceSha256:sha(readFileSync(join(root,'operation.mjs'))),publicInputsSha256:sha(readFileSync(pinsPath)),runtimeDependenciesSha256:{},sourcePins:{}};
+  writeFileSync(join(privateRoot,'setup-state.json'),JSON.stringify(state),{mode:0o600});writeFileSync(join(privateRoot,'plan-hash.json'),JSON.stringify({sha256:sha(JSON.stringify(plan))}),{mode:0o600});
+  return {plan,privateRoot,authRoot,taskRoot,callsPath,dataPath};
+}
+it('real recovery factory retains non-Git auth and requires Git candidate inventory',async()=>{
+  const f=recoveryFactoryFixture();const runtime=await import('../runner/boundary/final-g1-runtime.mjs');
+  const owner=await runtime.createPreparedFinalG1Runtime(f.plan,{verify:false});await owner.cleanup();
+  const receipt=JSON.parse(readFileSync(join(f.privateRoot,'recovery-receipt.json'),'utf8'));
+  expect(receipt.complete).toBe(true);expect(receipt.resources).toContainEqual({kind:'private-tree',path:f.authRoot,inventoryHash:snapshotTask(f.authRoot,false,false).inventoryHash});
+  expect(receipt.resources).toContainEqual({kind:'private-tree',path:f.taskRoot,inventoryHash:snapshotTask(f.taskRoot).inventoryHash});
+  rmSync(join(f.taskRoot,'.git'),{recursive:true});await expect(owner.cleanup()).rejects.toThrow('task Git baseline required');
+  expect(JSON.parse(readFileSync(join(f.privateRoot,'recovery-receipt.json'),'utf8')).complete).toBe(false);
+},30000);
+it('real prepared entrypoint awaits cleanup on native module load failure and preserves that cause',async()=>{
+  const f=recoveryFactoryFixture();const privateInputPath=join(f.privateRoot,'input.json');writeFileSync(privateInputPath,JSON.stringify({plan:f.plan}),{mode:0o600});
+  const runtime=await import('../runner/boundary/final-g1-runtime.mjs');const assignmentId='final-profile-g1-'+f.plan.runId;
+  await expect(runtime.executePreparedFinalG1Assignment({privateInputPath,identity:{...identity,assignmentId,attemptId:assignmentId+'-attempt-1'},preregister:async()=>{}})).rejects.toThrow(/run-final-profile-g1/);
+  const receipt=JSON.parse(readFileSync(join(f.privateRoot,'recovery-receipt.json'),'utf8'));expect(receipt.complete).toBe(true);
+  expect(readFileSync(f.callsPath,'utf8').split('\n').filter(x=>x==='["close"]').length).toBeGreaterThanOrEqual(2);
+  rmSync(join(f.taskRoot,'.git'),{recursive:true});
+  await expect(runtime.executePreparedFinalG1Assignment({privateInputPath,identity:{...identity,assignmentId,attemptId:assignmentId+'-attempt-1'},preregister:async()=>{}})).rejects.toThrow(/run-final-profile-g1/);
+  expect(JSON.parse(readFileSync(join(f.privateRoot,'recovery-receipt.json'),'utf8')).complete).toBe(false);
+},30000);

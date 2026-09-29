@@ -79,7 +79,7 @@ export async function createReviewLoopRunSuiteBundle(
   const oraclePin = createReviewLoopOraclePin();
   const baselineRefNamespace = `refs/cq-corpus/${randomUUID()}`;
   await mkdir(suiteDir, { recursive: true });
-  await mkdir(join(fixturePath, 'src'), { recursive: true });
+  await mkdir(join(fixturePath, 'settings'), { recursive: true });
   await mkdir(join(fixturePath, 'test'), { recursive: true });
   await mkdir(dirname(checkPath), { recursive: true });
   await mkdir(dirname(denylistPath), { recursive: true });
@@ -87,8 +87,8 @@ export async function createReviewLoopRunSuiteBundle(
   await copyFile(fileURLToPath(new URL('../../policy/denylist/patterns.yml', import.meta.url)), denylistPath);
   for (const relativePath of [
     'package.json',
-    'src/settings.mjs',
-    'src/display.mjs',
+    'settings/module.js',
+    'settings/display.js',
     'test/public-settings.test.mjs',
   ]) {
     await copyFile(join(task.worktreePath, relativePath), join(fixturePath, relativePath));

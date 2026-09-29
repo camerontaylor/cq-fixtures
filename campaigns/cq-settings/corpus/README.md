@@ -10,6 +10,8 @@ This is visible local calibration material. It contains no held-out task or orac
 - Merge conflicts: `createMergeConflictTask(variant, modelSpec)` and `executeMergeConflictTask(task, driver)` in `integration-tasks.ts`. Local `MergeEffects` drive the exported resolver; each fresh repo contains separate main/feature intent files, and variants test Unicode length and reserved prefixes.
 - Fleet sweep: `createFleetSweepTask(variant)` and `executeFleetSweepTask(task)` in `integration-tasks.ts`. Variants use distinct nested test-package ownership trees and actual committed Git changes.
 
+The current review fixture is source epoch v2 (`review-loop-label-limit-02`), with product modules under `settings/` and visible tests importing `../settings/module.js` and `../settings/display.js`. The earlier v1 oracle pin is archived at `review-loop-oracle-pin-v1.json` for the first actual-run artifact; that historical pin and its artifacts are not rewritten by the v2 fixture layout.
+
 Each task materializes a fresh local Git repository and records the complete seeded commit SHA. Analysis tasks also expose a fixture content SHA. The manifests `operation-oracle-pins.json` and `integration-oracle-pins.json` pin task/executor sources, semantic judges, and the protected judge child by SHA256; factory construction fails closed if a pinned dependency drifts. The runSuite review adapter separately carries its baseline commit and review oracle pin into host scoring.
 
 ## Counts and boundaries

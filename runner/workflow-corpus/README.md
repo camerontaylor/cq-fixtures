@@ -11,7 +11,7 @@ contains only the package source and public test. The judge verifies the
 recorded baseline contents, checks candidate behavior over ordinary values,
 whitespace, astral characters, and combining sequences, verifies that display
 preserves the original Unicode input, runs the visible regression test, and
-checks that only `src/settings.mjs` differs from the baseline. Its patch SHA256
+checks that only `settings/module.js` differs from the baseline. Its patch SHA256
 identifies the candidate bytes; it does not compare against a reference patch.
 `identity` separately records the full candidate commit, baseline ancestry,
 clean Git state, and patch hash. A behaviorally correct but dirty candidate

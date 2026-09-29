@@ -58,7 +58,7 @@ export interface ReviewLoopJudgeReport {
   readonly conformance: ReviewLoopConformance;
 }
 
-const ALLOWED_CHANGED_PATHS = ['src/settings.mjs'] as const;
+const ALLOWED_CHANGED_PATHS = ['settings/module.js'] as const;
 const BUGGY_BASELINE_SETTINGS = `export function isValidCampaignLabel(label) {
   return typeof label === 'string' && label.trim().length > 0;
 }
@@ -74,8 +74,8 @@ const EXPECTED_PACKAGE_SOURCE = `${JSON.stringify({
   scripts: { test: 'node test/public-settings.test.mjs' },
 }, null, 2)}\n`;
 const EXPECTED_PUBLIC_TEST_SOURCE = `import assert from 'node:assert/strict';
-import { isValidCampaignLabel } from '../src/settings.mjs';
-import { displayCampaignLabel } from '../src/display.mjs';
+import { isValidCampaignLabel } from '../settings/module.js';
+import { displayCampaignLabel } from '../settings/display.js';
 
 assert.equal(isValidCampaignLabel(''), false);
 assert.equal(isValidCampaignLabel('   '), false);
@@ -126,13 +126,13 @@ function checkBaselineIdentity(
     options.oracleId !== REVIEW_LOOP_ORACLE_ID
   ) failures.push('task source, baseline, or oracle identity does not match the immutable review task IDs');
   try {
-    if (readBaselineFile(worktreePath, options.baselineRef, 'src/settings.mjs') !== BUGGY_BASELINE_SETTINGS) {
+    if (readBaselineFile(worktreePath, options.baselineRef, 'settings/module.js') !== BUGGY_BASELINE_SETTINGS) {
       failures.push('referenced baseline source does not match the seeded label-length defect');
     }
     if (readBaselineFile(worktreePath, options.baselineRef, 'package.json') !== EXPECTED_PACKAGE_SOURCE) {
       failures.push('referenced baseline package manifest does not match the pinned task substrate');
     }
-    if (readBaselineFile(worktreePath, options.baselineRef, 'src/display.mjs') !== EXPECTED_DISPLAY_SOURCE) {
+    if (readBaselineFile(worktreePath, options.baselineRef, 'settings/display.js') !== EXPECTED_DISPLAY_SOURCE) {
       failures.push('referenced baseline display source does not match the pinned task substrate');
     }
     if (readBaselineFile(worktreePath, options.baselineRef, 'test/public-settings.test.mjs') !== EXPECTED_PUBLIC_TEST_SOURCE) {
@@ -205,7 +205,7 @@ export async function judgeReviewLoopWorkspace(
     }
   };
   try {
-    actualSettings = await protectedProbe('src/settings.mjs', 'isValidCampaignLabel', cases.map(({ label }) => [label]));
+    actualSettings = await protectedProbe('settings/module.js', 'isValidCampaignLabel', cases.map(({ label }) => [label]));
     if (actualSettings === null) behaviorFailures.push('protected candidate module probe failed or returned an invalid bounded result');
     else cases.forEach(({ expected, name }, index) => {
       if (actualSettings?.[index] !== expected) behaviorFailures.push(`semantic case failed: ${name}`);
@@ -218,7 +218,7 @@ export async function judgeReviewLoopWorkspace(
   const visibleSettings = actualSettings === null ? null : visibleCases.map((testCase) => actualSettings![cases.indexOf(testCase)]);
   let displaySourcePreserved = false;
   try {
-    displaySourcePreserved = readFileSync(join(worktreePath, 'src/display.mjs'), 'utf8') === EXPECTED_DISPLAY_SOURCE;
+    displaySourcePreserved = readFileSync(join(worktreePath, 'settings/display.js'), 'utf8') === EXPECTED_DISPLAY_SOURCE;
   } catch {
     displaySourcePreserved = false;
   }

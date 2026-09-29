@@ -18,7 +18,7 @@ export interface ReviewLoopOracleDependency {
 }
 
 export interface ReviewLoopOraclePin {
-  readonly version: 1;
+  readonly version: 2;
   readonly oracleId: string;
   readonly dependencies: readonly ReviewLoopOracleDependency[];
   readonly sha256: string;
@@ -32,10 +32,10 @@ export function createReviewLoopOraclePin(repoRoot = REPO_ROOT): ReviewLoopOracl
     path,
     sha256: createHash('sha256').update(readFileSync(join(repoRoot, path))).digest('hex'),
   }));
-  const oracleId = 'cq-settings.label-length-unicode.oracle.v1';
-  const canonical = JSON.stringify({ version: 1, oracleId, dependencies });
+  const oracleId = 'cq-settings.label-length-unicode.oracle.v2';
+  const canonical = JSON.stringify({ version: 2, oracleId, dependencies });
   return {
-    version: 1,
+    version: 2,
     oracleId,
     dependencies,
     sha256: createHash('sha256').update(canonical).digest('hex'),

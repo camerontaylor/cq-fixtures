@@ -1,18 +1,18 @@
 {
-  "version": 2,
-  "oracleId": "cq-settings.label-length-unicode.oracle.v2",
+  "version": 1,
+  "oracleId": "cq-settings.label-length-unicode.oracle.v1",
   "dependencies": [
     {
       "path": "runner/workflow-corpus/review-loop-judge.ts",
-      "sha256": "087ff1c30eed362adbe16756f058233a6cd43c4ebc53f4d0d777790799a4b441"
+      "sha256": "3919784b7d0820e97698b519877e9db156812f28f2d725d9f48ba0c78a606223"
     },
     {
       "path": "runner/workflow-corpus/review-loop-pin.ts",
-      "sha256": "5829210c227771aacacf2e6d50dd64a340d2f6d01061da214707e1abe0a8c853"
+      "sha256": "b9bfae8d0839ca73b36023b42ccf156d9946868faec139dee5478cdd24b339f3"
     },
     {
       "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
-      "sha256": "0aa8a7179f9df3310931e7505bf8f4048ce26bfc97f26067b65fe43a0ec63dc3"
+      "sha256": "b07b57dc59db92d18d5f93621ed9db202b3c057c72c5cacca5f4177d4ef7984c"
     },
     {
       "path": "runner/boundary/judge-child.ts",
@@ -23,5 +23,5 @@
       "sha256": "2baca75b07bbb185753f80c4db83f5405586c33788bb0a52ae8f31538259179f"
     }
   ],
-  "sha256": "d521f9d703fa9fc147eb469f2a600bd612b1f4b1d59d0f632f5381d9484b0bd3"
+  "sha256": "eba81317198a52dff7fceba98a9c96b310ace7b992e6d984e52c8bc39b44292e"
 }

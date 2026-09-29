@@ -11,10 +11,10 @@ import {
   type OpResult,
 } from '@camerontaylor/cq-toolkit';
 
-export const REVIEW_LOOP_TASK_ID = 'review-loop-label-limit-01' as const;
-export const REVIEW_LOOP_SOURCE_ID = 'cq-settings.settings-module-seed.v1' as const;
-export const REVIEW_LOOP_BASELINE_ID = 'cq-settings.label-length-defect.baseline.v1' as const;
-export const REVIEW_LOOP_ORACLE_ID = 'cq-settings.label-length-unicode.oracle.v1' as const;
+export const REVIEW_LOOP_TASK_ID = 'review-loop-label-limit-02' as const;
+export const REVIEW_LOOP_SOURCE_ID = 'cq-settings.settings-module-seed.v2' as const;
+export const REVIEW_LOOP_BASELINE_ID = 'cq-settings.label-length-defect.baseline.v2' as const;
+export const REVIEW_LOOP_ORACLE_ID = 'cq-settings.label-length-unicode.oracle.v2' as const;
 
 /** A worker-visible repair task; it intentionally contains no judge data. */
 export interface ReviewLoopRepairTask {
@@ -22,7 +22,7 @@ export interface ReviewLoopRepairTask {
   readonly sourceId: typeof REVIEW_LOOP_SOURCE_ID;
   readonly baselineId: typeof REVIEW_LOOP_BASELINE_ID;
   readonly oracleId: typeof REVIEW_LOOP_ORACLE_ID;
-  readonly substrateFamily: 'campaign-settings-module-v1';
+  readonly substrateFamily: 'campaign-settings-module-v2';
   readonly worktreePath: string;
   readonly baselineCommit: string;
   readonly modelSpec: ModelSpec;
@@ -41,8 +41,8 @@ const DISPLAY_SOURCE = `export function displayCampaignLabel(label) {
 `;
 
 const PUBLIC_TEST_SOURCE = `import assert from 'node:assert/strict';
-import { isValidCampaignLabel } from '../src/settings.mjs';
-import { displayCampaignLabel } from '../src/display.mjs';
+import { isValidCampaignLabel } from '../settings/module.js';
+import { displayCampaignLabel } from '../settings/display.js';
 
 assert.equal(isValidCampaignLabel(''), false);
 assert.equal(isValidCampaignLabel('   '), false);
@@ -61,7 +61,7 @@ export async function createReviewLoopRepairTask(
 ): Promise<ReviewLoopRepairTask> {
   const taskRoot = await mkdtemp(join(parentDirectory, 'cq-review-task-'));
   const worktreePath = join(taskRoot, 'repo');
-  await mkdir(join(worktreePath, 'src'), { recursive: true });
+  await mkdir(join(worktreePath, 'settings'), { recursive: true });
   await mkdir(join(worktreePath, 'test'), { recursive: true });
   await writeFile(join(worktreePath, 'package.json'), JSON.stringify({
     name: 'local-campaign-settings-task',
@@ -69,8 +69,8 @@ export async function createReviewLoopRepairTask(
     type: 'module',
     scripts: { test: 'node test/public-settings.test.mjs' },
   }, null, 2) + '\n');
-  await writeFile(join(worktreePath, 'src/settings.mjs'), INITIAL_SETTINGS_SOURCE);
-  await writeFile(join(worktreePath, 'src/display.mjs'), DISPLAY_SOURCE);
+  await writeFile(join(worktreePath, 'settings/module.js'), INITIAL_SETTINGS_SOURCE);
+  await writeFile(join(worktreePath, 'settings/display.js'), DISPLAY_SOURCE);
   await writeFile(join(worktreePath, 'test/public-settings.test.mjs'), PUBLIC_TEST_SOURCE);
 
   const git = (args: string[]): string => execFileSync('git', args, {
@@ -81,7 +81,7 @@ export async function createReviewLoopRepairTask(
   git(['init', '-q']);
   git(['config', 'user.name', 'CQ Local Corpus']);
   git(['config', 'user.email', 'cq-local-corpus@example.invalid']);
-  git(['add', 'package.json', 'src/settings.mjs', 'src/display.mjs', 'test/public-settings.test.mjs']);
+  git(['add', 'package.json', 'settings/module.js', 'settings/display.js', 'test/public-settings.test.mjs']);
   git(['commit', '-q', '-m', 'Seed campaign label validation defect']);
   const baselineCommit = git(['rev-parse', 'HEAD']);
 
@@ -90,9 +90,9 @@ export async function createReviewLoopRepairTask(
     pr: 1,
     item: {
       id: 'review-local-label-length',
-      path: 'src/settings.mjs',
+      path: 'settings/module.js',
       line: 2,
-      body: 'Campaign labels are limited to 40 Unicode code points after trimming. Reject longer labels. Preserve the original label for display; do not change src/display.mjs.',
+      body: 'Campaign labels are limited to 40 Unicode code points after trimming. Reject longer labels. Preserve the original label for display; do not change settings/display.js.',
       comments: [],
     },
     worktree: { path: worktreePath, branch: 'review/fix-label-limit' },
@@ -104,7 +104,7 @@ export async function createReviewLoopRepairTask(
     sourceId: REVIEW_LOOP_SOURCE_ID,
     baselineId: REVIEW_LOOP_BASELINE_ID,
     oracleId: REVIEW_LOOP_ORACLE_ID,
-    substrateFamily: 'campaign-settings-module-v1',
+    substrateFamily: 'campaign-settings-module-v2',
     worktreePath,
     baselineCommit,
     modelSpec: { ...modelSpec },

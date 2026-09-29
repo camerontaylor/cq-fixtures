@@ -147,7 +147,7 @@ describe('bounded campaign strategy engine', () => {
     expect(visibleRunIdentity('experiment-a', 'assignment-a', 'repeat-b')).not.toBe(first);
   });
 
-  it('maps visible strategy stages onto the frozen S1 judgement and preserves local diagnostics', async () => {
+  it('maps a successful visible run onto the frozen S1 judgement and preserves local diagnostics', async () => {
     const root = mkdtempSync(join(tmpdir(), 'visible-strategy-screen-'));
     let active: { invocationId: string; assignmentId: string; stageId: string; attemptId: string } | undefined;
     const observations = new Map<string, unknown>();
@@ -202,8 +202,7 @@ describe('bounded campaign strategy engine', () => {
       },
     };
     try {
-      let result: Awaited<ReturnType<typeof runVisibleReviewLoopScreening>>;
-      try { result = await runVisibleReviewLoopScreening({
+      const result = await runVisibleReviewLoopScreening({
         driver: driver as never,
         supervisor: { async cancelInvocationAndWait({ identity }) {
           return { invocationId: identity.invocationId, stageId: identity.stageId, attemptId: identity.attemptId,
@@ -214,14 +213,7 @@ describe('bounded campaign strategy engine', () => {
         evaluationBoundaryHash: 'a'.repeat(64), toolsAssistanceHash: 'b'.repeat(64), tierId: 'visible-small',
         assignmentId: 'visible-review-assignment-01', runNamespace: 'review-repeat-01', outputRoot: join(root, 'run'),
         s1DependencyRoot: resolve(dirname(fileURLToPath(import.meta.url)), '../../cq-settings-integration'),
-      }); }
-      catch (error) {
-        // The current S1 mapper conflates the corpus oracle content pin with
-        // judgeManifestHash. Keep this fixture fail-closed until S1 reconciles
-        // those identities; once corrected, the success assertions below run.
-        expect(error instanceof Error ? error.message : String(error)).toContain('runSuite judge pin does not match frozen oracle manifest');
-        return;
-      }
+      });
       expect(result.status, JSON.stringify({ operationalStatus: result.strategy.operationalStatus,
         recipeCompleted: result.strategy.recipeCompleted, correctness: result.pipelineEvidence.candidateCorrectness,
         format: result.pipelineEvidence.formatCompliance, reasons: result.strategy.incompleteReasons,
@@ -241,14 +233,28 @@ describe('bounded campaign strategy engine', () => {
       expect(result.pipelineEvidence.execution.sourceInvocationIds).toHaveLength(4);
       expect(result.pipelineEvidence.stages.every((stage) => stage.invocationId?.startsWith('iv-'))).toBe(true);
       expect(result.pipelineEvidence.stages[0]?.usage.tokenTotal.value).toBe(6);
+      expect(result.pipelineEvidence.stages.every((stage) => stage.usage.input.availability === 'observed'
+        && stage.usage.input.inclusion === 'disjoint')).toBe(true);
       expect(result.rows).toHaveLength(1);
       expect(result.tables.length).toBeGreaterThan(0);
-      const mappedOutcome = result.taskOutcome as { judgements: readonly { judgementId: string; artifact: { path: string; sha256: string } }[] };
+      const mappedOutcome = result.taskOutcome as {
+        candidateCorrectness: boolean | null; formatConformance: boolean | null; assignedStrategySuccess: boolean | null;
+        stages: readonly { stageId: string; attemptId: string; invocationId: string; artifacts: readonly unknown[] }[];
+        judgements: readonly { judgementId: string; artifact: { path: string; sha256: string } }[];
+      };
+      expect(mappedOutcome.candidateCorrectness, JSON.stringify({ localDiagnostics: result.localJudge.diagnostics,
+        outcome: result.localJudge.outcome, stages: result.strategy.stages.map((stage) => ({ kind: stage.kind, status: stage.status, detail: stage.detail })) })).toBe(true);
+      expect(mappedOutcome.formatConformance).toBeNull();
+      expect(mappedOutcome.assignedStrategySuccess).toBe(result.strategy.assignedStrategySuccess);
       expect(mappedOutcome.judgements).toHaveLength(2);
+      expect(mappedOutcome.judgements[0]).toEqual(result.localJudge.outcome?.judgements[0]);
       expect(mappedOutcome.judgements[0]?.judgementId).toBe(result.localJudge.outcome?.judgements[0]?.judgementId);
       expect(mappedOutcome.judgements[1]?.judgementId).not.toBe(mappedOutcome.judgements[0]?.judgementId);
       expect(mappedOutcome.judgements[1]?.artifact.sha256).toMatch(/^[a-f0-9]{64}$/);
-      expect(readFileSync(join(root, 'run', 'artifacts', mappedOutcome.judgements[1]!.artifact.path))).toBeTruthy();
+      const appendedArtifact = readFileSync(join(root, 'run', 'artifacts', mappedOutcome.judgements[1]!.artifact.path));
+      expect(createHash('sha256').update(appendedArtifact).digest('hex')).toBe(mappedOutcome.judgements[1]?.artifact.sha256);
+      expect(mappedOutcome.stages.map((stage) => stage.invocationId)).toEqual(result.pipelineEvidence.stages.map((stage) => stage.invocationId));
+      expect(mappedOutcome.stages.every((stage) => stage.artifacts.length === 0)).toBe(true);
       expect((result.rows[0] as { taskOutcome: unknown }).taskOutcome).toEqual(result.taskOutcome);
       expect(result.localJudge.pipelineCampaignEvidence).toBe(false);
       expect(result.localJudge.modelUsage).toBe('not-a-model-observation');
@@ -525,6 +531,20 @@ describe('bounded campaign strategy engine', () => {
     expect(outcome.formatCompliance).toBe(true);
     expect(outcome.assignedStrategySuccess).toBe(false);
     expect(outcome.operationalStatus).toBe('cancelled');
+  });
+
+  it('keeps a format miss separate from a mechanically correct candidate', async () => {
+    const executor = new FakeExecutor();
+    executor.handler = (request) => request.kind === 'draft'
+      ? result({ candidate: candidate('mechanically-correct', request.workspaceId) })
+      : request.kind === 'independent-judge'
+        ? result({ judgement: { status: 'valid', correctness: true, formatCompliance: false } })
+        : result();
+    const outcome = await runStrategy({ ...task, requireFormatCompliance: true }, { kind: 'one-shot', route: codex }, tier, executor, { ids: fixedIds() });
+    expect(outcome.candidateCorrectness).toBe(true);
+    expect(outcome.formatCompliance).toBe(false);
+    expect(outcome.assignedStrategySuccess).toBe(false);
+    expect(outcome.operationalStatus).toBe('complete');
   });
 
   it('does not launch a pre-cancelled stage and fails closed after hard-required token uncertainty', async () => {

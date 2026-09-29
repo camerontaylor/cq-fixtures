@@ -5,13 +5,14 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionStore, type OpInvocation, type WorkerResult } from '@camerontaylor/cq-toolkit';
 import { CodexExecDriver } from '../runner/native/codex.ts';
 import { PiNativeDriver } from '../runner/native/pi.ts';
 import { assertPiConfiguredAuthHandoff } from '../runner/native/visible-g1-pi-driver.ts';
 import { ZcodeAcpDriver, assertOutsideGlmBlackout } from '../runner/native/zcode.ts';
+import { createVisibleG1AcpSpawnAdapter } from '../runner/native/visible-g1-glm-driver.ts';
 import { runSupervised, visibleCalibrationSpawnAdapter, type NativeTaskExport } from '../runner/native/process.ts';
 import { parseJsonEventLines, applyUsageObservation } from '../runner/native/events.ts';
 import { unavailableObservation, type InvocationIdentity } from '../runner/native/observation.ts';
@@ -35,6 +36,11 @@ import type { ContainerBoundarySpec } from '../runner/boundary/container.ts';
 
 const roots: string[] = [];
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+function setGlmSafeTestTime(): void {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-29T02:00:00.000Z'));
+}
 
 function tempRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'cq-native-test-'));
@@ -623,16 +629,19 @@ describe('native transport event and identity handling', () => {
     await expect(driver.cancelInvocationAndWait({ identity: { ...invocationIdentity, stageId: 'wrong-stage' }, cause: 'bad proof', deadlineEpochMs: Date.now() + 100 })).rejects.toThrow(/no matching invocation/u);
   });
 
-  it('preserves a ZCode ACP envelope around a simulated native result and refuses blackout dispatch', async () => {
+  it('does not infer launch or process-stop evidence from a simulated ZCode result', async () => {
+    setGlmSafeTestTime();
     const root = tempRoot();
     const fake: Pick<{ run(input: OpInvocation): Promise<WorkerResult> }, 'run'> = {
       async run() { return { model: 'GLM-5.3-Flash', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete' }; },
     };
     const driver = new ZcodeAcpDriver({ driver: fake, sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root });
-    await driver.beginInvocation(identity('zcode'));
+    const invocationIdentity = identity('zcode');
+    await driver.beginInvocation(invocationIdentity);
     const result = await driver.run(invocation('simulated task', 'GLM-5.3-Flash'));
     expect(result.stopReason).toBe('complete');
-    await expect(driver.cancelInvocationAndWait({ identity: identity('zcode'), cause: 'post-run proof', deadlineEpochMs: Date.now() + 100 })).resolves.toMatchObject({ processTree: 'stopped-and-reaped', invocation: 'settled' });
+    expect(driver.getLaunchEvidence('zcode')).toMatchObject({ identity: invocationIdentity, status: 'unknown' });
+    await expect(driver.cancelInvocationAndWait({ identity: invocationIdentity, cause: 'post-run proof', deadlineEpochMs: Date.now() + 100 })).rejects.toThrow();
     expect(driver.getObservation('zcode')).toMatchObject({
       transport: 'zcode-acp', model: {
         requested: { value: 'GLM-5.3-Flash', status: 'requested' },
@@ -642,6 +651,85 @@ describe('native transport event and identity handling', () => {
     });
     expect(() => assertOutsideGlmBlackout(new Date('2026-09-29T07:00:00Z'))).toThrow(/blackout/u);
     expect(() => assertOutsideGlmBlackout(new Date('2026-09-29T02:00:00Z'))).not.toThrow();
+  });
+
+  it('accepts the pinned ACP resolver’s canonical binary and records its Node spawn event', async () => {
+    setGlmSafeTestTime();
+    const root = tempRoot();
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const executable = join(bin, 'zcode-acp');
+    writeFileSync(executable, '#!/usr/bin/env node\nprocess.exit(1);\n', { mode: 0o700 });
+    chmodSync(executable, 0o700);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${bin}${delimiter}${originalPath ?? ''}`;
+    try {
+      const invocationIdentity = identity('zcode-spawn-observed');
+      const driver = new ZcodeAcpDriver({
+        executable: 'zcode-acp', version: 'synthetic ACP fixture',
+        sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root,
+        launchEvidence: {
+          boundaryIdentity: 'visible-only-unconfined', launchIdentity: 'test-launch-identity', admissionId: 'test-spawn-admission',
+          environmentNames: ['PATH'], scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
+        },
+        spawn: createVisibleG1AcpSpawnAdapter(executable),
+      });
+      await driver.beginInvocation(invocationIdentity);
+      await driver.run(invocation('synthetic no-model ACP process', 'GLM-5.3-Flash'));
+      expect(driver.getLaunchEvidence(invocationIdentity.invocationId)).toMatchObject({
+        identity: invocationIdentity, status: 'spawn-observed',
+        source: 'node:child_process.ChildProcess:spawn-event-after-command-validation',
+      });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
+  });
+
+  it('rejects a substituted pinned-ACP executable before child_process.spawn', async () => {
+    setGlmSafeTestTime();
+    const root = tempRoot();
+    const configuredBin = join(root, 'configured-bin');
+    const substitutedBin = join(root, 'substituted-bin');
+    mkdirSync(configuredBin, { recursive: true });
+    mkdirSync(substitutedBin, { recursive: true });
+    const configuredExecutable = join(configuredBin, 'zcode-acp');
+    const substitutedExecutable = join(substitutedBin, 'zcode-acp');
+    const marker = join(root, 'substituted-was-spawned');
+    writeFileSync(configuredExecutable, '#!/usr/bin/env node\nprocess.exit(1);\n', { mode: 0o700 });
+    writeFileSync(substitutedExecutable, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned');\nprocess.exit(1);\n`, { mode: 0o700 });
+    chmodSync(configuredExecutable, 0o700);
+    chmodSync(substitutedExecutable, 0o700);
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = `${configuredBin}${delimiter}${originalPath ?? ''}`;
+      const invocationIdentity = identity('zcode-no-spawn-observed');
+      const driver = new ZcodeAcpDriver({
+        executable: 'zcode-acp', version: 'synthetic ACP fixture',
+        sessionsDirectory: join(root, 'sessions'), workspaceForInvocation: () => root,
+        launchEvidence: {
+          boundaryIdentity: 'visible-only-unconfined', launchIdentity: 'test-launch-identity', admissionId: 'test-substitution-admission',
+          environmentNames: ['PATH'], scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
+        },
+        spawn: createVisibleG1AcpSpawnAdapter(configuredExecutable),
+      });
+      // Resolve the pinned package's bare command to a different file than the independently pinned adapter path.
+      process.env.PATH = `${substitutedBin}${delimiter}${originalPath ?? ''}`;
+      await driver.beginInvocation(invocationIdentity);
+      const result = await driver.run(invocation('synthetic substituted ACP path', 'GLM-5.3-Flash'));
+      expect(result.stopReason).toBe('error');
+      expect(existsSync(marker)).toBe(false);
+      expect(driver.getLaunchEvidence(invocationIdentity.invocationId)).toMatchObject({
+        identity: invocationIdentity, status: 'no-spawn-observed',
+        source: 'visible-g1-glm-driver:spawn-command-guard-before-child_process.spawn',
+      });
+      expect(driver.getObservation(invocationIdentity.invocationId)?.model.settings.processTree).toMatchObject({
+        value: null, status: 'no-child-process-receipt',
+      });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
   });
 });
 

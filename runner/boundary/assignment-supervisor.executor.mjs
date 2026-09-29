@@ -3,12 +3,14 @@ import { readFileSync, lstatSync, realpathSync, openSync, writeFileSync, fsyncSy
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+const { withAssignmentResourceOwner } = await import(new URL('./assignment-supervisor-owner.ts', import.meta.url));
 const hash = b => createHash('sha256').update(b).digest('hex');
 const bytes = readFileSync(process.argv[2]);
 if (hash(bytes) !== process.argv[3]) throw Error('executor descriptor changed');
 const job = JSON.parse(bytes);
 const send = m => process.send?.({ ...m, identity: job.identity });
 let sequence = 0;
+const priorResults = [];
 async function preregister(resource) {
   const id = ++sequence;
   await new Promise((resolve, reject) => {
@@ -29,7 +31,7 @@ try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(0, op.deadlineEpochMs - Date.now()));
     let result;
-    try { result = await module[op.exportName]({ privateInputPath: op.privateInputPath, identity: job.identity, deadlineEpochMs: op.deadlineEpochMs, signal: controller.signal, preregister }); }
+    try { result = await withAssignmentResourceOwner(preregister, () => module[op.exportName]({ privateInputPath: op.privateInputPath, identity: job.identity, deadlineEpochMs: op.deadlineEpochMs, signal: controller.signal, preregister, priorResults: structuredClone(priorResults) })); }
     finally { clearTimeout(timer); }
     if (controller.signal.aborted || Date.now() >= op.deadlineEpochMs || !process.connected) throw Error('operation ended after ownership cutoff');
     const path = join(job.privateRoot, `result-${job.identity.invocationId}-${index}.json`);
@@ -37,7 +39,8 @@ try {
     if (Buffer.byteLength(encoded) > 1024 * 1024) throw Error('private result too large');
     const fd = openSync(path, 'wx', 0o600);
     try { writeFileSync(fd, encoded); fsyncSync(fd); } finally { closeSync(fd); }
-    send({ type: 'result', phase: op.phase, path, sha256: hash(encoded) });
+    priorResults.push({ phase: op.phase, path, sha256: hash(encoded) });
+    send({ type: 'result', ...priorResults.at(-1) });
   }
 } catch { send({ type: 'failure' }); }
 // Parent owns group reap, including descendants and inherited pipes.

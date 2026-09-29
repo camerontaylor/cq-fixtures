@@ -317,6 +317,31 @@ export function finalProfileInvocationIdentity(input: {
   return { boundaryIdentity, invocationIdentity, finalArgs };
 }
 
+/** Build the reported effective profile through the same strict argv translator
+ * used at launch. The profile is a template: its host-side task root is a stable
+ * absolute marker, while each invocation identity is separately bound to the
+ * actual canonical runSuite workspace by finalProfileInvocationIdentity().
+ */
+export function buildFinalProfileLaunchComparison(
+  configured: LaunchProfile,
+  version: string | null,
+): { effective: LaunchProfile; comparison: LaunchComparison } {
+  const profileHostTaskRoot = resolve('<runSuite workspace>');
+  const hostArgs = [
+    'exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', 'danger-full-access',
+    '-C', profileHostTaskRoot, '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="low"', '-',
+  ];
+  const effective: LaunchProfile = {
+    label: 'Final HTTP-only subscription G1', executable: '/usr/local/bin/codex', version,
+    args: finalCodexArguments(hostArgs, profileHostTaskRoot),
+    envKeys: ['HOME', 'CODEX_HOME', 'LANG', 'PATH', 'TMPDIR'], cwdBehavior: 'isolated /task mapped from exact runSuite workspace',
+    providerRoute: 'cq-subscription-http (HTTP-only managed subscription)', requestedModel: 'gpt-6-sol', authClass: 'managed-subscription access-only',
+    effort: 'low', permissionPolicy: 'danger-full-access', sandboxPolicy: 'dedicated nonprivileged S5 container; isolation unverified',
+    systemContext: null, tools: null, extensions: null, assistance: null, sessionBehavior: 'ephemeral Codex turn; runner workspace binding', feedbackBehavior: null,
+  };
+  return { effective, comparison: compareLaunchProfiles(configured, effective) };
+}
+
 /** Exactly one diagnostic assignment. No adapter exists until parent approval is frozen. */
 export async function runFinalProfileG1(options: FinalProfileG1Options): Promise<FinalProfileG1Result> {
   const now = options.now ?? Date.now;
@@ -419,18 +444,7 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   const accessProfile = options.launchInventory ?? resolveNativeLaunchInventory(options.configPath ?? join(homedir(), '.paseo', 'config.json'));
   const configured = accessProfile.configuredProfiles.find((profile) => profile.providerRoute.split(' ')[0] === 'codex' && profile.requestedModel?.toLowerCase() === 'gpt-6-sol');
   if (!configured) throw new Error('safe launch inventory lacks the configured Codex gpt-6-sol profile');
-  const effective: LaunchProfile = {
-    label: 'Final HTTP-only subscription G1', executable: '/usr/local/bin/codex', version: readExecutableVersion('/usr/local/bin/codex'),
-    args: finalCodexArguments([
-      'exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', 'danger-full-access',
-      '-C', '<runSuite workspace>', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="low"', '-',
-    ], '<runSuite workspace>'),
-    envKeys: ['HOME', 'CODEX_HOME', 'LANG', 'PATH', 'TMPDIR'], cwdBehavior: 'isolated /task mapped from exact runSuite workspace',
-    providerRoute: 'cq-subscription-http (HTTP-only managed subscription)', requestedModel: 'gpt-6-sol', authClass: 'managed-subscription access-only',
-    effort: 'low', permissionPolicy: 'danger-full-access', sandboxPolicy: 'dedicated nonprivileged S5 container; isolation unverified',
-    systemContext: null, tools: null, extensions: null, assistance: null, sessionBehavior: 'ephemeral Codex turn; runner workspace binding', feedbackBehavior: null,
-  };
-  const comparison: LaunchComparison = compareLaunchProfiles(configured, effective);
+  const { effective, comparison } = buildFinalProfileLaunchComparison(configured, readExecutableVersion('/usr/local/bin/codex'));
   let expectedTaskBaselineCommit: string | undefined;
   const driver = new CodexExecDriver({ executable, version: configured.version, profile: configured.label,
     model: 'gpt-6-sol', effort: 'low', hardWallClockMs: MODEL_BUDGET_MS,

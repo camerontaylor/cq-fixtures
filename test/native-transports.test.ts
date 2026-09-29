@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SessionStore, type OpInvocation, type WorkerResult } from '@camerontaylor/cq-toolkit';
 import { CodexExecDriver } from '../runner/native/codex.ts';
@@ -15,7 +15,7 @@ import { RUNNER_SESSION_DIRECTORY } from '../runner/native/session.ts';
 import { ObservedNativeDriver, createWorkerResult } from '../runner/native/observed-driver.ts';
 import { runNativeConformanceSuite } from '../runner/native/conformance.ts';
 import { runVisibleG1, visibleG1TestInventory } from '../runner/native/run-visible-g1.ts';
-import { createFinalProfileQuotaSource, estimateFinalProfileAdmission, resolveFinalProfileQuotaSource, runBoundedFinalProfileSetup } from '../runner/native/run-final-profile-g1.ts';
+import { buildFinalProfileLaunchComparison, createFinalProfileQuotaSource, estimateFinalProfileAdmission, finalProfileInvocationIdentity, resolveFinalProfileQuotaSource, runBoundedFinalProfileSetup } from '../runner/native/run-final-profile-g1.ts';
 import type { CodexAppServerSession } from '../runner/campaign/codex-app-server.ts';
 import { CampaignScheduler, type CampaignAssignment } from '../runner/campaign/scheduler.ts';
 import { FileCampaignQueueStore } from '../runner/campaign/persistence.ts';
@@ -25,7 +25,8 @@ import { SAFE_GIT_CONFIG, snapshotTask } from '../runner/boundary/task-tree.ts';
 import type { ExperimentContext } from '../runner/experiment.ts';
 import { createReviewLoopRepairTask } from '../campaigns/cq-settings/corpus/review-loop-task.ts';
 import { createReviewLoopRunSuiteBundle } from '../runner/workflow-corpus/review-loop-suite.ts';
-import { finalCodexArguments } from '../runner/boundary/codex-final-profile.ts';
+import { FINAL_BROKER_IDENTITY, FINAL_NATIVE_IMAGE, finalCodexArguments } from '../runner/boundary/codex-final-profile.ts';
+import type { ContainerBoundarySpec } from '../runner/boundary/container.ts';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -887,4 +888,38 @@ describe('final-profile oracle source root binding', () => {
       await task.cleanup();
     }
   }, 90_000);
+});
+
+describe('final-profile effective launch metadata', () => {
+  it('uses strict template argv translation while invocation identity remains bound to the actual workspace', () => {
+    const configured: LaunchProfile = {
+      label: 'configured Codex Sol', executable: '/usr/local/bin/codex', version: 'configured-version', args: [], envKeys: [],
+      cwdBehavior: 'configured workspace', providerRoute: 'codex', requestedModel: 'gpt-6-sol', authClass: 'managed subscription',
+      effort: 'low', permissionPolicy: 'workspace-write', sandboxPolicy: 'workspace-write', systemContext: null, tools: null,
+      extensions: null, assistance: null, sessionBehavior: 'session store', feedbackBehavior: null,
+    };
+    const { effective } = buildFinalProfileLaunchComparison(configured, 'synthetic-version');
+    const metadataHostRoot = resolve('<runSuite workspace>');
+    const hostArgs = ['exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', 'danger-full-access',
+      '-C', metadataHostRoot, '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="low"', '-'];
+    const expectedArgs = finalCodexArguments(hostArgs, metadataHostRoot);
+    expect(effective.version).toBe('synthetic-version');
+    expect(effective.args).toEqual(expectedArgs);
+    expect(effective.args).toContain('/task');
+    expect(effective.args).toContain('model_provider="cq-subscription-http"');
+
+    const cwd = tempRoot();
+    const specification: ContainerBoundarySpec = {
+      profile: 'cq-boundary-s5', daemonId: 'synthetic-daemon', vmConfigHash: 'a'.repeat(64), image: FINAL_NATIVE_IMAGE,
+      taskVolume: 'cq-s5-task-test-00000001', contextVolume: 'cq-s5-context-test-00000001',
+      stagingEvidence: 'synthetic-staging-receipt', authenticationFiles: ['auth.json'], nativeControlEvidence: 'synthetic-native-control',
+      network: { name: 'cq-s5-test-net', workerIP: '172.29.249.3', brokerIP: '172.29.249.2', port: 8080,
+        brokerIdentity: FINAL_BROKER_IDENTITY, productionEligible: true }, namespaceEvidence: 'synthetic-namespace-evidence',
+    };
+    const identity = finalProfileInvocationIdentity({ specification, cwd, budgetSeconds: 90 });
+    expect(identity.finalArgs).toEqual(expectedArgs);
+    expect(identity.finalArgs[7]).toBe('/task');
+    expect(identity.invocationIdentity).toMatch(/^[a-f0-9]{64}$/u);
+    expect(identity.boundaryIdentity).toMatch(/^[a-f0-9]{64}$/u);
+  });
 });

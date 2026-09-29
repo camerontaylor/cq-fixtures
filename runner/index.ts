@@ -56,7 +56,7 @@ export type { PipelineJudgeResult, PipelineMappingResult, PipelineStageLedger, P
 import { ArtifactStore, sha256, type ImmutableArtifactRef } from './artifacts/index.ts';
 import { findDenylistMatch, loadDenylistRules } from './denylist.ts';
 import { canonicalJson, judgeManifestHash, suiteTaskId, type ExperimentContext, type JudgeDependencyManifest, type TaskOutcome, type TaskOutcomeJudgement } from './experiment.ts';
-import { campaignUsage, sanitizeNativeObservation, unavailableObservation, type InvocationIdentity, type NativeObservation, type ObservedDriver } from './native/observation.ts';
+import { campaignUsage, sanitizeNativeObservation, unavailableObservation, validatedLaunchEvidenceLaunched, type InvocationIdentity, type NativeObservation, type ObservedDriver } from './native/observation.ts';
 
 // Public library surface: the suite loader rides along with the runner.
 export { isFixerCase, loadSuite, type Suite, type SuiteCase } from './suite.ts';
@@ -1439,11 +1439,28 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       }
       const credentialFailure = thrown instanceof Error && /requires [A-Z0-9_]+_API_KEY in the environment/.test(thrown.message);
       const observedTerminal = nativeObservation?.terminal.cause;
+      let launchEvidenceLaunched: boolean | null | undefined;
+      if (typeof observedDriver.getLaunchEvidence === 'function') {
+        try {
+          const evidence = await observedDriver.getLaunchEvidence(invocationIdentity.invocationId);
+          launchEvidenceLaunched = validatedLaunchEvidenceLaunched(evidence, invocationIdentity);
+          if (evidence !== undefined && launchEvidenceLaunched === null) {
+            caseDiagnostics.push(`case ${c.id}: invalid or mismatched native launch evidence`);
+          }
+        } catch {
+          launchEvidenceLaunched = null;
+          caseDiagnostics.push(`case ${c.id}: native launch evidence retrieval failed`);
+        }
+      }
+      const legacyLaunched = launchedBudgetStop || worker?.stopReason === 'complete' ? true
+        : credentialFailure ? false
+          : thrown !== undefined ? null
+            : worker !== undefined ? true : false;
       const execution: NonNullable<TaskOutcome['execution']> = {
-        launched: launchedBudgetStop || worker?.stopReason === 'complete' ? true
-          : credentialFailure ? false
-            : thrown !== undefined ? null
-              : worker !== undefined ? true : false,
+        // An explicit native spawn receipt is authoritative. Without a
+        // receipt, keep the historical WorkerResult inference; a declared
+        // evidence seam that fails or yields unknown never implies launch.
+        launched: launchEvidenceLaunched === undefined ? legacyLaunched : launchEvidenceLaunched,
         terminalCause: launchedBudgetStop ? 'budget-exhausted'
           : credentialFailure ? 'prelaunch-failure'
               : thrown !== undefined || (nativeObservation !== undefined && nativeObservation.terminal.transportException !== null)

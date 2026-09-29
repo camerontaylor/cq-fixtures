@@ -30,7 +30,7 @@ import type { FrozenFinalProfileApproval } from '../campaign/final-profile-admis
 import { freezeFinalProfileAdmission } from '../campaign/final-profile-admission.ts';
 import { compareLaunchProfiles, readExecutableVersion, resolveLaunchExecutable, type LaunchComparison, type LaunchProfile } from './launch-inventory.ts';
 import { resolveNativeLaunchInventory, type NativeLaunchInventory } from './inventory.ts';
-import type { NativeSpawnContext, NativeSpawnAdapter } from './process.ts';
+import type { NativeInvocationCleanup, NativeInvocationCleanupProof, NativeInvocationCleanupRequest, NativeSpawnContext, NativeSpawnAdapter } from './process.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const TOTAL_ASSIGNMENT_MS = 240_000;
@@ -64,19 +64,8 @@ export interface FinalProfileInvocationSetup {
   exportRoot: string;
 }
 
-export interface FinalProfileSetupCleanupProof {
-  status: 'stopped-and-reaped' | 'quarantined';
-  /** null means cleanup timed out before the runtime could enumerate its owned resources. */
-  resourceIds: string[] | null;
-  volumeDisposition: 'disposed' | 'quarantined';
-}
-
-export interface FinalProfileSetupCleanupRequest {
-  identity: NativeSpawnContext['identity'];
-  reason: string;
-  deadlineEpochMs: number;
-  signal: AbortSignal;
-}
+export type FinalProfileSetupCleanupProof = NativeInvocationCleanupProof;
+export type FinalProfileSetupCleanupRequest = NativeInvocationCleanupRequest;
 
 export interface FinalProfileG1Options {
   outputRoot: string;
@@ -92,7 +81,7 @@ export interface FinalProfileG1Options {
   /** Stages the exact runSuite workspace and returns private S5 receipts. Values stay in memory. */
   prepareInvocation: (input: NativeSpawnContext) => Promise<FinalProfileInvocationSetup>;
   /** Must stop all invocation-owned provisioning and namespaces before disposing or quarantining volumes. */
-  cleanupInvocation: (input: FinalProfileSetupCleanupRequest) => Promise<FinalProfileSetupCleanupProof>;
+  cleanupInvocation: NativeInvocationCleanup;
   quotaSource?: QuotaSource | null;
   launchInventory?: NativeLaunchInventory;
   executable?: string;
@@ -175,7 +164,7 @@ export async function runBoundedFinalProfileSetup<T>(input: {
   setupBudgetMs: number;
   shutdownBudgetMs: number;
   run: (context: NativeSpawnContext) => Promise<T>;
-  cleanup: (request: FinalProfileSetupCleanupRequest) => Promise<FinalProfileSetupCleanupProof>;
+  cleanup: NativeInvocationCleanup;
 }): Promise<T> {
   if (!Number.isFinite(input.setupBudgetMs) || input.setupBudgetMs < 1 ||
       !Number.isFinite(input.shutdownBudgetMs) || input.shutdownBudgetMs < 1) throw new RangeError('finite setup and shutdown budgets required');
@@ -212,7 +201,7 @@ export async function runBoundedFinalProfileSetup<T>(input: {
     let proof: FinalProfileSetupCleanupProof | null = null;
     let cleanupFailure: unknown;
     const cleanup = Promise.resolve().then(() => input.cleanup({
-      identity: input.context.identity, reason, deadlineEpochMs: shutdownDeadlineEpochMs, signal: cleanupController.signal,
+      identity: input.context.identity, reason, deadlineEpochMs: shutdownDeadlineEpochMs, signal: cleanupController.signal, preserveRecovery: true,
     }));
     try {
       proof = await Promise.race([
@@ -446,14 +435,17 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   if (!configured) throw new Error('safe launch inventory lacks the configured Codex gpt-6-sol profile');
   const { effective, comparison } = buildFinalProfileLaunchComparison(configured, readExecutableVersion('/usr/local/bin/codex'));
   let expectedTaskBaselineCommit: string | undefined;
+  let invocationCleanupPromise: Promise<FinalProfileSetupCleanupProof> | undefined;
+  const cleanupInvocation: NativeInvocationCleanup = (request) => invocationCleanupPromise ??= options.cleanupInvocation(request);
   const driver = new CodexExecDriver({ executable, version: configured.version, profile: configured.label,
     model: 'gpt-6-sol', effort: 'low', hardWallClockMs: MODEL_BUDGET_MS,
     finalProfileContainerPolicy: { profile: 'cq-subscription-http', identity: { assignmentId, stageId, attemptId } },
     artifactDirectory: join(artifactRoot, 'native-events'), invocationStage: 'final-profile-G1', assignmentDeadlineEpochMs: deadlineEpochMs, signal: abort.signal,
+    cleanupInvocation,
     expectedTaskBaselineCommit: () => expectedTaskBaselineCommit,
     spawnAdapterFactory: (context) => runBoundedFinalProfileSetup({ context,
       setupBudgetMs: SETUP_BUDGET_MS, shutdownBudgetMs: TEARDOWN_BUDGET_MS,
-      cleanup: options.cleanupInvocation,
+      cleanup: cleanupInvocation,
       run: async (setupContext) => {
       if (setupContext.identity.assignmentId !== assignmentId || setupContext.identity.attemptId !== attemptId || setupContext.stage !== 'final-profile-G1') throw new Error('native invocation differs from the frozen G1 assignment');
       const setup = await options.prepareInvocation(setupContext);

@@ -313,6 +313,7 @@ describe('native transport event and identity handling', () => {
       model: 'gpt-6-sol', effort: 'low', invocationStage: 'final-profile-G1',
       finalProfileContainerPolicy: { profile: 'cq-subscription-http', identity: frozenIdentity },
       artifactDirectory: join(root, 'artifacts'), workspaceForInvocation: () => process.cwd(),
+      cleanupInvocation: async () => ({ status: 'stopped-and-reaped', resourceIds: [], volumeDisposition: 'quarantined' }),
       spawnAdapterFactory: async (context) => {
         factoryCalls++;
         expect(context.stage).toBe('final-profile-G1');
@@ -577,6 +578,7 @@ describe('supervised native subprocesses', () => {
     const result = await runSupervised(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
       cwd: root, identity: identity('late-adapter'), stage: 'final-profile-G1', timeoutMs: 2_000,
       hardDeadlineEpochMs: started + 35,
+      cleanupInvocation: async () => { cleanup.push('cleanup'); return { status: 'stopped-and-reaped', resourceIds: ['late-adapter-worker'], volumeDisposition: 'quarantined' }; },
       spawnAdapter: async (_command, _args, context) => {
         expect(context.deadlineEpochMs).toBe(started + 35);
         await new Promise((resolve) => setTimeout(resolve, 70));
@@ -588,9 +590,9 @@ describe('supervised native subprocesses', () => {
       },
     });
     expect(Date.now() - started).toBeLessThan(150);
-    expect(result).toMatchObject({ terminal: 'timeout', treeStopped: false });
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(cleanup).toEqual(['terminate', 'finalize']);
+    expect(result).toMatchObject({ terminal: 'timeout', treeStopped: true,
+      lifecycle: { terminated: true, finalized: true, invocationCleanup: { status: 'completed' } } });
+    expect(cleanup).toEqual(['terminate', 'finalize', 'cleanup']);
   });
 
   it('aborts delayed setup at the setup cutoff, awaits runtime cleanup, and forbids late capture', async () => {
@@ -698,6 +700,145 @@ describe('supervised native subprocesses', () => {
     expect(observedAbortDuringCleanup).toBe(true);
   });
 
+  it('keeps setup cancellation out of the handed-off runtime and orders cleanup after adapter lifecycle', async () => {
+    const root = tempRoot();
+    const script = join(root, 'handoff-cli.cjs');
+    writeFileSync(script, 'setInterval(()=>{},1000);');
+    const order: string[] = [];
+    let setupSignal: AbortSignal | undefined;
+    const result = await runSupervised(process.execPath, [script], {
+      cwd: root, identity: identity('handoff-order'), stage: 'actual-route-G2', timeoutMs: 80, cleanupTimeoutMs: 1_000,
+      spawnAdapterFactory: async (context) => {
+        setupSignal = context.signal;
+        return async (command, args, launchContext) => ({
+          child: spawn(command, [...args], { cwd: launchContext.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true }),
+          boundaryIdentity: 'synthetic-boundary', launchIdentity: 'synthetic-launch', admissionId: 'synthetic-admission',
+          environmentNames: [], scope: 'boundary', isolation: 'unverified', heldOut: false,
+          async terminate() { order.push('terminate'); expect(setupSignal?.aborted).toBe(false); },
+          async finalize() { order.push('finalize'); return { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) }; },
+        });
+      },
+      async cleanupInvocation(request) {
+        order.push('cleanup');
+        expect(request.preserveRecovery).toBe(true);
+        expect(request.identity).toEqual(identity('handoff-order'));
+        return { status: 'stopped-and-reaped', resourceIds: ['synthetic-worker'], volumeDisposition: 'quarantined' };
+      },
+    });
+    expect(order).toEqual(['terminate', 'finalize', 'cleanup']);
+    expect(result).toMatchObject({ terminal: 'timeout', treeStopped: true,
+      lifecycle: { terminated: true, finalized: true, invocationCleanup: { status: 'completed', proof: { volumeDisposition: 'quarantined' } } } });
+  }, 5_000);
+
+  it('aborts setup and awaits invocation cleanup when the adapter factory rejects', async () => {
+    const root = tempRoot();
+    const events: string[] = [];
+    let setupSignal: AbortSignal | undefined;
+    const result = await runSupervised(process.execPath, ['-e', 'process.exit(0)'], {
+      cwd: root, identity: identity('factory-reject'), stage: 'actual-route-G2', timeoutMs: 1_000,
+      spawnAdapterFactory: async (context) => { setupSignal = context.signal; events.push('factory'); throw new Error('synthetic factory failure'); },
+      async cleanupInvocation(request) {
+        events.push('cleanup');
+        expect(setupSignal?.aborted).toBe(true);
+        expect(request.preserveRecovery).toBe(true);
+        return { status: 'stopped-and-reaped', resourceIds: ['synthetic-stage'], volumeDisposition: 'quarantined' };
+      },
+    });
+    expect(events).toEqual(['factory', 'cleanup']);
+    expect(result.terminal).toBe('spawn-error');
+    expect(result.treeStopped).toBe(true);
+    expect(result.lifecycle).toMatchObject({ invocationCleanup: { status: 'completed', proof: { volumeDisposition: 'quarantined' } } });
+  }, 5_000);
+
+  it('does not enter staging when assignment cancellation predates native launch', async () => {
+    const root = tempRoot();
+    const signal = AbortSignal.abort(new Error('cancelled before native launch'));
+    const calls: string[] = [];
+    const result = await runSupervised(process.execPath, ['-e', 'process.exit(0)'], {
+      cwd: root, identity: identity('pre-aborted'), stage: 'final-profile-G1', timeoutMs: 1_000, signal,
+      spawnAdapterFactory: async () => { calls.push('factory'); return async () => { throw new Error('must not launch'); }; },
+      async cleanupInvocation() {
+        calls.push('cleanup');
+        return { status: 'stopped-and-reaped', resourceIds: [], volumeDisposition: 'quarantined' };
+      },
+    });
+    expect(calls).toEqual(['cleanup']);
+    expect(result.terminal).toBe('cancelled');
+    expect(result.treeStopped).toBe(true);
+    expect(result.lifecycle?.invocationCleanup?.status).toBe('completed');
+  }, 5_000);
+
+  it('waits a bounded late receipt through child stop, adapter lifecycle and preserved invocation cleanup', async () => {
+    const root = tempRoot();
+    const script = join(root, 'late-handoff-cli.cjs');
+    writeFileSync(script, 'setInterval(()=>{},1000);');
+    const events: string[] = [];
+    const started = Date.now();
+    const result = await runSupervised(process.execPath, [script], {
+      cwd: root, identity: identity('late-receipt'), stage: 'actual-route-G2', timeoutMs: 1_000,
+      hardDeadlineEpochMs: started + 150, cleanupTimeoutMs: 600,
+      spawnAdapter: async (command, args, context) => {
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        return {
+          child: spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true }),
+          boundaryIdentity: 'late-boundary', launchIdentity: 'late-launch', admissionId: 'late-admission',
+          environmentNames: [], scope: 'boundary', isolation: 'unverified', heldOut: false,
+          async terminate() { events.push('terminate'); },
+          async finalize() { events.push('finalize'); return { inventoryHash: 'c'.repeat(64), head: 'd'.repeat(40) }; },
+        };
+      },
+      async cleanupInvocation(request) {
+        events.push('cleanup');
+        expect(request.preserveRecovery).toBe(true);
+        return { status: 'stopped-and-reaped', resourceIds: ['late-worker'], volumeDisposition: 'quarantined' };
+      },
+    });
+    expect(events).toEqual(['terminate', 'finalize', 'cleanup']);
+    expect(result.terminal).toBe('timeout');
+    expect(result.treeStopped).toBe(true);
+    expect(result.lifecycle).toMatchObject({ terminated: true, finalized: true, invocationCleanup: { status: 'completed' } });
+    expect(Date.now() - started).toBeLessThan(800);
+  }, 5_000);
+
+  it('bounds uninterruptible pre-handoff work and reports missing cleanup proof without capture eligibility', async () => {
+    const root = tempRoot();
+    const started = Date.now();
+    let cleanupAborted = false;
+    const result = await runSupervised(process.execPath, ['-e', 'process.exit(0)'], {
+      cwd: root, identity: identity('stuck-factory'), stage: 'actual-route-G2', timeoutMs: 1_000,
+      hardDeadlineEpochMs: started + 50, cleanupTimeoutMs: 180,
+      spawnAdapterFactory: async () => new Promise(() => undefined),
+      cleanupInvocation: (request) => new Promise(() => request.signal.addEventListener('abort', () => { cleanupAborted = true; }, { once: true })),
+    });
+    expect(cleanupAborted).toBe(true);
+    expect(result).toMatchObject({ terminal: 'timeout', treeStopped: false,
+      lifecycle: { invocationCleanup: { status: 'failed', errorName: 'Error' } } });
+    expect(Date.now() - started).toBeLessThan(400);
+  }, 5_000);
+
+  it('keeps cleanup failure explicit and capture-ineligible after receipt termination and export', async () => {
+    const root = tempRoot();
+    const script = join(root, 'cleanup-fails.cjs');
+    writeFileSync(script, 'process.exit(0);');
+    const order: string[] = [];
+    const result = await runSupervised(process.execPath, [script], {
+      cwd: root, identity: identity('cleanup-proof-fails'), stage: 'actual-route-G2', timeoutMs: 1_000,
+      spawnAdapter: async (command, args, context) => ({
+        child: spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true }),
+        boundaryIdentity: 'cleanup-failure-boundary', launchIdentity: 'cleanup-failure-launch', admissionId: 'cleanup-failure-admission',
+        environmentNames: [], scope: 'boundary', isolation: 'unverified', heldOut: false,
+        async terminate() { order.push('terminate'); },
+        async finalize() { order.push('finalize'); return { inventoryHash: 'e'.repeat(64), head: 'f'.repeat(40) }; },
+      }),
+      async cleanupInvocation() { order.push('cleanup'); throw new Error('private cleanup detail'); },
+    });
+    expect(order).toEqual(['terminate', 'finalize', 'cleanup']);
+    expect(result.treeStopped).toBe(false);
+    expect(result.lifecycle).toMatchObject({ invocationCleanup: { status: 'failed', errorName: 'Error' } });
+    expect(JSON.stringify(result.lifecycle)).not.toContain('private cleanup detail');
+    expect(result.launch).not.toHaveProperty('taskExport');
+  }, 5_000);
+
   it('awaits boundary stop and export before returning a failed transport envelope', async () => {
     const root = tempRoot();
     fakeTaskWorkspace(root);
@@ -708,6 +849,9 @@ describe('supervised native subprocesses', () => {
     const result = await runSupervised(process.execPath, [script], {
       cwd: root, identity: identity('boundary-failed'), stage: 'final-profile-G1', timeoutMs: 10_000,
       expectedTaskBaselineCommit: 'c'.repeat(40),
+      cleanupInvocation: async (request) => { order.push('cleanup'); expect(request.preserveRecovery).toBe(true); return {
+        status: 'stopped-and-reaped', resourceIds: ['worker-boundary-failed'], volumeDisposition: 'quarantined' };
+      },
       spawnAdapter: async (command, args, context) => {
         expect(context.identity).toEqual(identity('boundary-failed'));
         expect(context.stage).toBe('final-profile-G1');
@@ -723,9 +867,10 @@ describe('supervised native subprocesses', () => {
         };
       },
     });
-    expect(order).toEqual(['terminate', 'finalize']);
+    expect(order).toEqual(['terminate', 'finalize', 'cleanup']);
     expect(result).toMatchObject({ code: 7, stdout: 'partial-result\n', treeStopped: true, terminal: 'exit' });
-    expect(result.lifecycle).toEqual({ terminated: true, finalized: true });
+    expect(result.lifecycle).toMatchObject({ terminated: true, finalized: true,
+      invocationCleanup: { status: 'completed', proof: { status: 'stopped-and-reaped', volumeDisposition: 'quarantined' } } });
     expect(result.launch).toMatchObject({ scope: 'boundary', isolation: 'unverified', heldOut: false, taskExport: { inventoryHash, head: 'b'.repeat(40), publication: {
       destination: root, baselineCommit: 'c'.repeat(40), hostUnchanged: true, afterTeardown: true, captureEligible: true,
     } } });
@@ -738,6 +883,7 @@ describe('supervised native subprocesses', () => {
     const order: string[] = [];
     const result = await runSupervised(process.execPath, [script], {
       cwd: root, identity: identity('boundary-cleanup-error'), stage: 'final-profile-G1', timeoutMs: 10_000,
+      cleanupInvocation: async () => { order.push('cleanup'); return { status: 'stopped-and-reaped', resourceIds: ['worker-boundary-error'], volumeDisposition: 'quarantined' }; },
       spawnAdapter: async (command, args, context) => ({
         child: spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true }),
         boundaryIdentity: 'frozen-boundary', launchIdentity: 'launch-hash', admissionId: 'final-g1-admission',
@@ -746,7 +892,7 @@ describe('supervised native subprocesses', () => {
         async finalize() { order.push('finalize'); throw new Error('simulated export refused'); },
       }),
     });
-    expect(order).toEqual(['terminate', 'finalize']);
+    expect(order).toEqual(['terminate', 'finalize', 'cleanup']);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('candidate evidence');
     expect(result.treeStopped).toBe(false);
@@ -764,6 +910,7 @@ describe('supervised native subprocesses', () => {
     const result = await runSupervised(process.execPath, [script], {
       cwd: root, identity: identity('timed-boundary-cleanup'), stage: 'final-profile-G1', timeoutMs: 1_000,
       hardDeadlineEpochMs: startedAt + 6_000,
+      cleanupInvocation: async () => { order.push('cleanup'); return { status: 'stopped-and-reaped', resourceIds: ['worker-timed'], volumeDisposition: 'quarantined' }; },
       spawnAdapter: async (command, args, context) => ({
         child: spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true }),
         boundaryIdentity: 'frozen-boundary', launchIdentity: 'launch-hash', admissionId: 'final-g1-admission',
@@ -778,7 +925,7 @@ describe('supervised native subprocesses', () => {
       }),
     });
 
-    expect(order).toEqual(['terminate-start', 'terminate-failed', 'finalize']);
+    expect(order).toEqual(['terminate-start', 'terminate-failed', 'finalize', 'cleanup']);
     expect(result.terminal).toBe('timeout');
     expect(result.code).toBeNull();
     expect(result.stdout).toContain('partial model output');

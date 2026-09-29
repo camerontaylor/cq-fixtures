@@ -20,7 +20,11 @@ export interface SupervisedProcessResult {
   startedAt: string;
   endedAt: string;
   launch?: NativeLaunchEvidence;
-  lifecycle?: { terminated: boolean; finalized: boolean; error?: { name: string; message: string } };
+  lifecycle?: {
+    terminated: boolean; finalized: boolean;
+    invocationCleanup?: { status: 'completed' | 'failed' | 'unconfigured'; proof?: NativeInvocationCleanupProof; errorName?: string };
+    error?: { name: string; message: string };
+  };
   error?: { name: string; message: string };
 }
 
@@ -72,6 +76,22 @@ export interface NativeSpawnReceipt {
 }
 export type NativeSpawnAdapter = (command: string, args: readonly string[], context: NativeSpawnContext) => Promise<NativeSpawnReceipt>;
 export type NativeSpawnAdapterFactory = (context: NativeSpawnContext) => Promise<NativeSpawnAdapter>;
+
+/** Invocation-owned runtime cleanup, called after setup failure or after the
+ * adapter's terminate/finalize sequence. Recovery is retained by default. */
+export interface NativeInvocationCleanupRequest {
+  identity: SupervisedInvocationIdentity;
+  reason: string;
+  deadlineEpochMs: number;
+  signal: AbortSignal;
+  preserveRecovery: true;
+}
+export interface NativeInvocationCleanupProof {
+  status: 'stopped-and-reaped' | 'quarantined';
+  resourceIds: string[] | null;
+  volumeDisposition: 'disposed' | 'quarantined';
+}
+export type NativeInvocationCleanup = (request: NativeInvocationCleanupRequest) => Promise<NativeInvocationCleanupProof>;
 
 export interface SupervisedInvocationIdentity {
   invocationId: string;
@@ -240,6 +260,10 @@ export interface SupervisedProcessOptions {
   spawnAdapter?: NativeSpawnAdapter;
   /** Creates invocation-specific staging/admission inside the same hard deadline. */
   spawnAdapterFactory?: NativeSpawnAdapterFactory;
+  /** S5 owned-resource cleanup; required for boundary receipts. */
+  cleanupInvocation?: NativeInvocationCleanup;
+  /** Bounded cleanup window after the decision deadline; not a hard resource-lifetime guarantee. */
+  cleanupTimeoutMs?: number;
   /** Exact S5 baseline captured for this invocation before transport starts. */
   expectedTaskBaselineCommit?: string;
   /** Explicitly for fake executables in tests; production launches fail closed without a boundary adapter. */
@@ -249,7 +273,9 @@ export interface SupervisedProcessOptions {
 const DEFAULT_KILL_GRACE_MS = 300;
 const DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
-/** Run one native CLI in its own process group and bound its complete lifetime. */
+/** Run one native CLI with a decision cutoff and bounded awaited cleanup window.
+ * Uncooperative adapter/runtime calls can outlive that window; those paths fail
+ * closed and return no capture proof, but this is not a global lifetime bound. */
 export async function runSupervised(
   command: string,
   args: readonly string[],
@@ -262,7 +288,7 @@ export async function runSupervised(
   const hardDeadlineEpochMs = options.hardDeadlineEpochMs ?? Date.now() + options.timeoutMs;
   if (!Number.isFinite(hardDeadlineEpochMs)) throw new RangeError('hardDeadlineEpochMs must be finite');
   const setupController = new AbortController();
-  const setupSignal = options.signal ? AbortSignal.any([options.signal, setupController.signal]) : setupController.signal;
+  const setupSignal = setupController.signal;
   const maxBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const stdoutParts: string[] = [];
   const stderrParts: string[] = [];
@@ -274,24 +300,44 @@ export async function runSupervised(
   let launch: SupervisedProcessResult['launch'];
   let boundaryLifecycle: Pick<NativeSpawnReceipt, 'terminate' | 'finalize'> | undefined;
   let lifecycleResult: SupervisedProcessResult['lifecycle'];
+  let lifecycleResultFrozen = false;
   let treeStopped = false;
-  let processLaunchStarted = false;
+  let handoffComplete = false;
+
+  if ((options.stage === 'final-profile-G1' || options.stage === 'actual-route-G2') &&
+      (options.spawnAdapter || options.spawnAdapterFactory || options.boundary) && !options.cleanupInvocation) {
+    return spawnFailure(command, args, options.cwd, startedAt,
+      new Error('final-profile native boundary requires an invocation cleanup callback before dispatch'), 'spawn-error', false,
+      { terminated: false, finalized: false, invocationCleanup: { status: 'unconfigured' },
+        error: { name: 'CleanupUnconfigured', message: 'boundary dispatch refused without invocation cleanup ownership' } });
+  }
 
   let launchTimeoutReject!: (error: Error) => void;
   const launchDeadline = new Promise<never>((_, reject) => { launchTimeoutReject = reject; });
-  const onSetupAbort = () => launchTimeoutReject(new Error('native assignment was cancelled during admission or provisioning'));
+  const onSetupAbort = () => {
+    if (handoffComplete) return;
+    const error = new Error('native assignment was cancelled during admission or provisioning');
+    setupController.abort(error);
+    launchTimeoutReject(error);
+  };
+  if (options.signal?.aborted) onSetupAbort();
   options.signal?.addEventListener('abort', onSetupAbort, { once: true });
   const remainingAtStart = hardDeadlineEpochMs - Date.now();
   if (remainingAtStart <= 0) {
+    options.signal?.removeEventListener('abort', onSetupAbort);
+    setupController.abort(new Error('native assignment deadline elapsed before launch'));
     return spawnFailure(command, args, options.cwd, startedAt, new Error('native assignment deadline elapsed before launch'), 'timeout');
   }
   const launchTimeout = setTimeout(() => {
     setupController.abort(new Error('native assignment deadline elapsed during admission or provisioning'));
     launchTimeoutReject(new Error('native assignment deadline elapsed during admission or provisioning'));
   }, remainingAtStart);
-  let launchPromise: Promise<{ child: ChildProcess; receipt?: NativeSpawnReceipt; launch?: NativeLaunchEvidence }>;
+  let launchPromise: Promise<{ child: ChildProcess; receipt?: NativeSpawnReceipt; launch?: NativeLaunchEvidence }> | undefined;
   try {
     launchPromise = (async () => {
+    if (setupSignal.aborted || Date.now() >= hardDeadlineEpochMs) {
+      throw new Error('native assignment ended before boundary setup began');
+    }
     if (options.boundary) {
       if (options.boundary.purpose !== 'actual-route' || options.boundary.heldOut !== false) {
         throw new Error('native transport requires an explicitly admitted visible actual-route boundary');
@@ -299,7 +345,6 @@ export async function runSupervised(
       if (resolve(options.boundary.policy.resolved.task) !== resolve(options.cwd)) {
         throw new Error('boundary task directory must match the invocation workspace');
       }
-      processLaunchStarted = true;
       const receipt = await spawnBoundary({ ...options.boundary, executable: command, args: [...args] });
       const launchEvidence: NativeLaunchEvidence = {
         boundaryIdentity: receipt.boundaryIdentity, launchIdentity: receipt.launchIdentity,
@@ -313,9 +358,9 @@ export async function runSupervised(
         cwd: options.cwd, identity: options.identity, stage: options.stage ?? 'visible-calibration-G1',
         deadlineEpochMs: hardDeadlineEpochMs, signal: setupSignal,
       };
+      if (setupSignal.aborted || Date.now() >= hardDeadlineEpochMs) throw new Error('native assignment ended before adapter factory began');
       const adapter = options.spawnAdapter ?? await options.spawnAdapterFactory!(context);
       if (Date.now() >= hardDeadlineEpochMs || setupSignal.aborted) throw new Error('native assignment deadline elapsed before adapter launch');
-      processLaunchStarted = true;
       const receipt = await adapter(command, args, context);
       if (!receipt.admissionId.trim() || receipt.heldOut !== false ||
           (receipt.scope === 'visible-calibration' && receipt.isolation !== 'disabled') ||
@@ -330,7 +375,6 @@ export async function runSupervised(
       };
       return { child: receipt.child, receipt, launch: launchEvidence };
     } else if (options.allowUnconfinedTestProcess) {
-      processLaunchStarted = true;
       return { child: spawn(command, [...args], {
         cwd: options.cwd,
         env: options.env ?? process.env,
@@ -347,27 +391,73 @@ export async function runSupervised(
     child = launched.child;
     launch = launched.launch;
     if (launched.receipt?.scope === 'boundary') boundaryLifecycle = { terminate: launched.receipt.terminate, finalize: launched.receipt.finalize };
+    handoffComplete = true;
+    options.signal?.removeEventListener('abort', onSetupAbort);
   } catch (error) {
     clearTimeout(launchTimeout);
     const deadlineExpired = Date.now() >= hardDeadlineEpochMs;
     const launchCancelled = options.signal?.aborted === true;
-    if (deadlineExpired || launchCancelled) {
-      // If an adapter cannot stop provisioning synchronously, a late receipt is
-      // still reaped and finalized. The caller receives no successful capture.
-      void launchPromise!.then(async (late) => {
-        await stopAndWait(late.child, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
-        if (late.receipt?.scope === 'boundary') {
-          let terminationError: unknown;
-          try { await late.receipt.terminate?.(); } catch (failure) { terminationError = failure; }
-          try { await late.receipt.finalize?.(); } catch (failure) { if (!terminationError) terminationError = failure; }
-        }
+    setupController.abort(error);
+    const cleanupMs = options.cleanupTimeoutMs ?? 30_000;
+    const cleanupDeadline = Date.now() + cleanupMs;
+    const setupSettleDeadline = Math.min(cleanupDeadline, Date.now() + Math.min(250, Math.max(1, Math.floor(cleanupMs / 3))));
+    let late: { child: ChildProcess; receipt?: NativeSpawnReceipt; launch?: NativeLaunchEvidence } | false = false;
+    let launchPromiseSettled = !launchPromise;
+    if (launchPromise) {
+      try { late = await withinDeadline(launchPromise, setupSettleDeadline); launchPromiseSettled = late !== false; }
+      catch { launchPromiseSettled = true; /* factory rejection settles setup; the owned cleanup hook still runs */ }
+    }
+    let cleanupCompleted = false;
+    let cleanupErrorName: string | undefined;
+    let cleanupProof: NativeInvocationCleanupProof | undefined;
+    let lateTerminated = false;
+    let lateFinalized = false;
+    let lateLifecycleProven = false;
+    if (late !== false) {
+      const hostStopped = await stopAndWait(late.child, Math.min(options.killGraceMs ?? DEFAULT_KILL_GRACE_MS,
+        Math.max(50, cleanupDeadline - Date.now())));
+      lateTerminated = !late.receipt || late.receipt.scope !== 'boundary';
+      lateFinalized = !late.receipt || late.receipt.scope !== 'boundary';
+      try { if (late.receipt?.scope === 'boundary') { await late.receipt.terminate!(); lateTerminated = true; } }
+      catch (failure) { cleanupErrorName = failure instanceof Error ? failure.name : 'Error'; }
+      try { if (late.receipt?.scope === 'boundary') { await late.receipt.finalize!(); lateFinalized = true; } }
+      catch (failure) { cleanupErrorName ??= failure instanceof Error ? failure.name : 'Error'; }
+      if (options.cleanupInvocation) {
+        const outcome = options.identity ? await invokeBoundedCleanup(options.cleanupInvocation, options.identity, 'native setup ended before receipt handoff', cleanupDeadline) : { status: 'failed' as const, errorName: 'InvocationIdentityUnavailable' };
+        cleanupCompleted = outcome.status === 'completed'; cleanupProof = outcome.proof; cleanupErrorName ??= outcome.errorName;
+      }
+      // Cleanup evidence is explicit in the returned failed envelope. A late
+      // receipt never becomes capture eligible, even when all stop hooks pass.
+      lateLifecycleProven = hostStopped && lateTerminated && lateFinalized;
+    } else if (options.cleanupInvocation && options.identity) {
+      const outcome = await invokeBoundedCleanup(options.cleanupInvocation, options.identity, 'native setup did not settle before receipt handoff', cleanupDeadline);
+      cleanupCompleted = outcome.status === 'completed'; cleanupProof = outcome.proof; cleanupErrorName = outcome.errorName;
+      // A factory that settles after this bounded cleanup window gets one more
+      // exact-receipt teardown attempt. This continuation cannot authorize capture.
+      void launchPromise?.then(async (lateReceipt) => {
+        await stopAndWait(lateReceipt.child, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
+        try { await lateReceipt.receipt?.terminate?.(); } catch { /* cleanup proof remains failed */ }
+        try { await lateReceipt.receipt?.finalize?.(); } catch { /* recovery is retained */ }
+        try { await options.cleanupInvocation!({ identity: options.identity!, reason: 'late native setup settled after bounded cleanup',
+          deadlineEpochMs: Date.now() + cleanupMs, signal: new AbortController().signal, preserveRecovery: true }); }
+        catch { /* late cleanup has no capture/report path */ }
       }).catch(() => undefined);
     } else {
-      void launchPromise!.catch(() => undefined);
+      void launchPromise?.catch(() => undefined);
     }
+    const cleanupStatus: NonNullable<SupervisedProcessResult['lifecycle']>['invocationCleanup'] = options.cleanupInvocation
+      ? { status: cleanupCompleted ? 'completed' : 'failed', ...(cleanupProof ? { proof: cleanupProof } : {}), ...(cleanupErrorName ? { errorName: cleanupErrorName } : {}) }
+      : { status: 'unconfigured' };
+    const failedLifecycle: SupervisedProcessResult['lifecycle'] = {
+      terminated: lateTerminated, finalized: lateFinalized, invocationCleanup: cleanupStatus,
+      ...((cleanupErrorName || (options.cleanupInvocation && !cleanupCompleted)) ? {
+        error: { name: cleanupErrorName ?? 'CleanupUnproven', message: 'native setup failed before receipt handoff; invocation cleanup did not prove stop' },
+      } : {}),
+    };
+    const setupStopped = launchPromiseSettled && cleanupCompleted && !cleanupErrorName && (late === false || lateLifecycleProven);
     return spawnFailure(command, args, options.cwd, startedAt, error,
       deadlineExpired ? 'timeout' : launchCancelled ? 'cancelled' : 'spawn-error',
-      !processLaunchStarted && (deadlineExpired || launchCancelled));
+      setupStopped, failedLifecycle, late !== false ? late.launch : undefined);
   } finally {
     clearTimeout(launchTimeout);
     options.signal?.removeEventListener('abort', onSetupAbort);
@@ -400,8 +490,9 @@ export async function runSupervised(
   });
   let stopCompletion: Promise<boolean> | undefined;
   const stopAndFinalize = (): Promise<boolean> => stopCompletion ??= (async () => {
+    const lifecycleDeadlineEpochMs = hardDeadlineEpochMs + (options.cleanupTimeoutMs ?? 30_000);
     const hostTreeStopped = await stopAndWait(child, Math.min(options.killGraceMs ?? DEFAULT_KILL_GRACE_MS,
-      Math.max(50, hardDeadlineEpochMs - Date.now())));
+      Math.max(50, lifecycleDeadlineEpochMs - Date.now())));
     if (!boundaryLifecycle) {
       treeStopped = hostTreeStopped;
       return treeStopped;
@@ -410,6 +501,7 @@ export async function runSupervised(
     let finalized = false;
     let taskExport: NativeTaskExport | undefined;
     let lifecycleError: Error | undefined;
+    let cleanupEvidence: NonNullable<SupervisedProcessResult['lifecycle']>['invocationCleanup'];
     try {
       await boundaryLifecycle.terminate!();
       terminated = true;
@@ -442,15 +534,24 @@ export async function runSupervised(
     } catch (error) {
       if (!lifecycleError) lifecycleError = error instanceof Error ? error : new Error(String(error));
     }
-    if (terminated && hostTreeStopped && finalized && taskExport && launch) {
+    if (options.cleanupInvocation && options.identity) {
+      const cleanupOutcome = await invokeBoundedCleanup(options.cleanupInvocation, options.identity,
+        'native boundary lifecycle settled', lifecycleDeadlineEpochMs);
+      cleanupEvidence = { status: cleanupOutcome.status, ...(cleanupOutcome.proof ? { proof: cleanupOutcome.proof } : {}),
+        ...(cleanupOutcome.errorName ? { errorName: cleanupOutcome.errorName } : {}) };
+      if (cleanupOutcome.status !== 'completed' && !lifecycleError) lifecycleError = new Error('native invocation cleanup did not prove stopped-and-reaped resources');
+    } else {
+      cleanupEvidence = { status: 'unconfigured' };
+      if (!lifecycleError) lifecycleError = new Error('boundary receipt has no invocation cleanup callback');
+    }
+    if (terminated && hostTreeStopped && finalized && cleanupEvidence?.status === 'completed' && taskExport && launch) {
       launch.taskExport = { ...taskExport };
     }
-    lifecycleResult = {
-      terminated,
-      finalized,
+    if (!lifecycleResultFrozen) lifecycleResult = {
+      terminated, finalized, invocationCleanup: cleanupEvidence,
       ...(lifecycleError ? { error: { name: lifecycleError.name, message: lifecycleError.message } } : {}),
     };
-    treeStopped = hostTreeStopped && terminated && finalized && Date.now() <= hardDeadlineEpochMs;
+    treeStopped = hostTreeStopped && terminated && finalized && cleanupEvidence?.status === 'completed';
     return treeStopped;
   })();
   let fallbackTimer: NodeJS.Timeout | undefined;
@@ -463,8 +564,14 @@ export async function runSupervised(
       // A leader can exit while a detached descendant remains in its process
       // group. Prove the complete group is gone before resolving so callers
       // cannot capture a workspace while a late descendant can still edit it.
-      void withinDeadline(stopAndFinalize(), hardDeadlineEpochMs).then((stopped) => {
+      const lifecycleDeadline = hardDeadlineEpochMs + (options.cleanupTimeoutMs ?? 30_000);
+      void withinDeadline(stopAndFinalize(), lifecycleDeadline).then((stopped) => {
         treeStopped = stopped;
+        if (stopped === false && !lifecycleResult) {
+          lifecycleResultFrozen = true;
+          lifecycleResult = { terminated: false, finalized: false, invocationCleanup: { status: 'failed', errorName: 'DeadlineExceeded' },
+            error: { name: 'DeadlineExceeded', message: 'native boundary lifecycle exceeded its bounded cleanup window' } };
+        }
         resolve(snapshot(code, signal, stopped));
       });
     });
@@ -477,19 +584,24 @@ export async function runSupervised(
   const onAbort = () => { cancelled = true; terminateTree(child); scheduleForceKill(); };
   options.signal?.addEventListener('abort', onAbort, { once: true });
   const remainingTransportMs = Math.max(1, Math.min(options.timeoutMs, hardDeadlineEpochMs - Date.now()));
-  const timer = setTimeout(() => { timedOut = true; setupController.abort(new Error('native assignment deadline elapsed')); terminateTree(child); scheduleForceKill(); }, remainingTransportMs);
+  const timer = setTimeout(() => { timedOut = true; terminateTree(child); scheduleForceKill(); }, remainingTransportMs);
   if (cancelled) onAbort();
 
   // The hard fallback bounds even a child that closes its leader early but
   // leaves a descendant holding an inherited pipe open.
-  const forceResolveMs = Math.max(1, hardDeadlineEpochMs - Date.now());
+  const forceResolveMs = Math.max(1, hardDeadlineEpochMs + (options.cleanupTimeoutMs ?? 30_000) - Date.now());
   const forced = new Promise<SupervisedProcessResult>((resolve) => {
     fallbackTimer = setTimeout(() => {
       timedOut = true;
-      setupController.abort(new Error('native assignment deadline elapsed during teardown'));
       terminateTree(child);
-      void withinDeadline(stopAndFinalize(), hardDeadlineEpochMs).then((stopped) => {
+      const lifecycleDeadline = hardDeadlineEpochMs + (options.cleanupTimeoutMs ?? 30_000);
+      void withinDeadline(stopAndFinalize(), lifecycleDeadline).then((stopped) => {
         treeStopped = stopped;
+        if (stopped === false && !lifecycleResult) {
+          lifecycleResultFrozen = true;
+          lifecycleResult = { terminated: false, finalized: false, invocationCleanup: { status: 'failed', errorName: 'DeadlineExceeded' },
+            error: { name: 'DeadlineExceeded', message: 'native boundary lifecycle exceeded its bounded cleanup window' } };
+        }
         resolve(snapshot(null, 'SIGKILL', stopped));
       });
     }, forceResolveMs);
@@ -550,12 +662,16 @@ function spawnFailure(
   value: unknown,
   terminal: ProcessTerminal = 'spawn-error',
   treeStopped = true,
+  lifecycle?: SupervisedProcessResult['lifecycle'],
+  launch?: NativeLaunchEvidence,
 ): SupervisedProcessResult {
   const error = value instanceof Error ? value : new Error(String(value));
   return {
     command, args: [...args], cwd, stdout: '', stderr: '', code: null,
     signal: null, terminal, treeStopped, startedAt,
     endedAt: new Date().toISOString(),
+    ...(lifecycle ? { lifecycle } : {}),
+    ...(launch ? { launch } : {}),
     error: { name: error.name, message: error.message },
   };
 }
@@ -568,4 +684,36 @@ async function withinDeadline<T>(work: Promise<T>, deadlineEpochMs: number): Pro
       new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, deadlineEpochMs - Date.now())); }),
     ]);
   } finally { if (timer) clearTimeout(timer); }
+}
+
+type CleanupOutcome = { status: 'completed' | 'failed'; proof?: NativeInvocationCleanupProof; errorName?: string };
+
+async function invokeBoundedCleanup(
+  cleanup: NativeInvocationCleanup,
+  identity: SupervisedInvocationIdentity,
+  reason: string,
+  deadlineEpochMs: number,
+): Promise<CleanupOutcome> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('native invocation cleanup deadline elapsed')),
+    Math.max(1, deadlineEpochMs - Date.now()));
+  const work = Promise.resolve().then(() => cleanup({ identity: { ...identity }, reason, deadlineEpochMs,
+    signal: controller.signal, preserveRecovery: true }));
+  try {
+    const proof = await Promise.race([
+      work,
+      new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () =>
+        reject(controller.signal.reason ?? new Error('native invocation cleanup deadline elapsed')), { once: true })),
+    ]);
+    if (!proof || !['stopped-and-reaped', 'quarantined'].includes(proof.status) ||
+        !Array.isArray(proof.resourceIds) || !['disposed', 'quarantined'].includes(proof.volumeDisposition)) {
+      return { status: 'failed', errorName: 'InvalidCleanupProof' };
+    }
+    if (proof.status !== 'stopped-and-reaped') return { status: 'failed', proof, errorName: 'CleanupQuarantined' };
+    return { status: 'completed', proof };
+  } catch (error) {
+    return { status: 'failed', errorName: error instanceof Error ? error.name : 'Error' };
+  } finally {
+    clearTimeout(timer);
+  }
 }

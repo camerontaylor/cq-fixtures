@@ -1822,3 +1822,86 @@ describe('final-profile effective launch metadata', () => {
     expect(identity.boundaryIdentity).toMatch(/^[a-f0-9]{64}$/u);
   });
 });
+
+describe('PK05 committed native process receipt adoption', () => {
+  for (const status of ['trusted-no-spawn', 'spawned', 'unknown', 'missing', 'wrong-invocationId', 'wrong-assignmentId', 'wrong-stageId', 'wrong-attemptId'] as const) {
+    it(`keeps ${status} process proof bound to the exact invocation`, async () => {
+      const root = tempRoot();
+      const target = identity(`receipt-${status}`);
+      class ReceiptDriver extends ObservedNativeDriver {
+        constructor() { super({ configuredTarget: 'fixture', transport: 'fixture', executable: 'fixture', executableVersion: '1', profile: 'fixture', artifactDirectory: root }); }
+        protected async runObserved(input: OpInvocation, bound: InvocationIdentity): Promise<WorkerResult> {
+          const observation = this.newObservation(bound, input, new Date().toISOString());
+          this.observations.set(bound.invocationId, observation);
+          this.nativeSupervisor.expectProcessTree(bound);
+          const receiptIdentity = { ...bound };
+          if (status.startsWith('wrong-')) receiptIdentity[status.slice(6) as keyof InvocationIdentity] = 'stale';
+          const result = this.reconcileSupervisedProcess(bound, {
+            command: 'fixture', args: [], cwd: root, stdout: '', stderr: '', code: 0, signal: null,
+            terminal: 'exit', treeStopped: true, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+            ...(status === 'missing' ? {} : { processEvidence: { identity: receiptIdentity,
+              status: status.startsWith('wrong-') ? 'spawned' : status as 'spawned' | 'trusted-no-spawn' | 'unknown',
+              source: status === 'trusted-no-spawn' ? 'trusted supervisor pre-spawn guard' : 'OS child PID' } }),
+          });
+          const expected = status === 'spawned' || status === 'trusted-no-spawn';
+          expect(result.treeStopped).toBe(expected);
+          const worker = createWorkerResult({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }, 'complete');
+          this.finishObservation(observation, worker);
+          return worker;
+        }
+      }
+      const driver = new ReceiptDriver();
+      await driver.beginInvocation(target);
+      await driver.run(invocation());
+      const evidence = driver.getLifecycleEvidence(target.invocationId)!;
+      expect(evidence.identity).toEqual(target);
+      expect(evidence.settlement.status).toBe('settled');
+      expect(evidence.process.status).toBe(status === 'trusted-no-spawn' ? 'not-started' : status === 'spawned' ? 'stopped' : 'unknown');
+      const proof = driver.cancelInvocationAndWait({ identity: target, cause: 'fixture audit', deadlineEpochMs: Date.now() + 100 });
+      if (status === 'trusted-no-spawn' || status === 'spawned') await expect(proof).resolves.toMatchObject({ processTree: 'stopped-and-reaped' });
+      else await expect(proof).rejects.toThrow(/cannot prove/u);
+    });
+  }
+
+  for (const hook of ['terminate', 'finalize', 'cleanup'] as const) {
+    it(`does not upgrade returned proof when stalled ${hook} finishes late`, async () => {
+      const root = tempRoot();
+      const fakePid = 456_789_125;
+      const child = Object.assign(new EventEmitter(), { pid: fakePid, stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough() }) as unknown as ChildProcess;
+      let release!: () => void;
+      const stalled = new Promise<void>((resolve) => { release = resolve; });
+      let ready!: () => void;
+      const handoff = new Promise<void>((resolve) => { ready = resolve; });
+      let cleanupCalls = 0;
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number | null) => {
+        if (pid !== -fakePid) throw new Error('unexpected fixture group');
+        if (signal === 0) throw Object.assign(new Error('fixture absent'), { code: 'ESRCH' });
+        child.emit('close', 0, signal); return true;
+      }) as typeof process.kill);
+      const execution = runSupervised('fixture', [], { cwd: root, identity: identity(`late-${hook}`), stage: 'final-profile-G1',
+        timeoutMs: 100, hardDeadlineEpochMs: Date.now() + 400, cleanupTimeoutMs: 100, killGraceMs: 10,
+        cleanupInvocation: async () => { cleanupCalls++; if (hook === 'cleanup') await stalled;
+          return { status: 'stopped-and-reaped', resourceIds: ['fixture'], volumeDisposition: 'quarantined' }; },
+        spawnAdapter: async () => { ready(); return { child, boundaryIdentity: 'fixture', launchIdentity: 'fixture', admissionId: 'fixture',
+          scope: 'boundary', isolation: 'unverified', heldOut: false, environmentNames: [],
+          terminate: async () => { if (hook === 'terminate') await stalled; },
+          finalize: async () => { if (hook === 'finalize') await stalled; return { inventoryHash: 'a'.repeat(64), head: 'b'.repeat(40) }; },
+        }; },
+      });
+      await handoff;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(500);
+      const result = await execution;
+      expect(result.terminal).toBe('timeout');
+      expect(result.treeStopped).toBe(false);
+      expect(result.launch).not.toHaveProperty('taskExport');
+      const before = JSON.stringify(result);
+      release();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(JSON.stringify(result)).toBe(before);
+      expect(cleanupCalls).toBeLessThanOrEqual(1);
+    });
+  }
+});

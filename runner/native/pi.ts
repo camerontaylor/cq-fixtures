@@ -70,6 +70,8 @@ export class PiNativeDriver extends ObservedNativeDriver {
     this.invocationStage = options.invocationStage ?? 'visible-calibration-G1';
   }
 
+  getLaunchEvidence(invocationId: string) { return this.getProcessLaunchEvidence(invocationId); }
+
   protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
     const observation = this.newObservation(identity, invocation, new Date().toISOString());
     observation.model.configuredTarget = 'pi-opencode/opencode-go/space-bunny-free';
@@ -101,7 +103,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
       const toolArgs = piToolArgs(invocation);
       args.splice(args.length - 2, 0, ...toolArgs);
       this.nativeSupervisor.expectProcessTree(identity);
-      const result = await runSupervised(this.executable, args, {
+      const supervised = await runSupervised(this.executable, args, {
         cwd, identity, stage: this.invocationStage,
         timeoutMs: invocation.budget.wallClockMs ?? this.hardWallClockMs,
         killGraceMs: this.killGraceMs,
@@ -109,7 +111,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
         ...(this.boundaryForInvocation ? { boundary: this.boundaryForInvocation(identity, invocation, cwd) } : {}),
         ...(this.spawnAdapter ? { spawnAdapter: this.spawnAdapter } : {}),
       });
-      this.reportProcessTree(identity, result.treeStopped);
+      const result = this.reconcileSupervisedProcess(identity, supervised);
       if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };
       observation.model.settings.processTree = { value: result.treeStopped, source: 'native process-group stop proof', status: result.treeStopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden' };
       const raw = redactAnonymousRouteEvents([result.stdout, result.stderr ? `\n${result.stderr}` : ''].join(''));

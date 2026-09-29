@@ -203,11 +203,17 @@ describe('bounded campaign strategy engine', () => {
     };
     try {
       const result = await runVisibleReviewLoopScreening({
-        driver: driver as never,
-        supervisor: { async cancelInvocationAndWait({ identity }) {
+      driver: driver as never,
+      supervisor: { async cancelInvocationAndWait({ identity }) {
           return { invocationId: identity.invocationId, stageId: identity.stageId, attemptId: identity.attemptId,
             processTree: 'stopped-and-reaped', invocation: 'settled' };
-        } },
+      } },
+      independentJudgeSupervisor: {
+        async run<T>(_request: StageRequest, operation: () => Promise<T>) { return operation(); },
+        async cancelAndWait({ request }) { return { assignmentId: request.assignmentId, stageId: request.stageId,
+          attemptId: request.attemptId, processTree: 'stopped-and-reaped', execution: 'settled', cleanup: 'complete' };
+        },
+      },
         route: { id: 'codex-sol-simulated', transport: 'codex-exec', tokenEnforcement: 'unsupported', supportedSettings: { effort: ['high'] } },
         model: 'gpt-6-sol', provider: 'codex', effort: 'high', profileId: 'test-codex-sol', settingsId: 'effort-high',
         evaluationBoundaryHash: 'a'.repeat(64), toolsAssistanceHash: 'b'.repeat(64), tierId: 'visible-small',
@@ -409,6 +415,36 @@ describe('bounded campaign strategy engine', () => {
     expect(outcome.operationalStatus).toBe('timed-out');
     expect(outcome.stages[0]?.quarantined).toBe(false);
     expect(captured).toBe(true);
+  });
+
+  it('fails closed when the independent judge supervisor cannot prove cleanup', async () => {
+    const nativeDriver = { beginInvocation() {}, getObservation() { return undefined; } };
+    const executor = createNativeStrategyExecutor(nativeDriver, {
+      async runStage(request) {
+        if (request.kind === 'draft') return result({ candidate: candidate('judge-cleanup-candidate', request.workspaceId) });
+        return new Promise<ExecutorResult>(() => {});
+      },
+      captureCandidate(request) { return request.kind === 'draft' ? candidate('judge-cleanup-candidate', request.workspaceId) : null; },
+      createCandidateWorkspace(_request, _index, stableWorkspaceId) { return { id: stableWorkspaceId, handle: {} }; },
+      supervisor: { async cancelInvocationAndWait({ identity }) {
+        return { invocationId: identity.invocationId, stageId: identity.stageId, attemptId: identity.attemptId,
+          processTree: 'stopped-and-reaped', invocation: 'settled' };
+      } },
+      independentJudgeSupervisor: {
+        async run<T>(_request: StageRequest, operation: () => Promise<T>) { return operation(); },
+        async cancelAndWait({ request }) { return { assignmentId: request.assignmentId, stageId: request.stageId,
+          attemptId: request.attemptId, processTree: 'stopped-and-reaped', execution: 'settled', cleanup: 'failed' };
+        },
+      },
+    });
+    const outcome = await runStrategy(task, { kind: 'one-shot', route: codex }, {
+      ...tier, wallClockMs: 240, judgementAllowanceMs: 80, shutdownAllowanceMs: 30,
+      observationAllowanceMs: 10, captureAllowanceMs: 20,
+    }, executor, { ids: fixedIds() });
+    const judge = outcome.stages.find((stage) => stage.kind === 'independent-judge');
+    expect(judge?.quarantined).toBe(true);
+    expect(outcome.candidateCorrectness).toBeNull();
+    expect(outcome.incompleteReasons).toContain(`executor-not-settled:${judge?.stageId}`);
   });
 
   it('charges draft, every verification and repair, and final independent judging', async () => {
@@ -716,6 +752,52 @@ describe('bounded campaign strategy engine', () => {
     expect(outcome.operationalStatus).toBe('timed-out');
     expect(outcome.accounting.endToEndMs).toBeLessThan(500);
     expect(outcome.candidateCorrectness).toBeNull();
+  });
+
+  it('rejects a late successful judge and gives settlement its separate bounded reserve', async () => {
+    const executor = new FakeExecutor();
+    let finishJudge!: (value: ExecutorResult) => void;
+    executor.handler = (request) => request.kind === 'draft'
+      ? result({ candidate: candidate('deadline-candidate', request.workspaceId) })
+      : request.kind === 'independent-judge'
+        ? new Promise<ExecutorResult>((resolve) => { finishJudge = resolve; })
+        : result();
+    executor.stopAndWait = async (request, execution) => {
+      expect(request.kind).toBe('independent-judge');
+      finishJudge(result({ judgement: { status: 'valid', correctness: true } }));
+      await execution;
+      executor.stopped = true;
+      return { stopped: true, executionSettled: true };
+    };
+    const started = performance.now();
+    const outcome = await runStrategy(task, { kind: 'one-shot', route: codex }, {
+      ...tier, wallClockMs: 260, judgementAllowanceMs: 90, shutdownAllowanceMs: 35,
+      observationAllowanceMs: 15, captureAllowanceMs: 20,
+    }, executor, { ids: fixedIds() });
+    const judge = outcome.stages.find((stage) => stage.kind === 'independent-judge');
+    expect(executor.stopped).toBe(true);
+    expect(judge?.status).toBe('timed-out');
+    expect(judge?.quarantined).toBe(false);
+    expect(outcome.candidateCorrectness).toBeNull();
+    expect(outcome.accounting.endToEndMs).toBeLessThan(300);
+    expect(performance.now() - started).toBeLessThan(350);
+  });
+
+  it('quarantines a judge when its supervisor cannot prove cleanup', async () => {
+    const executor = new FakeExecutor();
+    executor.handler = (request) => request.kind === 'draft'
+      ? result({ candidate: candidate('unclean-judge-candidate', request.workspaceId) })
+      : request.kind === 'independent-judge' ? new Promise<ExecutorResult>(() => {}) : result();
+    executor.stopAndWait = async () => ({ stopped: false, executionSettled: false });
+    const outcome = await runStrategy(task, { kind: 'one-shot', route: codex }, {
+      ...tier, wallClockMs: 240, judgementAllowanceMs: 80, shutdownAllowanceMs: 30,
+      observationAllowanceMs: 10, captureAllowanceMs: 20,
+    }, executor, { ids: fixedIds() });
+    const judge = outcome.stages.find((stage) => stage.kind === 'independent-judge');
+    expect(judge?.quarantined).toBe(true);
+    expect(outcome.finalCandidate?.sha256).toBe(candidate('unclean-judge-candidate', 'task-workspace').sha256);
+    expect(outcome.candidateCorrectness).toBeNull();
+    expect(outcome.incompleteReasons).toContain(`executor-not-settled:${judge?.stageId}`);
   });
 });
 

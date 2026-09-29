@@ -65,6 +65,32 @@ export interface NativeSupervisorControl {
   }): Promise<NativeStopProof>;
 }
 
+/**
+ * The S1 host judge must execute behind a process supervisor of its own.
+ * S2's native Driver supervisor cannot stop runSuite's check subprocess.
+ * `cleanup: 'complete'` is required before the strategy may trust a timed-out
+ * judge as settled; quarantine is evidence of containment, not permission to
+ * capture or clean its workspace.
+ */
+export interface IndependentJudgeSettlementProof {
+  assignmentId: string;
+  stageId: string;
+  attemptId: string;
+  processTree: 'stopped-and-reaped';
+  execution: 'settled';
+  cleanup: 'complete' | 'failed' | 'quarantined';
+}
+
+export interface IndependentJudgeSupervisor {
+  /** Launches the judge operation inside a cancellable, reapable boundary. */
+  run<T>(request: StageRequest, operation: () => Promise<T>): Promise<T>;
+  cancelAndWait(input: {
+    request: StageRequest;
+    cause: unknown;
+    deadlineEpochMs: number;
+  }): Promise<IndependentJudgeSettlementProof>;
+}
+
 export interface NativeStrategyExecutorHooks {
   /** Runs one concrete toolkit operation with the configured native Driver. */
   runStage(request: StageRequest, driver: NativeObservedDriver): Promise<ExecutorResult>;
@@ -73,6 +99,7 @@ export interface NativeStrategyExecutorHooks {
   /** Creates an isolated substrate for each independently generated candidate. */
   createCandidateWorkspace(request: Omit<StageRequest, 'workspace' | 'workspaceId'>, index: number, stableWorkspaceId: string): Promise<{ id: string; handle: unknown }> | { id: string; handle: unknown };
   supervisor: NativeSupervisorControl;
+  independentJudgeSupervisor?: IndependentJudgeSupervisor;
 }
 
 interface RunningInvocation {
@@ -164,6 +191,10 @@ export function createNativeStrategyExecutor(
       const state: RunningInvocation = { identity, settled: false };
       running.set(request.attemptId, state);
       try {
+        if (request.kind === 'independent-judge') {
+          if (!hooks.independentJudgeSupervisor) throw new Error('S1 independent judge requires a separate cancellable process supervisor');
+          return await hooks.independentJudgeSupervisor.run(request, () => hooks.runStage(request, driver));
+        }
         return await hooks.runStage(request, driver);
       } finally {
         state.settled = true;
@@ -174,6 +205,19 @@ export function createNativeStrategyExecutor(
       const state = running.get(request.attemptId);
       const identity = state?.identity ?? identityByAttempt.get(request.attemptId);
       if (!identity) return { stopped: false, executionSettled: false };
+      if (request.kind === 'independent-judge') {
+        const supervisor = hooks.independentJudgeSupervisor;
+        if (!supervisor) return { stopped: false, executionSettled: false };
+        const proof = await supervisor.cancelAndWait({ request, cause,
+          deadlineEpochMs: request.deadlineEpochMs + request.tier.shutdownAllowanceMs });
+        const matches = proof.assignmentId === request.assignmentId && proof.stageId === request.stageId
+          && proof.attemptId === request.attemptId && proof.processTree === 'stopped-and-reaped'
+          && proof.execution === 'settled' && proof.cleanup === 'complete';
+        await execution.then(() => undefined, () => undefined);
+        const settled = state?.settled === true;
+        running.delete(request.attemptId);
+        return { stopped: matches && settled, executionSettled: matches && settled };
+      }
       const proof = await hooks.supervisor.cancelInvocationAndWait({
         identity,
         cause,

@@ -461,11 +461,16 @@ function raceDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 function raceStage<T>(promise: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
+  const deadlineAt = performance.now() + Math.max(0, ms);
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Hard wall-clock deadline exceeded')), Math.max(0, ms));
     const abort = (): void => reject(signal.reason ?? new Error('cancelled'));
     if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
-    promise.then((value) => { clearTimeout(timer); signal.removeEventListener('abort', abort); resolve(value); }, (error: unknown) => {
+    promise.then((value) => {
+      clearTimeout(timer); signal.removeEventListener('abort', abort);
+      if (performance.now() >= deadlineAt) reject(new Error('Hard wall-clock deadline exceeded'));
+      else resolve(value);
+    }, (error: unknown) => {
       clearTimeout(timer); signal.removeEventListener('abort', abort); reject(error);
     });
   });
@@ -511,7 +516,9 @@ export async function runStrategy(
   const startedAt = now();
   const endAt = startedAt + tier.wallClockMs;
   const workEndAt = endAt - tier.judgementAllowanceMs - tier.shutdownAllowanceMs - tier.observationAllowanceMs - tier.captureAllowanceMs;
-  const judgeEndAt = endAt;
+  // Keep the independent judgement inside the decision window and preserve
+  // shutdown/observation/capture time after its deadline.
+  const judgeEndAt = endAt - tier.shutdownAllowanceMs - tier.observationAllowanceMs - tier.captureAllowanceMs;
   const stages: StageRecord[] = [];
   const candidates: Candidate[] = [];
   const candidateWorkspaceIds = new Set<string>();
@@ -645,6 +652,11 @@ export async function runStrategy(
         }
       } catch (captureError) {
         if (captureStart !== null) captureReserveRemainingMs = Math.max(0, captureReserveRemainingMs - Math.max(0, now() - captureStart));
+        // A timed-out capture may still be reading a mutable workspace. It
+        // cannot yield a candidate or authorize downstream judging.
+        quarantined = true;
+        settledProof = false;
+        recipeCompleted = false;
         incompleteReasons.push(`capture-failed:${stageId}:${captureError instanceof Error ? captureError.message : String(captureError)}`);
       }
     }

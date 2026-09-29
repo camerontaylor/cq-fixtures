@@ -2,6 +2,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { CodexExecDriver } from '../runner/native/codex.ts';
 import { PiNativeDriver } from '../runner/native/pi.ts';
 import { visibleCalibrationSpawnAdapter } from '../runner/native/process.ts';
 import { parseVisiblePiModelWallClockMs, runVisibleG1, visibleG1TestInventory } from '../runner/native/run-visible-g1.ts';
@@ -52,6 +53,43 @@ function fixture(scenario: 'complete' | 'timeout', modelWallClockMs: number) {
 }
 
 describe('visible Pi runSuite workspace conformance', () => {
+  it('validates distinct Luna and Sol native runSuite identities on the same task tree', async () => {
+    const reports: Array<{ rows: Array<{ model: string }>; experimentId: string; task: { pinnedBaselineCommits: Array<{ tree: string }> } }> = [];
+    for (const route of ['codex', 'codex-luna'] as const) {
+      const env = fixture('complete', 10_000);
+      const model = route === 'codex-luna' ? 'gpt-6-luna' : 'gpt-6-sol';
+      const effort = route === 'codex-luna' ? 'high' : 'low';
+      const executable = env.launchInventory.configuredProfiles[0]!.executable;
+      const code = readFileSync(executable, 'utf8');
+      const event = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '{"fixed":true,"notes":"bounded fixture repair"}' } });
+      writeFileSync(executable, code.slice(0, code.indexOf('process.stdout.write')) + `process.stdout.write(${JSON.stringify(event + '\n')});\n`);
+      const driver = new CodexExecDriver({ executable, version: 'fixture-1', model, effort,
+        artifactDirectory: join(env.root, 'codex-native-events'), spawnAdapter: visibleCalibrationSpawnAdapter({
+          admissionId: `fixture-${route}`, scope: 'visible-calibration', isolation: 'disabled', heldOut: false, environmentNames: ['PATH'],
+        }),
+      });
+      const configured = { ...env.launchInventory.configuredProfiles[0]!, providerRoute: 'codex', requestedModel: model, effort };
+      const result = await runVisibleG1({ route, driver,
+        boundary: { scope: 'visible-calibration', isolation: 'disabled', heldOut: false, evidenceRef: 'fixture' },
+        outputRoot: env.root, launchInventory: visibleG1TestInventory(configured, route), quotaSource: { async refresh() { return null; } },
+      });
+      const report = JSON.parse(readFileSync(result.reportPath, 'utf8'));
+      expect(report.rows).toContainEqual(expect.objectContaining({ model, driver: 'codex-exec' }));
+      expect(report.tables.flatMap((table: { cells: unknown[] }) => table.cells)).toContainEqual(expect.objectContaining({ model, driver: 'codex-exec' }));
+      expect(report.observations[0].observation.model).toMatchObject({
+        configuredTarget: `codex/${model}`, requested: { value: model }, observed: { value: null, status: 'not-reported' },
+        settings: { effort: { value: effort, status: 'requested-unobservable' } },
+      });
+      expect(report.workspaceConformance.receipt).toMatchObject({ status: 'passed', lifecycle: { qualification: 'qualified' } });
+      reports.push(report);
+      await expect(runVisibleG1({ route: route === 'codex' ? 'codex-luna' : 'codex', driver,
+        boundary: { scope: 'visible-calibration', isolation: 'disabled', heldOut: false, evidenceRef: 'fixture' }, outputRoot: env.root,
+      })).rejects.toThrow(/target does not match/u);
+    }
+    expect(reports[0]!.experimentId).not.toBe(reports[1]!.experimentId);
+    expect(reports[0]!.task.pinnedBaselineCommits[0]!.tree).toBe(reports[1]!.task.pinnedBaselineCommits[0]!.tree);
+  }, 30_000);
+
   it('parses only bounded decimal cutoffs and rejects overrides on non-Pi routes before setup', async () => {
     expect(parseVisiblePiModelWallClockMs('1000')).toBe(1_000);
     expect(parseVisiblePiModelWallClockMs('120000')).toBe(120_000);

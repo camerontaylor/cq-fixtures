@@ -44,7 +44,7 @@ export class AcpSpawnCommandRejected extends Error {
 export class ZcodeAcpDriver extends ObservedNativeDriver {
   private readonly acp: Pick<Driver, 'run'>;
   private readonly sessions: SessionStore;
-  private readonly workspaceForInvocation: NonNullable<ZcodeAcpOptions['workspaceForInvocation']>;
+  private readonly workspaceForInvocation: ZcodeAcpOptions['workspaceForInvocation'];
   private readonly hardWallClockMs: number;
   private readonly abortGraceMs: number;
   private readonly killGraceMs: number;
@@ -97,7 +97,7 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
     this.admittedSpawnConfigured = Boolean(options.driver || (options.spawn && options.launchEvidence?.admissionId.trim()));
     this.launchEvidence = options.launchEvidence;
     this.sessions = new SessionStore(sessionsDirectory);
-    this.workspaceForInvocation = options.workspaceForInvocation ?? (() => process.cwd());
+    this.workspaceForInvocation = options.workspaceForInvocation;
     this.hardWallClockMs = options.hardWallClockMs ?? 120_000;
     this.abortGraceMs = options.abortGraceMs ?? 300;
     this.killGraceMs = options.killGraceMs ?? 1_000;
@@ -133,7 +133,7 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
       assertOutsideGlmBlackout();
       const session = await resolveNativeSession(
         invocation,
-        (candidate) => this.workspaceForInvocation(identity, candidate),
+        this.workspaceForInvocation ? (candidate) => this.workspaceForInvocation!(identity, candidate) : undefined,
         this.sessions,
       );
       const workspace = resolve(session.cwd);

@@ -45,7 +45,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
   private readonly effort: string;
   private readonly model: string;
   private readonly finalProfileContainerPolicy: CodexExecOptions['finalProfileContainerPolicy'];
-  private readonly workspaceForInvocation: NonNullable<CodexExecOptions['workspaceForInvocation']>;
+  private readonly workspaceForInvocation: CodexExecOptions['workspaceForInvocation'];
   private readonly boundaryForInvocation: CodexExecOptions['boundaryForInvocation'];
   private readonly spawnAdapter: NativeSpawnAdapter | undefined;
   private readonly spawnAdapterFactory: NativeSpawnAdapterFactory | undefined;
@@ -71,7 +71,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
     this.killGraceMs = options.killGraceMs ?? 300;
     this.effort = effort;
     this.model = model;
-    this.workspaceForInvocation = options.workspaceForInvocation ?? (() => process.cwd());
+    this.workspaceForInvocation = options.workspaceForInvocation;
     this.boundaryForInvocation = options.boundaryForInvocation;
     this.spawnAdapter = options.spawnAdapter;
     this.spawnAdapterFactory = options.spawnAdapterFactory;
@@ -160,7 +160,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
         observation.terminal.cause = 'spawn-error';
         throw error;
       } else if (result.code !== 0) observation.terminal.cause = `exit:${result.code ?? result.signal ?? 'unknown'}`;
-      if (!result.treeStopped) observation.terminal.cause = 'process-tree-stop-unproven';
+      if (!result.treeStopped && result.terminal !== 'timeout' && result.terminal !== 'cancelled') observation.terminal.cause = 'process-tree-stop-unproven';
       // A clean exit after the supervisor's timeout signal does not turn the
       // timed-out invocation into a completed one. Some CLIs handle SIGTERM,
       // flush a final response, then exit 0; terminal cause remains the

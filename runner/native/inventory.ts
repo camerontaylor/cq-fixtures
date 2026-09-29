@@ -25,7 +25,8 @@ export function resolveNativeLaunchInventory(
   options: NativeLaunchInventoryOptions = {},
 ): NativeLaunchInventory {
   const configuredProfiles = readConfiguredPaseoProfiles(configPath);
-  const byProvider = (provider: NativeRouteName) => configuredProfiles.find((profile) => profile.providerRoute.split(' ')[0] === provider);
+  const byProvider = (provider: NativeRouteName, model: string) => configuredProfiles.find((profile) =>
+    profile.providerRoute.split(' ')[0] === provider && profile.requestedModel?.toLowerCase() === model.toLowerCase());
   const environmentNames = (route: NativeRouteName) => [...new Set(options.environmentNames?.[route] ?? [])].sort();
   const executable = (name: string) => resolveLaunchExecutable(name);
   const profile = (
@@ -41,7 +42,7 @@ export function resolveNativeLaunchInventory(
     sessionBehavior: string,
     extensions: string[] | null,
   ): LaunchProfile => {
-    const selected = byProvider(route);
+    const selected = byProvider(route, requestedModel);
     return {
       label,
       executable: executable(command),
@@ -70,11 +71,16 @@ export function resolveNativeLaunchInventory(
       '-C', '<SessionStore workspace>', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="low"', '-',
     ], 'runner SessionStore workspace; Codex turn ephemeral', 'gpt-6-sol', 'low requested; CLI does not report effective effort',
     'OpInvocation tool policy requested; codex exec flags do not enforce it', 'per-invocation --sandbox', 'ephemeral', []),
+    profile('codex', 'Codex Luna native exec bridge', 'codex', [
+      'exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', '<invocation sandbox>',
+      '-C', '<SessionStore workspace>', '-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="high"', '-',
+    ], 'runner SessionStore workspace; Codex turn ephemeral', 'gpt-6-luna', 'high requested; CLI does not report effective effort',
+    'OpInvocation tool policy requested; codex exec flags do not enforce it', 'per-invocation --sandbox', 'ephemeral', []),
     ...(['json', 'rpc'] as const).map((mode) => profile('pi-opencode', `Pi ${mode.toUpperCase()} bridge`, 'pi', [
       '--mode', mode, '--provider', 'opencode-go', '--model', 'opencode-go/space-bunny-free:high',
-      '--thinking', 'high', '--no-session', '--no-extensions', '<policy-derived tool flags>', '-p', '<prompt>',
+      '--thinking', 'high', '--no-session', '--no-approve', '<policy-derived tool flags>', '-p', '<prompt>',
     ], 'runner SessionStore workspace; Pi session ephemeral', 'opencode-go/space-bunny-free', 'high',
-    'policy-derived --tools/--no-tools', 'unsupported by Pi CLI; native profile governs shell access', 'no-session', [])),
+    'policy-derived --tools/--no-tools', 'unsupported by Pi CLI; native profile governs shell access', 'no-session', null)),
     profile('zcode', 'ZCode ACP bridge', 'zcode-acp', ['server'],
       'runner SessionStore workspace via ACP session cwd', 'GLM-5.3-Flash', 'high requested; ACP effective status unverified',
       'Paseo profile mode yolo; effective ACP permissions unverified', 'ACP server profile; effective sandbox unverified',
@@ -85,7 +91,7 @@ export function resolveNativeLaunchInventory(
     generatedAt: new Date().toISOString(), configuredProfiles, proposedBridges,
     comparisons: proposedBridges.map((bridge) => {
       const route = bridge.label.startsWith('Codex') ? 'codex' : bridge.label.startsWith('Pi') ? 'pi-opencode' : 'zcode';
-      const configured = byProvider(route);
+      const configured = byProvider(route, bridge.requestedModel!);
       return { target: bridge.label, comparison: compareLaunchProfiles(configured ?? unknownProfile(bridge.label), bridge) };
     }),
   };

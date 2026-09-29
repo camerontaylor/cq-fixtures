@@ -65,8 +65,12 @@ export function readPaseoProfile(
   const config = JSON.parse(readFileSync(configPath, 'utf8')) as PaseoConfig;
   const selected = (config.agentProfiles ?? config.daemon?.agentProfiles)?.find((profile) => profile.name === profileName);
   if (!selected) throw new Error(`Paseo profile not found: ${profileName}`);
+  return profileFromConfig(config, selected, executableOverride);
+}
+
+function profileFromConfig(config: PaseoConfig, selected: PaseoProfile, executableOverride?: string): LaunchProfile {
   const provider = config.agents?.providers?.[selected.provider];
-  if (!provider) throw new Error(`Paseo provider not found for profile: ${profileName}`);
+  if (!provider) throw new Error(`Paseo provider not found for profile: ${selected.name}`);
   const command = provider.command ?? [];
   const executable = executableOverride ?? command[0] ?? provider.executable ?? provider.extends ?? selected.provider;
   const executablePath = resolveLaunchExecutable(executable);
@@ -89,7 +93,9 @@ export function readPaseoProfile(
     systemContext: provider.systemContext?.map((item) => `sha256:${createHash('sha256').update(item).digest('hex')}`) ?? null,
     tools: provider.tools ?? null,
     extensions: provider.extensions ?? null,
-    assistance: selected.featureValues ? Object.keys(selected.featureValues).sort() : provider.assistance ?? null,
+    assistance: selected.featureValues ? Object.entries(selected.featureValues).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) =>
+      ['auto_accept', 'fast_mode'].includes(name) && typeof value === 'boolean'
+        ? `${name}=${value}` : `${name}:unknown`) : provider.assistance ?? null,
     sessionBehavior: provider.sessionBehavior ?? null,
     feedbackBehavior: provider.feedbackBehavior ?? null,
   };
@@ -122,14 +128,24 @@ export function readExecutableVersion(executable: string): string | null {
 export function readConfiguredPaseoProfiles(configPath: string): LaunchProfile[] {
   const config = JSON.parse(readFileSync(configPath, 'utf8')) as PaseoConfig;
   const profiles = config.agentProfiles ?? config.daemon?.agentProfiles ?? [];
-  return profiles
+  const configured = profiles
     .filter((profile) => {
       const id = profile.model?.toLowerCase() ?? '';
       return profile.provider === 'codex' ||
         (profile.provider === 'pi-opencode' && id.includes('space-bunny-free')) ||
         (profile.provider === 'zcode' && /glm-5\.3-flash/i.test(profile.model ?? ''));
     })
-    .map((profile) => readPaseoProfile(configPath, profile.name));
+    .map((profile) => profileFromConfig(config, profile));
+  // A requested fallback is separate from any named Sol profile. Its native
+  // capability/effective settings remain unverified until conductor admission.
+  if (!configured.some((profile) => profile.providerRoute.split(' ')[0] === 'codex' && profile.requestedModel === 'gpt-6-luna') &&
+      config.agents?.providers?.codex) {
+    configured.push(profileFromConfig(config, {
+      name: 'Requested GPT-6-Luna fallback (unverified)', provider: 'codex',
+      model: 'gpt-6-luna', thinkingOptionId: 'high', modeId: 'full-access',
+    }));
+  }
+  return configured;
 }
 
 function canonical(value: unknown): string {

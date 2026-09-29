@@ -45,7 +45,8 @@ function fixtureObservation(identity: InvocationIdentity, workerResult: WorkerRe
 function fixtureUsage(overrides: Partial<Record<'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'reasoning' | 'tokenTotal', { value: number | null; availability: 'observed' | 'unavailable' | 'not-reported' }>> = {}) {
   return Object.fromEntries((['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'tokenTotal'] as const).map((name) => {
     const item = overrides[name] ?? { value: null, availability: 'not-reported' as const };
-    return [name, { ...item, source: item.availability === 'observed' ? 'test-ledger' : null, semantics: name, inclusion: null }];
+    return [name, { ...item, source: item.availability === 'observed' ? 'test-ledger' : null,
+      semantics: name === 'tokenTotal' && item.availability === 'observed' ? 'authoritative-total' : name, inclusion: null }];
   })) as unknown as PipelineStageLedger['usage'];
 }
 
@@ -96,7 +97,7 @@ function experiment(): ExperimentContext {
 }
 
 describe('campaign envelope', () => {
-  it('joins S4 stages to the final S1 judgement and emits schema-validated campaign rows and tables', () => {
+  it('maps only frozen judgements, exact evidence refs, recipe format, budget failure, and unknown totals', () => {
     const context = experiment();
     const candidateSha256 = 'a'.repeat(64);
     const judgeStage: PipelineStageLedger = {
@@ -108,12 +109,14 @@ describe('campaign envelope', () => {
       assignmentId: context.assignmentId, stageId: 'stage-draft', attemptId: 'attempt-draft',
       invocationId: 'invocation-draft', kind: 'draft', routeId: 'codex-one-shot', status: 'completed', launched: true,
       terminalCause: 'complete', transportException: null,
-      usage: fixtureUsage({ input: { value: 12, availability: 'observed' }, output: { value: 5, availability: 'observed' } }),
+      usage: { ...fixtureUsage({ input: { value: 12, availability: 'observed' }, output: { value: 5, availability: 'observed' },
+        tokenTotal: { value: 99, availability: 'observed' } }), tokenTotal: {
+        ...fixtureUsage({ tokenTotal: { value: 99, availability: 'observed' } }).tokenTotal, semantics: 'unknown',
+      } },
     };
     const strategy = (overrides: Partial<PipelineStrategyLedger> = {}): PipelineStrategyLedger => ({
-      assignmentId: context.assignmentId, taskId: 'review-loop-task', finalCandidate: { sha256: candidateSha256 },
-      candidateCorrectness: true, formatCompliance: true, assignedStrategySuccess: true,
-      operationalStatus: 'complete', recipeCompleted: true, authorizedBudgetStop: false,
+      assignmentId: context.assignmentId, taskId: 'review-loop-task', finalCandidate: { sha256: candidateSha256 }, candidateCorrectness: true,
+      operationalStatus: 'complete', authorizedBudgetStop: false,
       stages: [modelStage, judgeStage], accounting: { endToEndMs: 321 }, ...overrides,
     });
     const judgement: TaskOutcomeJudgement = {
@@ -146,48 +149,51 @@ describe('campaign envelope', () => {
       },
       runId: 'local-judge-run', timestamp: new Date().toISOString(),
     };
-    const mapped = mapPipelineCampaignEvidence({
+    const historyBefore = structuredClone(taskOutcome.judgements);
+    const map = (options: Partial<Parameters<typeof mapPipelineCampaignEvidence>[0]> = {}) => mapPipelineCampaignEvidence({
       strategy: strategy(), judgeResult: { rows: [judgeRow], tables: [] }, caseId: 'case-1', context,
+      selection: { judgementId: 'judge-v1', version: 1, judgePin: judgement.judgePin, candidateSha256 },
+      recipeEvidence: { formatConformance: true, assignedStrategySuccess: true },
+      pipelineJudgementArtifact: { judgementId: 'pipeline-judge-v2', version: 2, artifact: { path: 'campaign/pipeline-judge.json', sha256: 'c'.repeat(64) } },
+      rowMetadata: { role: 'fixer-worker', suite: 'pipeline-test-suite', case: 'case-1', model: 'gpt-6-luna', driver: 'codex-exec', runId: 'pipeline-run', timestamp: new Date().toISOString(), expectedCases: 1 },
+      stageEvidence: { 'invocation-draft': { artifacts: [{ kind: 'native-observation', path: 'attempts/observation.json', sha256: 'd'.repeat(64) }], observation: { path: 'attempts/observation.json', sha256: 'd'.repeat(64) } } },
+      ...options,
     });
+    const mapped = map();
     expect(mapped.taskOutcome.candidateCorrectness).toBe(true);
-    expect(mapped.taskOutcome.assignedStrategySuccess).toBe(true);
-    expect(mapped.taskOutcome.stages.map((stage) => stage.invocationId)).toEqual(['invocation-draft']);
-    expect(mapped.rows[0]?.observedUsage).toMatchObject({ input: 12, output: 5, cacheRead: null, tokenTotal: null, complete: false });
+    expect(mapped.taskOutcome.judgements[0]).toEqual(judgement);
+    expect(mapped.taskOutcome.judgements).toHaveLength(2);
+    expect(mapped.taskOutcome.judgements[1]).toMatchObject({ judgementId: 'pipeline-judge-v2', formatConformance: true, assignedStrategySuccess: true });
+    expect(mapped.taskOutcome.stages[0]).toMatchObject({ invocationId: 'invocation-draft', artifacts: [{ path: 'attempts/observation.json' }] });
+    expect(mapped.rows[0]?.observedUsage).toMatchObject({ input: 12, output: 5, tokenTotal: null, complete: false });
     expect(mapped.tables[0]?.cells[0]).toMatchObject({ assignedStrategySuccess: 1, observedUsage: { input: 12, output: 5, tokenTotal: null } });
+    expect(taskOutcome.judgements).toEqual(historyBefore);
+    const authoritativeStage = { ...modelStage, usage: { ...modelStage.usage, tokenTotal: { ...modelStage.usage.tokenTotal, semantics: 'authoritative-total' } } };
+    const authoritativeTotal = map({ strategy: strategy({ stages: [authoritativeStage, judgeStage] }) });
+    expect(authoritativeTotal.rows[0]?.observedUsage?.tokenTotal).toBe(99);
 
-    const formatMiss = mapPipelineCampaignEvidence({
-      strategy: strategy({ formatCompliance: false, assignedStrategySuccess: false }),
-      judgeResult: { rows: [{ ...judgeRow, taskOutcome: { ...taskOutcome, formatConformance: false, judgements: [{ ...judgement, formatConformance: false }] } }], tables: [] },
-      caseId: 'case-1', context,
-    });
+    const formatMiss = map({ recipeEvidence: { formatConformance: false, assignedStrategySuccess: false } });
     expect(formatMiss.rows[0]?.outcomes).toMatchObject({ candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: false });
+    expect(formatMiss.taskOutcome.judgements[0]?.formatConformance).toBe(true);
+    expect(formatMiss.taskOutcome.judgements[1]?.formatConformance).toBe(false);
     expect(formatMiss.tables[0]?.cells[0]?.assignedStrategySuccess).toBe(0);
 
-    const budgetStage: PipelineStageLedger = {
-      ...modelStage, terminalCause: 'budget-exhausted', usage: fixtureUsage(),
-    };
-    const budget = mapPipelineCampaignEvidence({
-      strategy: strategy({ candidateCorrectness: null, formatCompliance: null, assignedStrategySuccess: null,
-        operationalStatus: 'budget-exhausted', recipeCompleted: false, authorizedBudgetStop: true,
-        stages: [budgetStage, judgeStage] }),
-      judgeResult: { rows: [{ ...judgeRow, taskOutcome: { ...taskOutcome, candidateCorrectness: null, formatConformance: null,
-        judgements: [{ ...judgement, candidateCorrectness: null, formatConformance: null, assignedStrategySuccess: null }] } }], tables: [] },
-      caseId: 'case-1', context,
-    });
-    expect(budget.taskOutcome.execution).toMatchObject({ launched: true, terminalCause: 'budget-exhausted', sourceInvocationIds: ['invocation-draft'] });
+    const noCandidate = strategy({ finalCandidate: null, candidateCorrectness: null, operationalStatus: 'budget-exhausted', authorizedBudgetStop: true,
+      stages: [{ ...modelStage, terminalCause: 'budget-exhausted', usage: fixtureUsage() }] });
+    const budget = map({ strategy: noCandidate, judgeResult: { rows: [], tables: [] }, selection: null,
+      recipeEvidence: { formatConformance: null, assignedStrategySuccess: null }, pipelineJudgementArtifact: undefined,
+      stageEvidence: { 'invocation-draft': { artifacts: [{ kind: 'native-observation', path: 'attempts/budget.json', sha256: 'e'.repeat(64) }] } } });
+    expect(budget.taskOutcome).toMatchObject({ candidateCorrectness: null, assignedStrategySuccess: false, execution: { launched: true, terminalCause: 'budget-exhausted' }, judgements: [] });
     expect(budget.rows[0]?.observedUsage).toMatchObject({ input: null, output: null, tokenTotal: null, complete: false });
+    expect(budget.tables[0]?.cells[0]?.assignedStrategySuccess).toBe(0);
 
-    const thrown = mapPipelineCampaignEvidence({
-      strategy: strategy({ candidateCorrectness: null, formatCompliance: null, assignedStrategySuccess: null,
-        operationalStatus: 'operational-failure', recipeCompleted: false,
-        stages: [{ ...modelStage, status: 'failed', terminalCause: 'transport-throw', transportException: { name: 'Error', message: 'fixture transport failure' }, usage: fixtureUsage() }, judgeStage] }),
-      judgeResult: { rows: [{ ...judgeRow, taskOutcome: { ...taskOutcome, candidateCorrectness: null, formatConformance: null,
-        judgements: [{ ...judgement, candidateCorrectness: null, formatConformance: null, assignedStrategySuccess: null }] } }], tables: [] },
-      caseId: 'case-1', context,
-    });
-    expect(thrown.taskOutcome.execution).toMatchObject({ launched: true, terminalCause: 'transport-error' });
-    expect(thrown.taskOutcome.operationalStatus).toBe('measured-transport-failure');
-    expect(thrown.rows[0]?.observedUsage).toMatchObject({ input: null, output: null, complete: false });
+    const thrown = map({ strategy: strategy({ finalCandidate: null, candidateCorrectness: null, operationalStatus: 'operational-failure',
+      stages: [{ ...modelStage, status: 'failed', terminalCause: 'transport-throw', transportException: { name: 'Error', message: 'fixture transport failure' }, usage: fixtureUsage() }] }),
+      judgeResult: { rows: [], tables: [] }, selection: null, recipeEvidence: { formatConformance: null, assignedStrategySuccess: null },
+      pipelineJudgementArtifact: undefined, stageEvidence: { 'invocation-draft': { artifacts: [{ kind: 'native-observation', path: 'attempts/throw.json', sha256: 'f'.repeat(64) }] } } });
+    expect(thrown.taskOutcome).toMatchObject({ candidateCorrectness: null, assignedStrategySuccess: null, operationalStatus: 'measured-transport-failure', execution: { terminalCause: 'transport-error' } });
+
+    expect(() => map({ selection: { judgementId: 'other', version: 9, judgePin: judgement.judgePin, candidateSha256 } })).toThrow(/ID\/version/);
   });
 
   it('keeps unavailable counters and invalid totals unknown; total is not recomputed from possibly overlapping counters', () => {

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync, watch } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionStore, type OpInvocation, type WorkerResult } from '@camerontaylor/cq-toolkit';
 import { CodexExecDriver } from '../runner/native/codex.ts';
@@ -54,6 +54,26 @@ function fakeExecutable(root: string, output: string, exit = 0): string {
   writeFileSync(file, source, { mode: 0o700 });
   chmodSync(file, 0o700);
   return file;
+}
+
+function waitForFile(path: string, timeoutMs: number): Promise<void> {
+  if (existsSync(path)) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      watcher.close();
+      if (error) reject(error);
+      else resolve();
+    };
+    const watcher = watch(dirname(path), { persistent: false }, () => {
+      if (existsSync(path)) finish();
+    });
+    const timer = setTimeout(() => finish(new Error(`timed out waiting for fixture readiness: ${path}`)), timeoutMs);
+    if (existsSync(path)) finish();
+  });
 }
 
 function fakeTaskWorkspace(root: string): string {
@@ -155,14 +175,22 @@ describe('native transport event and identity handling', () => {
       } }),
     ].join('\n') + '\n';
     const executable = join(root, 'codex-handles-term');
-    writeFileSync(executable, `#!/usr/bin/env node\nprocess.on('SIGTERM', () => process.exit(0));\nprocess.stdout.write(${JSON.stringify(events)});\nsetInterval(() => {}, 1000);\n`, { mode: 0o700 });
+    const readiness = join(root, 'stdout-flushed');
+    writeFileSync(executable, `#!/usr/bin/env node\nprocess.on('SIGTERM', () => process.exit(0));\nprocess.stdout.write(${JSON.stringify(events)}, () => require('node:fs').writeFileSync(${JSON.stringify(readiness)}, 'ready'));\nsetInterval(() => {}, 1000);\n`, { mode: 0o700 });
     chmodSync(executable, 0o700);
     const driver = new CodexExecDriver({ executable, hardWallClockMs: 250,
       artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch() });
     await driver.beginInvocation(identity('timeout-clean-exit'));
-    const result = await driver.run(invocation('retain output after timeout'));
+    const execution = driver.run(invocation('retain output after timeout'));
+    await Promise.race([
+      waitForFile(readiness, 3_000),
+      execution.then(() => { throw new Error('Codex fixture settled before confirming its stdout write'); }),
+    ]);
+    const result = await execution;
     const observation = driver.getObservation('timeout-clean-exit')!;
 
+    const rawEvents = readFileSync(expectArtifactWithValidHash(observation, 'raw-events').path, 'utf8');
+    expect(rawEvents).toContain('item.completed');
     expect(result.stopReason).toBe('budget');
     expect(result.structuredOutput).toBe('format-mismatch');
     expect(observation.terminal.cause).toBe('timeout');

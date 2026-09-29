@@ -393,6 +393,14 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   }
   
   const admission = decision.reservation.diagnostic;
+  // The temporary runSuite bundle owns fixtures and worker-visible task files.
+  // Oracle dependencies remain pinned to the runner's allowlisted native
+  // checkout so scoring never depends on copied source under that bundle.
+  const judgeManifest = {
+    sourcePin: bundle.oraclePin.sha256,
+    sourceRootId: 'cq-settings-native-checkout',
+    dependencies: bundle.oraclePin.dependencies,
+  } satisfies ExperimentContext['judgeManifest'];
   const identityContext: ExperimentContext = {
     campaignId: 'cq-settings-final-profile-g1', cohortId: 'final-profile-G1', experimentId: experiment,
     taskId: suiteTaskId(bundle.suite.name, task.substrateFamily), repeatId: options.runId,
@@ -401,10 +409,10 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
     budgetId: sha256(canonicalJson({ totalWallClockMs: TOTAL_ASSIGNMENT_MS, setupMs: SETUP_BUDGET_MS, modelMs: MODEL_BUDGET_MS, teardownMs: TEARDOWN_BUDGET_MS, judgeMs: JUDGE_BUDGET_MS })),
     profileId: 'cq-subscription-http:boundary-unverified', frozenWeight: 1,
     substrateId: `${task.sourceId}:${task.baselineId}:${task.substrateFamily}`,
-    judgeManifest: { sourcePin: bundle.oraclePin.sha256, dependencies: bundle.oraclePin.dependencies },
+    judgeManifest,
     caseAssignments: { [caseId]: { assignmentId, stageId, attemptId,
       substrateId: `${task.sourceId}:${task.baselineId}:${task.substrateFamily}`,
-      judgeManifest: { sourcePin: bundle.oraclePin.sha256, dependencies: bundle.oraclePin.dependencies } } },
+      judgeManifest } },
   };
   const executable = options.executable ?? '/usr/local/bin/codex';
   if (resolveLaunchExecutable(executable) !== '/usr/local/bin/codex') throw new Error('final-profile G1 requires the exact inventoried /usr/local/bin/codex executable');

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile } from 'node:fs/promises';
 import { dirname, parse, resolve, join } from 'node:path';
 import { validateFinalAdmission, type FinalProfileAdmission } from '../boundary/codex-final-profile.ts';
@@ -22,11 +23,19 @@ async function privateDirectory(directory: string): Promise<void> {
     const stat = await lstat(parent);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('admission ledger requires ordinary parent directories');
   }
+  const finalStat = await lstat(absolute);
+  if (!finalStat.isDirectory() || finalStat.isSymbolicLink() || finalStat.uid !== process.getuid?.() || (finalStat.mode & 0o077)) {
+    throw new Error('admission ledger requires a private self-owned final directory');
+  }
 }
 
 async function exclusive(directory: string, name: string, bytes: string): Promise<void> {
   const handle = await open(join(directory, name), 'wx', 0o600);
-  try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+  try {
+    await handle.writeFile(bytes); await handle.sync();
+    const written = await handle.stat();
+    if (written.uid !== process.getuid?.() || (written.mode & 0o077)) throw new Error('admission ledger record ownership unavailable');
+  } finally { await handle.close(); }
   const parent = await open(directory, 'r');
   try { await parent.sync(); } finally { await parent.close(); }
 }
@@ -54,7 +63,8 @@ export async function freezeFinalProfileAdmission(
     if (request.stage !== frozen.receipt.stage || request.boundaryIdentity !== frozen.receipt.boundaryIdentity ||
         request.invocationIdentity !== frozen.receipt.invocationIdentity) throw new Error('request differs from independently frozen parent approval');
     const stat = await lstat(join(directory, planName));
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || digest(await readFile(join(directory, planName), 'utf8')) !== approvalHash) {
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) ||
+        digest(await readFile(join(directory, planName), 'utf8')) !== approvalHash) {
       throw new Error('parent approval changed after freeze');
     }
     validateFinalAdmission(frozen.receipt, request);
@@ -65,4 +75,53 @@ export async function freezeFinalProfileAdmission(
     await exclusive(directory, `consumed-${frozen.receipt.admissionId}.json`, record);
     return structuredClone(frozen.receipt);
   };
+}
+
+export interface ConsumedAdmissionJoin {
+  admissionId: string;
+  stage: FinalProfileAdmission['stage'];
+  boundaryIdentity: string;
+  invocationIdentity: string;
+  sourcePin: string;
+  assignmentId: string;
+  attemptId: string;
+}
+
+async function privateLedgerBytes(path: string, maxBytes = 1024 * 1024): Promise<string | null> {
+  let handle;
+  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch { return null; }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > maxBytes || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) return null;
+    return await handle.readFile('utf8');
+  } catch { return null; } finally { await handle.close().catch(() => { /* unreadable record stays unverified */ }); }
+}
+
+/** Authoritative consumed-ledger lookup with exact source/assignment/stage/attempt/
+ * invocation/boundary/admission joins, safe private readback of both the consumed
+ * record and the frozen approval bytes it hashes. Missing, fabricated, replayed,
+ * altered or unconsumed evidence returns false; it never throws and never echoes.
+ */
+export async function verifyConsumedAdmissionRecord(root: string, expected: ConsumedAdmissionJoin): Promise<boolean> {
+  try {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/u.test(expected.admissionId) ||
+        !/^[a-f0-9]{64}$/u.test(expected.sourcePin) || !/^[a-f0-9]{64}$/u.test(expected.boundaryIdentity) ||
+        !/^[a-f0-9]{64}$/u.test(expected.invocationIdentity) || !expected.assignmentId.trim() || !expected.attemptId.trim()) return false;
+    const directory = resolve(root);
+    const consumedBytes = await privateLedgerBytes(join(directory, `consumed-${expected.admissionId}.json`));
+    if (consumedBytes === null) return false;
+    let record: FrozenFinalProfileApproval & { approvalHash: string; consumedAt: string; state: string };
+    try { record = JSON.parse(consumedBytes); } catch { return false; }
+    if (record.state !== 'spent-before-provisioning' || typeof record.approvalHash !== 'string' || !/^[a-f0-9]{64}$/u.test(record.approvalHash) ||
+        typeof record.consumedAt !== 'string' || !Number.isFinite(Date.parse(record.consumedAt))) return false;
+    if (record.assignmentId !== expected.assignmentId || record.attemptId !== expected.attemptId || record.sourcePin !== expected.sourcePin) return false;
+    const receipt = record.receipt;
+    if (!receipt || receipt.admissionId !== expected.admissionId || receipt.stage !== expected.stage ||
+        receipt.profile !== 'cq-subscription-http' || receipt.heldOut !== false ||
+        receipt.boundaryIdentity !== expected.boundaryIdentity || receipt.invocationIdentity !== expected.invocationIdentity ||
+        !Number.isFinite(receipt.expiresAt)) return false;
+    const approvalBytes = await privateLedgerBytes(join(directory, `approval-${expected.admissionId}.json`));
+    if (approvalBytes === null || digest(approvalBytes) !== record.approvalHash) return false;
+    return true;
+  } catch { return false; }
 }

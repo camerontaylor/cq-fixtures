@@ -6,8 +6,10 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
-import { createNativeStrategyExecutor, type IndependentJudgeSupervisor, type NativeObservedDriver, type NativeSupervisorControl } from './executor.ts';
+import type { Driver, OpInvocation } from '@camerontaylor/cq-toolkit';
+import { createNativeStrategyExecutor, type NativeObservedDriver, type NativeSupervisorControl } from './executor.ts';
+import { createIndependentJudgeProcessSupervisor } from './judge-process.ts';
+import type { ReviewLoopJudgeProcessRequest } from './judge-protocol.ts';
 import {
   defineBudgetTiers, runStrategy, type Candidate, type ExecutorResult, type PerTaskBudgetTier,
   type StageRequest, type StrategyRoute, type StrategyResult, unknownUsage,
@@ -34,8 +36,6 @@ export interface VisibleReviewLoopOptions {
   /** Already configured native driver; this entrypoint never resolves credentials or launches by itself. */
   driver: Driver & NativeObservedDriver;
   supervisor: NativeSupervisorControl;
-  /** Parent-owned process boundary for S1 runSuite and its host check subprocess. */
-  independentJudgeSupervisor: IndependentJudgeSupervisor;
   route: StrategyRoute & { transport: 'codex-exec' | 'pi-json' | 'pi-rpc' | 'zcode-acp' };
   model: string;
   provider: string;
@@ -159,8 +159,14 @@ interface S1PipelineMappingInput {
   stageEvidence: Readonly<Record<string, { artifacts: readonly { kind: string; path: string; sha256: string }[]; observation?: { path: string; sha256: string } }>>;
 }
 interface ReviewTask {
+  id: string;
+  sourceId: string;
+  baselineId: string;
+  oracleId: string;
+  substrateFamily: string;
   worktreePath: string;
   baselineCommit: string;
+  modelSpec: { model: string; provider: string };
   operationInput: { item: { body: string }; [key: string]: unknown };
   cleanup(): Promise<void>;
 }
@@ -245,9 +251,6 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(options.assignmentId)) throw new Error('assignmentId must be a path-safe frozen roster ID');
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(options.runNamespace)) throw new Error('runNamespace must be a path-safe frozen roster ID');
   if (options.route.tokenEnforcement !== 'unsupported') throw new Error('visible screening cannot claim whole-pipeline token enforcement');
-  if (!options.independentJudgeSupervisor?.run || !options.independentJudgeSupervisor.cancelAndWait) {
-    throw new Error('visible screening requires an independent S1 judge process supervisor with cancel, reap, settlement, and cleanup proof');
-  }
   if (!options.route.supportedSettings?.effort?.includes(options.effort)) throw new Error(`route does not attest effort '${options.effort}'`);
   const tier = VISIBLE_REVIEW_LOOP_LIMITS.tiers.find((entry) => entry.id === options.tierId);
   if (!tier) throw new Error(`unknown frozen visible screening tier '${options.tierId}'`);
@@ -260,10 +263,13 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
   const s1Root = resolveS1DependencyRoot(options.s1DependencyRoot);
   const s1 = await loadS1Bindings(s1Root);
   const artifactStore = new s1.ArtifactStore(artifactRoot);
+  const independentJudgeSupervisor = createIndependentJudgeProcessSupervisor({ privateRoot: tempRoot });
   const task = await s1.createReviewLoopRepairTask({ model: options.model, provider: options.provider }, tempRoot);
   let bundle: ReviewBundle | undefined;
   const workspaceByAttempt = new Map<string, CandidateWorkspace>();
-  const runSuiteResults: S1RunSuiteResult[] = [];
+  const judgeResultsByAttempt = new Map<string, S1RunSuiteResult>();
+  const judgeArtifactRoots: string[] = [];
+  const judgeResultHashes = new Map<string, { requestSha256: string; payloadSha256: string }>();
   let seedTree = '';
   let preserveForRecovery = false;
   let cleanupAttempted = false;
@@ -310,62 +316,7 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
       async runStage(request, driver): Promise<ExecutorResult> {
         const modelDriver = driver as unknown as Driver;
         if (request.kind === 'independent-judge') {
-          const candidate = request.inputCandidates[0];
-          if (!candidate || typeof (candidate.value as { patch?: unknown })?.patch !== 'string') {
-            return { status: 'failed', usage: unknownUsage(), serviceTimeMs: 0, launched: false,
-              judgement: { status: 'invalid', correctness: null, detail: 'missing captured candidate patch' } };
-          }
-          const suiteDriver: Driver = {
-            async run(invocation: OpInvocation): Promise<WorkerResult> {
-              const workspace = workspaceFromPrompt(invocation.prompt);
-              const actualTree = git(workspace, ['rev-parse', 'HEAD^{tree}']);
-              if (actualTree !== seedTree) throw new Error('S1 judge workspace baseline tree differs from the frozen task seed');
-              applyPatch(workspace, (candidate.value as { patch: string }).patch);
-              return { structuredOutput: { fixed: true, notes: 'Apply captured strategy candidate for host judgement.' },
-                usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete', model: options.model };
-            },
-          };
-          const started = performance.now();
-          const judgeContext: S1ExperimentContext = {
-            campaignId: 'cq-settings-visible-screening', cohortId: 'visible-calibration', experimentId: experimentRunId,
-            taskId: s1.suiteTaskId(bundle!.suite.name, substrateId), repeatId: hash(options.runNamespace).slice(0, 16),
-            assignmentId: request.assignmentId, stageId: request.stageId, attemptId: request.attemptId,
-            track: 'visible-review-loop-screening', strategyId: identity, settingsId: options.settingsId,
-            budgetId: tier.id, profileId: options.profileId, frozenWeight: 1, substrateId, judgeManifest,
-          };
-          const result = await s1.runSuite({
-            suiteDir: bundle!.suiteDir,
-            repoRoot: bundle!.repoRoot,
-            artifactRoot: privateArtifactRoot,
-            driver: bundle!.wrapDriver(suiteDriver),
-            model: options.model,
-            provider: options.provider,
-            driverName: DRIVER_LABEL[options.route.transport],
-            checkTimeoutMs: VISIBLE_REVIEW_LOOP_LIMITS.independentJudgeMs,
-            hostCheckScoringEnvironment: (workspace: string, baseline: string) => bundle!.hostCheckScoringEnvironment(workspace, baseline),
-            experiment: judgeContext,
-          });
-          runSuiteResults.push(result);
-          const row = result.rows.find((entry) => entry.case === bundle!.suite.cases[0]?.id);
-          const outcome = row?.taskOutcome;
-          if (!outcome) return { status: 'failed', usage: unknownUsage(), serviceTimeMs: performance.now() - started,
-            launched: false, judgement: { status: 'unavailable', correctness: null, detail: 'S1 runSuite produced no TaskOutcome' } };
-          const candidateHash = candidate.sha256;
-          const exact = outcome.judgements.filter((entry) => entry.candidateSha256 === candidateHash
-            && entry.judgePin === bundle!.oraclePin.sha256);
-          if (exact.length !== 1) return { status: 'failed', usage: unknownUsage(), serviceTimeMs: performance.now() - started,
-            launched: false, judgement: { status: 'unavailable', correctness: null,
-              detail: `S1 runSuite supplied ${exact.length} exact candidate and judge pin matches` } };
-          const selected = exact[0]!;
-          // Freeze the precise host judgement while this assigned stage is running.
-          frozenSelection = { judgementId: selected.judgementId, version: selected.version,
-            judgePin: selected.judgePin, candidateSha256: selected.candidateSha256 };
-          return {
-            status: 'completed', usage: unknownUsage(), serviceTimeMs: performance.now() - started,
-            launched: false,
-            judgement: { status: outcome.candidateCorrectness === null ? 'unavailable' : 'valid',
-              correctness: outcome.candidateCorrectness, detail: 'S1 local host-oracle correctness only; local format/task-success fields are not pipeline evidence.' },
-          };
+          throw new Error('independent judge stages must use the serializable child process supervisor');
         }
 
         const workspace = allocateClone(request.workspaceId, request.attemptId);
@@ -431,7 +382,55 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
         return { id: stableWorkspaceId, handle: allocateClone(stableWorkspaceId, request.attemptId) };
       },
       supervisor: options.supervisor,
-      independentJudgeSupervisor: options.independentJudgeSupervisor,
+      prepareIndependentJudgeRequest(request): ReviewLoopJudgeProcessRequest {
+        const candidate = request.inputCandidates[0];
+        const patch = candidate && (candidate.value as { patch?: unknown }).patch;
+        if (!candidate || typeof patch !== 'string' || hash(patch) !== candidate.sha256) {
+          throw new Error('independent judge requires a captured, hash-validated candidate patch');
+        }
+        const experiment: S1ExperimentContext = {
+          campaignId: 'cq-settings-visible-screening', cohortId: 'visible-calibration', experimentId: experimentRunId,
+          taskId: s1.suiteTaskId(bundle!.suite.name, substrateId), repeatId: hash(options.runNamespace).slice(0, 16),
+          assignmentId: request.assignmentId, stageId: request.stageId, attemptId: request.attemptId,
+          track: 'visible-review-loop-screening', strategyId: identity, settingsId: options.settingsId,
+          budgetId: tier.id, profileId: options.profileId, frozenWeight: 1, substrateId, judgeManifest,
+        };
+        return {
+          schemaVersion: 1, identity: { assignmentId: request.assignmentId, stageId: request.stageId, attemptId: request.attemptId },
+          deadlineEpochMs: request.deadlineEpochMs,
+          shutdownDeadlineEpochMs: request.deadlineEpochMs + request.tier.shutdownAllowanceMs,
+          s1DependencyRoot: s1Root,
+          task: {
+            id: task.id, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId,
+            substrateFamily: task.substrateFamily, worktreePath: task.worktreePath,
+            baselineCommit: task.baselineCommit, modelSpec: task.modelSpec,
+            operationInput: task.operationInput as unknown as Readonly<Record<string, unknown>>,
+          },
+          model: options.model, provider: options.provider,
+          driverName: DRIVER_LABEL[options.route.transport], checkTimeoutMs: VISIBLE_REVIEW_LOOP_LIMITS.independentJudgeMs,
+          taskSourceSha256: hash(readFileSync(join(s1Root, S1_TASK_SOURCE))),
+          suiteSourceSha256: hash(readFileSync(join(s1Root, S1_SUITE_SOURCE))),
+          baselineCommit: task.baselineCommit, baselineTree: seedTree,
+          sourceId: s1.REVIEW_LOOP_SOURCE_ID, baselineId: s1.REVIEW_LOOP_BASELINE_ID,
+          suiteName: bundle!.suite.name, caseId: bundle!.suite.cases[0]!.id,
+          promptSha256: hash(bundle!.suite.cases[0]!.task.prompt), oraclePin: bundle!.oraclePin.sha256,
+          taskFixtureFiles: ['package.json', 'settings/module.js', 'settings/display.js', 'test/public-settings.test.mjs']
+            .map((path) => ({ path, sha256: hash(readFileSync(join(task.worktreePath, path))) })),
+          judgeManifest, experiment,
+          candidate: { sha256: candidate.sha256, patch, baselineCommit: task.baselineCommit, baselineTree: seedTree },
+        };
+      },
+      onIndependentJudgeEvidence(request, evidence) {
+        const result: S1RunSuiteResult = {
+          rows: evidence.rows as S1Row[], tables: [...evidence.tables], diagnostics: [...evidence.diagnostics],
+        };
+        frozenSelection = evidence.selection;
+        judgeResultsByAttempt.set(request.attemptId, result);
+        // Retain only the private child artifact root until S1 evidence is promoted below.
+        judgeArtifactRoots.push(evidence.artifactRoot);
+        judgeResultHashes.set(request.attemptId, { requestSha256: evidence.requestSha256, payloadSha256: evidence.payloadSha256 });
+      },
+      independentJudgeSupervisor,
     });
 
     const strategyTask = {
@@ -449,14 +448,17 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
     };
     const strategy = await runStrategy(strategyTask, recipe, tier, executor, { assignmentId: options.assignmentId });
     preserveForRecovery = strategy.stages.some((stage) => stage.quarantined);
-    if (!preserveForRecovery) promoteArtifactTree(privateArtifactRoot, artifactRoot);
-    const finalResult = runSuiteResults.at(-1);
+    if (!preserveForRecovery) {
+      promoteArtifactTree(privateArtifactRoot, artifactRoot);
+      for (const judgeArtifactRoot of judgeArtifactRoots) promoteArtifactTree(judgeArtifactRoot, artifactRoot);
+    }
     const assignedCaseId = bundle!.suite.cases[0]!.id;
-    const localOutcome = finalResult?.rows.find((row) => row.case === assignedCaseId)?.taskOutcome ?? null;
     const runIdentity = visibleRunIdentity(identity, options.assignmentId, options.runNamespace);
     const selectedHostJudgement = frozenSelection as { judgementId: string; version: number; judgePin: string; candidateSha256: string } | null;
     const modelStages = strategy.stages.filter((stage) => stage.routeId !== null);
     const judgeStage = strategy.stages.find((stage) => stage.kind === 'independent-judge');
+    const finalResult = judgeStage ? judgeResultsByAttempt.get(judgeStage.attemptId) : undefined;
+    const localOutcome = finalResult?.rows.find((row) => row.case === assignedCaseId)?.taskOutcome ?? null;
     const mappingContext: S1ExperimentContext = {
       campaignId: 'cq-settings-visible-screening', cohortId: 'visible-calibration', experimentId: experimentRunId,
       taskId: s1.suiteTaskId(bundle!.suite.name, substrateId), repeatId: hash(options.runNamespace).slice(0, 16),
@@ -489,7 +491,10 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
         })),
         accounting: { endToEndMs: strategy.accounting.endToEndMs },
       },
-      judgeResult: { rows: finalResult?.rows ?? [], tables: finalResult?.tables ?? [] },
+      judgeResult: {
+        rows: (judgeStage ? judgeResultsByAttempt.get(judgeStage.attemptId)?.rows : undefined) ?? [],
+        tables: (judgeStage ? judgeResultsByAttempt.get(judgeStage.attemptId)?.tables : undefined) ?? [],
+      },
       caseId: assignedCaseId, context: mappingContext, selection: selectedHostJudgement,
       recipeEvidence: { formatConformance: strategy.formatCompliance,
         assignedStrategySuccess: strategy.assignedStrategySuccess },
@@ -511,6 +516,7 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
         selectedHostJudgement, formatConformance: strategy.formatCompliance,
         assignedStrategySuccess: strategy.assignedStrategySuccess, operationalStatus: strategy.operationalStatus,
         stageInvocationIds: modelStages.map((stage) => stage.invocationId),
+        judgeProcess: judgeStage ? judgeResultHashes.get(judgeStage.attemptId) ?? null : null,
       }, null, 2)}\n`;
       const digest = hash(contents);
       const artifact = { path: 'pending-recipe-judgement.json', sha256: digest };
@@ -550,8 +556,9 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
       localJudge: {
         evidenceClass: 'local-judge-only', pipelineCampaignEvidence: false,
         modelUsage: 'not-a-model-observation', outcome: localOutcome,
-        rows: finalResult?.rows ?? [], tables: finalResult?.tables ?? [],
-        diagnostics: finalResult?.diagnostics ?? [],
+        rows: judgeStage ? judgeResultsByAttempt.get(judgeStage.attemptId)?.rows ?? [] : [],
+        tables: judgeStage ? judgeResultsByAttempt.get(judgeStage.attemptId)?.tables ?? [] : [],
+        diagnostics: judgeStage ? judgeResultsByAttempt.get(judgeStage.attemptId)?.diagnostics ?? [] : [],
       },
       limits: VISIBLE_REVIEW_LOOP_LIMITS,
       resourceCleanup: preserveForRecovery ? 'quarantined' : 'complete',
@@ -646,12 +653,6 @@ function patchOf(candidate: Candidate): string {
 function applyPatch(workspace: string, patch: string): void {
   if (!patch) return;
   execFileSync('git', ['apply', '--binary', '--whitespace=nowarn', '-'], { cwd: workspace, input: patch, stdio: ['pipe', 'ignore', 'pipe'] });
-}
-
-function workspaceFromPrompt(prompt: string): string {
-  const match = prompt.match(/^workspace: (.+)$/mu);
-  if (!match?.[1]) throw new Error('runSuite did not provide the judge workspace path');
-  return match[1];
 }
 
 function safe(value: string): string {

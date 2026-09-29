@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +35,46 @@ function request(): ReviewLoopJudgeProcessRequest {
 }
 
 describe('protected judge admission', () => {
+  it('launches the protected child with a loader that supports parameter properties', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'judge-lifecycle-'));
+    let command = '';
+    let args: readonly string[] = [];
+    const supervisor = createIndependentJudgeProcessSupervisor({
+      privateRoot: root,
+      ownershipForTest: {
+        stableJudgeCandidateInventory: () => ({ inventoryHash: 'e'.repeat(64) }),
+        createJudgeNamespacePlan: (input) => {
+          const plan = { identity: input.identity, candidateSha256: input.candidateSha256,
+            oraclePin: input.oraclePin, slots: input.inventoryHashes.map((inventoryHash) => ({ inventoryHash })) };
+          const planPath = join(input.privateParentRoot, 'plan.json');
+          const bytes = JSON.stringify(plan);
+          writeFileSync(planPath, bytes, { mode: 0o600, flag: 'wx' });
+          return { planPath, planSha256: sha(bytes), plan };
+        },
+        cleanupJudgeNamespace: async (handle) => ({ identity: handle.plan.identity, planSha256: handle.planSha256,
+          daemonVerified: true, ownershipVerified: true, containersAbsent: true,
+          processTree: 'stopped-and-reaped' as const, volumeDisposition: 'absent' as const,
+          resourceIds: [], cleanup: 'complete' as const, inventoryContentVerified: false as const }),
+      },
+      spawnChildForTest: ((childCommand: string, childArgs: readonly string[]) => {
+        command = childCommand;
+        args = childArgs;
+        throw new Error('offline spawn sentinel');
+      }) as unknown as typeof spawn,
+    });
+    const input = request();
+    await expect(supervisor.run(input, new AbortController().signal))
+      .rejects.toThrow('independent judge child could not be launched');
+    expect(command).toBe(process.execPath);
+    expect(args.slice(0, 3)).toEqual([
+      '--disable-warning=ExperimentalWarning', '--experimental-transform-types',
+      join(process.cwd(), 'runner/strategies/judge-child.ts'),
+    ]);
+    expect(args).toHaveLength(6);
+    const proof = await supervisor.cancelAndWait({ identity: input.identity, cause: 'inspection', deadlineEpochMs: Date.now() + 100 });
+    expect(proof).toMatchObject({ cleanup: 'complete', protectedOracleCleanup: 'proven' });
+  });
+
   it('rejects impossible deadline composition before admission', async () => {
     const supervisor = createIndependentJudgeProcessSupervisor({ privateRoot: mkdtempSync(join(tmpdir(), 'judge-lifecycle-')) });
     const input = request();

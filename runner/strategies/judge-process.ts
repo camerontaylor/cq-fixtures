@@ -520,7 +520,7 @@ export class IndependentJudgeProcessSupervisor {
     try {
       writeFileSync(requestPath, requestBytes, { flag: 'wx', mode: 0o600 });
       child = this.spawnChild(process.execPath, [
-        '--disable-warning=ExperimentalWarning', '--experimental-strip-types', this.childEntrypoint,
+        '--disable-warning=ExperimentalWarning', '--experimental-transform-types', this.childEntrypoint,
         requestPath, resultPath, requestSha256,
       ], {
         cwd: processRoot,

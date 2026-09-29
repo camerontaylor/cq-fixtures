@@ -19,7 +19,7 @@ afterEach(async () => {
 describe('no-dispatch remediation preflight', () => {
   it('fails closed when the active final-profile loader omits implicit runtime assets', async () => {
     await expect(runPreflight()).rejects.toThrow(
-      'final-profile runtime pin loader closure omits required runtime asset: runner/boundary/broker-public-assets/broker.mjs',
+      'final-profile runtime pin loader pins differ (missing: runner/boundary/broker-public-assets/broker.mjs, runner/boundary/broker-public-assets/config.json, schema/suite.schema.json; hash mismatch: none)',
     );
   });
 
@@ -60,9 +60,9 @@ describe('no-dispatch remediation preflight', () => {
 
   it('requires exact asset paths and hashes as a subset of the active runtime pin map', () => {
     const expected = { 'assets/config.json': 'a'.repeat(64) };
-    expect(() => assertIncludesPins(expected, {})).toThrow('closure omits required runtime asset: assets/config.json');
+    expect(() => assertIncludesPins(expected, {})).toThrow('pins differ (missing: assets/config.json; hash mismatch: none)');
     expect(() => assertIncludesPins(expected, { 'assets/config.json': '0'.repeat(64) }))
-      .toThrow('content hash differs for assets/config.json');
+      .toThrow('pins differ (missing: none; hash mismatch: assets/config.json)');
     expect(() => assertIncludesPins(expected, { ...expected, 'src/entry.ts': 'b'.repeat(64) })).not.toThrow();
   });
 

@@ -145,9 +145,14 @@ export function assertSamePins(expected, actual, label = 'source loader') {
 
 /** Require exact pins for a subset of runtime assets in a larger source loader closure. */
 export function assertIncludesPins(expected, actual, label = 'source loader') {
+  const missing = [];
+  const mismatched = [];
   for (const path of Object.keys(expected).sort()) {
-    if (!Object.hasOwn(actual, path)) throw new Error(`${label} closure omits required runtime asset: ${path}`);
-    if (expected[path] !== actual[path]) throw new Error(`${label} content hash differs for ${path}`);
+    if (!Object.hasOwn(actual, path)) missing.push(path);
+    else if (expected[path] !== actual[path]) mismatched.push(path);
+  }
+  if (missing.length || mismatched.length) {
+    throw new Error(`${label} pins differ (missing: ${missing.join(', ') || 'none'}; hash mismatch: ${mismatched.join(', ') || 'none'})`);
   }
 }
 

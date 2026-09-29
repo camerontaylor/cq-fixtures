@@ -208,6 +208,7 @@ interface CellAccumulator {
   experiment?: ExperimentCellIdentity;
   observedUsage: NonNullable<ComparisonTableCell['observedUsage']>;
   usageComplete: boolean;
+  hasObservedUsage: boolean;
   candidateKnown: number;
   candidateCorrect: number;
   assignedKnown: number;
@@ -363,7 +364,7 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         budgetStops: 0,
         ...(cellIdentity !== undefined ? { experiment: cellIdentity } : {}),
         observedUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, tokenTotal: 0, complete: true },
-        usageComplete: true, candidateKnown: 0, candidateCorrect: 0, assignedKnown: 0,
+        usageComplete: true, hasObservedUsage: false, candidateKnown: 0, candidateCorrect: 0, assignedKnown: 0,
         assignedSuccess: 0, launches: 0, operationalCompletions: 0,
       };
       cells.set(key, acc);
@@ -446,11 +447,14 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       acc.hasReasoning = true;
       acc.tokens.reasoning += row.tokens.reasoning;
     }
-    const observed = row.observedUsage ?? (row.experiment === undefined ? {
-      input: row.tokens.input ?? 0, output: row.tokens.output ?? 0, cacheRead: row.tokens.cacheRead ?? 0,
-      cacheWrite: row.tokens.cacheWrite ?? 0, reasoning: row.tokens.reasoning ?? 0,
-      tokenTotal: (row.tokens.input ?? 0) + (row.tokens.output ?? 0) + (row.tokens.cacheRead ?? 0) + (row.tokens.cacheWrite ?? 0), complete: true,
-    } : { input: null, output: null, cacheRead: null, cacheWrite: null, reasoning: null, tokenTotal: null, complete: false });
+    // Numeric compatibility counters carry no availability or inclusion proof.
+    // Only explicit observations can establish campaign usage and totals.
+    const observed = row.observedUsage ?? {
+      input: null, output: null, cacheRead: null, cacheWrite: null,
+      reasoning: null, tokenTotal: null, complete: false,
+    };
+    acc.hasObservedUsage ||= row.observedUsage !== undefined;
+    if (!observed.complete) acc.usageComplete = false;
     for (const name of ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'tokenTotal'] as const) {
       const value = observed[name];
       if (value === null) { acc.observedUsage[name] = null; acc.usageComplete = false; }
@@ -517,7 +521,7 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         ...(acc.hasReasoning ? { reasoning: acc.tokens.reasoning } : {}),
       },
       ...(acc.experiment !== undefined ? { experiment: acc.experiment } : {}),
-      ...((acc.experiment !== undefined || !acc.usageComplete)
+      ...((acc.experiment !== undefined || acc.hasObservedUsage)
         ? { observedUsage: { ...acc.observedUsage, complete: acc.usageComplete } } : {}),
       ...(acc.experiment !== undefined ? {
         // The declared suite size is the assigned denominator; rows may be

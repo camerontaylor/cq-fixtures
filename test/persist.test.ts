@@ -32,6 +32,23 @@ afterEach(() => {
 });
 
 describe('denylist artifact scanner (F6)', () => {
+  it('allows task hashes while withholding credential-shaped artifact content', () => {
+    const rules = loadDenylistRules(repoRoot);
+    expect(findDenylistMatch(`task-${'a'.repeat(64)}`, 'candidate.patch', rules)).toBeUndefined();
+    const credentials = [
+      ['sk', '-'].join('') + 'a'.repeat(24),
+      ['ghp', '_'].join('') + 'a'.repeat(36),
+      ['github', '_pat_'].join('') + 'a'.repeat(24),
+      ['AK', 'IA'].join('') + 'A'.repeat(16),
+    ];
+    for (const credential of credentials) {
+      expect(findDenylistMatch(`key=${credential}`, 'candidate.patch', rules)?.id).toBe('class:credential-material');
+      const result = publishArtifacts(root, [{ case: 'credential', kind: 'patch', content: credential }], repoRoot);
+      expect(result.published[0]?.withheld).toBe('class:credential-material');
+      expect(existsSync(join(root, 'patches', 'credential.patch'))).toBe(false);
+    }
+  });
+
   it('parses the repo policy into class rules (non-vacuous)', () => {
     const rules = loadDenylistRules(repoRoot);
     expect(rules.length).toBeGreaterThan(0);

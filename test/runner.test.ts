@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readlinkSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readlinkSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -521,7 +521,7 @@ describe('writable workspace (fixer fixture round-trip)', () => {
   it('captures committed edits without running candidate Git config or attribute commands', async () => {
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'state.txt'), 'broken\n');
-    writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
+    writeFileSync(join(root, 'fixture', 'check.js'), "const fs = require('fs'); process.exit(fs.readFileSync('state.txt', 'utf8') === 'fixed\\npending\\n' && fs.readFileSync('addition.txt', 'utf8') === 'untracked\\n' ? 0 : 1);\n");
     const dir = writeSuite('git-boundary-suite', {
       name: 'git-boundary-suite',
       role: 'fixer-worker',
@@ -533,6 +533,7 @@ describe('writable workspace (fixer fixture round-trip)', () => {
     const tripwire = (marker: string) => `printf hit > '${marker}'`;
     let workerBaselineCommit: string | undefined;
     let hostBaselinePin: string | undefined;
+    let workerMetadata: { head: Buffer; index: Buffer } | undefined;
     const hostileWorkspace: Driver = {
       async run(invocation: OpInvocation): Promise<WorkerResult> {
         const workspace = /workspace: (.+)$/m.exec(invocation.prompt)?.[1];
@@ -548,6 +549,8 @@ describe('writable workspace (fixer fixture round-trip)', () => {
           '-C', workspace, '-c', 'user.name=test', '-c', 'user.email=test@localhost', 'commit', '-am', 'worker edit',
         ], { encoding: 'utf8' });
         if (committed.status !== 0) throw new Error('synthetic worker commit failed');
+        writeFileSync(join(workspace, 'state.txt'), 'fixed\npending\n');
+        writeFileSync(join(workspace, 'addition.txt'), 'untracked\n');
         // Model-controlled files attempt Git's fsmonitor, clean-filter, and
         // textconv hooks. The only possible effects are these temp markers.
         writeFileSync(join(workspace, '.gitattributes'), 'state.txt filter=tripwire diff=tripwire\n');
@@ -561,6 +564,7 @@ describe('writable workspace (fixer fixture round-trip)', () => {
           '',
         ].join('\n'));
         writeFileSync(join(dotGit, 'info', 'attributes'), '* filter=tripwire diff=tripwire\n');
+        workerMetadata = { head: readFileSync(join(dotGit, 'HEAD')), index: readFileSync(join(dotGit, 'index')) };
         return {
           model: invocation.modelSpec.model,
           structuredOutput: { fixed: true, notes: 'updated state.txt' },
@@ -575,16 +579,30 @@ describe('writable workspace (fixer fixture round-trip)', () => {
       ...opts(dir, { driver: hostileWorkspace }),
       hostCheckScoringEnvironment: (_workspace, pinnedBaselineCommit) => {
         hostBaselinePin = pinnedBaselineCommit;
+        // Capture must leave the worker's HEAD and complete index bytes alone,
+        // including their cached stat inventory. Inspect before the judge runs.
+        expect(readFileSync(join(_workspace, '.git', 'HEAD'))).toEqual(workerMetadata?.head);
+        expect(readFileSync(join(_workspace, '.git', 'index'))).toEqual(workerMetadata?.index);
         return {};
       },
     });
     const patchArtifact = result.artifacts.find((artifact) => artifact.kind === 'patch');
     expect(patchArtifact?.content).toMatch(/\+fixed/);
+    expect(patchArtifact?.content).toMatch(/\+pending/);
+    expect(patchArtifact?.content).toMatch(/\+untracked/);
     expect(patchArtifact?.content).not.toContain('.git/');
     expect(markers.map((marker) => existsSync(marker))).toEqual([false, false, false]);
     expect(result.rows[0]).toMatchObject({ case: 'fix-git-boundary', outcome: { passed: 2 } });
     expect(workerBaselineCommit).toBeDefined();
     expect(hostBaselinePin).toBe(workerBaselineCommit);
+    const replay = join(root, 'replay');
+    cpSync(join(root, 'fixture'), replay, { recursive: true });
+    const applied = spawnSync('git', ['-C', replay, 'apply', '--whitespace=nowarn', '-'], {
+      input: patchArtifact!.content, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    });
+    expect(applied.status).toBe(0);
+    expect(readFileSync(join(replay, 'state.txt'), 'utf8')).toBe('fixed\npending\n');
+    expect(readFileSync(join(replay, 'addition.txt'), 'utf8')).toBe('untracked\n');
   }, 20_000);
 
   it('materializes relative symlinks verbatim — the copied link still points inside the workspace', async () => {

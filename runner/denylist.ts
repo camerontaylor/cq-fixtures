@@ -17,6 +17,15 @@ export interface DenylistRule {
   path?: RegExp;
 }
 
+// The policy tree scanner overlays credential rules from gitleaks. Artifact
+// scanning runs without that binary, so retain a bounded credential check here
+// too. Type-specific boundaries keep the suffix of task-<hash> from being
+// mistaken for an API key. This is defense in depth, not a complete secret scan.
+const CREDENTIAL_RULE: DenylistRule = {
+  id: 'class:credential-material',
+  regex: /\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[A-Z0-9]{16}\b)/,
+};
+
 /** Parse `policy/denylist/patterns.yml` rule regex/path lines. Fail-closed: 0 rules throws. */
 export function loadDenylistRules(repoRoot: string): DenylistRule[] {
   const text = readFileSync(join(repoRoot, 'policy/denylist/patterns.yml'), 'utf8');
@@ -64,7 +73,7 @@ export function loadDenylistRules(repoRoot: string): DenylistRule[] {
   if (rules.length === 0) {
     throw new Error('denylist: no rules parsed from policy/denylist/patterns.yml');
   }
-  return rules;
+  return [...rules, CREDENTIAL_RULE];
 }
 
 /**

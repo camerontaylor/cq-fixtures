@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -73,6 +74,15 @@ function simulatedVisibleLaunch() {
   return visibleCalibrationSpawnAdapter({ admissionId: 'test-admission-only', scope: 'visible-calibration', isolation: 'disabled', heldOut: false, environmentNames: ['PATH'] });
 }
 
+function expectArtifactWithValidHash(observation: { artifacts: Array<{ kind: string; path: string; sha256: string }> }, kind: string) {
+  const matches = observation.artifacts.filter((artifact) => artifact.kind === kind);
+  expect(matches).toHaveLength(1);
+  const artifact = matches[0]!;
+  expect(artifact.sha256).toMatch(/^[a-f0-9]{64}$/u);
+  expect(artifact.sha256).toBe(createHash('sha256').update(readFileSync(artifact.path)).digest('hex'));
+  return artifact;
+}
+
 describe('native transport event and identity handling', () => {
   it('loads the exact configured Pi auth handoff without exposing its value', () => {
     const root = tempRoot();
@@ -119,8 +129,10 @@ describe('native transport event and identity handling', () => {
       expect(observation.model.requested).toMatchObject({ value: 'gpt-6-luna', status: 'requested' });
       expect(observation.model.settings.sandbox).toMatchObject({ value: 'workspace-write', status: 'requested' });
       expect(observation.usage.counters.input).toMatchObject({ value: 20, availability: 'observed' });
-      expect(observation.artifacts).toHaveLength(1);
-      expect(readFileSync(observation.artifacts[0]!.path, 'utf8')).toContain('turn.completed');
+      const eventsArtifact = expectArtifactWithValidHash(observation, 'raw-events');
+      const lifecycleArtifact = expectArtifactWithValidHash(observation, 'supervisor-lifecycle');
+      expect(readFileSync(eventsArtifact.path, 'utf8')).toContain('turn.completed');
+      expect(JSON.parse(readFileSync(lifecycleArtifact.path, 'utf8'))).toMatchObject({ terminal: 'exit', processTreeStopped: true });
     }
   }, 15_000);
 
@@ -211,7 +223,9 @@ describe('native transport event and identity handling', () => {
     const observation = driver.getObservation('failed-after-events')!;
     expect(observation.usage.counters.input.value).toBe(11);
     expect(observation.usage.tokenTotal.value).toBe(14);
-    expect(observation.artifacts).toHaveLength(1);
+    const eventsArtifact = expectArtifactWithValidHash(observation, 'raw-events');
+    expectArtifactWithValidHash(observation, 'supervisor-lifecycle');
+    expect(readFileSync(eventsArtifact.path, 'utf8')).toContain('turn.completed');
   }, 15_000);
 
   it('persists model-timeout and boundary teardown outcomes without creating capture evidence', async () => {
@@ -242,6 +256,28 @@ describe('native transport event and identity handling', () => {
     expect(observation.capture.status).toBe('pending-runner-capture');
     expect(observation.usage.tokenTotal.value).toBeNull();
     expect(JSON.stringify(saved)).not.toContain('synthetic stop failure');
+  }, 15_000);
+
+  it('preserves process proof and the primary observation when lifecycle artifact writing fails', async () => {
+    const root = tempRoot();
+    const artifactRoot = join(root, 'artifacts');
+    const invocationId = 'lifecycle-write-failure';
+    mkdirSync(join(artifactRoot, invocationId, 'supervisor-lifecycle.json'), { recursive: true });
+    const events = `${JSON.stringify({ type: 'turn.completed', turn_id: 'turn-write-failure', usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } })}\n`;
+    const driver = new CodexExecDriver({ executable: fakeExecutable(root, events), artifactDirectory: artifactRoot, spawnAdapter: simulatedVisibleLaunch() });
+    const target = identity(invocationId);
+    await driver.beginInvocation(target);
+    const result = await driver.run(invocation());
+    const stopProof = await driver.cancelInvocationAndWait({ identity: target, cause: new Error('post-run proof check'), deadlineEpochMs: Date.now() + 1_000 });
+    const observation = driver.getObservation(invocationId)!;
+
+    expect(result.stopReason).toBe('complete');
+    expect(stopProof).toMatchObject({ invocationId, processTree: 'stopped-and-reaped', invocation: 'settled' });
+    expect(observation.model.settings.processTree).toMatchObject({ value: true, status: 'stopped-and-settled' });
+    expect(observation.model.settings.supervisorLifecycleArtifact).toMatchObject({ value: null, status: 'write-failed' });
+    expect(observation.usage.tokenTotal).toMatchObject({ value: 3, availability: 'observed' });
+    expectArtifactWithValidHash(observation, 'raw-events');
+    expect(observation.artifacts.some((artifact) => artifact.kind === 'supervisor-lifecycle')).toBe(false);
   }, 15_000);
 
   it('resolves the runner sessionRef workspace for a Codex ephemeral CLI launch', async () => {

@@ -27,7 +27,7 @@ function fixture(scenario: 'complete' | 'timeout') {
   const completion = scenario === 'timeout'
     ? `process.stdout.write(${JSON.stringify(`${event}\n`)}); setInterval(() => {}, 1000);`
     : `process.stdout.write(${JSON.stringify(`${event}\n`)});`;
-  writeFileSync(executable, `#!/usr/bin/env node\nconst fs = require('node:fs');\nfs.writeFileSync('src/settings.mjs', ${JSON.stringify(
+  writeFileSync(executable, `#!/usr/bin/env node\nconst fs = require('node:fs');\nfs.writeFileSync('settings/module.js', ${JSON.stringify(
     `export function isValidCampaignLabel(label) {\n  const value = typeof label === 'string' ? label.trim() : '';\n  return value.length > 0 && Array.from(value).length <= 40;\n}\n`,
   )});\n${completion}\n`, { mode: 0o700 });
   chmodSync(executable, 0o700);

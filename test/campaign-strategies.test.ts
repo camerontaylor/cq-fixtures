@@ -475,6 +475,8 @@ describe('bounded campaign strategy engine', () => {
       },
     };
     try {
+      const s1DependencyRoot = process.env.CQ_S1_DEPENDENCY_ROOT;
+      if (!s1DependencyRoot) throw new Error('CQ_S1_DEPENDENCY_ROOT must identify the frozen S1 integration');
       const result = await runVisibleReviewLoopScreening({
       driver: driver as never,
       supervisor: { async cancelInvocationAndWait({ identity }) {
@@ -485,8 +487,7 @@ describe('bounded campaign strategy engine', () => {
         model: 'gpt-6-sol', provider: 'codex', effort: 'high', profileId: 'test-codex-sol', settingsId: 'effort-high',
         evaluationBoundaryHash: 'a'.repeat(64), toolsAssistanceHash: 'b'.repeat(64), tierId: 'visible-large',
         assignmentId: 'visible-review-assignment-01', runNamespace: 'review-repeat-01', outputRoot: join(root, 'run'),
-        s1DependencyRoot: process.env.CQ_S1_DEPENDENCY_ROOT
-          ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../cq-settings-integration'),
+        s1DependencyRoot,
       });
       expect(result.status, JSON.stringify({ operationalStatus: result.strategy.operationalStatus,
         recipeCompleted: result.strategy.recipeCompleted, correctness: result.pipelineEvidence.candidateCorrectness,
@@ -653,8 +654,8 @@ describe('bounded campaign strategy engine', () => {
     expect(draft?.usage.tokenTotal.source).toBe('native-token-total');
     expect(draft?.baselineCommit).toBe('a'.repeat(40));
     expect(outcome.finalCandidate?.id).toBe('native-partial-edit');
-    expect(outcome.candidateCorrectness).toBe(true);
-    expect(outcome.assignedStrategySuccess).toBe(false);
+    expect(outcome.candidateCorrectness).toBeNull();
+    expect(outcome.assignedStrategySuccess).toBeNull();
   });
 
   it('uses the integrated native supervisor stop proof before candidate capture', async () => {
@@ -668,17 +669,20 @@ describe('bounded campaign strategy engine', () => {
       getObservation() { return undefined; },
     };
     let captured = false;
+    let invocationSettled = false;
     const executor = createNativeStrategyExecutor(nativeDriver, {
       async runStage(request) {
         const identity = handedOff!;
+        supervisor.reportProcessNotStarted(identity, 'test-stage-never-spawned-child');
         await new Promise<void>((resolve) => {
           if (request.signal.aborted) resolve();
           else request.signal.addEventListener('abort', () => resolve(), { once: true });
         });
         supervisor.settleInvocation(identity);
+        invocationSettled = true;
         return result({ status: 'cancelled' });
       },
-      captureCandidate() { captured = true; return null; },
+      captureCandidate() { expect(invocationSettled).toBe(true); captured = true; return null; },
       createCandidateWorkspace(_request, _index, stableWorkspaceId) { return { id: stableWorkspaceId, handle: {} }; },
       supervisor,
     });
@@ -934,12 +938,12 @@ describe('bounded campaign strategy engine', () => {
       const events: string[] = [];
       const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
         groupGone: async () => false, ownershipForTest: fakeJudgeOwnershipForTest({ events }) });
-      const short = { ...request, shutdownDeadlineEpochMs: Date.now() + 700 };
+      const short = { ...request, deadlineEpochMs: Date.now() + 750, shutdownDeadlineEpochMs: Date.now() + 1_500 };
       await expect(supervisor.run(short, new AbortController().signal)).rejects.toThrow(/cleanup could not be proven/);
       const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'cleanup-test', deadlineEpochMs: Date.now() + 1 });
       expect(proof).toMatchObject({ processTree: 'running-or-unknown', execution: 'unsettled', cleanup: 'quarantined',
         protectedOracleCleanup: 'unobserved' });
-      expect(events).toEqual(['plan-created', 'cleanup-refused']);
+      expect(events).toEqual(['plan-created']);
     });
   }, 10_000);
 

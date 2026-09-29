@@ -1,3 +1,4 @@
+import { FINAL_BROKER_RUNTIME_IDENTITY } from './broker-toolchain.ts';
 import { publishStoppedTask, validatePublicationPath } from './task-staging.ts';
 /** Boundary implementation only. Importing/preparing this module never calls a model. */
 import { createHash } from 'node:crypto';
@@ -101,7 +102,7 @@ child.on('error',()=>process.exit(125));child.on('exit',(code)=>process.exit(cod
  */
 export function createFinalCodexSpawnAdapter(input: {
   specification: ContainerBoundarySpec; staging: TaskStageReceipt;
-  broker: { containerId: string; imageId: string; configPath: string };
+  broker: { containerId: string; imageId: string; configPath: string; publicAssetVolume?: string; runtimeRunId?: string };
   hostTaskRoot: string; exportRoot: string; budgetSeconds: number;
   stage: FinalProfileAdmission['stage'];
   /** REQUIRED authoritative parent service: independently preregister source/assignment,
@@ -114,7 +115,7 @@ export function createFinalCodexSpawnAdapter(input: {
   if (spec.image !== FINAL_NATIVE_IMAGE) throw new Error('hard-pinned final native worker image required');
   validateStageReceipt(staging);
   const policy = compileContainerBoundary(spec);
-  if (!['final-profile-G1', 'actual-route-G2'].includes(input.stage) || spec.network.brokerIdentity !== FINAL_BROKER_IDENTITY ||
+  if (!['final-profile-G1', 'actual-route-G2'].includes(input.stage) || spec.network.brokerIdentity !== FINAL_BROKER_IDENTITY || spec.network.brokerRuntimeIdentity !== FINAL_BROKER_RUNTIME_IDENTITY ||
       spec.image !== FINAL_NATIVE_IMAGE || broker.imageId !== FINAL_BROKER_IMAGE || !spec.network.productionEligible || spec.network.brokerIP !== '172.29.249.2' ||
       spec.network.workerIP !== '172.29.249.3' || spec.network.port !== 8080 || spec.authenticationFiles.join(',') !== 'auth.json') throw new Error('frozen HTTP-only profile required');
   const files = staging.context.entries;

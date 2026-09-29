@@ -542,3 +542,36 @@ describe('stopped candidate publication into exact runSuite workspace', () => {
     expect(f.fs.readFileSync(join(f.source, 'tracked'), 'utf8')).toBe('original'); expect(f.fs.existsSync(f.exported)).toBe(true); const manifest = f.fs.readdirSync(f.parent).find(name => name.startsWith(f.exported.split('/').at(-1)! + '.recovery-'))!; expect(JSON.parse(f.fs.readFileSync(join(f.parent, manifest), 'utf8')).state).toBe('rolled-back');
   });
 });
+
+describe('exclusive public broker toolchain', () => {
+  async function fixture() {
+    const b = await import('../runner/boundary/broker-toolchain.ts');
+    const volumeName = 'cq-s5-broker-assets-' + 'a'.repeat(16), runId = 'synthetic-runtime';
+    return { b, input: { runId, volumeName, liveInventory: b.brokerAssetTree(), volume: { Driver: 'local', Options: null, Labels: { 'cq.boundary.runtime': runId, 'cq.boundary.public-assets': b.FINAL_BROKER_ASSET_INVENTORY } }, broker: { Image: 'sha256:a0af04214c67a25e4c5ab01b20f6e6deea98fc664b65ae5532576949234adfe3', Config: { User: '1000:1000', Entrypoint: ['/usr/local/bin/node'], Cmd: ['/opt/broker.mjs','/opt/config.json'], Labels: { 'cq.boundary.runtime': runId, 'cq.boundary.broker-runtime': b.FINAL_BROKER_RUNTIME_IDENTITY } }, HostConfig: { ReadonlyRootfs: true, Privileged: false, PidMode: '', CapDrop: ['ALL'], CapAdd: null, Binds: null, PortBindings: null }, Mounts: [{ Type: 'volume', Name: volumeName, Destination: '/opt', RW: false }] } } };
+  }
+  it('accepts exact public files and rejects altered bytes despite matching ownership labels', async () => {
+    const { b, input } = await fixture(); b.validateLiveBrokerToolchain(input);
+    const tree = await import('../runner/boundary/task-tree.ts');
+    input.liveInventory = tree.validateTaskEntries(input.liveInventory.entries.map(e => ({ ...e, data: Buffer.from('synthetic replacement').toString('base64') })), false, false);
+    expect(() => b.validateLiveBrokerToolchain(input)).toThrow(/assets/);
+  });
+  it('rejects writable, redirected, and additional auth mounts', async () => {
+    for (const mutation of ['writable','redirected','auth']) {
+      const { b, input } = await fixture();
+      if (mutation === 'writable') input.broker.Mounts[0].RW = true;
+      if (mutation === 'redirected') input.broker.Mounts[0].Destination = '/different';
+      if (mutation === 'auth') input.broker.Mounts.push({ Type: 'volume', Name: 'private-auth', Destination: '/auth', RW: false });
+      expect(() => b.validateLiveBrokerToolchain(input)).toThrow(/toolchain/);
+    }
+  });
+  it('rejects image, user, command and exclusive label substitutions', async () => {
+    for (const mutation of ['image','user','command','label']) {
+      const { b, input } = await fixture();
+      if (mutation === 'image') input.broker.Image = 'sha256:' + '0'.repeat(64);
+      if (mutation === 'user') input.broker.Config.User = '0:0';
+      if (mutation === 'command') input.broker.Config.Cmd.push('--extra');
+      if (mutation === 'label') input.volume.Labels['cq.boundary.public-assets'] = '0'.repeat(64);
+      expect(() => b.validateLiveBrokerToolchain(input)).toThrow(/toolchain/);
+    }
+  });
+});

@@ -17,7 +17,7 @@ export interface ContainerBoundarySpec {
   /** Relative exact files in /context; native owner stages later, no home grants. */
   authenticationFiles: string[];
   nativeControlEvidence: string | null;
-  network: { name: string; workerIP: string; brokerIP: string; port: number; brokerIdentity: string; productionEligible: boolean };
+  network: { name: string; workerIP: string; brokerIP: string; port: number; brokerIdentity: string; brokerRuntimeIdentity?: string; productionEligible: boolean };
   namespaceEvidence: string;
 }
 const HASH = /^[a-f0-9]{64}$/;
@@ -37,7 +37,7 @@ export function compileContainerBoundary(input: ContainerBoundarySpec) {
       !privateIP(spec.network.brokerIP) || spec.network.workerIP === spec.network.brokerIP ||
       spec.network.workerIP.split('.').slice(0, 3).join('.') !== spec.network.brokerIP.split('.').slice(0, 3).join('.') ||
       !Number.isInteger(spec.network.port) || spec.network.port < 1024 || spec.network.port > 65535 ||
-      !HASH.test(spec.network.brokerIdentity) || typeof spec.network.productionEligible !== 'boolean' ||
+      !HASH.test(spec.network.brokerIdentity) || (spec.network.brokerRuntimeIdentity !== undefined && !HASH.test(spec.network.brokerRuntimeIdentity)) || typeof spec.network.productionEligible !== 'boolean' ||
       new Set(spec.authenticationFiles).size !== spec.authenticationFiles.length ||
       spec.authenticationFiles.some((file) => !/^[a-zA-Z0-9._/-]+$/.test(file) || file.startsWith('/') || file.split('/').some((p) => !p || p === '..' || p === '.'))) {
     throw new Error('dedicated content-pinned namespace, staging and broker inventory required');

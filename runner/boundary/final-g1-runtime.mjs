@@ -1,3 +1,4 @@
+import { FINAL_BROKER_RUNTIME_IDENTITY, FINAL_BROKER_ASSET_INVENTORY, verifyLiveBrokerToolchain } from './broker-toolchain.ts';
 /** Trusted parent runtime factory. No model dispatch; approval is a separate parent file. */
 import { createHash } from 'node:crypto';
 import { constants, openSync, fstatSync, closeSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
@@ -25,6 +26,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
   if (hash(JSON.stringify(plan)) !== privateJson(join(privateRoot, 'plan-hash.json')).sha256) throw new Error('private runtime plan changed');
   async function verifySources() {
     if (hash(readFileSync(plan.runtimeSource)) !== plan.runtimeSourceSha256 || hash(readFileSync(join(root, 'runner/boundary/evidence/fallback/final-profile-public-inputs.json'))) !== plan.publicInputsSha256) throw new Error('reviewed runtime/public inputs changed');
+    for (const [path, digest] of Object.entries(plan.runtimeDependenciesSha256)) if (hash(readFileSync(path)) !== digest) throw new Error('reviewed runtime dependency changed');
     for (const [path, digest] of Object.entries(plan.sourcePins)) if (hash(readFileSync(join(root, path))) !== digest) throw new Error('reviewed G1 source changed');
   }
   async function verifyInfrastructure() {
@@ -33,9 +35,11 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
       if (await c.run(['info', '--format', '{{.ID}}']) !== pins.daemon.id || hash(readFileSync(pins.vm.configPath)) !== pins.vm.configHash) throw new Error('pinned daemon/VM changed');
       for (const image of [pins.workerImage, pins.brokerImage, plan.utilityImage]) if (JSON.parse(await c.run(['image', 'inspect', image]))[0].Id !== image) throw new Error('pinned image unavailable');
       const broker = JSON.parse(await c.run(['inspect', state.broker.containerId]))[0];
-      if (!broker.State.Running || broker.Image !== pins.brokerImage || broker.Config.Labels?.['cq.boundary.broker'] !== pins.brokerIdentity || broker.Config.Labels?.['cq.boundary.runtime'] !== plan.runId || broker.Mounts.length || broker.HostConfig.Privileged || broker.HostConfig.PidMode || !broker.HostConfig.ReadonlyRootfs || broker.HostConfig.PortBindings && Object.keys(broker.HostConfig.PortBindings).length) throw new Error('private broker inventory changed');
+      if (!broker.State.Running || broker.Image !== pins.brokerImage || broker.Config.Labels?.['cq.boundary.broker'] !== pins.brokerIdentity || broker.Config.Labels?.['cq.boundary.runtime'] !== plan.runId || broker.Mounts.length !== 1 || broker.HostConfig.Privileged || broker.HostConfig.PidMode || !broker.HostConfig.ReadonlyRootfs || broker.HostConfig.PortBindings && Object.keys(broker.HostConfig.PortBindings).length) throw new Error('private broker inventory changed');
+      await verifyLiveBrokerToolchain(c, state.broker.containerId, plan.brokerAssetVolume, plan.runId);
       const config = JSON.parse(await c.run(['exec', state.broker.containerId, '/usr/local/bin/node', '-e', "process.stdout.write(require('fs').readFileSync('/opt/config.json'))"]));
       if (compileBroker(config).identity !== pins.brokerIdentity) throw new Error('broker exact route identity changed');
+      if (JSON.stringify(Object.keys(broker.NetworkSettings.Networks).sort()) !== JSON.stringify(['bridge', state.network].sort())) throw new Error('broker extra network attachment');
       const network = JSON.parse(await c.run(['network', 'inspect', state.network]))[0];
       if (!network.Internal || network.EnableIPv6 || network.Labels?.['cq.boundary.runtime'] !== plan.runId || network.IPAM.Config.length !== 1 || network.IPAM.Config[0].Subnet !== pins.network.internalSubnet || network.Containers[state.broker.containerId]?.IPv4Address !== pins.network.brokerIP + '/24' || Object.keys(network.Containers).some(id => id !== state.broker.containerId)) throw new Error('private namespace network changed');
       if (hash(readFileSync(join(state.authRoot, 'payload/config.toml'))) !== pins.nativeConfigHash) throw new Error('native config changed');
@@ -65,6 +69,11 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
         const broker = JSON.parse(await c.run(['inspect', latest.broker.containerId]))[0];
         if (broker.Config.Labels?.['cq.boundary.runtime'] !== plan.runId || broker.Config.Labels?.['cq.boundary.broker'] !== pins.brokerIdentity) throw new Error('cleanup broker ownership changed');
         await teardownContainer(c, latest.broker.containerId);
+      }
+      if ((await c.run(['volume', 'ls', '-q'])).split('\n').includes(plan.brokerAssetVolume)) {
+        const v = JSON.parse(await c.run(['volume', 'inspect', plan.brokerAssetVolume]))[0];
+        if (v.Labels?.['cq.boundary.runtime'] !== plan.runId || v.Labels?.['cq.boundary.public-assets'] !== FINAL_BROKER_ASSET_INVENTORY || await c.run(['ps','-aq','--filter','volume=' + plan.brokerAssetVolume])) throw new Error('public toolchain cleanup ownership changed');
+        await c.run(['volume','rm',plan.brokerAssetVolume]);
       }
       if ((await c.run(['network', 'ls', '--format', '{{.Name}}'])).split('\n').includes(latest.network)) {
         const n = JSON.parse(await c.run(['network', 'inspect', latest.network]))[0];
@@ -96,7 +105,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
           const { snapshotTask } = await load('runner/boundary/task-tree.ts');
           const tree = snapshotTask(context.cwd, true);
           const files = tree.entries.filter(e => !e.path.startsWith('.git/') && e.path !== '.git' && e.kind === 'file');
-          if (files.length !== Object.keys(plan.taskFiles).length || files.some(e => !plan.taskFiles[e.path] || hash(Buffer.from(e.data, 'base64')) !== plan.taskFiles[e.path]) || tree.entries.some(e => e.kind === 'symlink' || (!e.path.startsWith('.git/') && e.path !== '.git' && !['src', 'test', ...Object.keys(plan.taskFiles)].includes(e.path)))) throw new Error('runSuite workspace is not the independently pinned task content');
+          if (files.length !== Object.keys(plan.taskFiles).length || files.some(e => !plan.taskFiles[e.path] || hash(Buffer.from(e.data, 'base64')) !== plan.taskFiles[e.path]) || tree.entries.some(e => e.kind === 'symlink' || (!e.path.startsWith('.git/') && e.path !== '.git' && ![...plan.taskDirectories, ...Object.keys(plan.taskFiles)].includes(e.path)))) throw new Error('runSuite workspace is not the independently pinned task content');
           // Read HEAD only from normalized private audit tree, never source Git config.
           const headEntry = tree.entries.find(e => e.path === '.git/HEAD'); const head = Buffer.from(headEntry.data, 'base64').toString().trim();
           const baseline = head.startsWith('ref: ') ? Buffer.from(tree.entries.find(e => e.path === '.git/' + head.slice(5)).data, 'base64').toString().trim() : head;
@@ -108,7 +117,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
             profile: 'cq-boundary-s5', daemonId: pins.daemon.id, vmConfigHash: pins.vm.configHash, image: pins.workerImage,
             taskVolume: receipt.taskVolume, contextVolume: receipt.contextVolume, stagingEvidence: receipt.receiptHash,
             authenticationFiles: ['auth.json'], nativeControlEvidence: plan.nativeControlEvidence,
-            network: { name: state.network, workerIP: pins.network.workerIP, brokerIP: pins.network.brokerIP, port: pins.network.port, brokerIdentity: pins.brokerIdentity, productionEligible: true },
+            network: { name: state.network, workerIP: pins.network.workerIP, brokerIP: pins.network.brokerIP, port: pins.network.port, brokerIdentity: pins.brokerIdentity, brokerRuntimeIdentity: FINAL_BROKER_RUNTIME_IDENTITY, productionEligible: true },
             namespaceEvidence: 'namespace-acl.sh:' + pins.sourceAssets['namespace-acl.sh'],
           };
           const boundaryIdentity = compileContainerBoundary(specification).identity;
@@ -129,7 +138,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
         await verifySources();
         if (!expected || Object.keys(expected).some(key => request[key] !== expected[key])) throw new Error('native request differs from independently prepared identities');
         const grant = privateJson(join(privateRoot, 'parent-approval.json'));
-        if (grant.runtimeModuleSha256 !== hash(readFileSync(join(privateRoot, 'runtime.mjs'))) || grant.planSha256 !== hash(JSON.stringify(plan)) || grant.approved !== true || grant.runId !== plan.runId || grant.runtimeSourceSha256 !== plan.runtimeSourceSha256 || grant.sourcePin !== plan.sourcePin || grant.publicInputsSha256 !== plan.publicInputsSha256 || grant.assignmentId !== assignmentId || grant.attemptId !== attemptId || grant.allowVerifiedDynamicPrivateStaging !== true || grant.stage !== 'final-profile-G1' || grant.modelBudgetSeconds !== 90 || grant.heldOut !== false || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= Date.now() || grant.expiresAt > Date.now() + 900000) throw new Error('separate reviewed parent G1 approval unavailable');
+        if (plan.sourceIsProvisional || grant.sourceIsProvisional !== false || grant.repositoryHead !== plan.repositoryHead || grant.runtimeModuleSha256 !== hash(readFileSync(join(privateRoot, 'runtime.mjs'))) || grant.planSha256 !== hash(JSON.stringify(plan)) || grant.approved !== true || grant.runId !== plan.runId || grant.runtimeSourceSha256 !== plan.runtimeSourceSha256 || grant.sourcePin !== plan.sourcePin || grant.publicInputsSha256 !== plan.publicInputsSha256 || grant.assignmentId !== assignmentId || grant.attemptId !== attemptId || grant.allowVerifiedDynamicPrivateStaging !== true || grant.stage !== 'final-profile-G1' || grant.modelBudgetSeconds !== 90 || grant.heldOut !== false || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= Date.now() || grant.expiresAt > Date.now() + 900000) throw new Error('separate reviewed parent G1 approval unavailable');
         return { assignmentId, attemptId, sourcePin: plan.sourcePin, receipt: { admissionId: grant.admissionId, stage: expected.stage, profile: 'cq-subscription-http', boundaryIdentity: expected.boundaryIdentity, invocationIdentity: expected.invocationIdentity, expiresAt: grant.expiresAt, heldOut: false } };
         } catch { await cleanup(); throw new Error('parent approval refused; private recovery retained'); }
       },

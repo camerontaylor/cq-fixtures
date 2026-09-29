@@ -42,6 +42,9 @@ export class PiNativeDriver extends ObservedNativeDriver {
   private readonly spawnAdapter: NativeSpawnAdapter | undefined;
   private readonly invocationStage: NativeInvocationStage;
 
+  /** Frozen configured cutoff used by visible-G1 route admission/reporting. */
+  get configuredModelWallClockMs(): number { return this.hardWallClockMs; }
+
   constructor(options: PiNativeOptions = {}) {
     const executable = options.executable ?? 'pi';
     const mode = options.mode ?? 'json';

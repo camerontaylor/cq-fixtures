@@ -1,9 +1,10 @@
 import { wilsonBounds } from './inference.js';
-import { evidenceContentHash, type PrecisionValidation } from './precision.js';
+import { evidenceContentHash, precisionValidationPasses, type PrecisionValidation } from './precision.js';
 /** Reporting only: immutable dataset counts, same z=4.5, unchanged gates.
  * Each dataset contributes once to each contrast and once to joint/FWER events.
  */
 export function precisionMonteCarloReport(validation: PrecisionValidation) {
+  if (!precisionValidationPasses(validation, validation.track)) throw new Error('failed or unpinned validation archive');
   const boundsCount = 4 * validation.core.length + validation.core.filter(s => s.nullDatasets > 0).length;
   // One-sided normal tail at 4.5 <3.4e-6; union bound for 3240 bounds <.012.
   if (boundsCount > 3240) throw new Error('Monte Carlo reporting family exceeds frozen bound count');

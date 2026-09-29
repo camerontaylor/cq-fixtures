@@ -195,6 +195,9 @@ export function analyzePrecisionSample(reg: Preregistration, rows: readonly Obse
     || !/^[a-f0-9]{64}$/i.test(extension.calibrationSha256) || extension.baseDesignHash !== designHash(reg)
     || !extension.calibrationArtifact.trim()) throw new Error('precision extension must be frozen and bind the exact registration and calibration source');
   if (!validation || !precisionValidationPasses(validation, reg.track)) reasons.push('precision recipe lacks passing validation for every core stratum in this track');
+  // The historical simulations contain no authenticated empirical role pilot.
+  // A locator and caller chosen digest cannot establish applicability.
+  reasons.push('authenticated empirical role applicability is absent');
   const corePoint = CORE_POINTS.some(p => pointId(p) === pointId(extension.model));
   const forecastPoint = forecastEvidence !== null && precisionForecastPasses(forecastEvidence, reg.track)
     && FORECAST_POINTS.some(p => pointId(p) === pointId({ ...extension.model, effect: .05 }))

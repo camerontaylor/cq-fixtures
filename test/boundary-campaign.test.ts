@@ -576,3 +576,16 @@ describe('exclusive public broker toolchain', () => {
     }
   });
 });
+
+it('private G1 factory leaves quota telemetry to the authenticated native default', async () => {
+  const { createHash } = await import('node:crypto');
+  const { fileURLToPath } = await import('node:url');
+  const privateRoot = mkdtempSync(join(tmpdir(), 'cq-runtime-quota-test-')); roots.push(privateRoot);
+  const plan = { repoRoot: process.cwd(), privateRoot, privateAuthRoot: join(privateRoot,'synthetic-auth'), network: 'synthetic-network', brokerContainerId: 'synthetic-broker', runId: 'synthetic-quota-test' };
+  writeFileSync(join(privateRoot,'setup-state.json'), JSON.stringify({ authRoot: plan.privateAuthRoot, network: plan.network, broker: { containerId: plan.brokerContainerId } }), { mode: 0o600 });
+  writeFileSync(join(privateRoot,'plan-hash.json'), JSON.stringify({ sha256: createHash('sha256').update(JSON.stringify(plan)).digest('hex') }), { mode: 0o600 });
+  const factory = fileURLToPath(new URL('../runner/boundary/final-g1-runtime.mjs', import.meta.url));
+  const script = "const m=await import(process.argv[1]);const runtime=await m.createPreparedFinalG1Runtime(JSON.parse(process.argv[2]),{verify:false});console.log(JSON.stringify({quotaOverride:Object.hasOwn(runtime.options,'quotaSource'),prepare:typeof runtime.options.prepareInvocation,cleanup:typeof runtime.options.cleanupInvocation}))";
+  const child = spawnSync(process.execPath, ['--experimental-transform-types','--input-type=module','-e',script,factory,JSON.stringify(plan)], { encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024 });
+  expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toEqual({ quotaOverride: false, prepare: 'function', cleanup: 'function' });
+}, 20000);

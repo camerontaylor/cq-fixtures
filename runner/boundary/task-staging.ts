@@ -35,7 +35,7 @@ export function validateStageReceipt(receipt: TaskStageReceipt): void {
 /** Git runs only on a validated fresh private tree, with normalized local config.
  * No candidate config, hooks, replace objects or alternates can select host paths.
  */
-export function verifyGitBaseline(tree: TaskTree, baselineCommit: string): { head: string; baselinePresent: true } {
+export function verifyGitBaseline(tree: TaskTree, baselineCommit: string): { head: string; baselineTree: string; baselinePresent: true } {
   validateTaskEntries(tree.entries); if (!/^[a-f0-9]{40}$/.test(baselineCommit)) throw new Error('exact Git baseline required');
   const directory = mkdtempSync(join(tmpdir(), 'cq-s5-git-audit-')); chmodSync(directory, 0o700);
   try {
@@ -47,7 +47,9 @@ export function verifyGitBaseline(tree: TaskTree, baselineCommit: string): { hea
     const head = git(['rev-parse', '--verify', 'HEAD']);
     if (!/^[a-f0-9]{40}$/.test(head)) throw new Error('candidate HEAD invalid');
     git(['merge-base', '--is-ancestor', baselineCommit, head]);
-    return { head, baselinePresent: true };
+    const baselineTree = git(['rev-parse', baselineCommit + '^{tree}']);
+    if (!/^[a-f0-9]{40}$/.test(baselineTree)) throw new Error('baseline tree invalid');
+    return { head, baselineTree, baselinePresent: true };
   } finally {
     const writable = (path: string) => { if (lstatSync(path).isDirectory()) { chmodSync(path, 0o700); for (const name of readdirSync(path)) writable(join(path, name)); } };
     writable(directory); rmSync(directory, { recursive: true, force: true });
@@ -136,7 +138,7 @@ export function validatePublicationPath(path: string): string {
  */
 export function publishStoppedTask(receipt: TaskStageReceipt, exportedRoot: string, hostTaskRoot: string,
   proof: { inventoryHash: string; head: string; namespaceAbsent: true },
-  trustedRename: typeof renameSync = renameSync): { backupRoot: string; recoveryManifest: string } {
+  trustedRename: typeof renameSync = renameSync): { backupRoot: string; recoveryManifest: string; destination: string; baselineCommit: string; baselineTree: string; hostUnchanged: true; afterTeardown: true; captureEligible: true } {
   validateStageReceipt(receipt);
   const source = validatePublicationPath(hostTaskRoot), exported = validatePublicationPath(exportedRoot);
   if (source === exported || dirname(source) !== dirname(exported) || !/^\.cq-stopped-export-[A-Za-z0-9]+$/.test(exported.split('/').at(-1)!) || lstatSync(source).dev !== lstatSync(exported).dev || proof.namespaceAbsent !== true) throw new Error('exact same-filesystem stopped export required');
@@ -146,10 +148,11 @@ export function publishStoppedTask(receipt: TaskStageReceipt, exportedRoot: stri
   writeFileSync(recoveryManifest, JSON.stringify(recovery), { mode: 0o600, flag: 'wx' });
   const save = () => writeFileSync(recoveryManifest, JSON.stringify(recovery), { mode: 0o600 });
   const originalStat = lstatSync(source);
-  let original: TaskTree;
+  let original: TaskTree; let baselineTree: string;
   try {
     original = snapshotTask(source, true);
-    if (original.inventoryHash !== receipt.task.inventoryHash || verifyGitBaseline(original, receipt.baselineCommit).head !== receipt.baselineCommit) throw new Error();
+    const baseline = verifyGitBaseline(original, receipt.baselineCommit); baselineTree = baseline.baselineTree;
+    if (original.inventoryHash !== receipt.task.inventoryHash || baseline.head !== receipt.baselineCommit) throw new Error();
     const candidate = snapshotTask(exported, false);
     if (candidate.inventoryHash !== proof.inventoryHash || verifyGitBaseline(candidate, receipt.baselineCommit).head !== proof.head) throw new Error();
     recovery.state = 'validated'; save();
@@ -167,5 +170,5 @@ export function publishStoppedTask(receipt: TaskStageReceipt, exportedRoot: stri
     } else recovery.state = 'publication-failed-recovery-retained';
     save(); throw new Error('publication failed; private hashed recovery retained');
   }
-  return { backupRoot, recoveryManifest };
+  return { backupRoot, recoveryManifest, destination: source, baselineCommit: receipt.baselineCommit, baselineTree, hostUnchanged: true, afterTeardown: true, captureEligible: true };
 }

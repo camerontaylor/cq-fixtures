@@ -512,6 +512,7 @@ describe('stopped candidate publication into exact runSuite workspace', () => {
     writeFileSync(join(f.exported, 'untracked'), 'partial', { mode: 0o700 }); const expectedHead = f.proof().head;
     const receipt = f.stage.publishStoppedTask(f.receipt, f.exported, f.source, f.proof());
     expect(f.fs.readFileSync(join(f.source, 'tracked'), 'utf8')).toBe('candidate'); expect(f.fs.existsSync(join(f.source, 'deleted'))).toBe(false); expect(f.fs.statSync(join(f.source, 'untracked')).mode & 0o777).toBe(0o700); expect(f.git(f.source, ['rev-parse', 'HEAD'])).toBe(expectedHead);
+    expect(receipt.destination).toBe(f.source); expect(receipt.baselineCommit).toBe(f.receipt.baselineCommit); expect(receipt.baselineTree).toBe(f.git(f.source, ['rev-parse', f.receipt.baselineCommit + '^{tree}'])); expect(receipt.hostUnchanged && receipt.afterTeardown && receipt.captureEligible).toBe(true);
     expect(f.fs.readFileSync(join(receipt.backupRoot, 'tracked'), 'utf8')).toBe('original'); expect(f.fs.statSync(receipt.recoveryManifest).mode & 0o777).toBe(0o600);
   });
   it('refuses mutated pristine task, export identity mismatch and traversal alias', async () => {

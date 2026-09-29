@@ -2,7 +2,7 @@
 /** Bounded final HTTP-only Codex G1 through the pinned review-loop runSuite task. */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, open, readFile, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, readdir, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -22,6 +22,7 @@ import { inventoryTaskWorkspace, runWorkspaceConformance } from './workspace-con
 import { CodexExecDriver } from './codex.ts';
 import type { ObservedDriver } from './observation.ts';
 import type { InvocationIdentity } from './observation.ts';
+import { superviseAssignment, type AssignmentReceipt } from '../boundary/assignment-supervisor.ts';
 import {
   CODEX_FINAL_BOOTSTRAP, FINAL_BROKER_IMAGE, FINAL_BROKER_IDENTITY, FINAL_NATIVE_IMAGE,
   createFinalCodexSpawnAdapter, finalCodexArguments, validateFinalCodexAuth,
@@ -673,6 +674,68 @@ async function writeCreateOnly(path: string, text: string): Promise<void> {
   try { await handle.writeFile(text); await handle.sync(); } finally { await handle.close(); }
   const parent = await open(dirname(path), 'r');
   try { await parent.sync(); } finally { await parent.close(); }
+}
+
+/** Parent-owned descriptor caller. Independent successor source/package pins
+ * are mandatory; legacy runtime wrappers carry no outer lifetime guarantee. */
+export async function runSupervisedFinalProfileG1(input: {
+  runId: string; invocationId: string; privateRoot: string; repositoryHead: string;
+  approvedPins: Readonly<Record<string, string>>; approvedPinHash: string;
+  preparationDeadlineEpochMs: number; resourceDeadlineEpochMs: number;
+  reapDeadlineEpochMs: number; quarantineDeadlineEpochMs: number;
+  requiredGuarantee: 'host-process-group' | 'hard-resource-lifetime'; signal?: AbortSignal;
+}): Promise<AssignmentReceipt> {
+  input = Object.freeze({ ...input, approvedPins: Object.freeze({ ...input.approvedPins }) });
+  if (input.requiredGuarantee !== 'host-process-group') throw new Error('hard resource lifetime unsupported; freeze refused');
+  if (!/^[A-Za-z0-9._-]{1,80}$/u.test(input.runId) || !/^[A-Za-z0-9._-]{1,128}$/u.test(input.invocationId)) throw new Error('exact outer assignment identity required');
+  const root = await realpath(ROOT);
+  const privateRoot = resolve(input.privateRoot);
+  const stat = await lstat(privateRoot);
+  if (await realpath(privateRoot) !== privateRoot || !stat.isDirectory() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) throw new Error('canonical owner-only private root required');
+  const limits = [input.preparationDeadlineEpochMs, input.resourceDeadlineEpochMs, input.reapDeadlineEpochMs, input.quarantineDeadlineEpochMs];
+  if (limits.some(value => !Number.isFinite(value)) || limits[0]! <= Date.now() || limits.some((value, index) => index > 0 && value < limits[index - 1]!) || limits[3]! - Date.now() > 3600_000) throw new Error('bounded absolute phase/resource/reap/quarantine deadlines required');
+  const pins = Object.freeze({ ...input.approvedPins });
+  if (!/^[a-f0-9]{64}$/u.test(input.approvedPinHash) || sha256(canonicalJson(pins)) !== input.approvedPinHash) throw new Error('independent immutable source/package pins required');
+  const preparation = 'runner/boundary/prepare-final-g1-runtime.mjs';
+  const execution = 'runner/boundary/final-g1-runtime.mjs';
+  const required = new Set([...await discoverSourceDependencyClosure(root, [...SOURCE_FILES, preparation, execution,
+    'runner/boundary/assignment-supervisor.executor.mjs']), 'package.json', 'package-lock.json', 'vendor/cq-toolkit-1.0.1.tgz']);
+  // Package closure is the complete installed runtime byte tree from the
+  // independent successor freeze, including bare imports and implicit assets.
+  for (const entry of await readdir(join(root, 'node_modules'), { recursive: true })) {
+    const path = join(root, 'node_modules', entry);
+    if ((await lstat(path)).isDirectory()) continue;
+    const canonical = await canonicalSourcePath(root, path);
+    if (!canonical.relative.startsWith('node_modules/')) throw new Error('installed runtime escaped approved package tree');
+    required.add(canonical.relative);
+  }
+  if ([...required].some(path => !Object.hasOwn(pins, path))) throw new Error('successor source/package closure pin is missing');
+  for (const [path, expected] of Object.entries(pins)) {
+    const canonical = await canonicalSourcePath(root, resolve(root, path));
+    if (canonical.relative !== path || !/^[a-f0-9]{64}$/u.test(expected) || sha256(await readFile(canonical.absolute)) !== expected) throw new Error('accepted source/package bytes changed');
+  }
+  const actualHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  if (actualHead !== input.repositoryHead || execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()) throw new Error('accepted clean source epoch changed');
+  const assignmentId = `final-profile-g1-${input.runId}`;
+  const identity = { invocationId: input.invocationId, assignmentId, stageId: `${assignmentId}-stage-1`, attemptId: `${assignmentId}-attempt-1` };
+  const preparationInput = join(privateRoot, `preparation-${input.invocationId}.json`);
+  const executionInput = join(privateRoot, `execution-${input.invocationId}.json`);
+  await writeCreateOnly(preparationInput, JSON.stringify({ repoRoot: root, runId: input.runId }));
+  // The committed executor verifies this exact prior-result path AND its
+  // accepted hash before reading planPath/planSha256. No direct plan fallback.
+  await writeCreateOnly(executionInput, JSON.stringify({ preparationResultPath: join(privateRoot, `result-${input.invocationId}-0.json`) }));
+  const allowedOperations = Object.freeze([
+    Object.freeze({ modulePath: join(root, preparation), moduleSha256: pins[preparation]!, exportName: 'executePrivateRuntimePreparation' }),
+    Object.freeze({ modulePath: join(root, execution), moduleSha256: pins[execution]!, exportName: 'executePreparedFinalG1Assignment' }),
+  ]);
+  return superviseAssignment({ identity, privateRoot, requiredGuarantee: input.requiredGuarantee,
+    operations: [
+      { ...allowedOperations[0]!, phase: 'preparation', privateInputPath: preparationInput, deadlineEpochMs: input.preparationDeadlineEpochMs },
+      { ...allowedOperations[1]!, phase: 'execution', privateInputPath: executionInput, deadlineEpochMs: input.resourceDeadlineEpochMs },
+    ], allowedOperations: [...allowedOperations], resources: [], resourceDeadlineEpochMs: input.resourceDeadlineEpochMs,
+    reapDeadlineEpochMs: input.reapDeadlineEpochMs, quarantineDeadlineEpochMs: input.quarantineDeadlineEpochMs,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
 }
 
 export async function runFinalProfileG1Cli(modulePath: string): Promise<FinalProfileG1Result> {

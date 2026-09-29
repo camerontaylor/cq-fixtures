@@ -10,6 +10,15 @@ import {
 } from '../runner/native/launch-inventory.ts';
 import { resolveNativeLaunchInventory } from '../runner/native/inventory.ts';
 
+// Inventory identity regressions do not probe installed native clients.
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
+  spawnSync: vi.fn((_command: string, args: string[]) => {
+    if (args.length !== 1 || args[0] !== '--version') throw new Error('inventory fixture only permits version probes');
+    return { status: 0, stdout: 'fixture-version-1\n', stderr: '' };
+  }),
+}));
+
 const roots: string[] = [];
 beforeEach(() => {
   const root = mkdtempSync(join(tmpdir(), 'cq-inventory-version-'));

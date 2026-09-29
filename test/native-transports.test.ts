@@ -450,13 +450,29 @@ describe('native transport event and identity handling', () => {
     const executable = join(root, 'fake-cli');
     writeFileSync(executable, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(join(root, 'cwd.txt'))}, process.cwd());\nprocess.stdout.write(${JSON.stringify(events)});\n`, { mode: 0o700 });
     chmodSync(executable, 0o700);
-    const driver = new CodexExecDriver({ executable, artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch(), workspaceForInvocation: () => root });
+    const driver = new CodexExecDriver({ executable, version: 'fixture-1', artifactDirectory: join(root, 'artifacts'), spawnAdapter: simulatedVisibleLaunch(), workspaceForInvocation: () => root });
     await driver.beginInvocation(identity('session-bound'));
     const result = await driver.run({ ...invocation('task', 'gpt-6-luna'), sessionRef: session.sessionId });
     expect(readFileSync(join(root, 'cwd.txt'), 'utf8')).toBe(root);
     expect(result.sessionId).toBe(session.sessionId);
     expect(driver.getObservation('session-bound')?.model.settings.session).toMatchObject({ status: 'runner-workspace-resolved' });
     unlinkSync(join(RUNNER_SESSION_DIRECTORY, `${session.sessionId}.jsonl`));
+  });
+
+  it('rejects an explicit wrong-workspace resolver even when it names the host cwd', async () => {
+    const root = tempRoot();
+    const store = new SessionStore(RUNNER_SESSION_DIRECTORY);
+    const session = await store.create(root);
+    const spawnAdapter = vi.fn();
+    const driver = new CodexExecDriver({ executable: 'synthetic', version: 'fixture-1',
+      artifactDirectory: join(root, 'artifacts'), spawnAdapter, workspaceForInvocation: () => process.cwd() });
+    const target = identity('wrong-session-workspace');
+    await driver.beginInvocation(target);
+    try {
+      await expect(driver.run({ ...invocation(), sessionRef: session.sessionId })).rejects.toThrow(/disagrees/u);
+      expect(spawnAdapter).not.toHaveBeenCalled();
+      expect(driver.getObservation(target.invocationId)).toMatchObject({ identity: target, terminal: { cause: 'transport-exception' } });
+    } finally { unlinkSync(join(RUNNER_SESSION_DIRECTORY, `${session.sessionId}.jsonl`)); }
   });
 
   it('binds final Sol/low full-access to the frozen container identity and validates exact boundary argv before launch', async () => {
@@ -474,7 +490,7 @@ describe('native transport event and identity handling', () => {
       executable: '/usr/local/bin/codex', version: 'synthetic-no-launch', profile: 'final-profile-test',
       model: 'gpt-6-sol', effort: 'low', invocationStage: 'final-profile-G1',
       finalProfileContainerPolicy: { profile: 'cq-subscription-http', identity: frozenIdentity },
-      artifactDirectory: join(root, 'artifacts'), workspaceForInvocation: () => process.cwd(),
+      artifactDirectory: join(root, 'artifacts'),
       cleanupInvocation: async () => ({ status: 'stopped-and-reaped', resourceIds: [], volumeDisposition: 'quarantined' }),
       spawnAdapterFactory: async (context) => {
         factoryCalls++;
@@ -550,7 +566,7 @@ describe('native transport event and identity handling', () => {
         executable: '/usr/local/bin/codex', version: 'synthetic-no-launch', profile: 'final-profile-test',
         model: 'gpt-6-sol', effort: 'low', invocationStage: 'final-profile-G1',
         finalProfileContainerPolicy: { profile: 'cq-subscription-http', identity: invocationIdentity },
-        artifactDirectory: join(root, `artifacts-${id}`), workspaceForInvocation: () => process.cwd(),
+        artifactDirectory: join(root, `artifacts-${id}`),
         expectedTaskBaselineCommit: () => stagedBaseline,
         cleanupInvocation: async (request) => {
           order.push('cleanup');

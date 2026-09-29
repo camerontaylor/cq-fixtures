@@ -37,7 +37,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
   private readonly thinking: string;
   private readonly hardWallClockMs: number;
   private readonly killGraceMs: number;
-  private readonly workspaceForInvocation: NonNullable<PiNativeOptions['workspaceForInvocation']>;
+  private readonly workspaceForInvocation: PiNativeOptions['workspaceForInvocation'];
   private readonly boundaryForInvocation: PiNativeOptions['boundaryForInvocation'];
   private readonly spawnAdapter: NativeSpawnAdapter | undefined;
   private readonly invocationStage: NativeInvocationStage;
@@ -64,7 +64,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
     this.thinking = thinking;
     this.hardWallClockMs = options.hardWallClockMs ?? 120_000;
     this.killGraceMs = options.killGraceMs ?? 300;
-    this.workspaceForInvocation = options.workspaceForInvocation ?? (() => process.cwd());
+    this.workspaceForInvocation = options.workspaceForInvocation;
     this.boundaryForInvocation = options.boundaryForInvocation;
     this.spawnAdapter = options.spawnAdapter;
     this.invocationStage = options.invocationStage ?? 'visible-calibration-G1';
@@ -128,7 +128,7 @@ export class PiNativeDriver extends ObservedNativeDriver {
         observation.terminal.cause = 'spawn-error';
         throw error;
       } else if (result.code !== 0) observation.terminal.cause = `exit:${result.code ?? result.signal ?? 'unknown'}`;
-      if (!result.treeStopped) observation.terminal.cause = 'process-tree-stop-unproven';
+      if (!result.treeStopped && result.terminal !== 'timeout' && result.terminal !== 'cancelled') observation.terminal.cause = 'process-tree-stop-unproven';
       // A clean exit after the supervisor's timeout or cancellation signal
       // does not complete the invocation. Some CLIs handle SIGTERM, flush a
       // final response, then exit 0; retain that evidence while preserving

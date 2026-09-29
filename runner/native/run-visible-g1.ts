@@ -29,7 +29,7 @@ import { sha256 } from '../artifacts/index.ts';
 import { assertOutsideGlmBlackout } from './zcode.ts';
 import ts from 'typescript';
 
-export type VisibleG1Route = 'codex' | 'pi-json' | 'pi-rpc' | 'glm';
+export type VisibleG1Route = 'codex' | 'codex-luna' | 'pi-json' | 'pi-rpc' | 'glm';
 type NativeRouteName = 'codex' | 'pi-opencode' | 'zcode';
 export const DEFAULT_VISIBLE_PI_MODEL_WALL_CLOCK_MS = 120_000;
 export const MIN_VISIBLE_PI_MODEL_WALL_CLOCK_MS = 1_000;
@@ -82,6 +82,10 @@ const ROUTES: Readonly<Record<VisibleG1Route, RouteSpec>> = {
     transport: 'codex-exec', provider: 'codex', model: 'gpt-6-sol', taskProvider: 'codex',
     rowDriver: 'codex-exec', strategy: 'codex-exec-visible-g1', profileRoute: 'codex', bridgeLabel: 'Codex native exec bridge',
   },
+  'codex-luna': {
+    transport: 'codex-exec', provider: 'codex', model: 'gpt-6-luna', taskProvider: 'codex',
+    rowDriver: 'codex-exec', strategy: 'codex-luna-exec-visible-g1', profileRoute: 'codex', bridgeLabel: 'Codex Luna native exec bridge',
+  },
   'pi-json': {
     transport: 'pi-json', provider: 'opencodego', model: 'opencode-go/space-bunny-free', taskProvider: 'opencode-go',
     rowDriver: 'pi-json', strategy: 'pi-opencode-go-json-visible-g1', profileRoute: 'pi-opencode', bridgeLabel: 'Pi JSON bridge',
@@ -108,6 +112,7 @@ const SOURCE_ENTRYPOINTS = [
 ];
 const ROUTE_ADAPTER_ENTRYPOINTS: Readonly<Record<VisibleG1Route, string>> = {
   codex: 'runner/native/visible-g1-codex-driver.ts',
+  'codex-luna': 'runner/native/visible-g1-codex-driver.ts',
   'pi-json': 'runner/native/visible-g1-pi-driver.ts',
   'pi-rpc': 'runner/native/visible-g1-pi-driver.ts',
   glm: 'runner/native/visible-g1-glm-driver.ts',
@@ -150,6 +155,9 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
   if (options.driver.nativeTransport !== spec.transport) {
     throw new Error(`route ${options.route} requires native transport ${spec.transport}; received ${options.driver.nativeTransport}`);
   }
+  if (options.driver.configuredNativeTarget !== `${spec.profileRoute === 'pi-opencode' ? 'pi-opencode' : spec.profileRoute}/${spec.model}`) {
+    throw new Error('native driver target does not match the preregistered visible route');
+  }
   if (options.route === 'glm') assertOutsideGlmBlackout(new Date(options.now?.() ?? Date.now()));
 
   const now = options.now ?? Date.now;
@@ -176,7 +184,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
     profile.providerRoute.split(' ')[0] === spec.profileRoute &&
     (spec.profileRoute !== 'pi-opencode' || profile.requestedModel?.toLowerCase().includes('space-bunny-free')) &&
     (spec.profileRoute !== 'zcode' || /glm-5\.3-flash/iu.test(profile.requestedModel ?? '')) &&
-    (spec.profileRoute !== 'codex' || /gpt-6-sol/iu.test(profile.requestedModel ?? '')),
+    (spec.profileRoute !== 'codex' || profile.requestedModel?.toLowerCase() === spec.model),
   );
   if (!bridgeProfile || !configuredProfile) throw new Error(`launch inventory could not resolve both selected profiles for ${options.route}`);
 
@@ -356,7 +364,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
       model: spec.model,
       modelWallClockMs,
       requestedEffort: settings.requestedEffort,
-      requestedPermissionProfile: options.route === 'codex' ? 'configured Sol fullaccess' : options.route === 'glm' ? 'ZCode yolo' : 'Pi configured high',
+      requestedPermissionProfile: options.route === 'codex-luna' ? 'requested Luna full-access (unverified)' : options.route === 'codex' ? 'configured Sol fullaccess' : options.route === 'glm' ? 'ZCode yolo' : 'Pi configured high',
       experimentId: identity,
       experimentRunId,
       assignment: { assignmentId, stageId, attemptId, admissionReason: admission.reason, diagnostic: admission.reservation.diagnostic },
@@ -521,7 +529,7 @@ async function main(argv: string[]): Promise<void> {
   const outputRoot = readArg(argv, '--output-root') ?? join(REPO_ROOT, 'research execution', 'visible-g1-runs');
   const configPath = readArg(argv, '--paseo-config') ?? join(homedir(), '.paseo', 'config.json');
   if (!routeArg || !Object.hasOwn(ROUTES, routeArg) || !moduleArg) {
-    throw new Error('usage: node --experimental-strip-types runner/native/run-visible-g1.ts --route codex|pi-json|pi-rpc|glm --driver-module <trusted-boundary-module> [--model-wall-clock-ms 1000..120000 (Pi routes only)] [--output-root <dir>] [--paseo-config <file>]');
+    throw new Error('usage: node --experimental-strip-types runner/native/run-visible-g1.ts --route codex|codex-luna|pi-json|pi-rpc|glm --driver-module <trusted-boundary-module> [--model-wall-clock-ms 1000..120000 (Pi routes only)] [--output-root <dir>] [--paseo-config <file>]');
   }
   const modelWallClockMs = modelWallClockArg === undefined
     ? DEFAULT_VISIBLE_PI_MODEL_WALL_CLOCK_MS
@@ -547,7 +555,7 @@ async function main(argv: string[]): Promise<void> {
   if (isPiRoute && created.modelWallClockMs !== modelWallClockMs) {
     throw new Error('trusted Pi driver factory did not return the exact preregistered model cutoff');
   }
-  if ((routeArg === 'codex' && !(created.driver instanceof CodexExecDriver)) ||
+  if (((routeArg === 'codex' || routeArg === 'codex-luna') && !(created.driver instanceof CodexExecDriver)) ||
       ((routeArg === 'pi-json' || routeArg === 'pi-rpc') && !(created.driver instanceof PiNativeDriver)) ||
       (routeArg === 'glm' && !(created.driver instanceof ZcodeAcpDriver))) {
     throw new Error(`--driver-module must return the configured native bridge for ${routeArg}; fake drivers are test-only`);
@@ -600,7 +608,7 @@ export function visibleG1TestInventory(profile: LaunchProfile, route: VisibleG1R
     permissionPolicy: 'OpInvocation fixer allowlist',
     sandboxPolicy: 'per-invocation workspace-write',
     cwdBehavior: 'runner SessionStore workspace; Codex turn ephemeral',
-    args: route === 'codex' ? ['exec', '--json', '--ephemeral', '-m', spec.model, '-c', 'model_reasoning_effort="low"'] : [],
+    args: spec.profileRoute === 'codex' ? ['exec', '--json', '--ephemeral', '-m', spec.model, '-c', `model_reasoning_effort="${route === 'codex' ? 'low' : 'high'}"`] : [],
   };
   return {
     generatedAt: new Date(0).toISOString(), configuredProfiles: [profile], proposedBridges: [bridge],

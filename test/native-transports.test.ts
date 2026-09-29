@@ -1204,7 +1204,8 @@ describe('supervised native subprocesses', () => {
     });
     expect(events).toEqual(['factory', 'cleanup']);
     expect(result.terminal).toBe('spawn-error');
-    expect(result.treeStopped).toBe(true);
+    expect(result.treeStopped).toBe(false);
+    expect(result.processEvidence).toMatchObject({ status: 'unknown', source: 'factory creation unobserved' });
     expect(result.lifecycle).toMatchObject({ invocationCleanup: { status: 'completed', proof: { volumeDisposition: 'quarantined' } } });
   }, 5_000);
 
@@ -1636,8 +1637,16 @@ describe('visible G1 runSuite entrypoint', () => {
   it('records a no-model Pi runSuite row with trusted host oracle and route dependency closure pins', async () => {
     const root = tempRoot();
     class SimulatedPiDriver extends ObservedNativeDriver {
+      private noSpawnIdentity: InvocationIdentity | undefined;
       constructor() {
         super({ configuredTarget: 'pi-opencode/opencode-go/space-bunny-free', transport: 'pi-json', executable: 'simulated-pi', executableVersion: 'test', profile: 'visible-test' });
+      }
+      getLaunchEvidence(invocationId: string) {
+        const identity = this.noSpawnIdentity;
+        return identity?.invocationId === invocationId ? {
+          identity: { ...identity }, status: 'no-spawn-observed' as const,
+          source: 'trusted supervisor pre-spawn guard', observedAt: new Date().toISOString(),
+        } : undefined;
       }
       protected async runObserved(input: OpInvocation, invocationIdentity: InvocationIdentity): Promise<WorkerResult> {
         const workspace = input.prompt.match(/^workspace: (.+)$/mu)?.[1];
@@ -1649,6 +1658,10 @@ describe('visible G1 runSuite entrypoint', () => {
           value: { scope: 'visible-calibration', isolation: 'disabled', heldOut: false },
           source: 'simulated parent admission receipt', status: 'observed',
         };
+        // This fixture returns before any child-process dispatch. Bind that
+        // pre-spawn guard to the exact invocation so conformance can verify it.
+        this.reportProcessNotStarted(invocationIdentity, 'trusted supervisor pre-spawn guard');
+        this.noSpawnIdentity = { ...invocationIdentity };
         const result = createWorkerResult({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, 'complete', {
           model: 'opencode-go/space-bunny-free', structuredOutput: { fixed: true, notes: 'bounded Unicode length validation' },
         });
@@ -1729,7 +1742,7 @@ describe('final-profile oracle source root binding', () => {
         if (!workspace) throw new Error('temporary-bundle runSuite invocation omitted its workspace');
         invokedWorkspace = workspace;
         writeFileSync(join(workspace, 'settings/module.js'), `export function isValidCampaignLabel(label) {\n  const value = typeof label === 'string' ? label.trim() : '';\n  return value.length > 0 && Array.from(value).length <= 40;\n}\n`);
-        execFileSync('git', ['-C', workspace, 'add', 'src/settings.mjs']);
+        execFileSync('git', ['-C', workspace, 'add', 'settings/module.js']);
         execFileSync('git', ['-C', workspace, '-c', 'user.name=CQ Native Regression', '-c', 'user.email=native-regression@example.invalid', 'commit', '-q', '-m', 'Simulated native candidate']);
         const observation = this.newObservation(invocationIdentity, input, new Date().toISOString());
         observation.model.observed = { value: 'gpt-6-sol', source: 'synthetic native event fixture', status: 'observed' };
@@ -1743,11 +1756,12 @@ describe('final-profile oracle source root binding', () => {
 
     try {
       const driver = new SimulatedFinalCodexDriver();
+      const wrappedDriver = bundle.wrapDriver(driver);
       const result = await runNativeConformanceSuite({
         suiteDir: bundle.suiteDir,
         repoRoot: bundle.repoRoot,
         artifactRoot: join(bundle.repoRoot, 'artifacts'),
-        driver: bundle.wrapDriver(driver),
+        driver: wrappedDriver,
         hostCheckScoringEnvironment: bundle.hostCheckScoringEnvironment,
         model: 'gpt-6-sol',
         provider: 'codex',
@@ -1775,6 +1789,9 @@ describe('final-profile oracle source root binding', () => {
       expect(result.rows[0]?.outcome.score).toBe(1);
       expect(result.tables).toHaveLength(1);
       expect(result.observations).toHaveLength(1);
+      const nativeIdentity = result.observations[0]!.observation.identity;
+      expect(nativeIdentity).toMatchObject({ assignmentId, stageId, attemptId });
+      expect(wrappedDriver.getObservation(nativeIdentity.invocationId)?.identity).toEqual(nativeIdentity);
       expect(result.observations[0]?.observation.capture.baselineCommit).toMatch(/^[a-f0-9]{40}$/u);
       expect(result.judgements).toHaveLength(1);
       expect(result.rows[0]?.taskOutcome?.judgements[0]?.judgeManifest).toMatchObject({

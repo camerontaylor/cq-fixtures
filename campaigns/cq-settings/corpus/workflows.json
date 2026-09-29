@@ -187,7 +187,11 @@
       "substrate": "fresh temporary Git repository",
       "modelAction": "injected Driver edits and commits the conflict worktree source",
       "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace checks pinned baseline ancestry, exact source allowlist, and Unicode label behavior in a bounded child process",
-      "identity": { "sourceId": "cq-settings.merge-worktree-seed.v1", "baselineId": "cq-settings.merge-conflict.baseline.v1", "oracleId": "cq-settings.merge-label-limit.oracle.v1" },
+      "identity": {
+        "sourceId": "cq-settings.merge-worktree-seed.v1",
+        "baselineId": "cq-settings.merge-conflict.baseline.v1",
+        "oracleId": "cq-settings.merge-label-limit.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     },
@@ -197,7 +201,11 @@
       "substrate": "fresh temporary Git monorepo with changed test file and untouched CLI package",
       "action": "exported planner consumes actual git diff evidence and selects the deepest package owner",
       "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeFleetSweepPlan independently checks captured changed paths and deepest package ownership",
-      "identity": { "sourceId": "cq-settings.fleet-nested-package-seed.v1", "baselineId": "cq-settings.fleet-dirty-test.baseline.v1", "oracleId": "cq-settings.fleet-deepest-owner.oracle.v1" },
+      "identity": {
+        "sourceId": "cq-settings.fleet-nested-package-seed.v1",
+        "baselineId": "cq-settings.fleet-dirty-test.baseline.v1",
+        "oracleId": "cq-settings.fleet-deepest-owner.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     },
@@ -207,7 +215,11 @@
       "substrate": "fresh temporary package tree with product source and test files",
       "action": "exported test-fix plan builder emits a test-fix unit from test and product files",
       "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeTestFixScopePlan independently reproduces and identifies the broad package-prefix staging leak; passed means the fault was detected, not that the unsafe plan is accepted",
-      "identity": { "sourceId": "cq-settings.testfix-scope-seed.v1", "baselineId": "cq-settings.testfix-broad-scope.baseline.v1", "oracleId": "cq-settings.testfix-scope-risk.oracle.v1" },
+      "identity": {
+        "sourceId": "cq-settings.testfix-scope-seed.v1",
+        "baselineId": "cq-settings.testfix-broad-scope.baseline.v1",
+        "oracleId": "cq-settings.testfix-scope-risk.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     },
@@ -217,7 +229,11 @@
       "substrate": "host-authored failure set with repeated signature",
       "modelAction": "injected Driver returns a concrete remediation proposal",
       "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeAnalysisRemediationProposal checks proposal content against the empty-setting defect; operation policy assertions remain separate",
-      "identity": { "sourceId": "cq-settings.analysis-setting-failures.v1", "baselineId": "cq-settings.analysis-duplicate-errors.baseline.v1", "oracleId": "cq-settings.analysis-remediation.oracle.v1" },
+      "identity": {
+        "sourceId": "cq-settings.analysis-setting-failures.v1",
+        "baselineId": "cq-settings.analysis-duplicate-errors.baseline.v1",
+        "oracleId": "cq-settings.analysis-remediation.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     },
@@ -236,7 +252,11 @@
       "substrate": "fresh temporary workspace with an on-disk captured baseline",
       "action": "exported capture/check ops compare live metric evidence; monotonic guard examines baseline diff",
       "oracle": "runner/workflow-corpus/operation-workflow-judges.ts#judgeRatchetOutcomes checks live tightened/regressed verdicts and monotonicity results for both directions",
-      "identity": { "sourceId": "cq-settings.ratchet-metric-seed.v1", "baselineId": "cq-settings.ratchet-captured-metric.baseline.v1", "oracleId": "cq-settings.ratchet-monotonicity.oracle.v1" },
+      "identity": {
+        "sourceId": "cq-settings.ratchet-metric-seed.v1",
+        "baselineId": "cq-settings.ratchet-captured-metric.baseline.v1",
+        "oracleId": "cq-settings.ratchet-monotonicity.oracle.v1"
+      },
       "campaignTask": false,
       "roleCall": false
     }
@@ -273,22 +293,84 @@
   },
   "wholeWorkflowG2Readiness": {
     "status": "blocked",
-    "blocker": "Host-side execFileSync(node) evaluation of candidate code is not protected execution.",
-    "dependency": "Boundary owner is implementing runner/boundary/judge-child.ts with an exact pinned native image and dedicated VM/daemon; candidate volume is the only read-only mount; execution is nonroot with no credentials, host mounts, or network; timeout kills and awaits the container namespace before volume disposal.",
-    "expectedCallerApi": "executeProtectedJudgeChild({candidateRoot, module, exportName, requests}) -> private {stdout: Buffer, exitCode, timedOut, containerAbsentVerified, scope:'protected-candidate-execution'}; module is a relative js/mjs/cjs/ts path; requests are unknown[][] with at most 128 cases and 64 KiB total; timeoutMs is at most 15000.",
-    "callerAdaptation": "Wait for the boundary implementation commit and published exact contract. Do not edit oracle code or run candidate-code/model evaluation before adapting callers to the protected executor.",
+    "blocker": "Existing workflow oracle callers still need migration from host-side candidate evaluation to the committed protected executor.",
+    "dependency": "runner/boundary/judge-child.ts was committed as 3f63fc7 and cherry-picked into this branch as c659929. S0 owns adapting the existing oracle callers; the six new task-local semantic judges use the documented API.",
+    "expectedCallerApi": "executeProtectedJudgeChild({candidateRoot, module, exportName, requests, timeoutMs}) -> private {stdout: Buffer, exitCode, timedOut, containerAbsentVerified, scope:'protected-candidate-execution'}; module is a relative js/mjs/cjs/ts path; requests are unknown[][] with at most 128 cases and 64 KiB total; timeoutMs is at most 15000.",
+    "callerAdaptation": "S0 owns existing oracle callers. New corpus callers import executeProtectedJudgeChild directly, keep stdout private, parse bounded results, and report host booleans only.",
     "stdoutPolicy": "The generic bootstrap imports the candidate module and invokes the named export with each request tuple. Protected child stdout remains private/untrusted; parse bounded behavior results into host booleans/logs and never put raw stdout in model context."
   },
   "heldoutReserve": {
     "reservedBeforeTuning": true,
-    "completeSubstrateFamilies": ["campaign-settings-module-v2", "analysis-semver-config-v2", "ratchet-missing-baseline-v2"],
-    "completeTemplateFamilies": ["review-anchored-limit-v2", "analysis-tsconfig-fixture-v2", "ratchet-config-proposal-v2"],
-    "completeFaultFamilies": ["missing-grapheme-bound-v2", "duplicate-analysis-signature-v2", "ratchet-direction-change-v2"],
+    "completeSubstrateFamilies": [
+      "campaign-settings-module-v2",
+      "analysis-semver-config-v2",
+      "ratchet-missing-baseline-v2"
+    ],
+    "completeTemplateFamilies": [
+      "review-anchored-limit-v2",
+      "analysis-tsconfig-fixture-v2",
+      "ratchet-config-proposal-v2"
+    ],
+    "completeFaultFamilies": [
+      "missing-grapheme-bound-v2",
+      "duplicate-analysis-signature-v2",
+      "ratchet-direction-change-v2"
+    ],
     "heldoutSubstratesMaterialized": 0,
     "heldoutOracleContentIncluded": false,
     "isolationClaim": false,
     "note": "reservation metadata only; no held-out task or oracle is delivered or claimed isolated"
   },
+  "pendingProtectedTasks": [
+    {
+      "id": "review-role-scope-01",
+      "factory": "campaigns/cq-settings/corpus/review-loop-task.ts#createReviewRoleScopeTask",
+      "substrateFamily": "campaign-role-permission-v1",
+      "oracleId": "cq-settings.review-role-scope.oracle.v1",
+      "status": "focused-synthetic-checks-passed-pending-acceptance",
+      "countsTowardValidatedTasks": false
+    },
+    {
+      "id": "review-label-nfc-01",
+      "factory": "campaigns/cq-settings/corpus/review-loop-task.ts#createReviewLabelNfcTask",
+      "substrateFamily": "campaign-label-canonicalization-v1",
+      "oracleId": "cq-settings.review-label-nfc.oracle.v1",
+      "status": "focused-synthetic-checks-passed-pending-acceptance",
+      "countsTowardValidatedTasks": false
+    },
+    {
+      "id": "analysis-safe-integer-setting-01",
+      "factory": "campaigns/cq-settings/corpus/operation-tasks.ts#createAnalysisRemediationTask(safeIntegerSetting)",
+      "substrateFamily": "numeric-setting-contract-v1",
+      "oracleId": "cq-settings.analysis-safe-integer-setting.oracle.v1",
+      "status": "focused-synthetic-checks-passed-pending-acceptance",
+      "countsTowardValidatedTasks": false
+    },
+    {
+      "id": "analysis-origin-policy-01",
+      "factory": "campaigns/cq-settings/corpus/operation-tasks.ts#createAnalysisRemediationTask(originPolicy)",
+      "substrateFamily": "remote-origin-config-v1",
+      "oracleId": "cq-settings.analysis-origin-policy.oracle.v1",
+      "status": "focused-synthetic-checks-passed-pending-acceptance",
+      "countsTowardValidatedTasks": false
+    },
+    {
+      "id": "merge-origin-precedence-01",
+      "factory": "campaigns/cq-settings/corpus/integration-tasks.ts#createMergeConflictTask(originPrecedence)",
+      "substrateFamily": "merge-source-precedence-v1",
+      "oracleId": "cq-settings.merge-origin-precedence.oracle.v1",
+      "status": "focused-synthetic-checks-passed-pending-acceptance",
+      "countsTowardValidatedTasks": false
+    },
+    {
+      "id": "fleet-test-unit-repair-01",
+      "factory": "campaigns/cq-settings/corpus/integration-tasks.ts#createFleetTestUnitRepairTask",
+      "substrateFamily": "fleet-test-helper-contract-v1",
+      "oracleId": "cq-settings.fleet-test-unit.oracle.v1",
+      "status": "focused-synthetic-checks-passed-pending-acceptance",
+      "countsTowardValidatedTasks": false
+    }
+  ],
   "evidence": {
     "redGreen": "test/campaign-workflows.test.ts: review seed fails and two committed repairs pass; two analyze/remediate seeds fail independent semantic probes and behaviorally distinct alternatives pass; two merge seeds fail and committed candidates pass; both ratchet directions accept improvements and reject regressions; both fleet plans select independently expected owners",
     "independentOracle": "exported host judge; expected behavior and scope assertions are absent from the task worktree; candidate patch hash identifies captured bytes but is not compared with a reference solution",

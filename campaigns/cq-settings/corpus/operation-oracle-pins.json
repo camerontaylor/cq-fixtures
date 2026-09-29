@@ -3,17 +3,45 @@
   "taskOracleIds": [
     "cq-settings.analysis-remediation.oracle.v1",
     "cq-settings.analysis-unicode-remediation.oracle.v1",
+    "cq-settings.analysis-safe-integer-setting.oracle.v1",
+    "cq-settings.analysis-origin-policy.oracle.v1",
     "cq-settings.ratchet-monotonicity.oracle.v1",
-    "cq-settings.ratchet-coverage-monotonicity.oracle.v1"
+    "cq-settings.ratchet-coverage-monotonicity.oracle.v1",
+    "cq-settings.review-role-scope.oracle.v1",
+    "cq-settings.review-label-nfc.oracle.v1"
   ],
   "dependencies": [
     {
       "path": "campaigns/cq-settings/corpus/operation-tasks.ts",
-      "sha256": "284e279ad779ab00d36f0d7ffe91bb474f4b1707da5a328bd152a9a23e38ee6a"
+      "sha256": "67348020922bbd1d4eead2e22760fc28be1c08abb5586513401bdd7423d788fa"
     },
     {
       "path": "runner/workflow-corpus/operation-workflow-judges.ts",
       "sha256": "7f47f8462258e0c8f4e31d6a52ce878a1488dc49f83c5e1571c5d40580290c8e"
+    },
+    {
+      "path": "campaigns/cq-settings/corpus/operation-task-oracles.ts",
+      "sha256": "98e0f134dd4562e51061599a6131d0d94a0d16c373f27651c04519b66d13fe06"
+    },
+    {
+      "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
+      "sha256": "86ba02c7ff5bfa9207879c6928a14ccc7e29291b397775495480ca94cb5403bb"
+    },
+    {
+      "path": "campaigns/cq-settings/corpus/review-task-oracles.ts",
+      "sha256": "0769ced17ae234824194e21fc5bcdbea297f8018ab50dd8456fd25661c86d402"
+    },
+    {
+      "path": "runner/boundary/judge-child.ts",
+      "sha256": "62a4c5a49122add1bce86531dfd4e47592db5efe4912b99ecde95ddbe7847d6a"
+    },
+    {
+      "path": "campaigns/cq-settings/corpus/protected-candidate-snapshot.ts",
+      "sha256": "389115f2614e3fe3ed0737f251168a07d7ca6f5a27c17b1c9de33bda2c15b57f"
+    },
+    {
+      "path": "runner/boundary/task-tree.ts",
+      "sha256": "2baca75b07bbb185753f80c4db83f5405586c33788bb0a52ae8f31538259179f"
     }
   ]
 }

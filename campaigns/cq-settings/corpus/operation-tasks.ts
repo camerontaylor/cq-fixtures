@@ -23,6 +23,7 @@ import {
   judgeRatchetOutcomes,
   type WorkflowOracleReport,
 } from '../../../runner/workflow-corpus/operation-workflow-judges.js';
+import { ANALYSIS_TASK_CONTRACTS, judgeAnalysisProposalMeaning } from './operation-task-oracles.js';
 
 export const ANALYSIS_TASKS = {
   whitespaceSetting: {
@@ -42,6 +43,20 @@ export const ANALYSIS_TASKS = {
     substrateFamily: 'unicode-label-linter-fixture-v1',
     clusterKey: 'campaign-label-too-long',
     fixture: 'src/settings.ts:24: campaign label exceeds 40 Unicode code points',
+  },
+  safeIntegerSetting: {
+    ...ANALYSIS_TASK_CONTRACTS.safeIntegerSetting,
+    clusterKey: 'max-parallel-jobs-not-safe-integer',
+    fixture: 'src/settings.ts:18: maxParallelJobs accepts fractional, unsafe, or out-of-range values',
+    source: `export function isValidMaxParallelJobs(value) { return typeof value === 'number' && value > 0; }\n`,
+    line: 18,
+  },
+  originPolicy: {
+    ...ANALYSIS_TASK_CONTRACTS.originPolicy,
+    clusterKey: 'remote-origin-policy-allows-credentials-or-http',
+    fixture: 'src/settings.ts:31: remoteOrigin accepts credential-bearing and non-HTTPS production URLs',
+    source: `export function isAllowedRemoteOrigin(value) { try { const parsed = new URL(value); return parsed.protocol === 'https:' || parsed.hostname === 'localhost'; } catch { return false; } }\n`,
+    line: 31,
   },
 } as const;
 
@@ -68,7 +83,7 @@ type AnalysisVariant = keyof typeof ANALYSIS_TASKS;
 
 export interface AnalysisRemediationTask {
   readonly variant: AnalysisVariant;
-  readonly id: (typeof ANALYSIS_TASKS)[AnalysisVariant]['id'];
+  readonly id: string;
   readonly sourceId: string;
   readonly baselineId: string;
   readonly oracleId: string;
@@ -117,8 +132,10 @@ export async function createAnalysisRemediationTask(
   await mkdir(join(workspacePath, 'src'), { recursive: true });
   const fixturePath = join(workspacePath, 'analysis-input.txt');
   await writeFile(fixturePath, `${definition.fixture}\n`);
-  await writeFile(join(workspacePath, 'src/settings.ts'),
-    `export function isValidSetting(value) { return typeof value === 'string' && value.length > 0; }\n`);
+  const initialSource = 'source' in definition
+    ? definition.source
+    : `export function isValidSetting(value) { return typeof value === 'string' && value.length > 0; }\n`;
+  await writeFile(join(workspacePath, 'src/settings.ts'), initialSource);
   git(workspacePath, ['init', '-q']);
   git(workspacePath, ['config', 'user.name', 'CQ Local Corpus']);
   git(workspacePath, ['config', 'user.email', 'cq-local-corpus@example.invalid']);
@@ -126,7 +143,7 @@ export async function createAnalysisRemediationTask(
   git(workspacePath, ['commit', '-q', '-m', `Seed ${definition.id}`]);
   const baselineCommit = git(workspacePath, ['rev-parse', 'HEAD']);
   const failure = {
-    file: 'src/settings.ts', line: variant === 'whitespaceSetting' ? 12 : 24,
+    file: 'src/settings.ts', line: 'line' in definition ? definition.line : variant === 'whitespaceSetting' ? 12 : 24,
     column: 4, ruleId: definition.clusterKey,
     message: definition.fixture.split(': ').slice(1).join(': '), severity: 'error' as const,
   };
@@ -162,7 +179,9 @@ export async function executeAnalysisRemediationTask(
     clusterSize: cluster.size,
     proposal,
     oracle: proposal.status === 'ok'
-      ? judgeAnalysisRemediationProposal(proposal.value.structuredOutput, ANALYSIS_REMEDIATION_CONTRACTS[task.variant === 'whitespaceSetting' ? 'emptySetting' : 'unicodeLabelLength'])
+      ? task.variant === 'safeIntegerSetting' || task.variant === 'originPolicy'
+        ? judgeAnalysisProposalMeaning(task.variant, proposal.value.structuredOutput as Parameters<typeof judgeAnalysisProposalMeaning>[1])
+        : judgeAnalysisRemediationProposal(proposal.value.structuredOutput, ANALYSIS_REMEDIATION_CONTRACTS[task.variant === 'whitespaceSetting' ? 'emptySetting' : 'unicodeLabelLength'])
       : { passed: false, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId, failures: [`operation returned ${proposal.status}`] },
   };
 }

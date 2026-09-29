@@ -60,6 +60,34 @@ import {
   executeMergeConflictTask,
   judgeMergeConflictTask,
 } from '../campaigns/cq-settings/corpus/integration-tasks.js';
+import {
+  REVIEW_TASK_CONTRACTS,
+  judgeReviewTaskCandidate,
+  judgeReviewTaskValues,
+} from '../campaigns/cq-settings/corpus/review-task-oracles.js';
+import {
+  ANALYSIS_TASK_CONTRACTS,
+  judgeAnalysisProposalMeaning,
+} from '../campaigns/cq-settings/corpus/operation-task-oracles.js';
+import {
+  FLEET_TEST_UNIT_CONTRACT,
+  MERGE_ORIGIN_CONTRACT,
+  judgeFleetUnitCandidate,
+  judgeFleetUnitValues,
+  judgeMergeOriginCandidate,
+  judgeMergeOriginValues,
+} from '../campaigns/cq-settings/corpus/integration-task-oracles.js';
+import {
+  createReviewLabelNfcTask,
+  createReviewRoleScopeTask,
+} from '../campaigns/cq-settings/corpus/review-loop-task.js';
+import {
+  createFleetTestUnitRepairTask,
+  createMergeConflictTask as createIntegrationMergeTask,
+  executeFleetTestUnitRepairTask,
+  judgeFleetTestUnitRepairTask,
+  judgeMergeOriginConflictTask,
+} from '../campaigns/cq-settings/corpus/integration-tasks.js';
 
 function expectOk<T>(result: OpResult<T>): T {
   if (result.status !== 'ok') {
@@ -849,4 +877,139 @@ describe('cq-settings bounded workflow corpus', () => {
     },
     30_000,
   );
+});
+
+describe('six-task corpus expansion', () => {
+  it('defines six distinct task, substrate, source, baseline, and oracle identities', () => {
+    const contracts = [
+      REVIEW_TASK_CONTRACTS.roleScope,
+      REVIEW_TASK_CONTRACTS.labelNfc,
+      ANALYSIS_TASK_CONTRACTS.safeIntegerSetting,
+      ANALYSIS_TASK_CONTRACTS.originPolicy,
+      MERGE_ORIGIN_CONTRACT,
+      FLEET_TEST_UNIT_CONTRACT,
+    ];
+    for (const field of ['id', 'sourceId', 'baselineId', 'oracleId', 'substrateFamily'] as const) {
+      expect(new Set(contracts.map((contract) => contract[field])).size).toBe(6);
+    }
+  });
+
+  it('judges analysis proposal meaning without depending on prose formatting', () => {
+    const integerProposal = judgeAnalysisProposalMeaning('safeIntegerSetting', {
+      setting: 'maxParallelJobs',
+      constraints: ['integer', 'safe-integer', 'range-1-through-64'],
+      rejectsInvalidValues: true,
+      preservesInputRepresentation: true,
+    });
+    expect(integerProposal.passed).toBe(true);
+    expect(judgeAnalysisProposalMeaning('safeIntegerSetting', {
+      setting: 'maxParallelJobs', constraints: ['integer'], rejectsInvalidValues: true, preservesInputRepresentation: true,
+    }).passed).toBe(false);
+    expect(ANALYSIS_TASK_CONTRACTS.safeIntegerSetting.expected).toEqual([true, true, false, false, false, false, false, false]);
+    expect(ANALYSIS_TASK_CONTRACTS.originPolicy.expected).toEqual([true, false, false, false, true, true]);
+  });
+
+  it('checks review, merge, and fleet behavior vectors with the task-owned truth tables', () => {
+    expect(judgeReviewTaskValues('roleScope', [true, true, false, false]).passed).toBe(true);
+    expect(judgeReviewTaskValues('roleScope', [true, false, false, false]).passed).toBe(false);
+    expect(judgeReviewTaskValues('labelNfc', [true, false, true, false, true]).passed).toBe(true);
+    expect(judgeMergeOriginValues([...MERGE_ORIGIN_CONTRACT.expected]).passed).toBe(true);
+    expect(judgeMergeOriginValues(['file', 'file', 'builtin']).passed).toBe(false);
+    expect(judgeFleetUnitValues([...FLEET_TEST_UNIT_CONTRACT.expected]).passed).toBe(true);
+    expect(judgeFleetUnitValues([null, null, { status: 'ready', value: { id: 'task-1', title: 'Repair setting' } }, { status: 'invalid' }]).passed).toBe(false);
+  });
+
+  it('runs synthetic review, merge, and fleet candidates only through the protected child', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cq-protected-corpus-candidate-'));
+    try {
+      await mkdir(join(root, 'settings'), { recursive: true });
+      const rolePath = join(root, 'settings/review-permissions.mjs');
+      await writeFile(rolePath, `export function canEditCampaign(actorId, ownerId, role, grants = []) { return typeof actorId === 'string' && actorId.length > 0 && (actorId === ownerId || (role === 'admin' && grants.includes('campaign:edit'))); }\n`);
+      expect((await judgeReviewTaskCandidate('roleScope', root)).passed).toBe(true);
+      await writeFile(rolePath, `export function canEditCampaign(actorId, ownerId) { return actorId === ownerId; }\n`);
+      expect((await judgeReviewTaskCandidate('roleScope', root)).passed).toBe(false);
+
+      const nfcPath = join(root, 'settings/campaign-labels.mjs');
+      await writeFile(nfcPath, `export function sameCampaignLabel(a,b) { return typeof a === 'string' && typeof b === 'string' && a.trim() !== '' && b.trim() !== '' && a.trim().normalize('NFC') === b.trim().normalize('NFC'); }\n`);
+      await writeFile(join(root, 'settings/display.mjs'), `export function displayCampaignLabel(value) { return value; }\n`);
+      expect((await judgeReviewTaskCandidate('labelNfc', root)).passed).toBe(true);
+      await writeFile(nfcPath, `export function sameCampaignLabel(a,b) { return typeof a === 'string' && typeof b === 'string' && a.trim() === b.trim(); }\n`);
+      expect((await judgeReviewTaskCandidate('labelNfc', root)).passed).toBe(false);
+
+      const mergePath = join(root, 'settings/origin-precedence.mjs');
+      await writeFile(mergePath, `export function resolveCampaignSetting(env,file,builtin) { return file ?? builtin ?? env; }\n`);
+      expect((await judgeMergeOriginCandidate(root)).passed).toBe(false);
+      await writeFile(mergePath, `export function resolveCampaignSetting(env,file,builtin) { return env ?? file ?? builtin; }\n`);
+      expect((await judgeMergeOriginCandidate(root)).passed).toBe(true);
+      await writeFile(mergePath, `export function resolveCampaignSetting(env,file,builtin) { for (const value of [env,file,builtin]) if (value != null) return value; return null; }\n`);
+      expect((await judgeMergeOriginCandidate(root)).passed).toBe(true);
+
+      await mkdir(join(root, 'packages/settings'), { recursive: true });
+      const fleetPath = join(root, FLEET_TEST_UNIT_CONTRACT.module);
+      await writeFile(fleetPath, `export function normalizeWorkItem(value) { if (value == null) return null; return typeof value === 'object' && !Array.isArray(value) && typeof value.id === 'string' && typeof value.title === 'string' ? {status:'ready',value:{id:value.id,title:value.title}} : {status:'invalid'}; }\n`);
+      expect((await judgeFleetUnitCandidate(root)).passed).toBe(false);
+      await writeFile(fleetPath, `export function normalizeWorkItem(value) { if (value == null) return {status:'empty',value:''}; if (typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string' || typeof value.title !== 'string') return {status:'invalid'}; return {status:'ready',value:{id:value.id,title:value.title}}; }\n`);
+      expect((await judgeFleetUnitCandidate(root)).passed).toBe(true);
+      await writeFile(fleetPath, `export function normalizeWorkItem(value) { if (value === undefined || value === null) return {value:'',status:'empty'}; if (typeof value === 'object' && !Array.isArray(value) && 'id' in value && 'title' in value) return {value:{title:value.title,id:value.id},status:'ready'}; return {status:'invalid'}; }\n`);
+      expect((await judgeFleetUnitCandidate(root)).passed).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('materializes fresh seeded repositories with immutable baseline commits', async () => {
+    const modelSpec = { model: 'offline-corpus-only', provider: 'fake' };
+    const tasks = [
+      await createReviewRoleScopeTask(modelSpec),
+      await createReviewLabelNfcTask(modelSpec),
+      await createAnalysisRemediationTask('safeIntegerSetting', modelSpec),
+      await createAnalysisRemediationTask('originPolicy', modelSpec),
+      await createIntegrationMergeTask('originPrecedence', modelSpec),
+      await createFleetTestUnitRepairTask(),
+    ];
+    try {
+      expect(new Set(tasks.map((task) => task.id)).size).toBe(6);
+      expect(tasks.every((task) => /^[a-f0-9]{40}$/.test(task.baselineCommit))).toBe(true);
+      expect(tasks.every((task) => /^[a-f0-9]{64}$/.test(task.oraclePin))).toBe(true);
+    } finally {
+      await Promise.all(tasks.map((task) => task.cleanup()));
+    }
+  }, 120_000);
+
+  it('runs makeSweepUnitOp with local-only bindings and grades its committed worktree in the protected child', async () => {
+    const task = await createFleetTestUnitRepairTask();
+    const candidateSource = `export function normalizeWorkItem(value) { if (value == null) return {status:'empty',value:''}; if (typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string' || typeof value.title !== 'string') return {status:'invalid'}; return {status:'ready',value:{id:value.id,title:value.title}}; }\n`;
+    const driver: Driver = {
+      async run(invocation) {
+        const worktreePath = invocation.prompt.match(/^worktree: (.+)$/m)?.[1];
+        if (!worktreePath) throw new Error('local corpus prompt omitted the task worktree path');
+        await writeFile(join(worktreePath, 'packages/settings/normalize-work-item.mjs'), candidateSource);
+        return { ...completedWorker({ changed: true, summary: 'Return the documented empty result for missing and null input.' }), model: invocation.modelSpec.model };
+      },
+    };
+    try {
+      const operation = expectOk(await executeFleetTestUnitRepairTask(task, driver));
+      expect(operation.package).toBe('settings');
+      expect(operation.committed).toBe(true);
+      const report = await judgeFleetTestUnitRepairTask(task, operation.worktree.path);
+      expect(report).toMatchObject({ passed: true, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId });
+      expect(report.failures).toEqual([]);
+    } finally {
+      await task.cleanup();
+    }
+  }, 120_000);
+
+  it('judges the merge task with behavior, branch-intent preservation, scope, and ancestry as separate facts', async () => {
+    const task = await createIntegrationMergeTask('originPrecedence', { model: 'offline-merge', provider: 'fake' });
+    try {
+      expect((await judgeMergeOriginConflictTask(task)).passed).toBe(false);
+      await writeFile(task.settingsPath, `export function resolveCampaignSetting(env,file,builtin) { return env ?? file ?? builtin; }\n`);
+      execFileSync('git', ['add', 'settings/origin-precedence.mjs'], { cwd: task.repoRoot });
+      execFileSync('git', ['commit', '-q', '-m', 'Resolve local origin precedence conflict'], { cwd: task.repoRoot });
+      const report = await judgeMergeOriginConflictTask(task);
+      expect(report).toMatchObject({ passed: true, failures: [] });
+    } finally {
+      await task.cleanup();
+    }
+  }, 120_000);
 });

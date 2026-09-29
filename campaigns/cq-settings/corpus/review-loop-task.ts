@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +12,7 @@ import {
   type ModelSpec,
   type OpResult,
 } from '@camerontaylor/cq-toolkit';
+import { REVIEW_TASK_CONTRACTS, type ReviewTaskVariant } from './review-task-oracles.js';
 
 export const REVIEW_LOOP_TASK_ID = 'review-loop-label-limit-01' as const;
 export const REVIEW_LOOP_SOURCE_ID = 'cq-settings.settings-module-seed.v1' as const;
@@ -28,6 +31,35 @@ export interface ReviewLoopRepairTask {
   readonly modelSpec: ModelSpec;
   readonly operationInput: FixReviewItemInput;
   cleanup(): Promise<void>;
+}
+
+export interface ExpandedReviewLoopRepairTask extends Omit<ReviewLoopRepairTask, 'id' | 'sourceId' | 'baselineId' | 'oracleId' | 'substrateFamily'> {
+  readonly variant: ReviewTaskVariant;
+  readonly id: typeof REVIEW_TASK_CONTRACTS.roleScope.id | typeof REVIEW_TASK_CONTRACTS.labelNfc.id;
+  readonly sourceId: typeof REVIEW_TASK_CONTRACTS.roleScope.sourceId | typeof REVIEW_TASK_CONTRACTS.labelNfc.sourceId;
+  readonly baselineId: typeof REVIEW_TASK_CONTRACTS.roleScope.baselineId | typeof REVIEW_TASK_CONTRACTS.labelNfc.baselineId;
+  readonly oracleId: typeof REVIEW_TASK_CONTRACTS.roleScope.oracleId | typeof REVIEW_TASK_CONTRACTS.labelNfc.oracleId;
+  readonly substrateFamily: typeof REVIEW_TASK_CONTRACTS.roleScope.substrateFamily | typeof REVIEW_TASK_CONTRACTS.labelNfc.substrateFamily;
+  readonly oraclePin: string;
+  readonly sourcePath: string;
+}
+
+interface ReviewTaskPinManifest {
+  readonly taskOracleIds: readonly string[];
+  readonly dependencies: readonly { readonly path: string; readonly sha256: string }[];
+}
+
+function pinnedReviewTaskOracle(oracleId: string): string {
+  const manifestUrl = new URL('./operation-oracle-pins.json', import.meta.url);
+  const bytes = readFileSync(manifestUrl);
+  const manifest = JSON.parse(bytes.toString('utf8')) as ReviewTaskPinManifest;
+  if (!manifest.taskOracleIds.includes(oracleId)) throw new Error(`review task oracle ${oracleId} is absent from the pin manifest`);
+  const root = new URL('../../../', import.meta.url);
+  for (const dependency of manifest.dependencies) {
+    const actual = createHash('sha256').update(readFileSync(new URL(dependency.path, root))).digest('hex');
+    if (actual !== dependency.sha256) throw new Error(`pinned review task oracle dependency changed: ${dependency.path}`);
+  }
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 const INITIAL_SETTINGS_SOURCE = `export function isValidCampaignLabel(label) {
@@ -51,6 +83,35 @@ assert.equal(isValidCampaignLabel('x'.repeat(41)), false);
 assert.equal(displayCampaignLabel('  Campaign A  '), '  Campaign A  ');
 `;
 
+const REVIEW_TASK_SEEDS = {
+  labelLimit: {
+    id: REVIEW_LOOP_TASK_ID,
+    sourceId: REVIEW_LOOP_SOURCE_ID,
+    baselineId: REVIEW_LOOP_BASELINE_ID,
+    oracleId: REVIEW_LOOP_ORACLE_ID,
+    substrateFamily: 'campaign-settings-module-v1',
+    sourcePath: 'src/settings.mjs',
+    source: INITIAL_SETTINGS_SOURCE,
+    tests: PUBLIC_TEST_SOURCE,
+    taskBody: 'Enforce the documented 40 Unicode code point campaign label limit after trimming. Preserve the original bytes used for display.',
+  },
+  roleScope: {
+    ...REVIEW_TASK_CONTRACTS.roleScope,
+    sourcePath: REVIEW_TASK_CONTRACTS.roleScope.module,
+    source: `export function canEditCampaign(actorId, ownerId, role, grants = []) {\n  return typeof actorId === 'string' && actorId.length > 0 && actorId === ownerId;\n}\n`,
+    tests: `import assert from 'node:assert/strict';\nimport { canEditCampaign } from '../settings/review-permissions.mjs';\nassert.equal(canEditCampaign('owner-1', 'owner-1', 'owner'), true);\nassert.equal(canEditCampaign('admin-1', 'owner-1', 'admin', ['campaign:edit']), true);\nassert.equal(canEditCampaign('outsider-1', 'owner-1', 'user', ['campaign:edit']), false);\nassert.equal(canEditCampaign(null, 'owner-1', 'admin', ['campaign:edit']), false);\n`,
+    taskBody: 'Repair campaign edit authorization. Owners may edit; an administrator with the documented campaign edit grant may edit; unrelated identities may not. Change only settings/review-permissions.mjs.',
+  },
+  labelNfc: {
+    ...REVIEW_TASK_CONTRACTS.labelNfc,
+    sourcePath: REVIEW_TASK_CONTRACTS.labelNfc.module,
+    source: `export function sameCampaignLabel(left, right) {\n  return typeof left === 'string' && typeof right === 'string' && left.trim() === right.trim();\n}\n`,
+    displaySource: `export function displayCampaignLabel(label) { return label; }\n`,
+    tests: `import assert from 'node:assert/strict';\nimport { sameCampaignLabel } from '../settings/campaign-labels.mjs';\nimport { displayCampaignLabel } from '../settings/display.mjs';\nassert.equal(sameCampaignLabel('Café', 'Cafe\\u0301'), true);\nassert.equal(sameCampaignLabel('café', 'cafe'), false);\nassert.equal(sameCampaignLabel('  Cafe\\u0301 ', 'Café'), true);\nassert.equal(sameCampaignLabel('', ''), false);\nassert.equal(sameCampaignLabel('Campaign A', 'Campaign A'), true);\nassert.equal(displayCampaignLabel('Cafe\\u0301'), 'Cafe\\u0301');\n`,
+    taskBody: 'Repair campaign label comparison by canonicalizing Unicode to NFC after trimming. Preserve original display bytes; change only settings/campaign-labels.mjs.',
+  },
+} as const;
+
 /**
  * Materialize a fresh, real Git repository for the review-fix operation.
  * Only task context and visible regression tests are placed in the worktree.
@@ -59,9 +120,33 @@ export async function createReviewLoopRepairTask(
   modelSpec: ModelSpec,
   parentDirectory = tmpdir(),
 ): Promise<ReviewLoopRepairTask> {
+  return createReviewTaskVariant(modelSpec, 'labelLimit', parentDirectory) as Promise<ReviewLoopRepairTask>;
+}
+
+export async function createReviewRoleScopeTask(
+  modelSpec: ModelSpec,
+  parentDirectory = tmpdir(),
+): Promise<ExpandedReviewLoopRepairTask> {
+  return createReviewTaskVariant(modelSpec, 'roleScope', parentDirectory) as Promise<ExpandedReviewLoopRepairTask>;
+}
+
+export async function createReviewLabelNfcTask(
+  modelSpec: ModelSpec,
+  parentDirectory = tmpdir(),
+): Promise<ExpandedReviewLoopRepairTask> {
+  return createReviewTaskVariant(modelSpec, 'labelNfc', parentDirectory) as Promise<ExpandedReviewLoopRepairTask>;
+}
+
+async function createReviewTaskVariant(
+  modelSpec: ModelSpec,
+  variant: ReviewTaskRepairVariant,
+  parentDirectory: string,
+): Promise<ReviewLoopRepairTask | ExpandedReviewLoopRepairTask> {
+  const definition = REVIEW_TASK_SEEDS[variant];
+  const oraclePin = variant === 'labelLimit' ? undefined : pinnedReviewTaskOracle(definition.oracleId);
   const taskRoot = await mkdtemp(join(parentDirectory, 'cq-review-task-'));
   const worktreePath = join(taskRoot, 'repo');
-  await mkdir(join(worktreePath, 'src'), { recursive: true });
+  await mkdir(join(worktreePath, definition.sourcePath, '..'), { recursive: true });
   await mkdir(join(worktreePath, 'test'), { recursive: true });
   await writeFile(join(worktreePath, 'package.json'), JSON.stringify({
     name: 'local-campaign-settings-task',
@@ -69,9 +154,14 @@ export async function createReviewLoopRepairTask(
     type: 'module',
     scripts: { test: 'node test/public-settings.test.mjs' },
   }, null, 2) + '\n');
-  await writeFile(join(worktreePath, 'src/settings.mjs'), INITIAL_SETTINGS_SOURCE);
-  await writeFile(join(worktreePath, 'src/display.mjs'), DISPLAY_SOURCE);
-  await writeFile(join(worktreePath, 'test/public-settings.test.mjs'), PUBLIC_TEST_SOURCE);
+  if (variant === 'labelLimit' || variant === 'labelNfc') {
+    await writeFile(join(worktreePath, variant === 'labelNfc' ? 'settings/display.mjs' : 'src/display.mjs'), DISPLAY_SOURCE);
+  }
+  await writeFile(join(worktreePath, definition.sourcePath), definition.source);
+  const testSource = variant === 'labelLimit'
+    ? definition.tests.replace("../settings/settings.mjs", `../${definition.sourcePath}`)
+    : definition.tests;
+  await writeFile(join(worktreePath, 'test/public-settings.test.mjs'), testSource);
 
   const git = (args: string[]): string => execFileSync('git', args, {
     cwd: worktreePath,
@@ -81,30 +171,33 @@ export async function createReviewLoopRepairTask(
   git(['init', '-q']);
   git(['config', 'user.name', 'CQ Local Corpus']);
   git(['config', 'user.email', 'cq-local-corpus@example.invalid']);
-  git(['add', 'package.json', 'src/settings.mjs', 'src/display.mjs', 'test/public-settings.test.mjs']);
-  git(['commit', '-q', '-m', 'Seed campaign label validation defect']);
+  git(['add', '-A']);
+  git(['commit', '-q', '-m', `Seed ${definition.id}`]);
   const baselineCommit = git(['rev-parse', 'HEAD']);
 
   const operationInput: FixReviewItemInput = {
     repo: 'local/cq-settings',
     pr: 1,
     item: {
-      id: 'review-local-label-length',
-      path: 'src/settings.mjs',
+      id: `review-local-${definition.id}`,
+      path: definition.sourcePath,
       line: 2,
-      body: 'Campaign labels are limited to 40 Unicode code points after trimming. Reject longer labels. Preserve the original label for display; do not change src/display.mjs.',
+      body: definition.taskBody,
       comments: [],
     },
-    worktree: { path: worktreePath, branch: 'review/fix-label-limit' },
+    worktree: { path: worktreePath, branch: `review/${definition.id}` },
     driver: { ...modelSpec },
   };
 
   return {
-    id: REVIEW_LOOP_TASK_ID,
-    sourceId: REVIEW_LOOP_SOURCE_ID,
-    baselineId: REVIEW_LOOP_BASELINE_ID,
-    oracleId: REVIEW_LOOP_ORACLE_ID,
-    substrateFamily: 'campaign-settings-module-v1',
+    ...(variant === 'labelLimit' ? {} : { variant }),
+    id: definition.id,
+    sourceId: definition.sourceId,
+    baselineId: definition.baselineId,
+    oracleId: definition.oracleId,
+    substrateFamily: definition.substrateFamily,
+    ...(oraclePin === undefined ? {} : { oraclePin }),
+    ...(variant === 'labelLimit' ? {} : { sourcePath: definition.sourcePath }),
     worktreePath,
     baselineCommit,
     modelSpec: { ...modelSpec },
@@ -112,12 +205,14 @@ export async function createReviewLoopRepairTask(
     async cleanup() {
       await rm(taskRoot, { recursive: true, force: true });
     },
-  };
+  } as ReviewLoopRepairTask | ExpandedReviewLoopRepairTask;
 }
+
+export type ReviewTaskRepairVariant = keyof typeof REVIEW_TASK_SEEDS;
 
 /** Dispatch the task through the selected toolkit's exported review op. */
 export function executeReviewLoopRepairTask(
-  task: ReviewLoopRepairTask,
+  task: ReviewLoopRepairTask | ExpandedReviewLoopRepairTask,
   driver: Driver,
 ): Promise<OpResult<FixReviewItemResult>> {
   return makeFixReviewItem({ driver })(task.operationInput);

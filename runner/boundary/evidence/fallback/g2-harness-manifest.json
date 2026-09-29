@@ -4,7 +4,7 @@
   "actualRouteG2": "pending-distinct-parent-admission",
   "wholeWorkflowG2": "blocked-on-native-traces-and-protected-oracle-caller-integration",
   "finalProfilePublicInputs": "final-profile-public-inputs.json",
-  "finalProfilePublicInputsSha256": "57eb7d11da57645ca2d59df2956bfe3d96a6bda7f82757fdefbab75407a1617d",
+  "finalProfilePublicInputsSha256": "0fd605bdf63f056575ef06a1c04e95272b3cd478209d4ddcab3aa5e806539df0",
   "sourceSha256": {
     "g2-harness.ts": "87e718a172b5d704163acb19b02cf092641e3e0d41081bf5dab636d0cfa7e24f",
     "g2-harness-cli.ts": "c9833ee7d7459def2daafdd79b7172a3ba72cabcb400619357cb11e8385d5d2e",

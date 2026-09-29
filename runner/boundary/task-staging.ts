@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync, existsSync, mkdtempSync, rmSync, chmodSync, readdirSync, lstatSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, rmSync, chmodSync, readdirSync, lstatSync, renameSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, dirname, parse } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DockerControl } from './docker-control.ts';
@@ -115,4 +115,57 @@ export async function exportStoppedTask(control: DockerControl, receipt: TaskSta
   const baseline = verifyGitBaseline(tree, receipt.baselineCommit);
   materializeTask(tree, destination);
   return { inventoryHash: tree.inventoryHash, head: baseline.head };
+}
+
+/** Canonical parent-owned path, with no symlink ancestor. */
+export function validatePublicationPath(path: string): string {
+  const absolute = resolve(path);
+  if (path !== absolute || realpathSync(absolute) !== absolute) throw new Error('canonical ordinary publication path required');
+  for (let cursor = absolute; cursor !== parse(cursor).root; cursor = dirname(cursor)) {
+    const stat = lstatSync(cursor);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('symlink publication ancestor refused');
+  }
+  const parent = lstatSync(dirname(absolute));
+  if (parent.uid !== process.getuid?.() || (parent.mode & 0o022)) throw new Error('exclusive parent-owned publication directory required');
+  return absolute;
+}
+
+/** ONLY after verified worker absence and a fresh stopped-task export. No code
+ * execution. Retains original backup and hashed private manifest for parent
+ * recovery/acceptance; rename failure attempts rollback and never deletes either.
+ */
+export function publishStoppedTask(receipt: TaskStageReceipt, exportedRoot: string, hostTaskRoot: string,
+  proof: { inventoryHash: string; head: string; namespaceAbsent: true },
+  trustedRename: typeof renameSync = renameSync): { backupRoot: string; recoveryManifest: string } {
+  validateStageReceipt(receipt);
+  const source = validatePublicationPath(hostTaskRoot), exported = validatePublicationPath(exportedRoot);
+  if (source === exported || dirname(source) !== dirname(exported) || !/^\.cq-stopped-export-[A-Za-z0-9]+$/.test(exported.split('/').at(-1)!) || lstatSync(source).dev !== lstatSync(exported).dev || proof.namespaceAbsent !== true) throw new Error('exact same-filesystem stopped export required');
+  const backupRoot = source + '.cq-original-' + randomBytes(8).toString('hex');
+  const recoveryManifest = exported + '.recovery-' + randomBytes(8).toString('hex') + '.json';
+  const recovery = { source, exported, backupRoot, originalInventoryHash: receipt.task.inventoryHash, baselineCommit: receipt.baselineCommit, candidateInventoryHash: proof.inventoryHash, candidateHead: proof.head, state: 'validating' };
+  writeFileSync(recoveryManifest, JSON.stringify(recovery), { mode: 0o600, flag: 'wx' });
+  const save = () => writeFileSync(recoveryManifest, JSON.stringify(recovery), { mode: 0o600 });
+  const originalStat = lstatSync(source);
+  let original: TaskTree;
+  try {
+    original = snapshotTask(source, true);
+    if (original.inventoryHash !== receipt.task.inventoryHash || verifyGitBaseline(original, receipt.baselineCommit).head !== receipt.baselineCommit) throw new Error();
+    const candidate = snapshotTask(exported, false);
+    if (candidate.inventoryHash !== proof.inventoryHash || verifyGitBaseline(candidate, receipt.baselineCommit).head !== proof.head) throw new Error();
+    recovery.state = 'validated'; save();
+  } catch { recovery.state = 'validation-refused'; save(); throw new Error('pristine host task/baseline or export identity refused; private hashed recovery retained'); }
+  const current = lstatSync(source);
+  if (existsSync(backupRoot) || current.ino !== originalStat.ino || current.dev !== originalStat.dev || snapshotTask(source, true).inventoryHash !== original.inventoryHash) { recovery.state = 'source-changed'; save(); throw new Error('publication refused; private hashed recovery retained'); }
+  let moved = false;
+  try {
+    trustedRename(source, backupRoot); moved = true; recovery.state = 'original-backed-up'; save();
+    trustedRename(exported, source); recovery.state = 'published-original-retained'; save();
+  } catch {
+    if (moved && !existsSync(source)) {
+      try { trustedRename(backupRoot, source); recovery.state = 'rolled-back'; }
+      catch { recovery.state = 'rollback-required-original-retained'; }
+    } else recovery.state = 'publication-failed-recovery-retained';
+    save(); throw new Error('publication failed; private hashed recovery retained');
+  }
+  return { backupRoot, recoveryManifest };
 }

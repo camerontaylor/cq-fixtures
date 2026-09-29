@@ -491,3 +491,54 @@ it('does not normalize missing canonical tool outcomes into denial', async () =>
   const result = h.normalizeG2NativeReceipt(fixture, receipt, {} as Parameters<typeof h.normalizeG2NativeReceipt>[2]);
   expect(result.traces[0].attempted).toBe(true); expect(result.traces[0].complete).toBe(false); expect(result.traces[0].disposition).toBe('unavailable');
 });
+
+describe('stopped candidate publication into exact runSuite workspace', () => {
+  async function publicationFixture() {
+    const fs = await import('node:fs'); const { createHash } = await import('node:crypto');
+    const tree = await import('../runner/boundary/task-tree.ts'); const stage = await import('../runner/boundary/task-staging.ts');
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'cq-publication-test-'))); roots.push(parent); fs.chmodSync(parent, 0o700);
+    const source = join(parent, 'assigned'); mkdirSync(source); writeFileSync(join(source, 'tracked'), 'original'); writeFileSync(join(source, 'deleted'), 'remove me');
+    const git = (cwd: string, args: string[]) => { const r = spawnSync('/usr/bin/git', args, { cwd, encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: parent, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }, timeout: 5000 }); if (r.status !== 0) throw new Error('synthetic fixture Git failed'); return r.stdout.trim(); };
+    git(source, ['init', '-q']); git(source, ['config', 'user.name', 'Synthetic']); git(source, ['config', 'user.email', 'synthetic@example.invalid']); git(source, ['add', '.']); git(source, ['commit', '-qm', 'baseline']);
+    const baselineCommit = git(source, ['rev-parse', 'HEAD']), task = tree.snapshotTask(source, true);
+    const context = tree.validateTaskEntries([], false, false);
+    const receipt = { daemonId: 'synthetic', utilityImage: 'sha256:' + '1'.repeat(64), taskVolume: 'cq-s5-task-' + '1'.repeat(16), contextVolume: 'cq-s5-context-' + '1'.repeat(16), baselineCommit, taskIdentity: tree.taskIdentity(task, baselineCommit), task, context, receiptHash: '' };
+    receipt.receiptHash = createHash('sha256').update(JSON.stringify({ daemonId: receipt.daemonId, utilityImage: receipt.utilityImage, taskVolume: receipt.taskVolume, contextVolume: receipt.contextVolume, baselineCommit, taskIdentity: receipt.taskIdentity, taskInventory: task.inventoryHash, contextInventory: context.inventoryHash })).digest('hex');
+    const exported = mkdtempSync(join(parent, '.cq-stopped-export-')); tree.materializeTask(task, exported);
+    return { fs, tree, stage, parent, source, exported, receipt, git, proof: () => ({ inventoryHash: tree.snapshotTask(exported, false).inventoryHash, head: git(exported, ['rev-parse', 'HEAD']), namespaceAbsent: true as const }) };
+  }
+  it('publishes committed edits, deletions, untracked files and executable modes while retaining rollback original', async () => {
+    const f = await publicationFixture(); writeFileSync(join(f.exported, 'tracked'), 'candidate'); f.fs.unlinkSync(join(f.exported, 'deleted')); f.git(f.exported, ['-c','user.name=Synthetic','-c','user.email=synthetic@example.invalid','commit','-qam','candidate']);
+    writeFileSync(join(f.exported, 'untracked'), 'partial', { mode: 0o700 }); const expectedHead = f.proof().head;
+    const receipt = f.stage.publishStoppedTask(f.receipt, f.exported, f.source, f.proof());
+    expect(f.fs.readFileSync(join(f.source, 'tracked'), 'utf8')).toBe('candidate'); expect(f.fs.existsSync(join(f.source, 'deleted'))).toBe(false); expect(f.fs.statSync(join(f.source, 'untracked')).mode & 0o777).toBe(0o700); expect(f.git(f.source, ['rev-parse', 'HEAD'])).toBe(expectedHead);
+    expect(f.fs.readFileSync(join(receipt.backupRoot, 'tracked'), 'utf8')).toBe('original'); expect(f.fs.statSync(receipt.recoveryManifest).mode & 0o777).toBe(0o600);
+  });
+  it('refuses mutated pristine task, export identity mismatch and traversal alias', async () => {
+    const f = await publicationFixture(); const proof = f.proof();
+    expect(() => f.stage.publishStoppedTask(f.receipt, f.exported, f.source, { ...proof, inventoryHash: 'f'.repeat(64) })).toThrow(/identity/);
+    expect(() => f.stage.publishStoppedTask(f.receipt, f.exported, f.source + '/.', proof)).toThrow(/canonical/);
+    writeFileSync(join(f.source, 'tracked'), 'host mutation'); expect(() => f.stage.publishStoppedTask(f.receipt, f.exported, f.source, proof)).toThrow(/pristine/);
+    expect(f.fs.readFileSync(join(f.source, 'tracked'), 'utf8')).toBe('host mutation'); expect(f.fs.existsSync(f.exported)).toBe(true);
+  });
+  it('refuses symlink ancestors without replacing the original', async () => {
+    const f = await publicationFixture(); const alias = join(f.parent, 'alias'); symlinkSync(f.parent, alias);
+    expect(() => f.stage.publishStoppedTask(f.receipt, join(alias, f.exported.split('/').at(-1)!), f.source, f.proof())).toThrow(/canonical|symlink/); expect(f.fs.existsSync(f.source)).toBe(true);
+  });
+  it('retains the original backup when both candidate publication and rollback rename fail', async () => {
+    const f = await publicationFixture(); let calls = 0;
+    expect(() => f.stage.publishStoppedTask(f.receipt, f.exported, f.source, f.proof(), (from, to) => { if (++calls >= 2) throw new Error('synthetic filesystem failure'); f.fs.renameSync(from, to); })).toThrow(/private hashed recovery/);
+    const backup = f.fs.readdirSync(f.parent).find(name => name.startsWith('assigned.cq-original-'))!;
+    expect(f.fs.readFileSync(join(f.parent, backup, 'tracked'), 'utf8')).toBe('original'); expect(f.fs.existsSync(f.exported)).toBe(true);
+  });
+  it('refuses a writable shared parent directory', async () => {
+    const f = await publicationFixture(); f.fs.chmodSync(f.parent, 0o777);
+    expect(() => f.stage.publishStoppedTask(f.receipt, f.exported, f.source, f.proof())).toThrow(/parent-owned/);
+    f.fs.chmodSync(f.parent, 0o700); expect(f.fs.existsSync(f.source)).toBe(true);
+  });
+  it('rolls back a failed candidate rename and retains the complete exported candidate', async () => {
+    const f = await publicationFixture(); let calls = 0;
+    expect(() => f.stage.publishStoppedTask(f.receipt, f.exported, f.source, f.proof(), (from, to) => { if (++calls === 2) throw new Error('synthetic rename failure'); f.fs.renameSync(from, to); })).toThrow(/private hashed recovery/);
+    expect(f.fs.readFileSync(join(f.source, 'tracked'), 'utf8')).toBe('original'); expect(f.fs.existsSync(f.exported)).toBe(true); const manifest = f.fs.readdirSync(f.parent).find(name => name.startsWith(f.exported.split('/').at(-1)! + '.recovery-'))!; expect(JSON.parse(f.fs.readFileSync(join(f.parent, manifest), 'utf8')).state).toBe('rolled-back');
+  });
+});

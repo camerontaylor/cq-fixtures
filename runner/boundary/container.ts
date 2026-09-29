@@ -2,8 +2,7 @@ import { createHash } from 'node:crypto';
 import { DockerControl } from './docker-control.ts';
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { g2DaemonEndpoint } from './g2-daemon-contract.ts';
 
 export interface ContainerBoundarySpec {
   profile: 'cq-boundary-s5';
@@ -43,7 +42,7 @@ export function compileContainerBoundary(input: ContainerBoundarySpec) {
     throw new Error('dedicated content-pinned namespace, staging and broker inventory required');
   }
   const identity = createHash('sha256').update(JSON.stringify(spec)).digest('hex');
-  const createArgs = ['--host', `unix://${join(homedir(), '.colima/cq-boundary-s5/docker.sock')}`, 'create', '--pull=never', '--label', `cq.boundary.identity=${identity}`,
+  const createArgs = ['--host', g2DaemonEndpoint(), 'create', '--pull=never', '--label', `cq.boundary.identity=${identity}`,
     '--user', '1000:1000', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--pids-limit', '128', '--memory', '768m', '--memory-swap', '768m', '--cpus', '1',
     '--cgroupns', 'private', '--ipc', 'private', '--network', spec.network.name, '--ip', spec.network.workerIP,

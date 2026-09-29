@@ -1,3 +1,4 @@
+import { assignmentResourceOwner } from './assignment-supervisor-owner.ts';
 import { privateLifecycleRecorder } from './lifecycle-evidence.ts';
 import type { LifecycleRecord } from './lifecycle-evidence.ts';
 import { FINAL_BROKER_RUNTIME_IDENTITY } from './broker-toolchain.ts';
@@ -9,7 +10,7 @@ import { join, resolve, dirname } from 'node:path';
 import { privateCodexAuthContext } from './subscription-auth.ts';
 import { compileContainerBoundary, spawnContainerBoundary } from './container.ts';
 import type { ContainerBoundarySpec } from './container.ts';
-import { containerPreparer } from './container-prepare.ts';
+import { containerPreparerOwned } from './container-prepare.ts';
 import { containerTaskSession } from './task-session.ts';
 import { validateStageReceipt } from './task-staging.ts';
 import type { TaskStageReceipt } from './task-staging.ts';
@@ -113,6 +114,11 @@ export function createFinalCodexSpawnAdapter(input: {
    * Native owner enforces a whole-provision deadline in addition to runtime budget. */
   admit: (request: { stage: FinalProfileAdmission['stage']; boundaryIdentity: string; invocationIdentity: string }) => Promise<FinalProfileAdmission>;
 }) {
+  return createFinalCodexSpawnAdapterOwned(input, assignmentResourceOwner());
+}
+
+export function createFinalCodexSpawnAdapterOwned(input: Parameters<typeof createFinalCodexSpawnAdapter>[0],
+  preregister: (resource: { kind: 'container'; id: string }) => Promise<void>) {
   const spec = structuredClone(input.specification), staging = structuredClone(input.staging), broker = structuredClone(input.broker);
   if (spec.image !== FINAL_NATIVE_IMAGE) throw new Error('hard-pinned final native worker image required');
   validateStageReceipt(staging);
@@ -138,7 +144,7 @@ export function createFinalCodexSpawnAdapter(input: {
     validateFinalAdmission(receipt, { stage, boundaryIdentity: policy.identity, invocationIdentity });
     // Recheck after queued admission, before provisioning or releasing native process.
     validateFinalCodexAuth(content('auth.json'), budget);
-    const prepare = containerPreparer(spec, staging, broker);
+    const prepare = containerPreparerOwned(spec, staging, broker, preregister);
     const launched = await spawnContainerBoundary({ boundary: policy, executable: '/usr/local/bin/node', args: ['-e', CODEX_FINAL_BOOTSTRAP, String(budget), JSON.stringify(finalArgs)], purpose: 'actual-route', heldOut: false,
       admit: async () => ({ admissionId: receipt.admissionId }), prepare: async (args, identity) => {
         const prepared = await prepare(args, identity);
@@ -161,9 +167,12 @@ export function createFinalCodexSpawnAdapter(input: {
         if (exportRoot !== hostTaskRoot) return session.finalize(exportRoot);
         const fresh = mkdtempSync(join(dirname(hostTaskRoot), '.cq-stopped-export-'));
         chmodSync(fresh, 0o700);
+        const recoveryPath = input.lifecycleEvidencePath ? join(dirname(input.lifecycleEvidencePath), 'publication-recovery.json') : undefined;
+        if (recoveryPath) writeFileSync(recoveryPath, JSON.stringify({ exported: fresh, destination: hostTaskRoot, state: 'exporting' }), { mode: 0o600, flag: 'wx' });
         const result = await session.finalize(fresh);
         note('publication-start');
         const publication = publishStoppedTask(staging, fresh, hostTaskRoot, { ...result, namespaceAbsent: true });
+        if (recoveryPath) writeFileSync(recoveryPath, JSON.stringify({ exported: fresh, ...publication, ...result, state: 'published' }), { mode: 0o600 });
         note('publication-done');
         return { ...result, publication };
       }, // Publication is not native acceptance. Only the explicit parent runtime may

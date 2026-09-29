@@ -287,6 +287,12 @@ const DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 /** Run one native CLI with a decision cutoff and bounded awaited cleanup window.
  * Uncooperative adapter/runtime calls can outlive that window; those paths fail
  * closed and return no capture proof, but this is not a global lifetime bound. */
+function frozenEvidence<T>(value: T): T {
+  const copy = structuredClone(value);
+  const freeze = (v: unknown): void => { if (v && typeof v === 'object') { Object.freeze(v); for (const child of Object.values(v)) freeze(child); } };
+  freeze(copy); return copy;
+}
+
 export async function runSupervised(
   command: string,
   args: readonly string[],
@@ -315,7 +321,7 @@ export async function runSupervised(
   let treeStopped = false;
   let handoffComplete = false;
   let processStatus: 'spawned' | 'trusted-no-spawn' | 'unknown' = 'trusted-no-spawn';
-  const processEvidence = () => ({ ...(options.identity ? { identity: { ...options.identity } } : {}),
+  const processEvidence = () => frozenEvidence({ ...(options.identity ? { identity: { ...options.identity } } : {}),
     status: processStatus, source: processStatus === 'spawned' ? 'OS child PID' : processStatus === 'trusted-no-spawn' ? 'trusted supervisor pre-spawn guard' : 'factory creation unobserved' });
 
   if ((options.stage === 'final-profile-G1' || options.stage === 'actual-route-G2') &&
@@ -556,8 +562,8 @@ export async function runSupervised(
     terminal: cancelled ? 'cancelled' : timedOut ? 'timeout' : spawnError ? 'spawn-error' : terminal,
     startedAt, endedAt: new Date().toISOString(),
     processEvidence: processEvidence(),
-    ...(launch ? { launch: structuredClone(launch) } : {}),
-    ...(lifecycleResult ? { lifecycle: structuredClone(lifecycleResult) } : {}),
+    ...(launch ? { launch: frozenEvidence(launch) } : {}),
+    ...(lifecycleResult ? { lifecycle: frozenEvidence(lifecycleResult) } : {}),
     ...(spawnError ? { error: { name: spawnError.name, message: spawnError.message } } : {}),
   });
   let stopCompletion: Promise<boolean> | undefined;
@@ -760,8 +766,8 @@ function spawnFailure(
     command, args: [...args], cwd, stdout: '', stderr: '', code: null,
     signal: null, terminal, treeStopped, startedAt,
     endedAt: new Date().toISOString(),
-    ...(lifecycle ? { lifecycle } : {}),
-    ...(launch ? { launch } : {}),
+    ...(lifecycle ? { lifecycle: frozenEvidence(lifecycle) } : {}),
+    ...(launch ? { launch: frozenEvidence(launch) } : {}),
     processEvidence: { status: 'trusted-no-spawn', source: 'trusted supervisor pre-spawn guard' },
     error: { name: error.name, message: error.message },
   };

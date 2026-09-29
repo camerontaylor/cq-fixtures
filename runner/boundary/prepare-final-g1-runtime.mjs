@@ -1,3 +1,4 @@
+import { assertG2DaemonPreregistration } from './g2-daemon-contract.ts';
 import { brokerAssetTree, FINAL_BROKER_RUNTIME_IDENTITY, FINAL_BROKER_ASSET_INVENTORY, verifyLiveBrokerToolchain } from './broker-toolchain.ts';
 /** No-dispatch operator: creates dedicated infrastructure, fresh access-only private context and disabled approval template. */
 import { mkdtempSync, chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -40,7 +41,7 @@ export async function deriveFinalG1PreparationPins(repoRoot) {
   if (createReviewLoopOraclePin(root).sha256 !== oraclePin.sha256) throw new Error('active oracle changed during source derivation');
   return { ...result, oraclePin };
 }
-export async function preparePrivateRuntime(repoRoot, runId) {
+export async function preparePrivateRuntime(repoRoot, runId, owner = { preregister: async () => {} }) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$/.test(runId)) throw new Error('safe unique parent runId required');
   const root = realpathSync(resolve(repoRoot)), load = p => import(pathToFileURL(join(root, p)).href);
   const repositoryHead = verifyCleanPreparationSource(root);
@@ -48,6 +49,7 @@ export async function preparePrivateRuntime(repoRoot, runId) {
   const { pins: sourcePins, sourcePin } = await deriveFinalG1PreparationPins(root);
   const publicInputsPath = join(root, 'runner/boundary/evidence/fallback/final-profile-public-inputs.json');
   const publicInputsSha256 = hash(readFileSync(publicInputsPath)), pins = JSON.parse(readFileSync(publicInputsPath));
+  assertG2DaemonPreregistration(pins.daemon.id, pins.daemon.id);
   const runtimeSource = fileURLToPath(new URL('./final-g1-runtime.mjs', import.meta.url));
   const runtimeSourceSha256 = hash(readFileSync(runtimeSource));
   verifyCleanPreparationSource(root, repositoryHead);
@@ -56,13 +58,14 @@ export async function preparePrivateRuntime(repoRoot, runId) {
   let taskFiles, taskDirectories;
   try { const tree = snapshotTask(task.worktreePath, true); taskFiles = Object.fromEntries(tree.entries.filter(e => !e.path.startsWith('.git/') && e.kind === 'file').map(e => [e.path, hash(Buffer.from(e.data, 'base64'))])); taskDirectories = tree.entries.filter(e => !e.path.startsWith('.git') && e.kind === 'directory').map(e => e.path); }
   finally { await task.cleanup(); }
-  const c = new DockerControl(), network = 'cq-s5-final-g1-' + randomBytes(8).toString('hex');
+  const c = new DockerControl(owner.preregister), network = 'cq-s5-final-g1-' + randomBytes(8).toString('hex');
   const brokerAssetVolume = 'cq-s5-broker-assets-' + randomBytes(8).toString('hex');
   let assetsCreated = false;
   let brokerId, networkCreated = false, auth, phase = 'daemon';
   const utilityImage = 'sha256:4a14ba40f65117679e6f60d0f7f7bfa5eb44ff9be79e96137966a1ba9675f9b0';
   try {
-    if (await c.run(['info', '--format', '{{.ID}}']) !== pins.daemon.id || hash(readFileSync(pins.vm.configPath)) !== pins.vm.configHash) throw new Error('dedicated daemon/VM identity differs');
+    assertG2DaemonPreregistration(pins.daemon.id, await c.run(['info', '--format', '{{.ID}}']));
+    if (hash(readFileSync(pins.vm.configPath)) !== pins.vm.configHash) throw new Error('dedicated daemon/VM identity differs');
     phase = 'images';
     for (const image of [pins.workerImage, pins.brokerImage, utilityImage]) if (JSON.parse(await c.run(['image', 'inspect', image]))[0].Id !== image) throw new Error('immutable image unavailable');
     phase = 'network-inventory';
@@ -72,12 +75,15 @@ export async function preparePrivateRuntime(repoRoot, runId) {
     auth = prepareFinalCodexContext('/Users/ctaylor/.tmp/cq-s5-frozen-profile-3AQYGq/config.toml');
     phase = 'public-assets';
     if ((await c.run(['volume','ls','-q'])).split('\n').includes(brokerAssetVolume)) throw new Error('public toolchain collision');
+    await owner.preregister({kind:'volume',id:brokerAssetVolume});
     await c.run(['volume','create','--label','cq.boundary.runtime=' + runId,'--label','cq.boundary.public-assets=' + FINAL_BROKER_ASSET_INVENTORY,brokerAssetVolume]); assetsCreated = true;
     const writer = readFileSync(new URL('./volume-io.mjs', import.meta.url),'utf8');
     await c.utility(['--rm','-i','--pull=never','--network','none','--user','0:0','--read-only','--cap-drop','ALL','--cap-add','CHOWN','--security-opt','no-new-privileges','--pids-limit','32','--memory','256m','--cpus','0.5','--mount',`type=volume,source=${brokerAssetVolume},target=/task,volume-nocopy`,'--entrypoint','/usr/local/bin/node',utilityImage,'-e',writer,'write'],JSON.stringify(brokerAssetTree().entries));
     phase = 'network-create';
+    await owner.preregister({kind:'network',id:network});
     await c.run(['network','create','--internal','--subnet',pins.network.internalSubnet,'--label','cq.boundary.runtime=' + runId,network]); networkCreated = true;
     phase = 'broker-create';
+    await owner.preregister({kind:'container',id:network + '-broker'});
     brokerId = await c.run(['create','--pull=never','--name',network + '-broker','--label','cq.boundary.runtime=' + runId,'--label','cq.boundary.broker=' + pins.brokerIdentity,'--label','cq.boundary.broker-runtime=' + FINAL_BROKER_RUNTIME_IDENTITY,'--mount',`type=volume,source=${brokerAssetVolume},target=/opt,readonly,volume-nocopy`,'--network','bridge','--user','1000:1000','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','32','--memory','256m','--memory-swap','256m','--cpus','0.5','--ipc','private','--cgroupns','private','--no-healthcheck','--entrypoint','/usr/local/bin/node',pins.brokerImage,'/opt/broker.mjs','/opt/config.json']);
     await c.run(['network','connect','--ip',pins.network.brokerIP,network,brokerId]); await c.run(['start',brokerId]);
     phase = 'broker-config';
@@ -91,21 +97,33 @@ export async function preparePrivateRuntime(repoRoot, runId) {
     const runtimeDependenciesSha256 = Object.fromEntries(['broker-toolchain.ts','broker-public-assets/broker.mjs','broker-public-assets/config.json'].map(p => { const path=fileURLToPath(new URL('./'+p,import.meta.url));return [path,hash(readFileSync(path))] }));
     const plan = { runtimeDependenciesSha256, brokerAssetVolume, effectiveBrokerIdentity:FINAL_BROKER_RUNTIME_IDENTITY, repositoryHead, sourceIsProvisional, repoRoot:root, privateRoot, privateAuthRoot:auth.privateRoot, network, brokerContainerId:brokerId, runId, runtimeSource, runtimeSourceSha256, sourcePins, sourcePin, publicInputsSha256, utilityImage, taskFiles, taskDirectories, nativeControlEvidence:'accepted-host-visible-G1-report-sha256:' + hash(readFileSync(report)) + ';final-container-G1-unqualified;extension-lifetime-unverified' };
     save(join(privateRoot,'setup-state.json'), { network, broker:{containerId:brokerId,imageId:pins.brokerImage,configPath:'/opt/config.json',publicAssetVolume:brokerAssetVolume,runtimeRunId:runId}, authRoot:auth.privateRoot, handedOff:false });
-    const planSha256 = hash(JSON.stringify(plan)); save(join(privateRoot,'plan-hash.json'),{sha256:planSha256});
+    const planSha256 = hash(JSON.stringify(plan)); save(join(privateRoot,'plan-hash.json'),{sha256:planSha256}); save(join(privateRoot,'plan.json'),plan);
     const wrapper = `import { createPreparedFinalG1Runtime } from ${JSON.stringify(pathToFileURL(runtimeSource).href)};\nconst plan=${JSON.stringify(plan)};\nexport async function createFinalProfileG1Runtime(){return (await createPreparedFinalG1Runtime(plan)).options}\nexport async function cleanupFinalProfileG1Runtime(options={}){return (await createPreparedFinalG1Runtime(plan,{verify:false})).cleanup(options)}\nexport async function verifyFinalProfileG1Runtime(){await (await createPreparedFinalG1Runtime(plan)).verifyInfrastructure();return {verified:true,modelCalls:0}}\n`;
     writeFileSync(join(privateRoot,'runtime.mjs'),wrapper,{mode:0o600,flag:'wx'});
     const approval = { approved:false, brokerStrategy:'nonroot-public-toolchain-v2', effectiveBrokerIdentity:FINAL_BROKER_RUNTIME_IDENTITY, publicAssetInventoryHash:FINAL_BROKER_ASSET_INVENTORY, sourceIsProvisional, repositoryHead, stage:'final-profile-G1', runId, assignmentId:'final-profile-g1-' + runId, attemptId:'final-profile-g1-' + runId + '-attempt-1', sourcePin, publicInputsSha256, runtimeSourceSha256, runtimeModuleSha256:hash(wrapper), planSha256, allowVerifiedDynamicPrivateStaging:true, modelBudgetSeconds:90, heldOut:false, admissionId:'PARENT-MUST-CHOOSE-UNIQUE-ID', expiresAt:0 };
     save(join(privateRoot,'parent-approval.template.json'),approval); mkdirSync(join(privateRoot,'reports'),{mode:0o700});
     phase = 'runtime-verification';
     const { createPreparedFinalG1Runtime } = await import(pathToFileURL(runtimeSource).href); await (await createPreparedFinalG1Runtime(plan)).verifyInfrastructure();
-    return { privateModule:join(privateRoot,'runtime.mjs'), approvalTemplate:join(privateRoot,'parent-approval.template.json'), modelCalls:0, approvalEnabled:false, ...approval, taskFiles, lifetime:{setup:'runtime-self-cutoff-before-native-60s;Docker-operations-bounded-but-not-interruptible',runtime:'native-90s-assignment-240s',latePreparation:'self-clean-on-return',recovery:'retained-after-handoff-until-parent-disposition'} };
-  } catch {
+    return { planPath:join(privateRoot,'plan.json'), planSha256, privateModule:join(privateRoot,'runtime.mjs'), approvalTemplate:join(privateRoot,'parent-approval.template.json'), modelCalls:0, approvalEnabled:false, ...approval, taskFiles, lifetime:{hardResourceLifetime:'unsupported',parentHookLifetime:'unsupported',outerExecution:'host-process-group reap only when invoked through pinned assignment-supervisor descriptor; legacy wrapper has no outer owner',setup:'runtime-self-cutoff-before-native-60s;Docker-operations-bounded-but-not-interruptible',runtime:'native-90s-assignment-240s',latePreparation:'self-clean-on-return',recovery:'retained-after-handoff-until-parent-disposition'} };
+  } catch (primary) {
+    try {
     if (brokerId) await teardownContainer(c,brokerId); if (networkCreated) await c.run(['network','rm',network]); if (assetsCreated) { const v=JSON.parse(await c.run(['volume','inspect',brokerAssetVolume]))[0]; if(v.Labels?.['cq.boundary.runtime']!==runId || v.Labels?.['cq.boundary.public-assets']!==FINAL_BROKER_ASSET_INVENTORY || await c.run(['ps','-aq','--filter','volume='+brokerAssetVolume])) throw new Error('private public-toolchain recovery ownership changed');await c.run(['volume','rm',brokerAssetVolume]); }
+    } catch { /* preserve initial safe phase/class; registry retains uncertain resources */ }
     // Private auth inventory retained for explicit parent recovery, never printed.
-    throw new Error('private runtime preparation unavailable at ' + phase + '; created infrastructure disposed, private recovery retained');
+    const safeClass = ['DaemonPreregistrationMismatch','DeadlineExceeded','OutputLimitExceeded','EACCES','ENOENT'].includes(primary?.name) ? primary.name : ['EACCES','ENOENT'].includes(primary?.code) ? primary.code : 'PreparationFailed';
+    throw Object.assign(new Error('private runtime preparation unavailable at ' + phase + '; ' + safeClass + '; disposition unknown, private recovery retained'), { name: safeClass });
   } finally { c.close(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try { console.log(JSON.stringify(await preparePrivateRuntime(process.argv[2],process.argv[3]),null,2)); }
   catch (error) { console.error(error.message.startsWith('private runtime preparation unavailable at ') ? error.message : 'bounded private runtime preparation failed before infrastructure; no credential details disclosed'); process.exitCode=1; }
+}
+
+/** Preparation operation used by the outer parent, not automatically admitted. */
+export async function executePrivateRuntimePreparation(context) {
+  const { constants, openSync, fstatSync, closeSync } = await import('node:fs');
+  const fd=openSync(context.privateInputPath,constants.O_RDONLY|constants.O_NOFOLLOW);
+  let descriptor;
+  try { const s=fstatSync(fd); if(!s.isFile()||s.nlink!==1||(s.mode&0o077)||s.uid!==process.getuid?.()) throw Error('private preparation descriptor required'); descriptor=JSON.parse(readFileSync(fd,'utf8')); } finally { closeSync(fd); }
+  return preparePrivateRuntime(descriptor.repoRoot,descriptor.runId,context);
 }

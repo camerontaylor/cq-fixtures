@@ -5,7 +5,7 @@ export type LifecycleRecord = (phase: LifecyclePhase, error?: unknown) => void;
 export function privateLifecycleRecorder(path: string): LifecycleRecord {
   return (phase, error) => {
     const value = error as { name?: unknown; code?: unknown; message?: unknown } | undefined;
-    const errorClass = ['Error','TypeError','RangeError','AbortError'].includes(String(value?.name)) ? value?.name : error === undefined ? undefined : 'unknown';
+    const errorClass = ['Error','TypeError','RangeError','AbortError','DaemonPreregistrationMismatch','DeadlineExceeded','OutputLimitExceeded','DockerOperationFailed'].includes(String(value?.name)) ? value?.name : error === undefined ? undefined : 'unknown';
     const code = ['EACCES','EPERM','ENOENT','ESRCH','ETIMEDOUT','ERR_INVALID_ARG_TYPE'].includes(String(value?.code)) ? value?.code : error === undefined ? undefined : 'unknown';
     const docker = typeof value?.message === 'string' ? /^bounded Docker operation failed \((info|inspect|ps|rm|volume|network|run|exec|create|start), (null|-?[0-9]+)\)$/.exec(value.message) : null;
     const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);

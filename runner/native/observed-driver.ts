@@ -144,6 +144,39 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
     });
     if (noSpawn) this.reportProcessNotStarted(identity, receipt!.source);
     else this.reportProcessTree(identity, spawned && result.treeStopped);
+    const observation = this.observations.get(identity.invocationId);
+    if (observation && result.lifecycle) {
+      const lifecycle = result.lifecycle;
+      const failureClass = lifecycle.error ? (['DeadlineExceeded', 'CleanupUnconfigured', 'Error', 'TypeError', 'RangeError'].includes(lifecycle.error.name) ? lifecycle.error.name : 'LifecycleFailure') : null;
+      observation.model.settings.supervisorFailure = {
+        value: { phase: lifecycle.failurePhase ?? null, failureClass, treeStopped: (noSpawn || spawned) && result.treeStopped },
+        source: 'identity-bound native supervisor receipt', status: lifecycle.error || !result.treeStopped ? 'secondary-failure' : 'none',
+      };
+      const receipt = {
+        schemaVersion: 1, identity: { ...identity }, terminal: result.terminal,
+        processEvidence: this.getProcessLaunchEvidence(identity.invocationId),
+        treeStopped: (noSpawn || spawned) && result.treeStopped,
+        terminated: lifecycle.terminated, finalized: lifecycle.finalized,
+        failurePhase: lifecycle.failurePhase ?? null, failureClass,
+        // This owner-only artifact retains opaque resource IDs and complete
+        // recovery disposition. Raw error messages are deliberately excluded.
+        invocationCleanup: lifecycle.invocationCleanup ? {
+          status: lifecycle.invocationCleanup.status,
+          proof: lifecycle.invocationCleanup.proof ? structuredClone(lifecycle.invocationCleanup.proof) : null,
+          failureClass: lifecycle.invocationCleanup.errorName ? 'CleanupFailure' : null,
+        } : null,
+        taskExport: result.launch?.taskExport ? structuredClone(result.launch.taskExport) : null,
+      };
+      const text = `${JSON.stringify(receipt, null, 2)}\n`;
+      const path = join(this.artifactDirectory, identity.invocationId, 'supervisor-recovery.json');
+      try {
+        mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+        writeFileSync(path, text, { flag: 'wx', mode: 0o600 });
+        observation.artifacts.push({ kind: 'supervisor-recovery', path, sha256: createHash('sha256').update(text).digest('hex') });
+      } catch {
+        observation.model.settings.supervisorRecoveryArtifact = { value: null, source: 'native supervisor recovery evidence', status: 'write-failed' };
+      }
+    }
     return { ...result, treeStopped: (noSpawn || spawned) && result.treeStopped };
   }
 

@@ -328,7 +328,9 @@ export async function runSupervised(
     setupController.abort(new Error('native assignment deadline elapsed before launch'));
     return spawnFailure(command, args, options.cwd, startedAt, new Error('native assignment deadline elapsed before launch'), 'timeout');
   }
+  let launchDeadlineExceeded = false;
   const launchTimeout = setTimeout(() => {
+    launchDeadlineExceeded = true;
     setupController.abort(new Error('native assignment deadline elapsed during admission or provisioning'));
     launchTimeoutReject(new Error('native assignment deadline elapsed during admission or provisioning'));
   }, remainingAtStart);
@@ -395,7 +397,7 @@ export async function runSupervised(
     options.signal?.removeEventListener('abort', onSetupAbort);
   } catch (error) {
     clearTimeout(launchTimeout);
-    const deadlineExpired = Date.now() >= hardDeadlineEpochMs;
+    const deadlineExpired = launchDeadlineExceeded || Date.now() >= hardDeadlineEpochMs;
     const launchCancelled = options.signal?.aborted === true;
     setupController.abort(error);
     const cleanupMs = options.cleanupTimeoutMs ?? 30_000;
@@ -414,21 +416,68 @@ export async function runSupervised(
     let lateFinalized = false;
     let lateLifecycleProven = false;
     if (late !== false) {
-      const hostStopped = await stopAndWait(late.child, Math.min(options.killGraceMs ?? DEFAULT_KILL_GRACE_MS,
+      const lateReceipt = late.receipt?.scope === 'boundary' ? late.receipt : undefined;
+      const cleanupLater = async () => {
+        if (!options.cleanupInvocation || !options.identity) return;
+        await invokeBoundedCleanup(options.cleanupInvocation, options.identity, 'late native setup settled after bounded cleanup', Date.now() + cleanupMs);
+      };
+      const finalizeThenCleanupLater = async () => {
+        if (lateReceipt) {
+          try { await lateReceipt.finalize!(); } catch { /* failed stop proof remains fail-closed */ }
+        }
+        await cleanupLater();
+      };
+      const terminateThenCleanupLater = async () => {
+        if (lateReceipt) {
+          try { await lateReceipt.terminate!(); } catch { /* continue to finalization after termination settles */ }
+        }
+        await finalizeThenCleanupLater();
+      };
+      const stoppedWork = stopAndWait(late.child, Math.min(options.killGraceMs ?? DEFAULT_KILL_GRACE_MS,
         Math.max(50, cleanupDeadline - Date.now())));
+      const stoppedOutcome = await settleWithinDeadline(stoppedWork, cleanupDeadline);
+      const hostStopped = stoppedOutcome.status === 'fulfilled' && stoppedOutcome.value;
+      let lifecycleBlockedByPendingHook = false;
+      if (stoppedOutcome.status === 'timed-out') {
+        cleanupErrorName = 'DeadlineExceeded';
+        lifecycleBlockedByPendingHook = true;
+        // Once process-group stopping settles, continue the required ordered
+        // hooks and cleanup. This continuation can never authorize capture.
+        void stoppedWork.then(terminateThenCleanupLater, terminateThenCleanupLater).catch(() => undefined);
+      } else if (stoppedOutcome.status === 'rejected') {
+        cleanupErrorName = stoppedOutcome.error instanceof Error ? stoppedOutcome.error.name : 'Error';
+      }
       lateTerminated = !late.receipt || late.receipt.scope !== 'boundary';
       lateFinalized = !late.receipt || late.receipt.scope !== 'boundary';
-      try { if (late.receipt?.scope === 'boundary') { await late.receipt.terminate!(); lateTerminated = true; } }
-      catch (failure) { cleanupErrorName = failure instanceof Error ? failure.name : 'Error'; }
-      try { if (late.receipt?.scope === 'boundary') { await late.receipt.finalize!(); lateFinalized = true; } }
-      catch (failure) { cleanupErrorName ??= failure instanceof Error ? failure.name : 'Error'; }
-      if (options.cleanupInvocation) {
+      if (!lifecycleBlockedByPendingHook && lateReceipt) {
+        const terminateWork = Promise.resolve().then(() => lateReceipt.terminate!());
+        const terminateOutcome = await settleWithinDeadline(terminateWork, cleanupDeadline);
+        if (terminateOutcome.status === 'fulfilled') lateTerminated = true;
+        else if (terminateOutcome.status === 'rejected') cleanupErrorName ??= terminateOutcome.error instanceof Error ? terminateOutcome.error.name : 'Error';
+        else {
+          cleanupErrorName ??= 'DeadlineExceeded';
+          lifecycleBlockedByPendingHook = true;
+          void terminateWork.then(finalizeThenCleanupLater, finalizeThenCleanupLater).catch(() => undefined);
+        }
+      }
+      if (!lifecycleBlockedByPendingHook && lateReceipt) {
+        const finalizeWork = Promise.resolve().then(() => lateReceipt.finalize!());
+        const finalizeOutcome = await settleWithinDeadline(finalizeWork, cleanupDeadline);
+        if (finalizeOutcome.status === 'fulfilled') lateFinalized = true;
+        else if (finalizeOutcome.status === 'rejected') cleanupErrorName ??= finalizeOutcome.error instanceof Error ? finalizeOutcome.error.name : 'Error';
+        else {
+          cleanupErrorName ??= 'DeadlineExceeded';
+          lifecycleBlockedByPendingHook = true;
+          void finalizeWork.then(cleanupLater, cleanupLater).catch(() => undefined);
+        }
+      }
+      if (!lifecycleBlockedByPendingHook && options.cleanupInvocation) {
         const outcome = options.identity ? await invokeBoundedCleanup(options.cleanupInvocation, options.identity, 'native setup ended before receipt handoff', cleanupDeadline) : { status: 'failed' as const, errorName: 'InvocationIdentityUnavailable' };
         cleanupCompleted = outcome.status === 'completed'; cleanupProof = outcome.proof; cleanupErrorName ??= outcome.errorName;
       }
       // Cleanup evidence is explicit in the returned failed envelope. A late
       // receipt never becomes capture eligible, even when all stop hooks pass.
-      lateLifecycleProven = hostStopped && lateTerminated && lateFinalized;
+      lateLifecycleProven = hostStopped && lateTerminated && lateFinalized && !lifecycleBlockedByPendingHook;
     } else if (options.cleanupInvocation && options.identity) {
       const outcome = await invokeBoundedCleanup(options.cleanupInvocation, options.identity, 'native setup did not settle before receipt handoff', cleanupDeadline);
       cleanupCompleted = outcome.status === 'completed'; cleanupProof = outcome.proof; cleanupErrorName = outcome.errorName;
@@ -682,6 +731,24 @@ async function withinDeadline<T>(work: Promise<T>, deadlineEpochMs: number): Pro
     return await Promise.race([
       work,
       new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, deadlineEpochMs - Date.now())); }),
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+type SettledByDeadline<T> =
+  | { status: 'fulfilled'; value: T }
+  | { status: 'rejected'; error: unknown }
+  | { status: 'timed-out' };
+
+async function settleWithinDeadline<T>(work: Promise<T>, deadlineEpochMs: number): Promise<SettledByDeadline<T>> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work.then((value): SettledByDeadline<T> => ({ status: 'fulfilled', value }),
+        (error): SettledByDeadline<T> => ({ status: 'rejected', error })),
+      new Promise<SettledByDeadline<T>>((resolve) => {
+        timer = setTimeout(() => resolve({ status: 'timed-out' }), Math.max(0, deadlineEpochMs - Date.now()));
+      }),
     ]);
   } finally { if (timer) clearTimeout(timer); }
 }

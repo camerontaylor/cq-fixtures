@@ -9,7 +9,7 @@ import { CodexExecDriver } from '../runner/native/codex.ts';
 import { PiNativeDriver } from '../runner/native/pi.ts';
 import { assertPiConfiguredAuthHandoff } from '../runner/native/visible-g1-pi-driver.ts';
 import { ZcodeAcpDriver, assertOutsideGlmBlackout } from '../runner/native/zcode.ts';
-import { runSupervised, visibleCalibrationSpawnAdapter } from '../runner/native/process.ts';
+import { runSupervised, visibleCalibrationSpawnAdapter, type NativeTaskExport } from '../runner/native/process.ts';
 import { parseJsonEventLines, applyUsageObservation } from '../runner/native/events.ts';
 import { unavailableObservation, type InvocationIdentity } from '../runner/native/observation.ts';
 import { RUNNER_SESSION_DIRECTORY } from '../runner/native/session.ts';
@@ -798,6 +798,87 @@ describe('supervised native subprocesses', () => {
     expect(result.treeStopped).toBe(true);
     expect(result.lifecycle).toMatchObject({ terminated: true, finalized: true, invocationCleanup: { status: 'completed' } });
     expect(Date.now() - started).toBeLessThan(800);
+  }, 5_000);
+
+  it('returns failed proof at the cleanup deadline when a late receipt termination hook hangs', async () => {
+    const root = tempRoot();
+    const started = Date.now();
+    const order: string[] = [];
+    let releaseTerminate!: () => void;
+    const terminateGate = new Promise<void>((resolve) => { releaseTerminate = resolve; });
+    let finishLateCleanup!: () => void;
+    const lateCleanupFinished = new Promise<void>((resolve) => { finishLateCleanup = resolve; });
+    const result = await runSupervised(process.execPath, ['-e', 'process.exit(0)'], {
+      cwd: root, identity: identity('late-hung-terminate'), stage: 'actual-route-G2', timeoutMs: 1_000,
+      hardDeadlineEpochMs: started + 50, cleanupTimeoutMs: 180,
+      spawnAdapter: async (command, args, context) => {
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        return {
+          child: spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true }),
+          boundaryIdentity: 'hung-boundary', launchIdentity: 'hung-launch', admissionId: 'hung-admission',
+          environmentNames: [], scope: 'boundary', isolation: 'unverified', heldOut: false,
+          terminate() { order.push('terminate-start'); return terminateGate; },
+          async finalize() { order.push('finalize'); return { inventoryHash: '1'.repeat(64), head: '2'.repeat(40) }; },
+        };
+      },
+      async cleanupInvocation() {
+        order.push('cleanup');
+        finishLateCleanup();
+        return { status: 'stopped-and-reaped', resourceIds: ['hung-worker'], volumeDisposition: 'quarantined' };
+      },
+    });
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result).toMatchObject({ terminal: 'timeout', treeStopped: false,
+      lifecycle: { terminated: false, finalized: false,
+        invocationCleanup: { status: 'failed', errorName: 'DeadlineExceeded' } } });
+    expect(order).toEqual(['terminate-start']);
+
+    releaseTerminate();
+    // The late continuation is unsupported as a global lifetime bound, but
+    // still preserves terminate → finalize → cleanup ordering after settlement.
+    await lateCleanupFinished;
+    expect(order).toEqual(['terminate-start', 'finalize', 'cleanup']);
+  }, 5_000);
+
+  it('returns failed proof at the cleanup deadline when late receipt finalization hangs', async () => {
+    const root = tempRoot();
+    const started = Date.now();
+    const order: string[] = [];
+    let releaseFinalize!: (value: NativeTaskExport) => void;
+    const finalizeGate = new Promise<NativeTaskExport>((resolve) => { releaseFinalize = resolve; });
+    let finishLateCleanup!: () => void;
+    const lateCleanupFinished = new Promise<void>((resolve) => { finishLateCleanup = resolve; });
+    const result = await runSupervised(process.execPath, ['-e', 'process.exit(0)'], {
+      cwd: root, identity: identity('late-hung-finalize'), stage: 'actual-route-G2', timeoutMs: 1_000,
+      hardDeadlineEpochMs: started + 50, cleanupTimeoutMs: 180,
+      spawnAdapter: async (command, args, context) => {
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        return {
+          child: spawn(command, [...args], { cwd: context.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true }),
+          boundaryIdentity: 'hung-finalize-boundary', launchIdentity: 'hung-finalize-launch', admissionId: 'hung-finalize-admission',
+          environmentNames: [], scope: 'boundary', isolation: 'unverified', heldOut: false,
+          async terminate() { order.push('terminate'); },
+          finalize() { order.push('finalize-start'); return finalizeGate; },
+        };
+      },
+      async cleanupInvocation() {
+        order.push('cleanup');
+        finishLateCleanup();
+        return { status: 'stopped-and-reaped', resourceIds: ['hung-finalize-worker'], volumeDisposition: 'quarantined' };
+      },
+    });
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result).toMatchObject({ terminal: 'timeout', treeStopped: false,
+      lifecycle: { terminated: true, finalized: false,
+        invocationCleanup: { status: 'failed', errorName: 'DeadlineExceeded' } } });
+    expect(order).toEqual(['terminate', 'finalize-start']);
+
+    releaseFinalize({ inventoryHash: '3'.repeat(64), head: '4'.repeat(40) });
+    // The out-of-band continuation never changes the failed result into proof.
+    await lateCleanupFinished;
+    expect(order).toEqual(['terminate', 'finalize-start', 'cleanup']);
   }, 5_000);
 
   it('bounds uninterruptible pre-handoff work and reports missing cleanup proof without capture eligibility', async () => {

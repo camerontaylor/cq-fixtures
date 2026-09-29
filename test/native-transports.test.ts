@@ -1766,7 +1766,7 @@ describe('final-profile oracle source root binding', () => {
         model: 'gpt-6-sol',
         provider: 'codex',
         driverName: 'codex-exec',
-        checkTimeoutMs: 20_000,
+        checkTimeoutMs: 60_000,
         experiment: {
           campaignId: 'cq-settings-final-profile-g1', cohortId: 'final-profile-G1',
           experimentId: 'source-root-regression', taskId: task.id, repeatId: 'source-root-regression',

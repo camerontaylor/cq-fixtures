@@ -5,14 +5,12 @@ This is visible local calibration material. It contains no held-out task or orac
 ## Runnable task entrypoints
 
 - Review repair: `createReviewLoopRepairTask(modelSpec)` and `executeReviewLoopRepairTask(task, driver)` in `review-loop-task.ts`. The runSuite bundle and host-pinned judge are in `runner/workflow-corpus/review-loop-suite.ts` and `review-loop-judge.ts`.
-- Analyze/remediate: `createAnalysisRemediationTask(variant, modelSpec)` and `executeAnalysisRemediationTask(task, driver)` in `operation-tasks.ts`. Variants are whitespace-only settings and Unicode code-point limit. The caller's `ModelSpec` is passed to the exported remediation operation. The semantic oracle evaluates candidate bytes through `executeProtectedJudgeChild`.
+- Analyze/remediate: `createAnalysisRemediationTask(variant, modelSpec)` and `executeAnalysisRemediationTask(task, driver)` in `operation-tasks.ts`. Variants are whitespace-only settings and Unicode code-point limit. The caller's `ModelSpec` is passed to the exported remediation operation. The semantic oracle executes the candidate module in a bounded child process.
 - Quality ratchets: `createRatchetTask(variant)` and `executeRatchetTask(task)` in `operation-tasks.ts`. Variants cover lower-is-better error counts and higher-is-better coverage. This toolkit path has no model Driver role; these are deterministic operation tasks, not model samples.
 - Merge conflicts: `createMergeConflictTask(variant, modelSpec)` and `executeMergeConflictTask(task, driver)` in `integration-tasks.ts`. Local `MergeEffects` drive the exported resolver; each fresh repo contains separate main/feature intent files, and variants test Unicode length and reserved prefixes.
 - Fleet sweep: `createFleetSweepTask(variant)` and `executeFleetSweepTask(task)` in `integration-tasks.ts`. Variants use distinct nested test-package ownership trees and actual committed Git changes.
 
-The current review fixture is source epoch v2 (`review-loop-label-limit-02`), with product modules under `settings/` and visible tests importing `../settings/module.js` and `../settings/display.js`. The earlier v1 oracle pin is archived at `review-loop-oracle-pin-v1.json` for the first actual-run artifact; that historical pin and its artifacts are not rewritten by the v2 fixture layout.
-
-Each task materializes a fresh local Git repository and records the complete seeded commit SHA. Analysis tasks also expose a fixture content SHA. The manifests `operation-oracle-pins.json` and `integration-oracle-pins.json` pin task/executor sources, semantic judges, and the protected judge child by SHA256; factory construction fails closed if a pinned dependency drifts. The runSuite review adapter separately carries its baseline commit and review oracle pin into host scoring.
+Each task materializes a fresh local Git repository and records the complete seeded commit SHA. Analysis tasks also expose a fixture content SHA. The manifests `operation-oracle-pins.json` and `integration-oracle-pins.json` pin task/executor sources and host semantic judges by SHA256; factory construction fails closed if a pinned dependency drifts. The runSuite review adapter separately carries its baseline commit and review oracle pin into host scoring.
 
 ## Counts and boundaries
 
@@ -56,22 +54,17 @@ not as evidence that the in-flight source lacks the wiring. The old campaign
 archive and pin remain unchanged; any future package claim must name a new
 source epoch.
 
-## Next visible-task expansion brief
+## Six additional visible calibration tasks
 
-`six-visible-task-expansion-brief.md` is a bounded implementation brief for
-six additional, genuinely distinct local substrates across review,
-analyze/remediate, merge-conflict, and fleet-sweep operations. It records
-entrypoints, owned paths, and independent semantic-oracle requirements. The
-tasks remain planned and are not included in current counts.
-
-The semantic oracle callers now execute candidate modules only through the
-protected judge-child boundary. Each call stages only the candidate module in
-a fresh sanitized Git snapshot; parent-side expected values stay outside that
-snapshot, and returned stdout remains private/untrusted. This closes the
-post-export candidate-execution blocker. Whole actual-route G2 remains pending:
-the final native route, correlated native receipts, authoritative consumed
-ledger, distinct actual-route admission, and final-container G1 are not
-established by these local oracle tests.
+`six-visible-task-expansion-brief.md` defines six distinct local substrates
+across review, analyze/remediate, merge-conflict, and fleet-sweep operations.
+Factories and task-local oracle definitions are in place. The six entries in
+`workflows.json` passed seven focused synthetic checks and remain excluded from
+the validated counts pending complete acceptance evidence. `npm run typecheck`
+also passes. The protected judge-child API is committed as `3f63fc7` and
+available in this branch; new task-local behavior judges use it with private,
+untrusted stdout. Existing oracle caller migration remains assigned to S0. No
+model calls were made.
 
 All delivered tasks are calibration. Held-out family names in `workflows.json` are reservations only; no held-out artifact has been materialized or proven inaccessible. The task count is not an adequacy or power claim. The new task substrates do not represent nine independent workflow families.
 

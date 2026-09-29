@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import {
   makePlanSweep,
   makeResolveConflictOp,
+  makeSweepUnitOp,
   type Driver,
   type ConflictResolutionValue,
   type MergeEffects,
@@ -20,6 +22,9 @@ import {
   type MergeConflictContract,
   type WorkflowOracleReport,
 } from '../../../runner/workflow-corpus/operation-workflow-judges.js';
+import { FLEET_TEST_UNIT_CONTRACT, MERGE_ORIGIN_CONTRACT, judgeFleetUnitCandidate, judgeLocalCandidateIdentity, judgeMergeOriginCandidate } from './integration-task-oracles.js';
+
+const execFileAsync = promisify(execFile);
 
 const git = (cwd: string, args: readonly string[]): string => execFileSync('git', [...args], {
   cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
@@ -62,6 +67,11 @@ export const MERGE_CONFLICT_TASKS = {
       { input: 'sys:internal', expected: '' }, { input: null, expected: '' },
     ],
   },
+  originPrecedence: {
+    ...MERGE_ORIGIN_CONTRACT,
+    substrateFamily: MERGE_ORIGIN_CONTRACT.substrateFamily,
+    examples: MERGE_ORIGIN_CONTRACT.expected.map((expected, index) => ({ input: MERGE_ORIGIN_CONTRACT.requests[index], expected })),
+  },
 } as const;
 
 type MergeVariant = keyof typeof MERGE_CONFLICT_TASKS;
@@ -91,22 +101,30 @@ export async function createMergeConflictTask(
   const oraclePin = pinnedIntegrationOracle(definition.oracleId);
   const root = await mkdtemp(join(parentDirectory, 'cq-merge-corpus-'));
   const repoRoot = join(root, 'repo');
-  const settingsPath = join(repoRoot, 'src/settings.mjs');
-  await mkdir(join(repoRoot, 'src'), { recursive: true });
+  const settingsRelativePath = variant === 'originPrecedence' ? MERGE_ORIGIN_CONTRACT.module : 'src/settings.mjs';
+  const settingsPath = join(repoRoot, settingsRelativePath);
+  await mkdir(join(settingsPath, '..'), { recursive: true });
   await mkdir(join(repoRoot, 'branch-intentions'), { recursive: true });
-  await writeFile(settingsPath, `export function campaignLabel(value) { return typeof value === 'string' ? value.trim() : ''; }\n`);
+  const originSource = `export function resolveCampaignSetting(environmentValue, fileValue, builtInValue) {\n  return fileValue ?? builtInValue ?? environmentValue;\n}\n`;
+  await writeFile(settingsPath, variant === 'originPrecedence'
+    ? originSource
+    : `export function campaignLabel(value) { return typeof value === 'string' ? value.trim() : ''; }\n`);
   const mainIntent = variant === 'unicodeLabelLimit'
     ? 'Main branch: preserve display trimming for campaign labels.\n'
-    : 'Main branch: preserve trimming and ordinary campaign labels.\n';
+    : variant === 'reservedPrefix'
+      ? 'Main branch: preserve trimming and ordinary campaign labels.\n'
+      : 'Main branch: keep file defaults and built-in fallbacks available.\n';
   const featureIntent = variant === 'unicodeLabelLimit'
     ? 'Feature branch: reject labels longer than 40 Unicode code points.\n'
-    : 'Feature branch: reject labels in the reserved sys: namespace.\n';
+    : variant === 'reservedPrefix'
+      ? 'Feature branch: reject labels in the reserved sys: namespace.\n'
+      : 'Feature branch: environment settings override file values; file values override built-in defaults.\n';
   await writeFile(join(repoRoot, 'branch-intentions/main.md'), mainIntent);
   await writeFile(join(repoRoot, 'branch-intentions/feature.md'), featureIntent);
   git(repoRoot, ['init', '-q']);
   git(repoRoot, ['config', 'user.name', 'CQ Local Corpus']);
   git(repoRoot, ['config', 'user.email', 'cq-local-corpus@example.invalid']);
-  git(repoRoot, ['add', 'src/settings.mjs', 'branch-intentions/main.md', 'branch-intentions/feature.md']);
+  git(repoRoot, ['add', settingsRelativePath, 'branch-intentions/main.md', 'branch-intentions/feature.md']);
   git(repoRoot, ['commit', '-q', '-m', `Seed ${definition.id}`]);
   const baselineCommit = git(repoRoot, ['rev-parse', 'HEAD']);
   return {
@@ -134,21 +152,42 @@ export async function executeMergeConflictTask(task: MergeConflictTask, driver: 
   };
   const operation = makeResolveConflictOp({
     effects, driver, createSession: async () => `local-${task.id}`,
-    loadPrompt: async () => `Resolve {{pr}} conflict in {{conflictFiles}} against {{baseBranch}} at {{worktree}}. Read branch-intentions/main.md and branch-intentions/feature.md; preserve both intentions. ${task.variant === 'unicodeLabelLimit' ? 'Count Unicode code points after trimming.' : 'Reject the reserved sys: prefix.'}`,
+    loadPrompt: async () => `Resolve {{pr}} conflict in {{conflictFiles}} against {{baseBranch}} at {{worktree}}. Read branch-intentions/main.md and branch-intentions/feature.md; preserve both intentions. ${task.variant === 'unicodeLabelLimit' ? 'Count Unicode code points after trimming.' : task.variant === 'reservedPrefix' ? 'Reject the reserved sys: prefix.' : 'Keep environment override above file default and built-in fallback.'}`,
   });
   return operation({
     pr: 23, repoRoot: task.repoRoot, headBranch: 'feature/settings', baseBranch: 'main',
-    conflictFiles: ['src/settings.mjs'], modelSpec: { ...task.modelSpec }, wallClockMs: 15_000,
+    conflictFiles: [task.settingsPath.slice(task.repoRoot.length + 1)], modelSpec: { ...task.modelSpec }, wallClockMs: 15_000,
   });
 }
 
-export async function judgeMergeConflictTask(task: MergeConflictTask): Promise<WorkflowOracleReport> {
+export function judgeMergeConflictTask(task: MergeConflictTask): WorkflowOracleReport {
+  if (task.variant === 'originPrecedence') throw new Error('use judgeMergeOriginConflictTask for the protected origin-precedence oracle');
   const definition = MERGE_CONFLICT_TASKS[task.variant];
   const contract: MergeConflictContract = {
     sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId,
     examples: definition.examples,
   };
   return judgeMergeConflictWorkspace(task.repoRoot, task.baselineCommit, contract);
+}
+
+export async function judgeMergeOriginConflictTask(task: MergeConflictTask): Promise<WorkflowOracleReport> {
+  if (task.variant !== 'originPrecedence') throw new Error('origin-precedence task required');
+  const behavior = await judgeMergeOriginCandidate(task.repoRoot);
+  const identity = judgeLocalCandidateIdentity({
+    repoRoot: task.repoRoot,
+    baselineCommit: task.baselineCommit,
+    allowedPaths: [task.settingsPath.slice(task.repoRoot.length + 1)],
+  });
+  const failures = [...behavior.failures, ...identity.failures];
+  const intentionDiff = git(task.repoRoot, ['diff', '--name-only', `${task.baselineCommit}..HEAD`, '--', 'branch-intentions/main.md', 'branch-intentions/feature.md']);
+  if (intentionDiff.length > 0) failures.push('candidate did not preserve both branch intention files');
+  return {
+    sourceId: task.sourceId,
+    baselineId: task.baselineId,
+    oracleId: task.oracleId,
+    passed: failures.length === 0,
+    failures,
+  };
 }
 
 export const FLEET_SWEEP_TASKS = {
@@ -239,4 +278,142 @@ export async function executeFleetSweepTask(task: FleetSweepTask): Promise<{ rea
     expectedPackage: task.expectedPackage, expectedPaths: task.changedPaths,
   });
   return { report, oracle };
+}
+
+export interface FleetTestUnitRepairTask {
+  readonly variant: 'missingNullResult';
+  readonly id: typeof FLEET_TEST_UNIT_CONTRACT.id;
+  readonly sourceId: typeof FLEET_TEST_UNIT_CONTRACT.sourceId;
+  readonly baselineId: typeof FLEET_TEST_UNIT_CONTRACT.baselineId;
+  readonly oracleId: typeof FLEET_TEST_UNIT_CONTRACT.oracleId;
+  readonly oraclePin: string;
+  readonly substrateFamily: typeof FLEET_TEST_UNIT_CONTRACT.substrateFamily;
+  readonly root: string;
+  readonly repoRoot: string;
+  readonly baselineCommit: string;
+  readonly taskFile: string;
+  readonly changedPaths: readonly string[];
+  cleanup(): Promise<void>;
+}
+
+const FLEET_TEST_UNIT_SOURCE = `export function normalizeWorkItem(value) {
+  if (value == null) return null;
+  if (typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string' || typeof value.title !== 'string') return { status: 'invalid' };
+  return { status: 'ready', value: { id: value.id, title: value.title } };
+}
+`;
+
+const FLEET_TEST_UNIT_PUBLIC_TEST = `import assert from 'node:assert/strict';
+import { normalizeWorkItem } from '../normalize-work-item.mjs';
+assert.deepEqual(normalizeWorkItem(null), { status: 'empty', value: '' });
+assert.deepEqual(normalizeWorkItem(), { status: 'empty', value: '' });
+assert.deepEqual(normalizeWorkItem({ id: 'task-1', title: 'Repair setting' }), { status: 'ready', value: { id: 'task-1', title: 'Repair setting' } });
+assert.deepEqual(normalizeWorkItem('malformed'), { status: 'invalid' });
+`;
+
+export async function createFleetTestUnitRepairTask(parentDirectory = tmpdir()): Promise<FleetTestUnitRepairTask> {
+  const oraclePin = pinnedIntegrationOracle(FLEET_TEST_UNIT_CONTRACT.oracleId);
+  const root = await mkdtemp(join(parentDirectory, 'cq-fleet-test-unit-corpus-'));
+  const repoRoot = join(root, 'repo');
+  const sourcePath = join(repoRoot, FLEET_TEST_UNIT_CONTRACT.module);
+  const taskFile = join(repoRoot, 'packages/settings/test/normalize-work-item.test.mjs');
+  await mkdir(join(repoRoot, 'packages/settings'), { recursive: true });
+  await mkdir(join(repoRoot, 'packages/settings/test'), { recursive: true });
+  await writeFile(join(repoRoot, 'package.json'), JSON.stringify({ name: 'cq-fleet-unit-corpus', private: true, type: 'module' }, null, 2) + '\n');
+  await writeFile(join(repoRoot, 'packages/settings/package.json'), JSON.stringify({ name: '@local/settings', private: true, type: 'module' }, null, 2) + '\n');
+  await writeFile(sourcePath, FLEET_TEST_UNIT_SOURCE);
+  await writeFile(taskFile, FLEET_TEST_UNIT_PUBLIC_TEST);
+  git(repoRoot, ['init', '-q']);
+  git(repoRoot, ['config', 'user.name', 'CQ Local Corpus']);
+  git(repoRoot, ['config', 'user.email', 'cq-local-corpus@example.invalid']);
+  git(repoRoot, ['add', '.']);
+  git(repoRoot, ['commit', '-q', '-m', `Seed ${FLEET_TEST_UNIT_CONTRACT.id}`]);
+  const baselineCommit = git(repoRoot, ['rev-parse', 'HEAD']);
+  return {
+    variant: 'missingNullResult',
+    id: FLEET_TEST_UNIT_CONTRACT.id,
+    sourceId: FLEET_TEST_UNIT_CONTRACT.sourceId,
+    baselineId: FLEET_TEST_UNIT_CONTRACT.baselineId,
+    oracleId: FLEET_TEST_UNIT_CONTRACT.oracleId,
+    oraclePin,
+    substrateFamily: FLEET_TEST_UNIT_CONTRACT.substrateFamily,
+    root,
+    repoRoot,
+    baselineCommit,
+    taskFile,
+    changedPaths: [
+      'packages/settings/normalize-work-item.mjs',
+      'packages/settings/test/normalize-work-item.test.mjs',
+    ],
+    async cleanup() { await rm(root, { recursive: true, force: true }); },
+  };
+}
+
+/** This local fake produces check-runner JSON and never executes repo code. */
+export function executeFleetTestUnitRepairTask(
+  task: FleetTestUnitRepairTask,
+  driver: Driver,
+): ReturnType<ReturnType<typeof makeSweepUnitOp>> {
+  let checkNumber = 0;
+  const bindings: Parameters<typeof makeSweepUnitOp>[0] = {
+    repoRoot: task.repoRoot,
+    worktreesDir: 'worktrees',
+    runPrefix: 'cq-fleet-test-unit',
+    base: task.baselineCommit,
+    adapter: 'vitest-json',
+    async runCheck() {
+      checkNumber += 1;
+      if (checkNumber === 1) {
+        return {
+          stdout: JSON.stringify({
+            success: false,
+            numTotalTests: 1,
+            numFailedTests: 1,
+            testResults: [{ name: task.taskFile, status: 'failed', assertionResults: [{ status: 'failed', title: 'missing input returns empty value' }] }],
+          }),
+          stderr: '',
+          exitCode: 1,
+        };
+      }
+      return {
+        stdout: JSON.stringify({
+          success: true,
+          numTotalTests: 1,
+          numFailedTests: 0,
+          testResults: [{ name: task.taskFile, status: 'passed', assertionResults: [{ status: 'passed', title: 'missing input returns empty value' }] }],
+        }),
+        stderr: '',
+        exitCode: 0,
+      };
+    },
+    checkCommand: (_unit, worktreePath) => ({ command: process.execPath, args: ['--test', 'packages/settings/test/normalize-work-item.test.mjs'], cwd: worktreePath }),
+    driver,
+    modelSpec: { model: 'cq-local-fake-driver', provider: 'local-corpus' },
+    sessionsDir: join(task.root, 'sessions'),
+    prompt: (_unit, worktree) => `Repair normalizeWorkItem missing and null input. Preserve valid records and reject malformed values. Edit only packages/settings/normalize-work-item.mjs.\nworktree: ${worktree.path}`,
+    async git(args) {
+      try {
+        const result = await execFileAsync('git', args, { cwd: task.repoRoot, encoding: 'utf8' });
+        return { code: 0, stdout: result.stdout, stderr: result.stderr };
+      } catch (error) {
+        const detail = error as { code?: number | string; stdout?: string; stderr?: string };
+        return { code: typeof detail.code === 'number' ? detail.code : 1, stdout: detail.stdout ?? '', stderr: detail.stderr ?? '' };
+      }
+    },
+    // Deliberately no pushBranch binding: this task cannot publish remotely.
+  };
+  const operation = makeSweepUnitOp(bindings);
+  return operation({ package: 'settings', fixer: 'normalize-work-item', files: ['packages/settings/test/normalize-work-item.test.mjs'] });
+}
+
+export async function judgeFleetTestUnitRepairTask(task: FleetTestUnitRepairTask, candidateRoot = task.repoRoot): Promise<WorkflowOracleReport> {
+  const behavior = await judgeFleetUnitCandidate(candidateRoot);
+  const identity = judgeLocalCandidateIdentity({
+    repoRoot: candidateRoot,
+    baselineCommit: task.baselineCommit,
+    allowedPaths: [...task.changedPaths],
+    exactPaths: false,
+  });
+  const failures = [...behavior.failures, ...identity.failures];
+  return { sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId, passed: failures.length === 0, failures };
 }

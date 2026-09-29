@@ -5,8 +5,8 @@ import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { ArtifactStore } from '../runner/artifacts/index.ts';
 import { judgeManifestHash } from '../runner/experiment.ts';
 import { captureGitCandidatePatch, resolveS1DependencyRoot, runVisibleReviewLoopScreening, visibleRunIdentity } from '../runner/strategies/visible-screening.ts';
@@ -376,7 +376,45 @@ describe('bounded campaign strategy engine', () => {
       expect(resolveS1DependencyRoot(dependencyRoot)).toBe(dependencyRoot);
       expect(() => resolveS1DependencyRoot(join(root, 'missing-integration'))).toThrow(/S1 integration root unavailable/);
       expect(() => resolveS1DependencyRoot()).toThrow(/pass a pinned s1DependencyRoot/);
+      expect(() => resolveS1DependencyRoot('   ')).toThrow(/pass a pinned s1DependencyRoot/);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('passes bounded safe integer absolute deadlines to each stage and rejects invalid epoch clocks', async () => {
+    const executor = new FakeExecutor();
+    let monotonicTick = 0;
+    const epochBase = 1_800_000_000_000;
+    const outcome = await runStrategy(task, { kind: 'one-shot', route: codex }, tier, executor, {
+      ids: fixedIds(), now: () => 100.25 + monotonicTick++ * 0.125, epochNow: () => epochBase + 0.75,
+    });
+    expect(outcome.stages.map((stage) => stage.kind)).toEqual(['draft', 'independent-judge']);
+    expect(executor.requests).toHaveLength(2);
+    for (const request of executor.requests) {
+      expect(Number.isSafeInteger(request.deadlineEpochMs)).toBe(true);
+      expect(request.deadlineEpochMs).toBeGreaterThan(epochBase);
+      expect(request.deadlineEpochMs).toBeLessThanOrEqual(epochBase + tier.wallClockMs);
+    }
+    const draftDeadline = executor.requests[0]!.deadlineEpochMs;
+    const judgeDeadline = executor.requests[1]!.deadlineEpochMs;
+    expect(judgeDeadline).toBeGreaterThan(draftDeadline);
+    expect(judgeDeadline).toBeLessThanOrEqual(epochBase + tier.wallClockMs - tier.shutdownAllowanceMs
+      - tier.observationAllowanceMs - tier.captureAllowanceMs);
+
+    const invalidClockExecutor = new FakeExecutor();
+    const invalidClock = await runStrategy(task, { kind: 'one-shot', route: codex }, tier, invalidClockExecutor, {
+      ids: fixedIds(), epochNow: () => Number.POSITIVE_INFINITY,
+    });
+    expect(invalidClock.operationalStatus).toBe('operational-failure');
+    expect(invalidClock.incompleteReasons).toContain('strategy-error:Strategy deadline inputs must be finite');
+    expect(invalidClockExecutor.requests).toHaveLength(0);
+
+    const unsafeClockExecutor = new FakeExecutor();
+    const unsafeClock = await runStrategy(task, { kind: 'one-shot', route: codex }, tier, unsafeClockExecutor, {
+      ids: fixedIds(), epochNow: () => Number.MAX_SAFE_INTEGER,
+    });
+    expect(unsafeClock.operationalStatus).toBe('operational-failure');
+    expect(unsafeClock.incompleteReasons).toContain('strategy-error:Strategy epoch deadline must be a safe integer');
+    expect(unsafeClockExecutor.requests).toHaveLength(0);
   });
 
   it('captures committed edits and untracked additions without changing the worker index', () => {

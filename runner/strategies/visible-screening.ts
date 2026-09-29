@@ -5,7 +5,7 @@ import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSyn
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import type { Driver, OpInvocation } from '@camerontaylor/cq-toolkit';
 import { createNativeStrategyExecutor, type NativeObservedDriver, type NativeSupervisorControl, type IndependentJudgeSettlementProof } from './executor.ts';
 import { createIndependentJudgeProcessSupervisor, loadPinnedJudgeOwnership } from './judge-process.ts';
@@ -216,22 +216,14 @@ function isS1DependencyRoot(root: string): boolean {
 }
 
 export function resolveS1DependencyRoot(explicitRoot?: string): string {
-  const ownRoot = findOwnRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
-  const root = explicitRoot ? resolve(explicitRoot) : ownRoot;
-  if (!root || !isS1DependencyRoot(root)) {
+  if (typeof explicitRoot !== 'string' || explicitRoot.trim().length === 0) {
+    throw new Error('S1 integration root unavailable in this repository; pass a pinned s1DependencyRoot');
+  }
+  const root = resolve(explicitRoot);
+  if (!isS1DependencyRoot(root)) {
     throw new Error('S1 integration root unavailable in this repository; pass a pinned s1DependencyRoot');
   }
   return root;
-}
-
-function findOwnRepositoryRoot(startDirectory: string): string | null {
-  let current = resolve(startDirectory);
-  for (;;) {
-    if (existsSync(join(current, '.git')) && existsSync(join(current, 'package.json'))) return current;
-    const parent = dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
 }
 
 /** Load the sibling S1 integration at runtime so this runner package keeps its own build boundary. */
@@ -420,10 +412,16 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
           track: 'visible-review-loop-screening', strategyId: identity, settingsId: options.settingsId,
           budgetId: tier.id, profileId: options.profileId, frozenWeight: 1, substrateId, judgeManifest,
         };
+        const shutdownDeadlineEpochMs = request.deadlineEpochMs + request.tier.shutdownAllowanceMs;
+        if (!Number.isSafeInteger(request.deadlineEpochMs) || !Number.isSafeInteger(request.tier.shutdownAllowanceMs)
+          || request.tier.shutdownAllowanceMs <= 0 || !Number.isSafeInteger(shutdownDeadlineEpochMs)
+          || shutdownDeadlineEpochMs <= request.deadlineEpochMs) {
+          throw new Error('Independent judge deadlines must be ordered safe integer epoch milliseconds');
+        }
         return {
           schemaVersion: 1, identity: { assignmentId: request.assignmentId, stageId: request.stageId, attemptId: request.attemptId },
           deadlineEpochMs: request.deadlineEpochMs,
-          shutdownDeadlineEpochMs: request.deadlineEpochMs + request.tier.shutdownAllowanceMs,
+          shutdownDeadlineEpochMs,
           s1DependencyRoot: s1Root,
           task: {
             id: task.id, sourceId: task.sourceId, baselineId: task.baselineId, oracleId: task.oracleId,

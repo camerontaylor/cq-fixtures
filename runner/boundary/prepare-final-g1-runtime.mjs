@@ -11,12 +11,28 @@ import { DockerControl, teardownContainer } from './docker-control.ts';
 import { prepareFinalCodexContext } from './codex-final-profile.ts';
 const hash = b => createHash('sha256').update(b).digest('hex');
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+/** Source-only derivation; independent of approval requests and infrastructure. */
+export async function deriveFinalG1PreparationPins(repoRoot) {
+  const root = realpathSync(resolve(repoRoot));
+  const load = p => import(pathToFileURL(join(root, p)).href);
+  const { createReviewLoopOraclePin } = await load('runner/workflow-corpus/review-loop-pin.ts');
+  const oraclePin = createReviewLoopOraclePin(root);
+  for (const dependency of oraclePin.dependencies) {
+    const path = realpathSync(join(root, dependency.path));
+    if (!path.startsWith(root + '/') || hash(readFileSync(path)) !== dependency.sha256) {
+      throw new Error('active oracle dependency bytes changed or escaped the canonical source root');
+    }
+  }
+  const native = await load('runner/native/run-final-profile-g1.ts');
+  const result = await native.finalProfileG1SourcePins(oraclePin.dependencies);
+  if (createReviewLoopOraclePin(root).sha256 !== oraclePin.sha256) throw new Error('active oracle changed during source derivation');
+  return { ...result, oraclePin };
+}
 export async function preparePrivateRuntime(repoRoot, runId) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$/.test(runId)) throw new Error('safe unique parent runId required');
-  const root = resolve(repoRoot), load = p => import(pathToFileURL(join(root, p)).href);
-  const native = await load('runner/native/run-final-profile-g1.ts');
+  const root = realpathSync(resolve(repoRoot)), load = p => import(pathToFileURL(join(root, p)).href);
   const { createReviewLoopRepairTask } = await load('campaigns/cq-settings/corpus/review-loop-task.ts');
-  const { pins: sourcePins, sourcePin } = await native.finalProfileG1SourcePins();
+  const { pins: sourcePins, sourcePin } = await deriveFinalG1PreparationPins(root);
   const publicInputsPath = join(root, 'runner/boundary/evidence/fallback/final-profile-public-inputs.json');
   const publicInputsSha256 = hash(readFileSync(publicInputsPath)), pins = JSON.parse(readFileSync(publicInputsPath));
   const runtimeSource = fileURLToPath(new URL('./final-g1-runtime.mjs', import.meta.url));

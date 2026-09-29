@@ -628,6 +628,42 @@ describe('exclusive public broker toolchain', () => {
   });
 });
 
+it('preparer pins match the actual runSuite oracle closure including nonstatic assets', async () => {
+  const { fileURLToPath } = await import('node:url');
+  const preparer = fileURLToPath(new URL('../runner/boundary/prepare-final-g1-runtime.mjs', import.meta.url));
+  const sourceRoot = process.env.CQ_BOUNDARY_SOURCE_ROOT ?? process.cwd();
+  const script = `
+    import { pathToFileURL } from 'node:url';
+    import { join } from 'node:path';
+    const load = p => import(pathToFileURL(join(process.argv[3], p)).href);
+    const { deriveFinalG1PreparationPins } = await import(pathToFileURL(process.argv[2]).href);
+    const { createReviewLoopRepairTask } = await load('campaigns/cq-settings/corpus/review-loop-task.ts');
+    const { createReviewLoopRunSuiteBundle } = await load('runner/workflow-corpus/review-loop-suite.ts');
+    const { finalProfileG1SourcePins } = await load('runner/native/run-final-profile-g1.ts');
+    const task = await createReviewLoopRepairTask({provider:'codex',model:'gpt-6-sol'});
+    let bundle;
+    try {
+      bundle = await createReviewLoopRunSuiteBundle(task);
+      const independent = await deriveFinalG1PreparationPins(process.argv[3]);
+      const actual = await finalProfileG1SourcePins(bundle.oraclePin.dependencies);
+      const legacy = await finalProfileG1SourcePins();
+      console.log(JSON.stringify({samePin:independent.sourcePin===actual.sourcePin,
+        sameEntries:JSON.stringify(independent.pins)===JSON.stringify(actual.pins),
+        sameOracle:independent.oraclePin.sha256===bundle.oraclePin.sha256,
+        legacyDifferent:legacy.sourcePin!==actual.sourcePin,
+        missing:Object.keys(actual.pins).filter(p=>!Object.hasOwn(legacy.pins,p)).sort(),
+        helperPinned:Object.hasOwn(actual.pins,'runner/native/workspace-conformance.ts')}));
+    } finally { if(bundle) await bundle.cleanup(); await task.cleanup(); }
+  `;
+  const child = spawnSync(process.execPath, ['--experimental-transform-types', '--input-type=module', '-e', script, 'source-pin-regression', preparer, sourceRoot],
+    { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024 });
+  expect(child.status, child.stderr).toBe(0);
+  expect(JSON.parse(child.stdout)).toEqual({ samePin: true, sameEntries: true, sameOracle: true, legacyDifferent: true,
+    missing: ['campaigns/cq-settings/corpus/operation-oracle-pins.json',
+      'runner/boundary/evidence/fallback/judge-ownership-source-closure.public.json',
+      'runner/boundary/namespace-acl.sh', 'runner/boundary/volume-io.mjs'], helperPinned: true });
+}, 35000);
+
 it('private G1 factory leaves quota telemetry to the authenticated native default', async () => {
   const { createHash } = await import('node:crypto');
   const { fileURLToPath } = await import('node:url');

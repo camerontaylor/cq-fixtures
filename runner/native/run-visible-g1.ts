@@ -31,6 +31,9 @@ import ts from 'typescript';
 
 export type VisibleG1Route = 'codex' | 'pi-json' | 'pi-rpc' | 'glm';
 type NativeRouteName = 'codex' | 'pi-opencode' | 'zcode';
+export const DEFAULT_VISIBLE_PI_MODEL_WALL_CLOCK_MS = 120_000;
+export const MIN_VISIBLE_PI_MODEL_WALL_CLOCK_MS = 1_000;
+export const MAX_VISIBLE_PI_MODEL_WALL_CLOCK_MS = 120_000;
 
 export interface VisibleG1BoundaryEvidence {
   scope: 'visible-calibration';
@@ -47,8 +50,8 @@ export interface VisibleG1Options {
   /** Tests inject a null quota source; live runs use both native read sources. */
   quotaSource?: QuotaSource;
   launchInventory?: NativeLaunchInventory;
-  /** Native runner deadline override for no-dispatch fixtures; production defaults to 60 seconds. */
-  suiteCheckTimeoutMs?: number;
+  /** Pi process cutoff; supported only on the Pi JSON/RPC visible routes. */
+  modelWallClockMs?: number;
   configPath?: string;
   now?: () => number;
 }
@@ -126,6 +129,20 @@ export function freshAggregateQuotaSource(clock: () => number = Date.now): Quota
 export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1Result> {
   const spec = ROUTES[options.route];
   if (!spec) throw new Error(`unsupported visible G1 route '${String(options.route)}'`);
+  const isPiRoute = options.route === 'pi-json' || options.route === 'pi-rpc';
+  if (options.modelWallClockMs !== undefined && !isPiRoute) {
+    throw new Error('--model-wall-clock-ms is supported only for pi-json and pi-rpc visible routes');
+  }
+  const modelWallClockMs = isPiRoute
+    ? options.modelWallClockMs ?? DEFAULT_VISIBLE_PI_MODEL_WALL_CLOCK_MS
+    : null;
+  if (modelWallClockMs !== null && !isValidVisiblePiModelWallClockMs(modelWallClockMs)) {
+    throw new Error(`Pi model wall-clock cutoff must be an integer from ${MIN_VISIBLE_PI_MODEL_WALL_CLOCK_MS} to ${MAX_VISIBLE_PI_MODEL_WALL_CLOCK_MS} milliseconds`);
+  }
+  if (isPiRoute && options.driver instanceof PiNativeDriver &&
+      options.driver.configuredModelWallClockMs !== modelWallClockMs) {
+    throw new Error('configured Pi driver cutoff does not match the preregistered --model-wall-clock-ms value');
+  }
   if (options.boundary.scope !== 'visible-calibration' || options.boundary.isolation !== 'disabled' ||
       options.boundary.heldOut !== false || !options.boundary.evidenceRef.trim()) {
     throw new Error('visible G1 requires an explicitly admitted, visible-calibration lifecycle receipt');
@@ -174,9 +191,10 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
     bridgeProfile: bridgeProfile.label,
     profileComparison: comparison.comparison,
     boundary: options.boundary,
-    suiteCheckTimeoutMs: options.suiteCheckTimeoutMs ?? 60_000,
+    modelWallClockMs,
   };
-  const budget = { wallClockMs: 120_000, maxAttempts: 1, maxTokens: null, hardTokenCap: false };
+  const suiteCheckTimeoutMs = modelWallClockMs ?? 60_000;
+  const budget = { wallClockMs: 120_000, modelWallClockMs, maxAttempts: 1, maxTokens: null, hardTokenCap: false };
   const identity = experimentId({
     track: 'visible-g1-calibration', sourcePins,
     corpusPin: `${task.sourceId}:${task.baselineId}:${task.baselineCommit}:${bundle.oraclePin.sha256}`,
@@ -300,7 +318,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
         model: spec.model,
         provider: spec.taskProvider,
         driverName: spec.rowDriver,
-        checkTimeoutMs: settings.suiteCheckTimeoutMs,
+        checkTimeoutMs: suiteCheckTimeoutMs,
         experiment,
         expectedCaseIds: [caseId],
         expectedInvocations: [{ assignmentId, stageId, attemptId }],
@@ -336,6 +354,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
       transport: spec.transport,
       provider: spec.provider,
       model: spec.model,
+      modelWallClockMs,
       requestedEffort: settings.requestedEffort,
       requestedPermissionProfile: options.route === 'codex' ? 'configured Sol fullaccess' : options.route === 'glm' ? 'ZCode yolo' : 'Pi configured high',
       experimentId: identity,
@@ -349,7 +368,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
       },
       judgeManifest,
       pins: { sourcePins, promptSha256: sha256(prompt), judgeSha256: bundle.oraclePin.sha256, launchInventorySha256: sha256(JSON.stringify(launchInventory)) },
-      budget: { ...budget, suiteCheckTimeoutMs: settings.suiteCheckTimeoutMs, schedulerDiagnosticMaxAttempts: 1, usagePolicy: 'unknown-usage-no-capacity-claim' },
+      budget: { ...budget, suiteCheckTimeoutMs, schedulerDiagnosticMaxAttempts: 1, usagePolicy: 'unknown-usage-no-capacity-claim' },
       quotaReads,
       boundary: { ...options.boundary, status: 'visible-only-unconfined', visibleOnly: true },
       profileComparison: comparison.comparison,
@@ -497,22 +516,36 @@ async function writeCreateOnly(path: string, contents: string): Promise<void> {
 async function main(argv: string[]): Promise<void> {
   const routeArg = readArg(argv, '--route') as VisibleG1Route | undefined;
   const moduleArg = readArg(argv, '--driver-module');
+  const modelWallClockArg = readArg(argv, '--model-wall-clock-ms');
   const outputRoot = readArg(argv, '--output-root') ?? join(REPO_ROOT, 'research execution', 'visible-g1-runs');
   const configPath = readArg(argv, '--paseo-config') ?? join(homedir(), '.paseo', 'config.json');
   if (!routeArg || !Object.hasOwn(ROUTES, routeArg) || !moduleArg) {
-    throw new Error('usage: node --experimental-strip-types runner/native/run-visible-g1.ts --route codex|pi-json|pi-rpc|glm --driver-module <trusted-boundary-module> [--output-root <dir>] [--paseo-config <file>]');
+    throw new Error('usage: node --experimental-strip-types runner/native/run-visible-g1.ts --route codex|pi-json|pi-rpc|glm --driver-module <trusted-boundary-module> [--model-wall-clock-ms 1000..120000 (Pi routes only)] [--output-root <dir>] [--paseo-config <file>]');
+  }
+  const modelWallClockMs = modelWallClockArg === undefined
+    ? DEFAULT_VISIBLE_PI_MODEL_WALL_CLOCK_MS
+    : parseVisiblePiModelWallClockMs(modelWallClockArg);
+  const isPiRoute = routeArg === 'pi-json' || routeArg === 'pi-rpc';
+  if (modelWallClockArg !== undefined && !isPiRoute) {
+    throw new Error('--model-wall-clock-ms is supported only for pi-json and pi-rpc visible routes');
   }
   const modulePath = isAbsolute(moduleArg) ? moduleArg : resolve(process.cwd(), moduleArg);
   const loaded = await import(pathToFileURL(modulePath).href) as {
-    createVisibleG1Driver(input: { route: VisibleG1Route; outputRoot: string }): Promise<{
+    createVisibleG1Driver(input: { route: VisibleG1Route; outputRoot: string; modelWallClockMs?: number }): Promise<{
       driver: ObservedNativeDriver;
       boundary: VisibleG1BoundaryEvidence;
       quotaSource?: QuotaSource;
       launchInventory?: NativeLaunchInventory;
+      modelWallClockMs?: number;
     }>;
   };
   if (typeof loaded.createVisibleG1Driver !== 'function') throw new Error('driver module must export createVisibleG1Driver');
-  const created = await loaded.createVisibleG1Driver({ route: routeArg, outputRoot });
+  const created = await loaded.createVisibleG1Driver({
+    route: routeArg, outputRoot, ...(isPiRoute ? { modelWallClockMs } : {}),
+  });
+  if (isPiRoute && created.modelWallClockMs !== modelWallClockMs) {
+    throw new Error('trusted Pi driver factory did not return the exact preregistered model cutoff');
+  }
   if ((routeArg === 'codex' && !(created.driver instanceof CodexExecDriver)) ||
       ((routeArg === 'pi-json' || routeArg === 'pi-rpc') && !(created.driver instanceof PiNativeDriver)) ||
       (routeArg === 'glm' && !(created.driver instanceof ZcodeAcpDriver))) {
@@ -525,10 +558,27 @@ async function main(argv: string[]): Promise<void> {
   const result = await runVisibleG1({
     route: routeArg, driver: created.driver, boundary: created.boundary,
     outputRoot, configPath,
+    ...(isPiRoute ? { modelWallClockMs } : {}),
     ...(created.quotaSource ? { quotaSource: created.quotaSource } : {}),
     ...(created.launchInventory ? { launchInventory: created.launchInventory } : {}),
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+export function parseVisiblePiModelWallClockMs(value: string): number {
+  if (!/^[0-9]+$/u.test(value)) {
+    throw new Error('--model-wall-clock-ms must be a decimal integer from 1000 to 120000');
+  }
+  const parsed = Number(value);
+  if (!isValidVisiblePiModelWallClockMs(parsed)) {
+    throw new Error('--model-wall-clock-ms must be a decimal integer from 1000 to 120000');
+  }
+  return parsed;
+}
+
+function isValidVisiblePiModelWallClockMs(value: number): boolean {
+  return Number.isFinite(value) && Number.isInteger(value) &&
+    value >= MIN_VISIBLE_PI_MODEL_WALL_CLOCK_MS && value <= MAX_VISIBLE_PI_MODEL_WALL_CLOCK_MS;
 }
 
 function readArg(argv: string[], flag: string): string | undefined {

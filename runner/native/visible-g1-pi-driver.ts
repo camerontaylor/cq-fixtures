@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { PiNativeDriver, type PiMode } from './pi.ts';
 import { resolveNativeLaunchInventory } from './inventory.ts';
 import { visibleCalibrationSpawnAdapter } from './process.ts';
+import { DEFAULT_VISIBLE_PI_MODEL_WALL_CLOCK_MS, MAX_VISIBLE_PI_MODEL_WALL_CLOCK_MS, MIN_VISIBLE_PI_MODEL_WALL_CLOCK_MS } from './run-visible-g1.ts';
 import type { VisibleG1Route } from './run-visible-g1.ts';
 
 const ENVIRONMENT_NAMES = ['HOME', 'OPENCODE_API_KEY', 'PATH', 'TMPDIR', 'XDG_CONFIG_HOME'];
@@ -32,9 +33,14 @@ export function assertPiConfiguredAuthHandoff(configPath: string): string {
 }
 
 /** Driver-module entrypoint consumed by runner/native/run-visible-g1.ts. */
-export async function createVisibleG1Driver(input: { route: VisibleG1Route; outputRoot: string }) {
+export async function createVisibleG1Driver(input: { route: VisibleG1Route; outputRoot: string; modelWallClockMs?: number }) {
   if (input.route !== 'pi-json' && input.route !== 'pi-rpc') {
     throw new Error('this trusted host adapter supports only pi-json and pi-rpc');
+  }
+  const modelWallClockMs = input.modelWallClockMs ?? DEFAULT_VISIBLE_PI_MODEL_WALL_CLOCK_MS;
+  if (!Number.isFinite(modelWallClockMs) || !Number.isInteger(modelWallClockMs) ||
+      modelWallClockMs < MIN_VISIBLE_PI_MODEL_WALL_CLOCK_MS || modelWallClockMs > MAX_VISIBLE_PI_MODEL_WALL_CLOCK_MS) {
+    throw new Error(`Pi model wall-clock cutoff must be an integer from ${MIN_VISIBLE_PI_MODEL_WALL_CLOCK_MS} to ${MAX_VISIBLE_PI_MODEL_WALL_CLOCK_MS} milliseconds`);
   }
   const admissionId = process.env.CQ_VISIBLE_G1_ADMISSION_ID;
   if (!admissionId || !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/u.test(admissionId)) {
@@ -60,7 +66,7 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
     model: MODEL,
     thinking: 'high',
     artifactDirectory: join(input.outputRoot, 'native-events'),
-    hardWallClockMs: 120_000,
+    hardWallClockMs: modelWallClockMs,
     spawnAdapter: visibleCalibrationSpawnAdapter({
       admissionId, scope: 'visible-calibration', isolation: 'disabled', heldOut: false,
       environmentNames: ENVIRONMENT_NAMES,
@@ -68,6 +74,7 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
   });
   return {
     driver,
+    modelWallClockMs,
     boundary: {
       scope: 'visible-calibration' as const,
       isolation: 'disabled' as const,

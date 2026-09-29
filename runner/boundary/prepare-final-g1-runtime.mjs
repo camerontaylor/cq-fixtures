@@ -11,6 +11,18 @@ import { DockerControl, teardownContainer } from './docker-control.ts';
 import { prepareFinalCodexContext } from './codex-final-profile.ts';
 const hash = b => createHash('sha256').update(b).digest('hex');
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+/** Reject all tracked and untracked source changes before private state or resources. */
+export function verifyCleanPreparationSource(repoRoot, expectedHead) {
+  const root = realpathSync(resolve(repoRoot));
+  const options = { cwd: root, encoding: 'utf8', timeout: 5000, maxBuffer: 512 * 1024,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
+  const head = execFileSync('/usr/bin/git', ['rev-parse', 'HEAD'], options).trim();
+  const status = execFileSync('/usr/bin/git', ['status', '--porcelain=v1', '--untracked-files=all'], options);
+  if (status.length || (expectedHead !== undefined && head !== expectedHead)) {
+    throw new Error('preparation source is dirty or its frozen HEAD changed; no resources authorized');
+  }
+  return head;
+}
 /** Source-only derivation; independent of approval requests and infrastructure. */
 export async function deriveFinalG1PreparationPins(repoRoot) {
   const root = realpathSync(resolve(repoRoot));
@@ -31,12 +43,14 @@ export async function deriveFinalG1PreparationPins(repoRoot) {
 export async function preparePrivateRuntime(repoRoot, runId) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$/.test(runId)) throw new Error('safe unique parent runId required');
   const root = realpathSync(resolve(repoRoot)), load = p => import(pathToFileURL(join(root, p)).href);
+  const repositoryHead = verifyCleanPreparationSource(root);
   const { createReviewLoopRepairTask } = await load('campaigns/cq-settings/corpus/review-loop-task.ts');
   const { pins: sourcePins, sourcePin } = await deriveFinalG1PreparationPins(root);
   const publicInputsPath = join(root, 'runner/boundary/evidence/fallback/final-profile-public-inputs.json');
   const publicInputsSha256 = hash(readFileSync(publicInputsPath)), pins = JSON.parse(readFileSync(publicInputsPath));
   const runtimeSource = fileURLToPath(new URL('./final-g1-runtime.mjs', import.meta.url));
   const runtimeSourceSha256 = hash(readFileSync(runtimeSource));
+  verifyCleanPreparationSource(root, repositoryHead);
   const privateRoot = realpathSync(mkdtempSync(join(tmpdir(), 'cq-s5-final-g1-private-'))); chmodSync(privateRoot, 0o700);
   const task = await createReviewLoopRepairTask({ provider: 'codex', model: 'gpt-6-sol' });
   let taskFiles, taskDirectories;
@@ -72,8 +86,8 @@ export async function preparePrivateRuntime(repoRoot, runId) {
     const { compileBroker } = await load('runner/boundary/egress-broker.ts'); if (compileBroker(config).identity !== pins.brokerIdentity) throw new Error('exact live broker configuration differs');
     phase = 'host-G1-evidence';
     const report = '/Volumes/offload/neptune/repos/toolkit-research-cq-settings/research/research-20260929-cq-settings-execution/visible-g1-runs/codex/de7971b1-827b-4da2-a7df-a821c525e2e2/visible-g1-report.json';
-    const repositoryHead = execFileSync('/usr/bin/git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8',timeout:5000}).trim();
-    const sourceIsProvisional = pins.effectiveBrokerIdentity !== FINAL_BROKER_RUNTIME_IDENTITY || !!execFileSync('/usr/bin/git',['status','--porcelain'],{cwd:root,encoding:'utf8',timeout:5000,maxBuffer:512*1024}).trim();
+    verifyCleanPreparationSource(root, repositoryHead);
+    const sourceIsProvisional = pins.effectiveBrokerIdentity !== FINAL_BROKER_RUNTIME_IDENTITY;
     const runtimeDependenciesSha256 = Object.fromEntries(['broker-toolchain.ts','broker-public-assets/broker.mjs','broker-public-assets/config.json'].map(p => { const path=fileURLToPath(new URL('./'+p,import.meta.url));return [path,hash(readFileSync(path))] }));
     const plan = { runtimeDependenciesSha256, brokerAssetVolume, effectiveBrokerIdentity:FINAL_BROKER_RUNTIME_IDENTITY, repositoryHead, sourceIsProvisional, repoRoot:root, privateRoot, privateAuthRoot:auth.privateRoot, network, brokerContainerId:brokerId, runId, runtimeSource, runtimeSourceSha256, sourcePins, sourcePin, publicInputsSha256, utilityImage, taskFiles, taskDirectories, nativeControlEvidence:'accepted-host-visible-G1-report-sha256:' + hash(readFileSync(report)) + ';final-container-G1-unqualified;extension-lifetime-unverified' };
     save(join(privateRoot,'setup-state.json'), { network, broker:{containerId:brokerId,imageId:pins.brokerImage,configPath:'/opt/config.json',publicAssetVolume:brokerAssetVolume,runtimeRunId:runId}, authRoot:auth.privateRoot, handedOff:false });

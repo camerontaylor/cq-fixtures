@@ -50,6 +50,53 @@ describe('independently owned assignment lifetime', () => {
     expect(r.terminal).toBe('cancelled'); expect(r.quarantine).toBe('unknown'); expect(r.hostProcessTree).toBe('stopped-and-reaped');
     expect(readFileSync(r.registryPath,'utf8')).toContain('cq-s5-retained');
   });
+  it('keeps timeout identity joined when quarantine synchronously attempts mutation', async () => {
+    const f = fixture('export async function execute(){await new Promise(()=>{})}');
+    const expected = { ...f.input.identity };
+    let requestIdentity: typeof identity | undefined;
+    const receipt = await superviseAssignment({ ...f.input, quarantine: async request => {
+      requestIdentity = request.identity;
+      expect(Reflect.set(request.identity, 'assignmentId', 'substituted')).toBe(false);
+      expect(Reflect.set(request, 'identity', { ...identity, assignmentId: 'replaced' })).toBe(false);
+      throw new Error('quarantine failed');
+    } });
+    expect(receipt).toMatchObject({ terminal: 'timeout', primaryCause: 'DeadlineExceeded', quarantine: 'unknown' });
+    expect(requestIdentity).toEqual(expected);
+    expect(requestIdentity).not.toBe(receipt.identity);
+    expect(Object.isFrozen(requestIdentity)).toBe(true);
+    expect(receipt.identity).toEqual(expected);
+    expect(JSON.parse(readFileSync(receipt.registryPath, 'utf8')).identity).toEqual(expected);
+    expect(JSON.parse(readFileSync(join(f.root, `executor-${expected.invocationId}.json`), 'utf8')).identity).toEqual(expected);
+  });
+  it('keeps registry request and receipt identity immutable after late quarantine continuation', async () => {
+    const f = fixture('export async function execute(){await new Promise(()=>{})}');
+    const callerIdentity = { ...identity };
+    const expected = { ...callerIdentity };
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let mutationAccepted: boolean | undefined;
+    let requestIdentity: typeof identity | undefined;
+    const pending = superviseAssignment({ ...f.input, identity: callerIdentity, quarantine: async request => {
+      requestIdentity = request.identity;
+      await gate;
+      mutationAccepted = Reflect.set(request.identity, 'attemptId', 'late-substitution');
+    } });
+    callerIdentity.assignmentId = 'caller-substitution';
+    const receipt = await pending;
+    const before = JSON.stringify(receipt), registryBefore = readFileSync(receipt.registryPath, 'utf8');
+    release();
+    await gate;
+    await Promise.resolve();
+    expect(mutationAccepted).toBe(false);
+    expect(receipt).toMatchObject({ terminal: 'timeout', primaryCause: 'DeadlineExceeded', quarantine: 'unknown' });
+    expect(requestIdentity).toEqual(expected);
+    expect(requestIdentity).not.toBe(receipt.identity);
+    expect(receipt.identity).toEqual(expected);
+    expect(JSON.stringify(receipt)).toBe(before);
+    expect(readFileSync(receipt.registryPath, 'utf8')).toBe(registryBefore);
+    expect(JSON.parse(registryBefore).identity).toEqual(expected);
+    expect(JSON.parse(readFileSync(join(f.root, `executor-${expected.invocationId}.json`), 'utf8')).identity).toEqual(expected);
+  });
   it('rejects module/descriptor substitutions before executor launch',async()=>{
     const f=fixture('export function execute(){return true}', 'preparation',1000);
     f.input.operations[0].moduleSha256='0'.repeat(64);

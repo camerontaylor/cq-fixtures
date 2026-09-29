@@ -12,7 +12,7 @@ import { experimentId, suiteTaskId, type ExperimentContext } from '../runner/exp
 import { runSuite } from '../runner/index.ts';
 import { CodexExecDriver } from '../runner/native/codex.ts';
 import { PiNativeDriver } from '../runner/native/pi.ts';
-import { visibleCalibrationSpawnAdapter } from '../runner/native/process.ts';
+import { NativeSupervisorControl, runSupervised, visibleCalibrationSpawnAdapter } from '../runner/native/process.ts';
 import { inventoryTaskWorkspace, runWorkspaceConformance, WorkspaceConformanceError } from '../runner/native/workspace-conformance.ts';
 import type { InvocationIdentity, LaunchEvidence } from '../runner/native/observation.ts';
 import { SESSION_STORE_DIR } from '../runner/index.ts';
@@ -421,4 +421,61 @@ describe('native lifecycle evidence', () => {
     expect(conformanceError!.receipt.failureCodes).toContain('native-lifecycle-proof-unknown');
     expect(conformanceError!.receipt.candidate.artifact).not.toBeNull();
   }, 30_000);
+});
+
+
+describe('native supervisor runtime identity validation', () => {
+  for (const field of ['invocationId', 'assignmentId', 'stageId', 'attemptId'] as const) {
+    it(`rejects malformed ${field} before registration and every proof report`, async () => {
+      for (const value of [undefined, null, '', '   ', 1, false, {}]) {
+        const malformed = { ...testIdentity, [field]: value } as unknown as InvocationIdentity;
+        const fresh = new NativeSupervisorControl();
+        expect(() => fresh.beginInvocation(malformed)).toThrow(/identity/);
+        const active = new NativeSupervisorControl();
+        active.beginInvocation(testIdentity); active.expectProcessTree(testIdentity);
+        expect(() => active.reportProcessNotStarted(malformed, 'trusted guard')).toThrow(/identity/);
+        expect(() => active.reportProcessTree(malformed, true)).toThrow(/identity/);
+        expect(() => active.settleInvocation(malformed)).toThrow(/identity/);
+        expect(() => active.signal(malformed)).toThrow(/identity/);
+        await expect(active.cancelInvocationAndWait({ identity: malformed, cause: 'cancel', deadlineEpochMs: Date.now() + 100 })).rejects.toThrow(/identity/);
+        active.settleInvocation(testIdentity);
+        await expect(active.cancelInvocationAndWait({ identity: testIdentity, cause: 'cancel', deadlineEpochMs: Date.now() + 100 })).rejects.toThrow(/cannot prove/);
+      }
+      const missing = { ...testIdentity } as Partial<InvocationIdentity>; delete missing[field];
+      expect(() => new NativeSupervisorControl().beginInvocation(missing as InvocationIdentity)).toThrow(/identity/);
+      const active = new NativeSupervisorControl(); active.beginInvocation(testIdentity); active.expectProcessTree(testIdentity);
+      expect(() => active.reportProcessNotStarted({ ...testIdentity, [field]: 'wrong' }, 'guard')).toThrow(/matching invocation/);
+      active.settleInvocation(testIdentity);
+      await expect(active.cancelInvocationAndWait({ identity: testIdentity, cause: 'cancel', deadlineEpochMs: Date.now() + 100 })).rejects.toThrow(/cannot prove/);
+    });
+  }
+  it('rejects missing identity objects and unknown invocation without proof', async () => {
+    const control = new NativeSupervisorControl();
+    for (const invalid of [undefined, null, {}, 'identity']) {
+      expect(() => control.beginInvocation(invalid as unknown as InvocationIdentity)).toThrow(/identity/);
+      expect(() => control.reportProcessNotStarted(invalid as unknown as InvocationIdentity, 'guard')).toThrow(/identity/);
+    }
+    expect(() => control.reportProcessNotStarted(testIdentity, 'guard')).toThrow(/matching invocation/);
+    control.beginInvocation(testIdentity); control.settleInvocation(testIdentity);
+    await expect(control.cancelInvocationAndWait({ identity: testIdentity, cause: 'cancel', deadlineEpochMs: Date.now() + 100 })).rejects.toThrow(/cannot prove/);
+  });
+  it('preserves wellformed SDK identity shapes and detached no-spawn settlement', async () => {
+    const control = new NativeSupervisorControl(), caller = { ...testIdentity, sdkMetadata: 'compatible' };
+    control.beginInvocation(caller); control.expectProcessTree(caller);
+    caller.assignmentId = 'mutated-caller';
+    expect(() => control.reportProcessNotStarted(caller, 'guard')).toThrow(/matching invocation/);
+    control.reportProcessNotStarted(testIdentity, 'trusted pre-spawn guard'); control.settleInvocation(testIdentity);
+    await expect(control.cancelInvocationAndWait({ identity: testIdentity, cause: 'cancel', deadlineEpochMs: Date.now() + 100 })).resolves.toEqual({
+      invocationId: testIdentity.invocationId, stageId: testIdentity.stageId, attemptId: testIdentity.attemptId,
+      processTree: 'stopped-and-reaped', invocation: 'settled',
+    });
+  });
+  it('refuses malformed runSupervised identity before invoking a factory', async () => {
+    let calls = 0;
+    await expect(runSupervised('unused', [], { cwd: '.', timeoutMs: 10,
+      identity: { invocationId: 'partial' } as InvocationIdentity,
+      spawnAdapterFactory: async () => { calls++; throw Error('must not run'); },
+    })).rejects.toThrow(/identity/);
+    expect(calls).toBe(0);
+  });
 });

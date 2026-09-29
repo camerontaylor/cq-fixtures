@@ -125,12 +125,13 @@ export class NativeSupervisorControl {
   private readonly invocations = new Map<string, SupervisedInvocation>();
 
   beginInvocation(identity: SupervisedInvocationIdentity): void {
+    identity = validatedSupervisorIdentity(identity);
     if (this.invocations.has(identity.invocationId)) throw new Error(`native invocation '${identity.invocationId}' is already active`);
     let settle!: () => void;
     this.invocations.set(identity.invocationId, {
-      identity: { ...identity }, controller: new AbortController(),
+      identity, controller: new AbortController(),
       settled: new Promise<void>((resolve) => { settle = resolve; }), settle: () => settle(),
-      invocationSettled: false, processTreeStopped: true,
+      invocationSettled: false, processTreeStopped: undefined,
     });
     // Keep a bounded history so late stop requests can still prove a settled
     // invocation without retaining an unbounded campaign's control objects.
@@ -153,7 +154,7 @@ export class NativeSupervisorControl {
   reportProcessNotStarted(identity: SupervisedInvocationIdentity, source?: string): void {
     // Only a trusted identity-bound pre-spawn guard may call this. Driver
     // settlement remains independently required; unknown must not call it.
-    if (source !== undefined && !source.trim()) throw new Error('trusted no-spawn source required');
+    if (source !== undefined && (typeof source !== 'string' || !source.trim())) throw new Error('trusted no-spawn source required');
     this.require(identity).processTreeStopped = true;
   }
 
@@ -196,13 +197,29 @@ export class NativeSupervisorControl {
   }
 
   private require(identity: SupervisedInvocationIdentity): SupervisedInvocation {
+    identity = validatedSupervisorIdentity(identity);
     const state = this.invocations.get(identity.invocationId);
     if (!state || !sameSupervisorIdentity(state.identity, identity)) throw new Error('native supervisor has no matching invocation');
     return state;
   }
 }
 
+/** Validate JavaScript callers as well as typed SDK callers; accept compatible
+ * extra SDK metadata without allowing it to participate in proof identity. */
+function validatedSupervisorIdentity(value: SupervisedInvocationIdentity): SupervisedInvocationIdentity {
+  const fields = ['invocationId', 'assignmentId', 'stageId', 'attemptId'] as const;
+  if (!value || typeof value !== 'object') throw new Error('complete native supervisor invocation identity required');
+  const identity = {} as SupervisedInvocationIdentity;
+  for (const field of fields) {
+    const entry = value[field];
+    if (!Object.hasOwn(value, field) || typeof entry !== 'string' || !entry.trim()) throw new Error('complete native supervisor invocation identity required');
+    identity[field] = entry;
+  }
+  return Object.freeze(identity);
+}
+
 function sameSupervisorIdentity(left: SupervisedInvocationIdentity, right: SupervisedInvocationIdentity): boolean {
+  right = validatedSupervisorIdentity(right);
   return left.invocationId === right.invocationId && left.assignmentId === right.assignmentId
     && left.stageId === right.stageId && left.attemptId === right.attemptId;
 }
@@ -298,6 +315,7 @@ export async function runSupervised(
   args: readonly string[],
   options: SupervisedProcessOptions,
 ): Promise<SupervisedProcessResult> {
+  if (options.identity !== undefined) options = { ...options, identity: validatedSupervisorIdentity(options.identity) };
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
     throw new RangeError('timeoutMs must be a positive finite number');
   }

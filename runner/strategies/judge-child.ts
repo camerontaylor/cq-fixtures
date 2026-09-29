@@ -11,6 +11,20 @@ const SUITE_SOURCE = 'runner/workflow-corpus/review-loop-suite.ts';
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 type MaterializedJudgeRequest = ReviewLoopJudgeProcessRequest & { readonly processRoot: string; readonly artifactRoot: string };
+interface JudgeOwnershipBindings {
+  stableJudgeCandidateInventory(module: string, bytes: Uint8Array): { inventoryHash: string };
+}
+
+const OWNERSHIP_CLOSURE = 'runner/boundary/evidence/fallback/judge-ownership-source-closure.public.json';
+const OWNERSHIP_MODULE = 'runner/boundary/judge-ownership.ts';
+const OWNERSHIP_CLOSURE_ASSETS = [
+  'runner/boundary/broker-toolchain.ts', 'runner/boundary/codex-final-profile.ts',
+  'runner/boundary/container-prepare.ts', 'runner/boundary/container.ts', 'runner/boundary/docker-control.ts',
+  'runner/boundary/egress-broker.ts', 'runner/boundary/judge-child.ts', OWNERSHIP_MODULE,
+  'runner/boundary/lifecycle-evidence.ts', 'runner/boundary/namespace-acl.sh',
+  'runner/boundary/subscription-auth.ts', 'runner/boundary/task-session.ts',
+  'runner/boundary/task-staging.ts', 'runner/boundary/task-tree.ts', 'runner/boundary/volume-io.mjs',
+] as const;
 
 interface ChildTask {
   id: string;
@@ -87,6 +101,11 @@ function validateRequest(value: unknown): asserts value is MaterializedJudgeRequ
   if (!/^[a-f0-9]{40}$/i.test(request.baselineCommit) || request.candidate.baselineCommit !== request.baselineCommit
     || request.candidate.baselineTree !== request.baselineTree) throw new Error('judge child baseline identity mismatch');
   if (hash(request.candidate.patch) !== request.candidate.sha256) throw new Error('judge child candidate patch hash mismatch');
+  if (!/^[a-f0-9]{64}$/i.test(request.candidateInventoryHash ?? '')
+    || !/^[a-f0-9]{64}$/i.test(request.namespacePlanSha256 ?? '')
+    || !Number.isInteger(request.namespaceSlotCount) || request.namespaceSlotCount < 1 || request.namespaceSlotCount > 8) {
+    throw new Error('judge child request omits its frozen S5 namespace inventory');
+  }
   if (request.experiment.assignmentId !== request.identity.assignmentId
     || request.experiment.stageId !== request.identity.stageId || request.experiment.attemptId !== request.identity.attemptId
     || request.experiment.judgeManifest.sourcePin !== request.oraclePin
@@ -109,6 +128,55 @@ async function loadS1(root: string): Promise<ChildS1> {
     import(at(TASK_SOURCE)), import(at('runner/index.ts')), import(at('runner/experiment.ts')), import(at(SUITE_SOURCE)),
   ]);
   return { ...corpus, ...runner, ...experiment, ...suite } as unknown as ChildS1;
+}
+
+async function loadPinnedOwnership(root: string, dependencies: readonly { path: string; sha256: string }[]): Promise<JudgeOwnershipBindings> {
+  const dependencyHashes = new Map(dependencies.map((entry) => [entry.path, entry.sha256]));
+  if (dependencyHashes.size !== dependencies.length) throw new Error('protected-judge dependency manifest contains duplicate paths');
+  const closurePath = join(root, OWNERSHIP_CLOSURE);
+  const closureStat = lstatSync(closurePath);
+  if (!closureStat.isFile() || closureStat.isSymbolicLink()) throw new Error('protected-judge source closure is not a regular file');
+  const closureBytes = readFileSync(closurePath);
+  const closurePin = dependencyHashes.get(OWNERSHIP_CLOSURE);
+  if (!closurePin || hash(closureBytes) !== closurePin) throw new Error('pinned protected-judge source closure is missing or changed');
+  const closure = JSON.parse(closureBytes.toString('utf8')) as { schemaVersion?: number; assets?: Record<string, string> };
+  if (closure.schemaVersion !== 1 || !closure.assets || Object.keys(closure.assets).length !== OWNERSHIP_CLOSURE_ASSETS.length) {
+    throw new Error('pinned protected-judge source closure is malformed');
+  }
+  if (JSON.stringify((closure as { entrypoints?: unknown }).entrypoints)
+    !== JSON.stringify(['runner/boundary/judge-ownership.ts', 'runner/boundary/judge-child.ts'])) {
+    throw new Error('pinned protected-judge source closure entrypoints are malformed');
+  }
+  for (const path of OWNERSHIP_CLOSURE_ASSETS) {
+    const expected = closure.assets[path];
+    const assetPath = join(root, path);
+    const stat = lstatSync(assetPath);
+    if (!expected || dependencyHashes.get(path) !== expected || !stat.isFile() || stat.isSymbolicLink()
+      || hash(readFileSync(assetPath)) !== expected) {
+      throw new Error(`protected-judge source closure pin mismatch: ${path}`);
+    }
+  }
+  return await import(pathToFileURL(join(root, OWNERSHIP_MODULE)).href) as JudgeOwnershipBindings;
+}
+
+function validateNamespace(request: MaterializedJudgeRequest): void {
+  const planPath = process.env.CQ_PROTECTED_JUDGE_PLAN;
+  if (!planPath || !isAbsolute(planPath) || !underRoot(request.processRoot, planPath)) throw new Error('protected-judge plan environment is missing or escaped');
+  const stat = lstatSync(planPath);
+  if (!stat.isFile() || stat.isSymbolicLink() || hash(readFileSync(planPath)) !== request.namespacePlanSha256) {
+    throw new Error('protected-judge plan bytes do not match the frozen request');
+  }
+  const plan = JSON.parse(readFileSync(planPath, 'utf8')) as {
+    schemaVersion?: number; identity?: { assignmentId?: string; stageId?: string; attemptId?: string };
+    candidateSha256?: string; oraclePin?: string; slots?: readonly { inventoryHash?: string }[];
+  };
+  if (plan.schemaVersion !== 1 || plan.identity?.assignmentId !== request.identity.assignmentId
+    || plan.identity?.stageId !== request.identity.stageId || plan.identity?.attemptId !== request.identity.attemptId
+    || plan.candidateSha256 !== request.candidate.sha256 || plan.oraclePin !== request.oraclePin
+    || plan.slots?.length !== request.namespaceSlotCount
+    || plan.slots.some((slot) => slot.inventoryHash !== request.candidateInventoryHash)) {
+    throw new Error('protected-judge plan identity or candidate inventory mismatch');
+  }
 }
 
 function workspaceFromPrompt(prompt: string): string {
@@ -136,6 +204,8 @@ async function execute(request: MaterializedJudgeRequest, requestSha256: string)
   }
   safeDirectory(request.processRoot);
   safeDirectory(request.processRoot, request.artifactRoot);
+  validateNamespace(request);
+  const ownership = await loadPinnedOwnership(request.s1DependencyRoot, request.judgeManifest.dependencies);
   const s1 = await loadS1(request.s1DependencyRoot);
   const dataRoot = join(request.processRoot, 's1-runtime');
   safeDirectory(dataRoot);
@@ -187,6 +257,11 @@ async function execute(request: MaterializedJudgeRequest, requestSha256: string)
         execFileSync('git', ['apply', '--binary', '--whitespace=nowarn', '-'], {
           cwd: workspace, input: request.candidate.patch, stdio: ['pipe', 'ignore', 'pipe'],
         });
+        const candidateModule = join(workspace, 'settings/module.js');
+        const moduleStat = lstatSync(candidateModule);
+        if (!moduleStat.isFile() || moduleStat.isSymbolicLink()) throw new Error('protected judge candidate module is not a regular file');
+        const inventory = ownership.stableJudgeCandidateInventory('settings/module.js', readFileSync(candidateModule));
+        if (inventory.inventoryHash !== request.candidateInventoryHash) throw new Error('protected judge candidate module inventory changed');
         return {
           structuredOutput: { fixed: true, notes: 'Apply frozen candidate patch for local host judgement.' },
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'complete', model: request.model,

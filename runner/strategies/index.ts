@@ -609,7 +609,7 @@ export async function runStrategy(
       const deadlineHit = /deadline|timed out/i.test(message) || timedOut();
       const cancelled = message === 'cancelled' || (options.signal?.aborted && input.kind !== 'independent-judge');
       joined.controller.abort(caught);
-      if (execution && !result && (deadlineHit || cancelled)) {
+      if (execution && !result && (deadlineHit || cancelled || input.kind === 'independent-judge')) {
         const shutdownStart = now();
         try {
           const proof = await raceDeadline(executor.stopAndWait(request, execution, caught), Math.min(shutdownReserveRemainingMs, Math.max(0, endAt - now())));

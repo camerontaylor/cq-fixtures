@@ -8,7 +8,8 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Driver, OpInvocation } from '@camerontaylor/cq-toolkit';
 import { createNativeStrategyExecutor, type NativeObservedDriver, type NativeSupervisorControl } from './executor.ts';
-import { createIndependentJudgeProcessSupervisor } from './judge-process.ts';
+import { createIndependentJudgeProcessSupervisor, loadPinnedJudgeOwnership } from './judge-process.ts';
+import type { IndependentJudgeExecution } from './executor.ts';
 import type { ReviewLoopJudgeProcessRequest } from './judge-protocol.ts';
 import {
   defineBudgetTiers, runStrategy, type Candidate, type ExecutorResult, type PerTaskBudgetTier,
@@ -77,6 +78,16 @@ export interface VisibleReviewLoopResult {
       launched: boolean | null;
       terminalCause: StrategyResult['operationalStatus'];
       sourceInvocationIds: readonly string[];
+    };
+    protectedOracleCleanup: {
+      status: 'proven' | 'unobserved';
+      planSha256: string | null;
+      daemonVerified: boolean;
+      ownershipVerified: boolean;
+      containersAbsent: boolean;
+      volumeDisposition: 'quarantined' | 'absent' | 'unproven';
+      resourceIds: readonly string[];
+      inventoryContentVerified: false;
     };
     stages: readonly {
       stageId: string; attemptId: string; invocationId: string | null; status: string;
@@ -269,7 +280,7 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
   const workspaceByAttempt = new Map<string, CandidateWorkspace>();
   const judgeResultsByAttempt = new Map<string, S1RunSuiteResult>();
   const judgeArtifactRoots: string[] = [];
-  const judgeResultHashes = new Map<string, { requestSha256: string; payloadSha256: string }>();
+  const judgeResultHashes = new Map<string, { requestSha256: string; payloadSha256: string; protectedOracleProof: IndependentJudgeExecution['evidence']['protectedOracleProof'] }>();
   let seedTree = '';
   let preserveForRecovery = false;
   let cleanupAttempted = false;
@@ -300,6 +311,10 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
     const experimentRunId = identity;
     const substrateId = `${s1.REVIEW_LOOP_SOURCE_ID}:${s1.REVIEW_LOOP_BASELINE_ID}:campaign-settings-module-v1`;
     const judgeManifest = { sourcePin: bundle.oraclePin.sha256, dependencies: bundle.oraclePin.dependencies };
+    const judgeOwnership = await loadPinnedJudgeOwnership(s1Root, judgeManifest);
+    if (bundle.suite.cases.length < 1 || bundle.suite.cases.length > 8) {
+      throw new Error('protected judge suite exceeds the S5 namespace slot limit');
+    }
     let frozenSelection: { judgementId: string; version: number; judgePin: string; candidateSha256: string } | null = null;
 
     const allocateClone = (workspaceId: string, attemptId: string): CandidateWorkspace => {
@@ -388,6 +403,13 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
         if (!candidate || typeof patch !== 'string' || hash(patch) !== candidate.sha256) {
           throw new Error('independent judge requires a captured, hash-validated candidate patch');
         }
+        const candidateWorkspace = candidate.workspace as CandidateWorkspace;
+        const revalidatedPatch = captureGitCandidatePatch(candidateWorkspace.path, task.baselineCommit, seedTree, task.worktreePath);
+        if (hash(revalidatedPatch) !== candidate.sha256) throw new Error('candidate workspace no longer matches its captured patch');
+        const modulePath = join(candidateWorkspace.path, 'settings/module.js');
+        const moduleStat = lstatSync(modulePath);
+        if (!moduleStat.isFile() || moduleStat.isSymbolicLink()) throw new Error('candidate settings/module.js must be a regular file');
+        const candidateInventoryHash = judgeOwnership.stableJudgeCandidateInventory('settings/module.js', readFileSync(modulePath)).inventoryHash;
         const experiment: S1ExperimentContext = {
           campaignId: 'cq-settings-visible-screening', cohortId: 'visible-calibration', experimentId: experimentRunId,
           taskId: s1.suiteTaskId(bundle!.suite.name, substrateId), repeatId: hash(options.runNamespace).slice(0, 16),
@@ -416,7 +438,7 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
           promptSha256: hash(bundle!.suite.cases[0]!.task.prompt), oraclePin: bundle!.oraclePin.sha256,
           taskFixtureFiles: ['package.json', 'settings/module.js', 'settings/display.js', 'test/public-settings.test.mjs']
             .map((path) => ({ path, sha256: hash(readFileSync(join(task.worktreePath, path))) })),
-          judgeManifest, experiment,
+          judgeManifest, experiment, candidateInventoryHash, namespaceSlotCount: bundle!.suite.cases.length,
           candidate: { sha256: candidate.sha256, patch, baselineCommit: task.baselineCommit, baselineTree: seedTree },
         };
       },
@@ -428,7 +450,8 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
         judgeResultsByAttempt.set(request.attemptId, result);
         // Retain only the private child artifact root until S1 evidence is promoted below.
         judgeArtifactRoots.push(evidence.artifactRoot);
-        judgeResultHashes.set(request.attemptId, { requestSha256: evidence.requestSha256, payloadSha256: evidence.payloadSha256 });
+        judgeResultHashes.set(request.attemptId, { requestSha256: evidence.requestSha256, payloadSha256: evidence.payloadSha256,
+          protectedOracleProof: evidence.protectedOracleProof });
       },
       independentJudgeSupervisor,
     });
@@ -548,6 +571,16 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
           terminalCause: strategy.operationalStatus,
           sourceInvocationIds: modelStages.flatMap((stage) => stage.invocationId ? [stage.invocationId] : []),
         },
+        protectedOracleCleanup: (() => {
+          const proof = judgeStage ? judgeResultHashes.get(judgeStage.attemptId)?.protectedOracleProof : undefined;
+          return proof ? { status: 'proven' as const, planSha256: proof.planSha256,
+            daemonVerified: proof.daemonVerified, ownershipVerified: proof.ownershipVerified,
+            containersAbsent: proof.containersAbsent, volumeDisposition: proof.volumeDisposition,
+            resourceIds: proof.resourceIds, inventoryContentVerified: false as const }
+            : { status: 'unobserved' as const, planSha256: null, daemonVerified: false,
+              ownershipVerified: false, containersAbsent: false, volumeDisposition: 'unproven' as const,
+              resourceIds: [], inventoryContentVerified: false as const };
+        })(),
         stages: modelStages.map(({ stageId, attemptId, invocationId, status: stageStatus, launched, terminalCause, transportException, usage }) => ({
           stageId, attemptId, invocationId, status: stageStatus, launched, terminalCause, transportException, usage,
         })),

@@ -1,3 +1,4 @@
+import { assertG2DaemonPreregistration } from './g2-daemon-contract.ts';
 import { FINAL_BROKER_RUNTIME_IDENTITY, FINAL_BROKER_ASSET_INVENTORY, verifyLiveBrokerToolchain } from './broker-toolchain.ts';
 /** Trusted parent runtime factory. No model dispatch; approval is a separate parent file. */
 import { createHash } from 'node:crypto';
@@ -36,7 +37,8 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true, prereg
   async function verifyInfrastructure() {
     await verifySources(); const c = new DockerControl(preregister);
     try {
-      if (await c.run(['info', '--format', '{{.ID}}']) !== pins.daemon.id || hash(readFileSync(pins.vm.configPath)) !== pins.vm.configHash) throw new Error('pinned daemon/VM changed');
+      assertG2DaemonPreregistration(pins.daemon.id, await c.run(['info', '--format', '{{.ID}}']));
+      if (hash(readFileSync(pins.vm.configPath)) !== pins.vm.configHash) throw new Error('pinned VM changed');
       for (const image of [pins.workerImage, pins.brokerImage, plan.utilityImage]) if (JSON.parse(await c.run(['image', 'inspect', image]))[0].Id !== image) throw new Error('pinned image unavailable');
       const broker = JSON.parse(await c.run(['inspect', state.broker.containerId]))[0];
       if (!broker.State.Running || broker.Image !== pins.brokerImage || broker.Config.Labels?.['cq.boundary.broker'] !== pins.brokerIdentity || broker.Config.Labels?.['cq.boundary.runtime'] !== plan.runId || broker.Mounts.length !== 1 || broker.HostConfig.Privileged || broker.HostConfig.PidMode || !broker.HostConfig.ReadonlyRootfs || broker.HostConfig.PortBindings && Object.keys(broker.HostConfig.PortBindings).length) throw new Error('private broker inventory changed');
@@ -58,7 +60,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true, prereg
     save(recoveryPath,recovery);
     if (latest.authRoot !== plan.privateAuthRoot || latest.network !== plan.network || latest.broker.containerId !== plan.brokerContainerId || latest.stage && (!/^cq-s5-task-[a-f0-9]{16}$/.test(latest.stage.taskVolume) || !/^cq-s5-context-[a-f0-9]{16}$/.test(latest.stage.contextVolume) || !/^[a-f0-9]{64}$/.test(latest.stage.receiptHash))) { c.close(); throw new Error('private setup ownership record changed'); }
     try {
-      if (await c.run(['info', '--format', '{{.ID}}']) !== pins.daemon.id) throw new Error('cleanup daemon changed');
+      assertG2DaemonPreregistration(pins.daemon.id, await c.run(['info', '--format', '{{.ID}}']));
       if (latest.stage) {
         if (latest.handedOff && removeRecovery) {
           const audit = privateJson(dispositionReceiptPath);

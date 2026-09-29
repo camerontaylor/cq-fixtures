@@ -1,0 +1,27 @@
+{
+  "provenance": "synthetic-no-model",
+  "terminal": "timeout",
+  "processTreeStopped": true,
+  "terminated": true,
+  "finalized": true,
+  "lifecycleError": false,
+  "publicationVerified": true,
+  "publishedInventoryMatches": true,
+  "namespaceAbsent": true,
+  "partialCandidatePreserved": true,
+  "untrackedModePreserved": true,
+  "inventoryHash": "c0ccd7e9b6b3c0ab7857e7f84111ad41e4a1279f6a9886a91d662ece5ffe4249",
+  "head": "1af96347fd1f08715afa9a2b3088b99a4f4d0c17",
+  "events": [
+    "terminate-start",
+    "namespace-absent",
+    "export-start",
+    "publication-verified",
+    "synthetic-volumes-disposed",
+    "control-closed"
+  ],
+  "modelCalls": 0,
+  "actualRouteQualified": false,
+  "integrationHead": "161b3c2c70078365681ce1838a1342eb41b697e7",
+  "run16RetroactiveProof": false
+}

@@ -15,7 +15,7 @@
     },
     {
       "path": "runner/workflow-corpus/operation-workflow-judges.ts",
-      "sha256": "7f47f8462258e0c8f4e31d6a52ce878a1488dc49f83c5e1571c5d40580290c8e"
+      "sha256": "b6f6383cfac0d810fffa5c81735da7697e2b27dbff58ba3188079cd70ba6a9b6"
     },
     {
       "path": "campaigns/cq-settings/corpus/integration-task-oracles.ts",

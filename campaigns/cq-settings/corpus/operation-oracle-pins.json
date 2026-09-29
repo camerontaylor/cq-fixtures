@@ -25,7 +25,7 @@
     },
     {
       "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
-      "sha256": "86ba02c7ff5bfa9207879c6928a14ccc7e29291b397775495480ca94cb5403bb"
+      "sha256": "d65e482928f9921880f9d25abdff3fb8459baa2c86f492b1add9801e3c17a093"
     },
     {
       "path": "campaigns/cq-settings/corpus/review-task-oracles.ts",

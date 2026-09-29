@@ -131,8 +131,8 @@ function scriptedReviewDriver(
     async run(invocation) {
       let commits: string[] = ['f'.repeat(40)];
       if (mode !== 'no-op-claim') {
-        await writeFile(join(task.worktreePath, 'src/settings.mjs'), candidateSource);
-        execFileSync('git', ['add', 'src/settings.mjs'], { cwd: task.worktreePath });
+        await writeFile(join(task.worktreePath, 'settings/module.js'), candidateSource);
+        execFileSync('git', ['add', 'settings/module.js'], { cwd: task.worktreePath });
         execFileSync('git', ['commit', '-q', '-m', `Candidate patch: ${mode}`], { cwd: task.worktreePath });
         commits = [execFileSync('git', ['rev-parse', 'HEAD'], { cwd: task.worktreePath, encoding: 'utf8' }).trim()];
       }
@@ -149,8 +149,8 @@ function scriptedReviewDriver(
 }
 
 function commitCandidate(task: Awaited<ReturnType<typeof createReviewLoopRepairTask>>, source: string): void {
-  writeFileSync(join(task.worktreePath, 'src/settings.mjs'), source);
-  execFileSync('git', ['add', 'src/settings.mjs'], { cwd: task.worktreePath });
+  writeFileSync(join(task.worktreePath, 'settings/module.js'), source);
+  execFileSync('git', ['add', 'settings/module.js'], { cwd: task.worktreePath });
   execFileSync('git', ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', 'Apply local candidate patch'], { cwd: task.worktreePath });
 }
 
@@ -175,7 +175,7 @@ describe('cq-settings bounded workflow corpus', () => {
       expect(green.identity.passed).toBe(true);
       expect(green.conformance.passed).toBe(true);
       expect(green.identity.candidatePatchSha256).toMatch(/^[a-f0-9]{64}$/);
-      expect(green.conformance.sourceTestAllowlist.changedPaths).toEqual(['src/settings.mjs']);
+      expect(green.conformance.sourceTestAllowlist.changedPaths).toEqual(['settings/module.js']);
     } finally {
       await task.cleanup();
     }
@@ -209,7 +209,7 @@ describe('cq-settings bounded workflow corpus', () => {
       const committed = await judgeReviewLoopRepairTask(task);
       expect(committed.passed).toBe(true);
 
-      await writeFile(join(task.worktreePath, 'src/settings.mjs'), ALTERNATIVE_SETTINGS_SOURCE);
+      await writeFile(join(task.worktreePath, 'settings/module.js'), ALTERNATIVE_SETTINGS_SOURCE);
       const dirty = await judgeReviewLoopRepairTask(task);
       expect(dirty.identity.passed).toBe(false);
       expect(dirty.identity.cleanGitCandidate).toBe(false);
@@ -223,7 +223,7 @@ describe('cq-settings bounded workflow corpus', () => {
   it('bounds arbitrary candidate-module execution in the host judge', async () => {
     const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
     try {
-      await writeFile(join(task.worktreePath, 'src/settings.mjs'), 'while (true) {}\n');
+      await writeFile(join(task.worktreePath, 'settings/module.js'), 'while (true) {}\n');
       const report = await judgeReviewLoopWorkspace(task.worktreePath, {
         baselineRef: task.baselineCommit,
         sourceId: task.sourceId,
@@ -259,8 +259,8 @@ describe('cq-settings bounded workflow corpus', () => {
         const workspace = invocation.prompt.match(/^workspace: (.+)$/m)?.[1];
         if (!workspace) throw new Error('runSuite invocation omitted workspace path');
         workerWorkspace = workspace;
-        await writeFile(join(workspace, 'src/settings.mjs'), ALTERNATIVE_SETTINGS_SOURCE);
-        execFileSync('git', ['-C', workspace, 'add', 'src/settings.mjs']);
+        await writeFile(join(workspace, 'settings/module.js'), ALTERNATIVE_SETTINGS_SOURCE);
+        execFileSync('git', ['-C', workspace, 'add', 'settings/module.js']);
         execFileSync('git', [
           '-C', workspace,
           '-c', 'user.name=CQ Corpus',
@@ -355,11 +355,13 @@ describe('cq-settings bounded workflow corpus', () => {
         baselineCommit,
       });
       expect(bundle.oraclePin).toMatchObject({
-        version: 1,
+        version: 2,
         oracleId: REVIEW_LOOP_ORACLE_ID,
         dependencies: expect.arrayContaining([
           expect.objectContaining({ path: 'runner/workflow-corpus/review-loop-judge.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+          expect.objectContaining({ path: 'runner/workflow-corpus/review-loop-pin.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
           expect.objectContaining({ path: 'campaigns/cq-settings/corpus/review-loop-task.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+          expect.objectContaining({ path: 'runner/boundary/judge-child.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
         ]),
       });
       expect(bundle.oraclePin.sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -433,7 +435,7 @@ describe('cq-settings bounded workflow corpus', () => {
 
       expect(expectOk(result).changed).toBe(true);
       expect(invocations).toHaveLength(1);
-      expect(invocations[0]?.prompt).toContain('src/settings.mjs');
+      expect(invocations[0]?.prompt).toContain('settings/module.js');
       expect(invocations[0]?.prompt).toContain('40 Unicode code points');
       expect(invocations[0]?.sandboxPolicy).toEqual({ level: 'workspace-write' });
     } finally {
@@ -908,6 +910,42 @@ describe('six-task corpus expansion', () => {
     expect(ANALYSIS_TASK_CONTRACTS.safeIntegerSetting.expected).toEqual([true, true, false, false, false, false, false, false]);
     expect(ANALYSIS_TASK_CONTRACTS.originPolicy.expected).toEqual([true, false, false, false, true, true]);
   });
+
+  it.each(['safeIntegerSetting', 'originPolicy'] as const)(
+    'runs the existing analysis operation for the $variant task through an injected local Driver',
+    async (variant) => {
+      const modelSpec = { model: `offline-${variant}`, provider: 'fake' };
+      const task = await createAnalysisRemediationTask(variant, modelSpec);
+      const contract = ANALYSIS_TASK_CONTRACTS[variant];
+      const invocations: Parameters<Driver['run']>[0][] = [];
+      const driver: Driver = {
+        async run(invocation) {
+          invocations.push(invocation);
+          return completedWorker({
+            setting: contract.setting,
+            constraints: [...contract.requiredConstraints],
+            rejectsInvalidValues: true,
+            preservesInputRepresentation: true,
+          });
+        },
+      };
+      try {
+        const execution = await executeAnalysisRemediationTask(task, driver);
+        expect(execution.oracle).toMatchObject({
+          passed: true,
+          sourceId: task.sourceId,
+          baselineId: task.baselineId,
+          oracleId: task.oracleId,
+          failures: [],
+        });
+        expect(invocations).toHaveLength(1);
+        expect(invocations[0]?.modelSpec).toEqual(modelSpec);
+      } finally {
+        await task.cleanup();
+      }
+    },
+    30_000,
+  );
 
   it('checks review, merge, and fleet behavior vectors with the task-owned truth tables', () => {
     expect(judgeReviewTaskValues('roleScope', [true, true, false, false]).passed).toBe(true);

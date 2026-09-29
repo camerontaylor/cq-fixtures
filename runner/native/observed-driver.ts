@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
-import type { InvocationIdentity, NativeLifecycleEvidence, NativeLifecycleEvidenceRef, NativeObservation, ObservedDriver } from './observation.ts';
-import { NativeSupervisorControl } from './process.ts';
+import type { InvocationIdentity, LaunchEvidence, NativeLifecycleEvidence, NativeLifecycleEvidenceRef, NativeObservation, ObservedDriver } from './observation.ts';
+import { NativeSupervisorControl, type SupervisedProcessResult } from './process.ts';
 
 export interface NativeDriverOptions {
   configuredTarget: string;
@@ -43,6 +43,7 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
   private identityQueue: Promise<void> = Promise.resolve();
   private activeIdentity: InvocationIdentity | undefined;
   private releaseIdentity: (() => void) | undefined;
+  private readonly processLaunchEvidence = new Map<string, LaunchEvidence>();
   private readonly lifecycle = new Map<string, NativeLifecycleState>();
   protected readonly nativeSupervisor = new NativeSupervisorControl();
 
@@ -71,6 +72,8 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
       settlementStatus: 'unsettled', artifact: null,
     };
     this.lifecycle.set(identity.invocationId, lifecycle);
+    this.processLaunchEvidence.set(identity.invocationId, { identity: { ...identity }, status: 'unknown',
+      source: 'native driver: no authoritative supervisor receipt', observedAt: new Date().toISOString() });
     const release = this.releaseIdentity;
     this.activeIdentity = undefined;
     this.releaseIdentity = undefined;
@@ -113,12 +116,35 @@ export abstract class ObservedNativeDriver implements Driver, ObservedDriver {
     const trustedSources = new Set([
       'visible-g1-glm-driver:spawn-command-guard-before-child_process.spawn',
       'node:child_process.ChildProcess:error-before-spawn-event',
+      'trusted supervisor pre-spawn guard',
     ]);
     if (!trustedSources.has(source)) throw new Error('native not-started evidence source is not trusted');
     const lifecycle = this.lifecycle.get(identity.invocationId);
     if (!lifecycle || !sameIdentity(lifecycle.identity, identity)) throw new Error('native lifecycle identity mismatch');
+    this.nativeSupervisor.reportProcessNotStarted(identity, source);
     lifecycle.processStatus = 'not-started';
     lifecycle.processProofSource = `trusted-launch-evidence:${source}`;
+  }
+
+  protected getProcessLaunchEvidence(invocationId: string): LaunchEvidence | undefined {
+    const evidence = this.processLaunchEvidence.get(invocationId);
+    return evidence ? { ...evidence, identity: { ...evidence.identity } } : undefined;
+  }
+
+  /** Consume only the committed supervisor's exact invocation-bound receipt. */
+  protected reconcileSupervisedProcess(identity: InvocationIdentity, result: SupervisedProcessResult): SupervisedProcessResult {
+    const receipt = result.processEvidence;
+    const matched = receipt?.identity !== undefined && sameIdentity(receipt.identity, identity);
+    const noSpawn = matched && receipt.status === 'trusted-no-spawn' && receipt.source === 'trusted supervisor pre-spawn guard';
+    const spawned = matched && receipt.status === 'spawned' && receipt.source === 'OS child PID';
+    this.processLaunchEvidence.set(identity.invocationId, {
+      identity: { ...identity }, status: noSpawn ? 'no-spawn-observed' : spawned ? 'spawn-observed' : 'unknown',
+      source: noSpawn || spawned ? receipt!.source : 'native driver: absent or untrusted supervisor receipt',
+      observedAt: result.endedAt,
+    });
+    if (noSpawn) this.reportProcessNotStarted(identity, receipt!.source);
+    else this.reportProcessTree(identity, spawned && result.treeStopped);
+    return { ...result, treeStopped: (noSpawn || spawned) && result.treeStopped };
   }
 
   cancelInvocationAndWait = this.nativeSupervisor.cancelInvocationAndWait.bind(this.nativeSupervisor);

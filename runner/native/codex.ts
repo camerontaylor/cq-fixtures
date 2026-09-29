@@ -92,6 +92,8 @@ export class CodexExecDriver extends ObservedNativeDriver {
     this.expectedTaskBaselineCommit = options.expectedTaskBaselineCommit;
   }
 
+  getLaunchEvidence(invocationId: string) { return this.getProcessLaunchEvidence(invocationId); }
+
   protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
     const startedAt = new Date().toISOString();
     const observation = this.newObservation(identity, invocation, startedAt);
@@ -124,7 +126,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
         '-c', `model_reasoning_effort=${JSON.stringify(this.effort)}`, '-',
       ];
       this.nativeSupervisor.expectProcessTree(identity);
-      const result = await runSupervised(this.executable, args, {
+      const supervised = await runSupervised(this.executable, args, {
         cwd, identity, stage: this.invocationStage, input: invocation.prompt,
         timeoutMs: Math.min(invocation.budget.wallClockMs ?? this.hardWallClockMs, this.hardWallClockMs),
         ...(this.assignmentDeadlineEpochMs === undefined ? {} : { hardDeadlineEpochMs: this.assignmentDeadlineEpochMs }),
@@ -136,7 +138,7 @@ export class CodexExecDriver extends ObservedNativeDriver {
         ...(this.cleanupInvocation ? { cleanupInvocation: this.cleanupInvocation } : {}),
         ...(this.expectedTaskBaselineCommit ? { expectedTaskBaselineCommit: this.expectedTaskBaselineCommit } : {}),
       });
-      this.reportProcessTree(identity, result.treeStopped);
+      const result = this.reconcileSupervisedProcess(identity, supervised);
       if (result.launch) observation.model.settings.launch = { value: result.launch, source: 'native spawn admission', status: launchEvidenceStatus(result.launch) };
       observation.model.settings.processTree = { value: result.treeStopped, source: 'native process-group stop proof', status: result.treeStopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden' };
       try {

@@ -17,6 +17,9 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
   const [{ DockerControl, teardownContainer }, profile, staging, { compileContainerBoundary }, { compileBroker }] = await Promise.all([
     load('runner/boundary/docker-control.ts'), load('runner/boundary/codex-final-profile.ts'), load('runner/boundary/task-staging.ts'), load('runner/boundary/container.ts'), load('runner/boundary/egress-broker.ts'),
   ]);
+  const lifecycleEvidencePath = join(privateRoot, 'boundary-lifecycle.jsonl');
+  let lifecycleRecord;
+  const note = (phase, error) => { try { lifecycleRecord?.(phase, error); } catch { /* diagnostic failure cannot change disposal result */ } };
   const statePath = join(privateRoot, 'setup-state.json');
   const state = privateJson(statePath);
   if (state.authRoot !== plan.privateAuthRoot || state.network !== plan.network || state.broker.containerId !== plan.brokerContainerId) throw new Error('private infrastructure plan changed');
@@ -44,9 +47,10 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
       if (!network.Internal || network.EnableIPv6 || network.Labels?.['cq.boundary.runtime'] !== plan.runId || network.IPAM.Config.length !== 1 || network.IPAM.Config[0].Subnet !== pins.network.internalSubnet || network.Containers[state.broker.containerId]?.IPv4Address !== pins.network.brokerIP + '/24' || Object.keys(network.Containers).some(id => id !== state.broker.containerId)) throw new Error('private namespace network changed');
       if (hash(readFileSync(join(state.authRoot, 'payload/config.toml'))) !== pins.nativeConfigHash) throw new Error('native config changed');
       profile.validateFinalCodexAuth(readFileSync(join(state.authRoot, 'payload/auth.json'), 'utf8'), 240);
-    } finally { c.close(); }
+    } catch (error) { note('runtime-cleanup-error', error); throw error; } finally { c.close(); }
   }
   async function cleanup({ removeRecovery = false } = {}) {
+    note('runtime-cleanup-start');
     const latest = privateJson(statePath), c = new DockerControl();
     if (latest.authRoot !== plan.privateAuthRoot || latest.network !== plan.network || latest.broker.containerId !== plan.brokerContainerId || latest.stage && (!/^cq-s5-task-[a-f0-9]{16}$/.test(latest.stage.taskVolume) || !/^cq-s5-context-[a-f0-9]{16}$/.test(latest.stage.contextVolume) || !/^[a-f0-9]{64}$/.test(latest.stage.receiptHash))) { c.close(); throw new Error('private setup ownership record changed'); }
     try {
@@ -82,8 +86,9 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
       }
       if (!latest.handedOff || removeRecovery) rmSync(latest.authRoot, { recursive: true, force: true });
       latest.infrastructureDisposed = true; latest.recoveryRetained = !!latest.handedOff && !removeRecovery; save(statePath, latest);
+      note('runtime-cleanup-done');
       return { infrastructureDisposed: true, recoveryRetained: latest.recoveryRetained };
-    } finally { c.close(); }
+    } catch (error) { note('runtime-cleanup-error', error); throw error; } finally { c.close(); }
   }
   if (verify) await verifyInfrastructure();
   return {
@@ -91,11 +96,14 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
       runId: plan.runId, outputRoot: join(privateRoot, 'reports'), admissionLedgerRoot: join(privateRoot, 'ledger'),
       // Use native authenticated AggregateQuotaSource; never override it with null or fabricate capacity.
       async prepareInvocation(context) {
+        const { privateLifecycleRecorder } = await load('runner/boundary/lifecycle-evidence.ts');
+        writeFileSync(lifecycleEvidencePath, '', { mode:0o600, flag:'wx' });
+        lifecycleRecord = privateLifecycleRecorder(lifecycleEvidencePath);
         if (used || context.stage !== 'final-profile-G1' || context.identity.assignmentId !== assignmentId || context.identity.stageId !== assignmentId + '-stage-1' || context.identity.attemptId !== attemptId || context.signal.aborted || context.deadlineEpochMs <= Date.now()) throw new Error('unexpected or expired single G1 invocation');
         used = true; prepareSettled = new Promise(resolve => { settlePrepare = resolve; }); let aborted = false; const started = Date.now();
         const setupCutoff = Math.min(Date.now() + 45000, context.deadlineEpochMs - 5000);
         const timer = setTimeout(() => { aborted = true; }, Math.max(1, setupCutoff - Date.now()));
-        const onAbort = () => { aborted = true; if (state.handedOff) void cleanup().catch(() => {}); };
+        const onAbort = () => { note('runtime-abort'); aborted = true; if (state.handedOff) void cleanup().catch(() => {}); };
         context.signal.addEventListener('abort', onAbort, { once: true });
         try {
           await verifyInfrastructure();
@@ -128,7 +136,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
           if (aborted || context.signal.aborted || Date.now() >= setupCutoff || Date.now() - started >= 45000) throw new Error('late G1 preparation refused');
           state.handedOff = true; save(statePath, state);
           const lease = setTimeout(() => { void cleanup().catch(() => {}); }, Math.max(1, started + 240000 - Date.now())); lease.unref();
-          return { specification, staging: receipt, broker: state.broker, hostTaskRoot: resolve(context.cwd), exportRoot: resolve(context.cwd) };
+          return { specification, staging: receipt, broker: state.broker, hostTaskRoot: resolve(context.cwd), exportRoot: resolve(context.cwd), lifecycleEvidencePath };
         } catch { await cleanup(); throw new Error('private G1 preparation unavailable; setup disposed or private recovery retained'); }
         finally { clearTimeout(timer); settlePrepare(); }
       },

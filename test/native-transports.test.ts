@@ -25,6 +25,7 @@ import { SAFE_GIT_CONFIG, snapshotTask } from '../runner/boundary/task-tree.ts';
 import type { ExperimentContext } from '../runner/experiment.ts';
 import { createReviewLoopRepairTask } from '../campaigns/cq-settings/corpus/review-loop-task.ts';
 import { createReviewLoopRunSuiteBundle } from '../runner/workflow-corpus/review-loop-suite.ts';
+import { finalCodexArguments } from '../runner/boundary/codex-final-profile.ts';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -115,6 +116,7 @@ describe('native transport event and identity handling', () => {
       const observation = driver.getObservation(key)!;
       expect(observation.identity).toEqual(identity(key));
       expect(observation.model.requested).toMatchObject({ value: 'gpt-6-luna', status: 'requested' });
+      expect(observation.model.settings.sandbox).toMatchObject({ value: 'workspace-write', status: 'requested' });
       expect(observation.usage.counters.input).toMatchObject({ value: 20, availability: 'observed' });
       expect(observation.artifacts).toHaveLength(1);
       expect(readFileSync(observation.artifacts[0]!.path, 'utf8')).toContain('turn.completed');
@@ -226,6 +228,74 @@ describe('native transport event and identity handling', () => {
     expect(result.sessionId).toBe(session.sessionId);
     expect(driver.getObservation('session-bound')?.model.settings.session).toMatchObject({ status: 'runner-workspace-resolved' });
     unlinkSync(join(RUNNER_SESSION_DIRECTORY, `${session.sessionId}.jsonl`));
+  });
+
+  it('binds final Sol/low full-access to the frozen container identity and validates exact boundary argv before launch', async () => {
+    const root = tempRoot();
+    const store = new SessionStore(RUNNER_SESSION_DIRECTORY);
+    const session = await store.create(root);
+    const frozenIdentity: InvocationIdentity = {
+      invocationId: 'final-native-argv', assignmentId: 'final-profile-g1-argv-test',
+      stageId: 'final-profile-g1-argv-test-stage-1', attemptId: 'final-profile-g1-argv-test-attempt-1',
+    };
+    let factoryCalls = 0;
+    let adapterCalls = 0;
+    let mappedArgs: string[] = [];
+    const driver = new CodexExecDriver({
+      executable: '/usr/local/bin/codex', version: 'synthetic-no-launch', profile: 'final-profile-test',
+      model: 'gpt-6-sol', effort: 'low', invocationStage: 'final-profile-G1',
+      finalProfileContainerPolicy: { profile: 'cq-subscription-http', identity: frozenIdentity },
+      artifactDirectory: join(root, 'artifacts'), workspaceForInvocation: () => process.cwd(),
+      spawnAdapterFactory: async (context) => {
+        factoryCalls++;
+        expect(context.stage).toBe('final-profile-G1');
+        expect(context.identity).toEqual(frozenIdentity);
+        return async (command, args, launchContext) => {
+          adapterCalls++;
+          expect(command).toBe('/usr/local/bin/codex');
+          expect(launchContext.cwd).toBe(root);
+          expect(launchContext.stage).toBe('final-profile-G1');
+          expect(args).toEqual([
+            'exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', 'danger-full-access',
+            '-C', root, '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="low"', '-',
+          ]);
+          mappedArgs = finalCodexArguments(args, root);
+          throw new Error('synthetic stop after final boundary argv validation');
+        };
+      },
+    });
+    try {
+      await driver.beginInvocation(frozenIdentity);
+      await expect(driver.run({
+        ...invocation('final profile synthetic task', 'gpt-6-sol'),
+        modelSpec: { model: 'gpt-6-sol', provider: 'codex' },
+        sessionRef: session.sessionId,
+      })).rejects.toThrow('synthetic stop after final boundary argv validation');
+      expect(factoryCalls).toBe(1);
+      expect(adapterCalls).toBe(1);
+      expect(mappedArgs).toContain('/task');
+      expect(mappedArgs).toContain('model_provider="cq-subscription-http"');
+      expect(mappedArgs).toContain('model_providers.cq-subscription-http.supports_websockets=false');
+      const observation = driver.getObservation(frozenIdentity.invocationId)!;
+      expect(observation.model.settings.session).toMatchObject({ status: 'runner-workspace-resolved' });
+      expect(observation.model.settings.requestedSandbox).toMatchObject({ value: 'workspace-write', status: 'requested' });
+      expect(observation.model.settings.sandbox).toMatchObject({
+        value: 'danger-full-access', status: 'effective-inside-unverified-boundary',
+      });
+      expect(observation.model.settings.launch).toBeUndefined();
+
+      const mismatchedIdentity = { ...frozenIdentity, invocationId: 'final-native-argv-mismatch', attemptId: 'different-attempt' };
+      await driver.beginInvocation(mismatchedIdentity);
+      await expect(driver.run({
+        ...invocation('final profile synthetic task', 'gpt-6-sol'),
+        modelSpec: { model: 'gpt-6-sol', provider: 'codex' },
+        sessionRef: session.sessionId,
+      })).rejects.toThrow(/does not match the frozen Codex invocation/u);
+      expect(factoryCalls).toBe(1);
+      expect(adapterCalls).toBe(1);
+    } finally {
+      unlinkSync(join(RUNNER_SESSION_DIRECTORY, `${session.sessionId}.jsonl`));
+    }
   });
 
   it('returns stage-matched native stop proof only after cancellation settles and the process group is gone', async () => {

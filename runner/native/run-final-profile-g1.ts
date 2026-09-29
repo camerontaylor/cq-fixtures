@@ -421,7 +421,10 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   if (!configured) throw new Error('safe launch inventory lacks the configured Codex gpt-6-sol profile');
   const effective: LaunchProfile = {
     label: 'Final HTTP-only subscription G1', executable: '/usr/local/bin/codex', version: readExecutableVersion('/usr/local/bin/codex'),
-    args: ['exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', 'danger-full-access', '-m', 'gpt-6-sol', 'effort=low', 'provider=cq-subscription-http'],
+    args: finalCodexArguments([
+      'exec', '--json', '--ephemeral', '--ignore-user-config', '--sandbox', 'danger-full-access',
+      '-C', '<runSuite workspace>', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="low"', '-',
+    ], '<runSuite workspace>'),
     envKeys: ['HOME', 'CODEX_HOME', 'LANG', 'PATH', 'TMPDIR'], cwdBehavior: 'isolated /task mapped from exact runSuite workspace',
     providerRoute: 'cq-subscription-http (HTTP-only managed subscription)', requestedModel: 'gpt-6-sol', authClass: 'managed-subscription access-only',
     effort: 'low', permissionPolicy: 'danger-full-access', sandboxPolicy: 'dedicated nonprivileged S5 container; isolation unverified',
@@ -431,6 +434,7 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   let expectedTaskBaselineCommit: string | undefined;
   const driver = new CodexExecDriver({ executable, version: configured.version, profile: configured.label,
     model: 'gpt-6-sol', effort: 'low', hardWallClockMs: MODEL_BUDGET_MS,
+    finalProfileContainerPolicy: { profile: 'cq-subscription-http', identity: { assignmentId, stageId, attemptId } },
     artifactDirectory: join(artifactRoot, 'native-events'), invocationStage: 'final-profile-G1', assignmentDeadlineEpochMs: deadlineEpochMs, signal: abort.signal,
     expectedTaskBaselineCommit: () => expectedTaskBaselineCommit,
     spawnAdapterFactory: (context) => runBoundedFinalProfileSetup({ context,

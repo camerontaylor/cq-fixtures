@@ -6,10 +6,12 @@ import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolk
 import { afterEach, describe, expect, it } from 'vitest';
 import { ArtifactStore, sha256 } from '../runner/artifacts/index.ts';
 import { nativeGovernorUsage } from '../runner/budget.ts';
-import { experimentId, suiteTaskId, type ExperimentContext } from '../runner/experiment.ts';
+import { experimentId, judgeManifestHash, suiteTaskId, type ExperimentContext, type TaskOutcome, type TaskOutcomeJudgement } from '../runner/experiment.ts';
+import type { ResultRow } from '../runner/aggregate.ts';
 import { runSuite } from '../runner/index.ts';
 import { campaignUsage, sanitizeNativeObservation, type NativeObservation, type InvocationIdentity } from '../runner/native/observation.ts';
 import { regradeCampaignCandidate } from '../runner/regrade.ts';
+import { mapPipelineCampaignEvidence, type PipelineStageLedger, type PipelineStrategyLedger } from '../runner/pipelineMapping.ts';
 
 let root = '';
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); });
@@ -38,6 +40,13 @@ function fixtureObservation(identity: InvocationIdentity, workerResult: WorkerRe
     capture: { status: 'pending', baselineCommit: null, baselineTree: null, patchSha256: null, workspaceSha256: null },
     timing: { startedAt: new Date().toISOString(), endedAt: null, stages: {} }, workerResult,
   };
+}
+
+function fixtureUsage(overrides: Partial<Record<'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'reasoning' | 'tokenTotal', { value: number | null; availability: 'observed' | 'unavailable' | 'not-reported' }>> = {}) {
+  return Object.fromEntries((['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'tokenTotal'] as const).map((name) => {
+    const item = overrides[name] ?? { value: null, availability: 'not-reported' as const };
+    return [name, { ...item, source: item.availability === 'observed' ? 'test-ledger' : null, semantics: name, inclusion: null }];
+  })) as unknown as PipelineStageLedger['usage'];
 }
 
 class ThrowsAfterEditing implements Driver {
@@ -87,6 +96,100 @@ function experiment(): ExperimentContext {
 }
 
 describe('campaign envelope', () => {
+  it('joins S4 stages to the final S1 judgement and emits schema-validated campaign rows and tables', () => {
+    const context = experiment();
+    const candidateSha256 = 'a'.repeat(64);
+    const judgeStage: PipelineStageLedger = {
+      assignmentId: context.assignmentId, stageId: context.stageId, attemptId: context.attemptId,
+      invocationId: null, kind: 'independent-judge', routeId: null, status: 'completed', launched: false,
+      terminalCause: null, transportException: null, usage: fixtureUsage(),
+    };
+    const modelStage: PipelineStageLedger = {
+      assignmentId: context.assignmentId, stageId: 'stage-draft', attemptId: 'attempt-draft',
+      invocationId: 'invocation-draft', kind: 'draft', routeId: 'codex-one-shot', status: 'completed', launched: true,
+      terminalCause: 'complete', transportException: null,
+      usage: fixtureUsage({ input: { value: 12, availability: 'observed' }, output: { value: 5, availability: 'observed' } }),
+    };
+    const strategy = (overrides: Partial<PipelineStrategyLedger> = {}): PipelineStrategyLedger => ({
+      assignmentId: context.assignmentId, taskId: 'review-loop-task', finalCandidate: { sha256: candidateSha256 },
+      candidateCorrectness: true, formatCompliance: true, assignedStrategySuccess: true,
+      operationalStatus: 'complete', recipeCompleted: true, authorizedBudgetStop: false,
+      stages: [modelStage, judgeStage], accounting: { endToEndMs: 321 }, ...overrides,
+    });
+    const judgement: TaskOutcomeJudgement = {
+      judgementId: 'judge-v1', version: 1, judgePin: judgeManifestHash(context.judgeManifest),
+      judgeManifest: context.judgeManifest, baselineCommit: 'baseline-commit', baselineTree: 'baseline-tree',
+      candidateSha256, candidateCorrectness: true, formatConformance: true, assignedStrategySuccess: true,
+      operationalStatus: 'complete', artifact: { path: 'campaign/judgement.json', sha256: 'b'.repeat(64) },
+    };
+    const taskOutcome: TaskOutcome = {
+      identity: {
+        campaignId: context.campaignId, cohortId: context.cohortId, experimentId: context.experimentId,
+        taskId: context.taskId, substrateId: context.substrateId, track: context.track, repeatId: context.repeatId,
+        assignmentId: context.assignmentId, strategyId: context.strategyId, role: 'fixer-worker',
+        budgetId: context.budgetId, frozenWeight: context.frozenWeight,
+      },
+      candidateCorrectness: true, formatConformance: true, assignedStrategySuccess: true, operationalStatus: 'complete',
+      stages: [], judgements: [judgement],
+    };
+    const judgeRow: ResultRow = {
+      role: 'fixer-worker', suite: 'pipeline-test-suite', case: 'case-1', model: 'gpt-6-luna', driver: 'codex-exec',
+      outcome: { score: 1, passed: 1, total: 1 }, costUSD: null, wallTimeMs: 1,
+      tokens: { input: 0, output: 0 }, taskOutcome,
+      experiment: {
+        campaignId: context.campaignId, cohortId: context.cohortId, experimentId: context.experimentId,
+        taskId: context.taskId, repeatId: context.repeatId, assignmentId: context.assignmentId,
+        stageId: context.stageId, attemptId: context.attemptId, track: context.track, strategyId: context.strategyId,
+        settingsId: context.settingsId, budgetId: context.budgetId, profileId: context.profileId,
+        frozenWeight: context.frozenWeight, substrateId: context.substrateId,
+        judgePin: judgeManifestHash(context.judgeManifest),
+      },
+      runId: 'local-judge-run', timestamp: new Date().toISOString(),
+    };
+    const mapped = mapPipelineCampaignEvidence({
+      strategy: strategy(), judgeResult: { rows: [judgeRow], tables: [] }, caseId: 'case-1', context,
+    });
+    expect(mapped.taskOutcome.candidateCorrectness).toBe(true);
+    expect(mapped.taskOutcome.assignedStrategySuccess).toBe(true);
+    expect(mapped.taskOutcome.stages.map((stage) => stage.invocationId)).toEqual(['invocation-draft']);
+    expect(mapped.rows[0]?.observedUsage).toMatchObject({ input: 12, output: 5, cacheRead: null, tokenTotal: null, complete: false });
+    expect(mapped.tables[0]?.cells[0]).toMatchObject({ assignedStrategySuccess: 1, observedUsage: { input: 12, output: 5, tokenTotal: null } });
+
+    const formatMiss = mapPipelineCampaignEvidence({
+      strategy: strategy({ formatCompliance: false, assignedStrategySuccess: false }),
+      judgeResult: { rows: [{ ...judgeRow, taskOutcome: { ...taskOutcome, formatConformance: false, judgements: [{ ...judgement, formatConformance: false }] } }], tables: [] },
+      caseId: 'case-1', context,
+    });
+    expect(formatMiss.rows[0]?.outcomes).toMatchObject({ candidateCorrectness: true, formatConformance: false, assignedStrategySuccess: false });
+    expect(formatMiss.tables[0]?.cells[0]?.assignedStrategySuccess).toBe(0);
+
+    const budgetStage: PipelineStageLedger = {
+      ...modelStage, terminalCause: 'budget-exhausted', usage: fixtureUsage(),
+    };
+    const budget = mapPipelineCampaignEvidence({
+      strategy: strategy({ candidateCorrectness: null, formatCompliance: null, assignedStrategySuccess: null,
+        operationalStatus: 'budget-exhausted', recipeCompleted: false, authorizedBudgetStop: true,
+        stages: [budgetStage, judgeStage] }),
+      judgeResult: { rows: [{ ...judgeRow, taskOutcome: { ...taskOutcome, candidateCorrectness: null, formatConformance: null,
+        judgements: [{ ...judgement, candidateCorrectness: null, formatConformance: null, assignedStrategySuccess: null }] } }], tables: [] },
+      caseId: 'case-1', context,
+    });
+    expect(budget.taskOutcome.execution).toMatchObject({ launched: true, terminalCause: 'budget-exhausted', sourceInvocationIds: ['invocation-draft'] });
+    expect(budget.rows[0]?.observedUsage).toMatchObject({ input: null, output: null, tokenTotal: null, complete: false });
+
+    const thrown = mapPipelineCampaignEvidence({
+      strategy: strategy({ candidateCorrectness: null, formatCompliance: null, assignedStrategySuccess: null,
+        operationalStatus: 'operational-failure', recipeCompleted: false,
+        stages: [{ ...modelStage, status: 'failed', terminalCause: 'transport-throw', transportException: { name: 'Error', message: 'fixture transport failure' }, usage: fixtureUsage() }, judgeStage] }),
+      judgeResult: { rows: [{ ...judgeRow, taskOutcome: { ...taskOutcome, candidateCorrectness: null, formatConformance: null,
+        judgements: [{ ...judgement, candidateCorrectness: null, formatConformance: null, assignedStrategySuccess: null }] } }], tables: [] },
+      caseId: 'case-1', context,
+    });
+    expect(thrown.taskOutcome.execution).toMatchObject({ launched: true, terminalCause: 'transport-error' });
+    expect(thrown.taskOutcome.operationalStatus).toBe('measured-transport-failure');
+    expect(thrown.rows[0]?.observedUsage).toMatchObject({ input: null, output: null, complete: false });
+  });
+
   it('keeps unavailable counters and invalid totals unknown; total is not recomputed from possibly overlapping counters', () => {
     const observation = fixtureObservation({ invocationId: 'i', assignmentId: 'a', stageId: 's', attemptId: 't' });
     observation.usage.counters.input = { value: 7, availability: 'observed', source: 'event', semantics: 'input' };

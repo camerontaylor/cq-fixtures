@@ -47,6 +47,12 @@ import type { CaseArtifact } from './persist.ts';
 import { scoreFixerWorker, FIXER_PROBE_COUNT } from './score/fixerWorker.ts';
 import { scoreReviewClassifier } from './score/reviewClassifier.ts';
 import { isFixerCase, loadSuite, suiteVariant } from './suite.ts';
+
+// Shared S4/S1 campaign seam. Re-exported from the runner entrypoint so
+// sibling strategy packages can use the pinned S1 binding without importing
+// internals or duplicating row/table schema rules.
+export { mapPipelineCampaignEvidence } from './pipelineMapping.ts';
+export type { PipelineJudgeResult, PipelineMappingResult, PipelineStageLedger, PipelineStrategyLedger } from './pipelineMapping.ts';
 import { ArtifactStore, sha256, type ImmutableArtifactRef } from './artifacts/index.ts';
 import { findDenylistMatch, loadDenylistRules } from './denylist.ts';
 import { canonicalJson, judgeManifestHash, suiteTaskId, type ExperimentContext, type JudgeDependencyManifest, type TaskOutcome, type TaskOutcomeJudgement } from './experiment.ts';

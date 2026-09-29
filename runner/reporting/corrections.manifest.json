@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "note": "PK14-owned pins for the D22/D77 correction and audit records. campaign-source-manifest.json is PK00-owned and is deliberately untouched. sha256 pins the original record bytes; canonicalId is the deterministic canonical-record hash used as the record's identity in the supersession graph. Every recordedAt is null because these legacy records carry no authentic timestamp and none is synthesized.",
+  "roots": {
+    "repo": "this repository, at the commit the consumer selects",
+    "corpus": "the research corpus research-20260929-cq-settings-execution/; the consumer resolves it, this manifest does not embed a machine-specific absolute path"
+  },
+  "approvedAuthorities": [
+    "cq-settings-execution-orchestrator"
+  ],
+  "entries": [
+    {
+      "id": "run19-lifecycle-correction",
+      "kind": "append-only-lifecycle-correction",
+      "root": "corpus",
+      "path": "evidence/run19-lifecycle-correction.json",
+      "sha256": "fcba300db5030b958ba8b50321faf9d59ee6fe377127c76280058fc0d995bfb2",
+      "canonicalId": "4be1a2f8788da5f3ba762c52d143dd8340195a1f0beac1fc9f2d829bc2b12c8b",
+      "authorityId": "cq-settings-execution-orchestrator",
+      "recordedAt": null
+    },
+    {
+      "id": "run19-retention-binding",
+      "kind": "retention-binding",
+      "root": "corpus",
+      "path": "evidence/run19-retention-binding.json",
+      "sha256": "a0d30ab47dcc021a5f814da38a3571630975cc8b7c1fab0ed8277c88f9397855",
+      "canonicalId": "2046c55eb29e9eb198c71a98bb9ccb1f325d57766259e4e3561e0e53b42d1158",
+      "authorityId": "cq-settings-execution-orchestrator",
+      "recordedAt": null
+    },
+    {
+      "id": "run18-retention-audit",
+      "kind": "retention-binding",
+      "root": "repo",
+      "path": "runner/boundary/evidence/fallback/run18-retention-audit.public.json",
+      "sha256": "0dabb0f1069c644335a62454670105da611ea063edfb330ac9414c22b54ad023",
+      "canonicalId": "ef460fdc93ef2d9936fe78566e121f4b4034c3671b136feb452d9e4aa58209fa",
+      "authorityId": "cq-settings-execution-orchestrator",
+      "recordedAt": null
+    },
+    {
+      "id": "run21-g1-contract-audit",
+      "kind": "g1-contract-audit",
+      "root": "corpus",
+      "path": "evidence/run21-g1-contract-audit.json",
+      "sha256": "40d6ea03550fe369dbf58551a924ee921121cfcdcf0b49d58ae0e2eefafbc5a6",
+      "canonicalId": "3940432b4a2c52f18ca8ee4ec269078c152dd654edd94d8892ad877d1df01027",
+      "authorityId": "cq-settings-execution-orchestrator",
+      "recordedAt": null
+    },
+    {
+      "id": "run21-retention-audit",
+      "kind": "retention-binding",
+      "root": "corpus",
+      "path": "evidence/run21-retention-audit.json",
+      "sha256": "0af5311b0a7d5dff5792efe22a67b7735be7706192eb772361a6d24dd98034a3",
+      "canonicalId": "e8860ec2ad24682628e7514e6ed9b96a8f362a7c58c61ae8c9d1ec6eabee7dc6",
+      "authorityId": "cq-settings-execution-orchestrator",
+      "recordedAt": null
+    },
+    {
+      "id": "pi-timeout-g1-contract-audit",
+      "kind": "g1-contract-audit",
+      "root": "corpus",
+      "path": "evidence/pi-timeout-g1-contract-audit.json",
+      "sha256": "4aab48b80383323dc4a2242d680ed83ebb05dd42e51544394c02920e5a73b93e",
+      "canonicalId": "53e800e30f413b5d61dec9acb260d0b3785e0696d42cad53485e7731ebed3ad2",
+      "authorityId": "cq-settings-execution-orchestrator",
+      "recordedAt": null
+    },
+    {
+      "id": "pi-workspace-g1-contract-audit",
+      "kind": "g1-contract-audit",
+      "root": "corpus",
+      "path": "evidence/pi-workspace-g1-contract-audit.json",
+      "sha256": "93a0f91cb89aa4230c351a14a12684c88e6d6e1c291560b98261a562e0d209a4",
+      "canonicalId": "7c96922809a1ce1efa121b3c5c4693dcf4cd6c965ece9df90aad0dd889ba772b",
+      "authorityId": "cq-settings-execution-orchestrator",
+      "recordedAt": null
+    }
+  ]
+}

@@ -1312,43 +1312,45 @@ describe('Codex JSONL shell-event decoder', () => {
 });
 
 describe('visible G1 runSuite entrypoint', () => {
-  it('records actual schema rows, comparison tables, host oracle pins, and simulated native observations', async () => {
+  it('records a no-model Pi runSuite row with trusted host oracle and route dependency closure pins', async () => {
     const root = tempRoot();
-    class SimulatedCodexDriver extends ObservedNativeDriver {
+    class SimulatedPiDriver extends ObservedNativeDriver {
       constructor() {
-        super({ configuredTarget: 'codex/gpt-6-luna', transport: 'codex-exec', executable: 'simulated-codex', executableVersion: 'test', profile: 'visible-test' });
+        super({ configuredTarget: 'pi-opencode/opencode-go/space-bunny-free', transport: 'pi-json', executable: 'simulated-pi', executableVersion: 'test', profile: 'visible-test' });
       }
       protected async runObserved(input: OpInvocation, invocationIdentity: InvocationIdentity): Promise<WorkerResult> {
         const workspace = input.prompt.match(/^workspace: (.+)$/mu)?.[1];
         if (!workspace) throw new Error('simulated runSuite invocation omitted workspace');
         writeFileSync(join(workspace, 'src/settings.mjs'), `export function isValidCampaignLabel(label) {\n  const value = typeof label === 'string' ? label.trim() : '';\n  return value.length > 0 && Array.from(value).length <= 40;\n}\n`);
         const observation = this.newObservation(invocationIdentity, input, new Date().toISOString());
-        observation.model.observed = { value: 'gpt-6-luna', source: 'simulated native event', status: 'observed' };
+        observation.model.observed = { value: 'opencode-go/space-bunny-free', source: 'simulated Pi JSON event', status: 'observed' };
         observation.model.settings.launch = {
           value: { scope: 'visible-calibration', isolation: 'disabled', heldOut: false },
           source: 'simulated parent admission receipt', status: 'observed',
         };
         const result = createWorkerResult({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, 'complete', {
-          model: 'gpt-6-luna', structuredOutput: { fixed: true, notes: 'bounded Unicode length validation' },
+          model: 'opencode-go/space-bunny-free', structuredOutput: { fixed: true, notes: 'bounded Unicode length validation' },
         });
         this.finishObservation(observation, result);
         return result;
       }
     }
     const configured: LaunchProfile = {
-      label: 'Codex Sol fullaccess', executable: process.execPath, version: 'test', args: [], envKeys: [],
-      cwdBehavior: 'runner workspace', providerRoute: 'codex', requestedModel: 'gpt-6-luna', authClass: 'subscription',
-      effort: 'low', permissionPolicy: 'fullaccess', sandboxPolicy: 'none', systemContext: [], tools: [], extensions: [],
+      label: 'Pi Space Bunny configured profile', executable: process.execPath, version: 'test', args: [], envKeys: [],
+      cwdBehavior: 'runner workspace', providerRoute: 'pi-opencode opencode-go', requestedModel: 'opencode-go/space-bunny-free', authClass: 'subscription',
+      effort: 'high', permissionPolicy: 'configured Pi policy', sandboxPolicy: 'unknown', systemContext: [], tools: [], extensions: [],
       assistance: [], sessionBehavior: 'ephemeral', feedbackBehavior: null,
     };
     const result = await runVisibleG1({
-      route: 'codex', driver: new SimulatedCodexDriver(),
+      route: 'pi-json', driver: new SimulatedPiDriver(),
       boundary: { scope: 'visible-calibration', isolation: 'disabled', heldOut: false, evidenceRef: 'synthetic-test-receipt' },
-      outputRoot: root, launchInventory: visibleG1TestInventory(configured), quotaSource: { async refresh() { return null; } },
+      outputRoot: root, launchInventory: visibleG1TestInventory(configured, 'pi-json'), quotaSource: { async refresh() { return null; } },
     });
     const report = JSON.parse(readFileSync(result.reportPath, 'utf8')) as {
       status: string; experimentId: string; boundary: { status: string; heldOut: boolean };
       profileComparison: { status: string }; task: { oraclePin: { sha256: string }; pinnedBaselineCommits: Array<{ commit: string; tree: string | null }> };
+      judgeManifest: { sourceRootId?: string; dependencies: Array<{ path: string; sha256: string }> };
+      pins: { sourcePins: Record<string, string> };
       rows: unknown[]; tables: unknown[]; observations: Array<{ observation: { capture: { baselineCommit: string | null; baselineTree?: string | null } } }>;
       budget: { maxAttempts: number; maxTokens: number | null; hardTokenCap: boolean };
     };
@@ -1357,15 +1359,23 @@ describe('visible G1 runSuite entrypoint', () => {
     expect(report.boundary).toMatchObject({ status: 'visible-only-unconfined', heldOut: false });
     expect(report.profileComparison.status).toBe('intentionally-altered');
     expect(report.task.oraclePin.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(report.judgeManifest).toMatchObject({ sourceRootId: 'cq-settings-native-checkout' });
     expect(report.task.pinnedBaselineCommits[0]?.commit).toMatch(/^[a-f0-9]{40}$/u);
     expect(report.observations[0]?.observation.capture.baselineCommit).toMatch(/^[a-f0-9]{40}$/u);
     expect(report.rows.length).toBeGreaterThan(0);
     expect(report.tables.length).toBeGreaterThan(0);
     expect(report.rows).toContainEqual(expect.objectContaining({
-      driver: 'codex-exec', outcome: expect.objectContaining({ score: 1 }),
+      driver: 'pi-json', outcome: expect.objectContaining({ score: 1 }),
+      taskOutcome: expect.objectContaining({ judgements: expect.arrayContaining([
+        expect.objectContaining({ judgeManifest: expect.objectContaining({ sourceRootId: 'cq-settings-native-checkout' }) }),
+      ]) }),
     }));
     expect(report.tables.flatMap((table: unknown) => (table as { cells?: unknown[] }).cells ?? []))
-      .toContainEqual(expect.objectContaining({ driver: 'codex-exec' }));
+      .toContainEqual(expect.objectContaining({ driver: 'pi-json' }));
+    expect(report.pins.sourcePins['runner/native/pi.ts']).toBe(createHash('sha256')
+      .update(readFileSync(new URL('../runner/native/pi.ts', import.meta.url))).digest('hex'));
+    expect(report.pins.sourcePins).toHaveProperty('runner/native/process.ts');
+    expect(report.pins.sourcePins).toHaveProperty('runner/native/events.ts');
     expect(report.budget).toMatchObject({ maxAttempts: 1, maxTokens: null, hardTokenCap: false });
   }, 90_000);
 });

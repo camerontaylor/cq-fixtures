@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /** One-route, visible-only G1 calibration through the verified runSuite corpus. */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, realpath, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import { createReviewLoopRepairTask } from '../../campaigns/cq-settings/corpus/review-loop-task.ts';
@@ -24,6 +24,7 @@ import type { ObservedDriver } from './observation.ts';
 import type { ObservedNativeDriver } from './observed-driver.ts';
 import { sha256 } from '../artifacts/index.ts';
 import { assertOutsideGlmBlackout } from './zcode.ts';
+import ts from 'typescript';
 
 export type VisibleG1Route = 'codex' | 'pi-json' | 'pi-rpc' | 'glm';
 type NativeRouteName = 'codex' | 'pi-opencode' | 'zcode';
@@ -88,23 +89,10 @@ const ROUTES: Readonly<Record<VisibleG1Route, RouteSpec>> = {
 };
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const SOURCE_PINS = [
+const SOURCE_ENTRYPOINTS = [
   'campaigns/cq-settings/corpus/review-loop-task.ts',
   'runner/workflow-corpus/review-loop-suite.ts',
-  'runner/workflow-corpus/review-loop-judge.ts',
-  'runner/workflow-corpus/review-loop-pin.ts',
-  'runner/campaign/scheduler.ts',
-  'runner/campaign/persistence.ts',
-  'runner/campaign/codexbar.ts',
-  'runner/campaign/codex-app-server.ts',
-  'runner/experiment.ts',
   'runner/native/run-visible-g1.ts',
-  'runner/native/visible-g1-codex-driver.ts',
-  'runner/native/codex.ts',
-  'runner/native/process.ts',
-  'runner/native/launch-inventory.ts',
-  'runner/native/conformance.ts',
-  'runner/native/observation.ts',
   'runner/index.ts',
   'schema/result-row.schema.json',
   'schema/comparison-table.schema.json',
@@ -140,7 +128,6 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
   const modelSpec = { model: spec.model, provider: spec.taskProvider };
   const task = await createReviewLoopRepairTask(modelSpec);
   const bundle = await createReviewLoopRunSuiteBundle(task);
-  await stageJudgeManifest(bundle.repoRoot, bundle.oraclePin);
   const runDirectory = join(resolve(options.outputRoot), options.route, runKey);
   const artifactRoot = join(runDirectory, 'artifacts');
   const queueDirectory = join(runDirectory, 'queue');
@@ -164,7 +151,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
   );
   if (!bridgeProfile || !configuredProfile) throw new Error(`launch inventory could not resolve both selected profiles for ${options.route}`);
 
-  const sourcePins = await hashSourcePins();
+  const sourcePins = await hashSourcePins(bundle.oraclePin.dependencies);
   const prompt = bundle.suite.cases[0]?.task.prompt;
   if (!prompt) throw new Error('review-loop runSuite bundle has no task prompt');
   const settings = {
@@ -222,6 +209,11 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
   await scheduler.markRunning(assignmentId, admission.reservation.id);
 
   const caseId = bundle.suite.cases[0]!.id;
+  const judgeManifest = {
+    sourcePin: bundle.oraclePin.sha256,
+    sourceRootId: 'cq-settings-native-checkout',
+    dependencies: bundle.oraclePin.dependencies,
+  } satisfies ExperimentContext['judgeManifest'];
   const experiment: ExperimentContext = {
     campaignId: 'cq-settings-visible-g1', cohortId: 'visible-calibration', experimentId: identity,
     taskId: suiteTaskId(bundle.suite.name, task.substrateFamily), repeatId: runKey,
@@ -232,10 +224,10 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
     caseAssignments: { [caseId]: {
       assignmentId, stageId, attemptId,
       substrateId: `${task.sourceId}:${task.baselineId}:${task.substrateFamily}`,
-      judgeManifest: { sourcePin: bundle.oraclePin.sha256, dependencies: bundle.oraclePin.dependencies },
+      judgeManifest,
     } },
     substrateId: `${task.sourceId}:${task.baselineId}:${task.substrateFamily}`,
-    judgeManifest: { sourcePin: bundle.oraclePin.sha256, dependencies: bundle.oraclePin.dependencies },
+    judgeManifest,
   };
 
   // The corpus adapter must retain the S1 identity and retrieval seam. It also
@@ -324,6 +316,7 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
         pinnedBaselineCommits: observations.map((item) => ({ commit: item.baselineCommit, tree: item.baselineTree })),
         oraclePin: bundle.oraclePin,
       },
+      judgeManifest,
       pins: { sourcePins, promptSha256: sha256(prompt), judgeSha256: bundle.oraclePin.sha256, launchInventorySha256: sha256(JSON.stringify(launchInventory)) },
       budget: { ...budget, schedulerDiagnosticMaxAttempts: 1, usagePolicy: 'unknown-usage-no-capacity-claim' },
       quotaReads,
@@ -373,25 +366,69 @@ export async function runVisibleG1(options: VisibleG1Options): Promise<VisibleG1
   }
 }
 
-async function hashSourcePins(): Promise<Record<string, string>> {
+async function hashSourcePins(
+  oracleDependencies: ReadonlyArray<{ path: string; sha256: string }>,
+): Promise<Record<string, string>> {
   const pins: Record<string, string> = {};
-  for (const relative of SOURCE_PINS) pins[relative] = sha256(await readFile(join(REPO_ROOT, relative)));
+  const paths = await discoverSourceDependencyClosure([
+    ...SOURCE_ENTRYPOINTS,
+    ...oracleDependencies.map((dependency) => dependency.path),
+  ]);
+  for (const path of paths) {
+    const bytes = await readFile(join(REPO_ROOT, path));
+    const actual = sha256(bytes);
+    const declared = oracleDependencies.find((dependency) => dependency.path === path)?.sha256;
+    if (declared !== undefined && declared !== actual) throw new Error(`review-loop oracle source changed after pinning: ${path}`);
+    pins[path] = actual;
+  }
   return pins;
 }
 
-/** Stage only hash-verified judge dependencies where runSuite validates its manifest. */
-async function stageJudgeManifest(
-  bundleRepoRoot: string,
-  manifest: { dependencies: ReadonlyArray<{ path: string; sha256: string }> },
-): Promise<void> {
-  for (const dependency of manifest.dependencies) {
-    const source = join(REPO_ROOT, dependency.path);
-    const contents = await readFile(source);
-    if (sha256(contents) !== dependency.sha256) throw new Error(`review-loop judge dependency changed after pinning: ${dependency.path}`);
-    const destination = join(bundleRepoRoot, dependency.path);
-    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-    await writeFile(destination, contents, { flag: 'wx', mode: 0o600 });
+/** Hash the host execution dependency closure, parsing imports so embedded fixture strings are not host edges. */
+async function discoverSourceDependencyClosure(initialPaths: readonly string[]): Promise<string[]> {
+  const pending = [...new Set(initialPaths)].map((path) => resolve(REPO_ROOT, path));
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const candidate = pending.pop()!;
+    const canonical = await realpath(candidate);
+    const repoRelative = relative(REPO_ROOT, canonical);
+    if (!repoRelative || repoRelative === '..' || repoRelative.startsWith(`..${sep}`) || isAbsolute(repoRelative)) {
+      throw new Error('visible G1 source dependency escaped the trusted checkout');
+    }
+    const normalized = repoRelative.split(sep).join('/');
+    if (visited.has(normalized)) continue;
+    visited.add(normalized);
+    const source = await readFile(canonical, 'utf8');
+    const sourceFile = ts.createSourceFile(canonical, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const specifiers = new Set<string>();
+    const visit = (node: ts.Node): void => {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+        specifiers.add(node.moduleSpecifier.text);
+      } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+          node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0]!)) {
+        specifiers.add(node.arguments[0]!.text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    for (const specifier of specifiers) {
+      if (!specifier.startsWith('.')) continue;
+      const base = resolve(dirname(canonical), specifier);
+      const candidates = [base, ...['.ts', '.tsx', '.mts', '.cts', '.d.ts', '.js', '.jsx', '.mjs', '.cjs', '.json'].map((extension) => `${base}${extension}`),
+        join(base, 'index.ts'), join(base, 'index.tsx'), join(base, 'index.js'), join(base, 'index.json')];
+      let resolved: string | undefined;
+      for (const path of candidates) {
+        try { resolved = await realpath(path); break; } catch { /* continue through TS/Node resolution candidates */ }
+      }
+      if (!resolved) throw new Error(`visible G1 relative source import could not be resolved: ${specifier}`);
+      const resolvedRelative = relative(REPO_ROOT, resolved);
+      if (resolvedRelative === '..' || resolvedRelative.startsWith(`..${sep}`) || isAbsolute(resolvedRelative)) {
+        throw new Error(`visible G1 source import escaped the trusted checkout: ${specifier}`);
+      }
+      pending.push(resolved);
+    }
   }
+  return [...visited].sort();
 }
 
 function quotaDiagnostic(snapshot: QuotaSnapshot | null) {
@@ -461,20 +498,21 @@ function readArg(argv: string[], flag: string): string | undefined {
   return value;
 }
 
-export function visibleG1TestInventory(profile: LaunchProfile): NativeLaunchInventory {
+export function visibleG1TestInventory(profile: LaunchProfile, route: VisibleG1Route = 'codex'): NativeLaunchInventory {
+  const spec = ROUTES[route];
   const bridge = {
     ...profile,
-    label: 'Codex native exec bridge',
-    requestedModel: 'gpt-6-luna',
-    effort: 'low',
+    label: spec.bridgeLabel,
+    requestedModel: spec.model,
+    effort: route === 'codex' ? 'low' : 'high',
     permissionPolicy: 'OpInvocation fixer allowlist',
     sandboxPolicy: 'per-invocation workspace-write',
     cwdBehavior: 'runner SessionStore workspace; Codex turn ephemeral',
-    args: ['exec', '--json', '--ephemeral', '-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"'],
+    args: route === 'codex' ? ['exec', '--json', '--ephemeral', '-m', spec.model, '-c', 'model_reasoning_effort="low"'] : [],
   };
   return {
     generatedAt: new Date(0).toISOString(), configuredProfiles: [profile], proposedBridges: [bridge],
-    comparisons: [{ target: 'Codex native exec bridge', comparison: {
+    comparisons: [{ target: spec.bridgeLabel, comparison: {
       status: 'intentionally-altered', changed: ['effort', 'permissionPolicy', 'sandboxPolicy'], unknown: [],
       configured: profile, bridge,
     } }],

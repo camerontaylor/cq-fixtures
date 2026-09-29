@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
+import { SessionStore } from '@camerontaylor/cq-toolkit';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ObservedNativeDriver, createWorkerResult } from '../runner/native/observed-driver.ts';
 import { ArtifactStore } from '../runner/artifacts/index.ts';
@@ -12,8 +13,9 @@ import { runSuite } from '../runner/index.ts';
 import { CodexExecDriver } from '../runner/native/codex.ts';
 import { PiNativeDriver } from '../runner/native/pi.ts';
 import { visibleCalibrationSpawnAdapter } from '../runner/native/process.ts';
-import { inventoryTaskWorkspace, runWorkspaceConformance } from '../runner/native/workspace-conformance.ts';
-import type { InvocationIdentity } from '../runner/native/observation.ts';
+import { inventoryTaskWorkspace, runWorkspaceConformance, WorkspaceConformanceError } from '../runner/native/workspace-conformance.ts';
+import type { InvocationIdentity, LaunchEvidence } from '../runner/native/observation.ts';
+import { SESSION_STORE_DIR } from '../runner/index.ts';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -152,7 +154,11 @@ assert.equal(candidate.isValidCampaignLabel('😀'.repeat(41)), false);
   return { repoRoot, suiteDir, taskDir, taskId, suiteName, frozen, taskCommit, taskTree, experiment, artifactRoot, stageId, attemptId, assignmentId };
 }
 
-function fakeNativeExecutable(root: string, route: 'codex' | 'pi'): string {
+function fakeNativeExecutable(
+  root: string,
+  route: 'codex' | 'pi',
+  scenario: 'complete' | 'timeout-after-edit' = 'complete',
+): string {
   const executable = join(root, `${route}-fake-cli`);
   const event = route === 'codex'
     ? [
@@ -163,10 +169,13 @@ function fakeNativeExecutable(root: string, route: 'codex' | 'pi'): string {
       id: 'synthetic-pi-final', role: 'assistant', stopReason: 'stop', usage: { input: 2, output: 1 },
       content: [{ type: 'text', text: '{"fixed":true,"notes":"synthetic edit"}' }],
     } });
+  const completion = scenario === 'timeout-after-edit'
+    ? `setInterval(() => {}, 1_000);`
+    : `process.stdout.write(${JSON.stringify(`${event}\n`)});`;
   const source = `#!/usr/bin/env node
 const fs = require('node:fs');
 fs.writeFileSync('settings/module.js', ${JSON.stringify(fixedModule)});
-process.stdout.write(${JSON.stringify(`${event}\n`)});
+${completion}
 `;
   writeFileSync(executable, source, { mode: 0o700 });
   chmodSync(executable, 0o700);
@@ -182,6 +191,49 @@ function createRunSuiteInvocation(env: ReturnType<typeof nativeWorkspaceFixture>
       CQ_REVIEW_LOOP_BASELINE_SHA: baselineCommit, CQ_REVIEW_LOOP_ORACLE_PIN: oraclePin,
     }),
   });
+}
+
+async function runNativeWorkspaceReceipt(
+  env: ReturnType<typeof nativeWorkspaceFixture>,
+  driver: CodexExecDriver | PiNativeDriver,
+  route: 'codex' | 'pi',
+) {
+  const actualStore = new SessionStore(SESSION_STORE_DIR);
+  const sessionLoads: Array<{ sessionRef: string; workspace: string | null }> = [];
+  const conformance = await runWorkspaceConformance({
+    driver,
+    experiment: env.experiment,
+    suiteName: env.suiteName,
+    caseId: env.taskId,
+    frozenJudgePin: oraclePin,
+    frozenBaseline: { contentSha256: env.frozen.contentSha256, taskCommit: env.taskCommit, taskTree: env.taskTree },
+    artifactRoot: env.artifactRoot,
+    sessionStore: { load: async (sessionRef) => {
+      const record = await actualStore.load(sessionRef);
+      sessionLoads.push({ sessionRef, workspace: record?.workspace ?? null });
+      return record;
+    } },
+    runSuite: (boundDriver) => createRunSuiteInvocation(env, boundDriver, route)(),
+  });
+  return { conformance, sessionLoads };
+}
+
+class CodexThrowAfterChildDriver extends CodexExecDriver {
+  private readonly spawned = new Map<string, InvocationIdentity>();
+
+  protected override async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
+    await super.runObserved(invocation, identity);
+    this.spawned.set(identity.invocationId, { ...identity });
+    throw new Error('synthetic wrapper failure after the fake Codex child settled');
+  }
+
+  getLaunchEvidence(invocationId: string): LaunchEvidence | undefined {
+    const identity = this.spawned.get(invocationId);
+    return identity === undefined ? undefined : {
+      identity, status: 'spawn-observed', source: 'synthetic Codex fake executable returned from runSupervised',
+      observedAt: new Date().toISOString(),
+    };
+  }
 }
 
 describe('native lifecycle evidence', () => {
@@ -290,5 +342,83 @@ describe('native lifecycle evidence', () => {
     expect(conformance.receipt.lifecycle.settlementEvidence).toEqual(lifecycleArtifact);
     const receiptFile = join(new ArtifactStore(env.artifactRoot).root, conformance.artifact.path);
     expect(readFileSync(receiptFile, 'utf8')).toContain('"qualification": "qualified"');
+  }, 30_000);
+
+  it.each(['timeout', 'throw-after-child'] as const)('preserves a candidate and stopped lifecycle proof after Codex %s', async (scenario) => {
+    const root = tempRoot();
+    const env = nativeWorkspaceFixture(root, 'codex');
+    const executable = fakeNativeExecutable(root, 'codex', scenario === 'timeout' ? 'timeout-after-edit' : 'complete');
+    const spawnAdapter = visibleCalibrationSpawnAdapter({
+      admissionId: `synthetic-codex-${scenario}-lifecycle-test`, scope: 'visible-calibration',
+      isolation: 'disabled', heldOut: false, environmentNames: ['PATH'],
+    });
+    const nativeOptions = {
+      executable, version: 'synthetic-fixture-1', model: 'test/native-lifecycle', effort: 'low',
+      artifactDirectory: join(root, 'codex-native-artifacts'), spawnAdapter,
+      // Leave startup room for the fake executable to write the candidate
+      // and complete native event frame; it then stays alive well beyond this
+      // test-local deadline so runSupervised itself produces the timeout.
+      ...(scenario === 'timeout' ? { hardWallClockMs: 5_000 } : {}),
+    };
+    const driver = scenario === 'timeout'
+      ? new CodexExecDriver(nativeOptions)
+      : new CodexThrowAfterChildDriver(nativeOptions);
+    const { conformance, sessionLoads } = await runNativeWorkspaceReceipt(env, driver, 'codex');
+
+    expect(conformance.receipt.workspaceSeparationStatus).toBe('passed');
+    expect(conformance.receipt.candidate.artifact).not.toBeNull();
+    expect(conformance.receipt.selectedJudgement).not.toBeNull();
+    expect(conformance.receipt.workspaces.assigned.before).not.toEqual(conformance.receipt.workspaces.assigned.afterWorker);
+    expect(conformance.receipt.workspaces.control.unchanged).toBe(true);
+    expect(conformance.receipt.workspaces.control.before).toEqual(conformance.receipt.workspaces.control.afterWorker);
+    expect(conformance.receipt.workspaces.control.before).toEqual(conformance.receipt.workspaces.control.afterRunSuite);
+    const loadedAssignment = sessionLoads.find(({ workspace }) => workspace !== null);
+    expect(loadedAssignment?.sessionRef).toBeDefined();
+    expect(loadedAssignment?.workspace).toBeDefined();
+    expect(conformance.receipt.identity.sessionRefSha256).toBe(sha256(loadedAssignment!.sessionRef));
+    expect(conformance.receipt.workspaces.assigned.identitySha256).toBe(sha256(loadedAssignment!.workspace!));
+    expect(conformance.receipt.workspaces.control.identitySha256).not.toBe(conformance.receipt.workspaces.assigned.identitySha256);
+    expect(sessionLoads.at(-1)).toEqual({ sessionRef: loadedAssignment!.sessionRef, workspace: null });
+    expect(conformance.receipt.lifecycle).toMatchObject({
+      qualification: 'qualified', processStatus: 'stopped', settlementStatus: 'settled',
+    });
+    const nativeObservation = conformance.result.observations.find(({ observation }) =>
+      observation.identity.invocationId === conformance.receipt.identity.invocationId)?.observation;
+    const lifecycleArtifact = nativeObservation?.artifacts.find(({ kind }) => kind === 'native-lifecycle');
+    expect(lifecycleArtifact).toBeDefined();
+    expect(conformance.receipt.lifecycle.processEvidence).toEqual(lifecycleArtifact);
+    expect(conformance.receipt.lifecycle.settlementEvidence).toEqual(lifecycleArtifact);
+    const outcome = conformance.result.taskOutcomes[0]?.outcome;
+    expect(outcome?.execution?.terminalCause).toBe(scenario === 'timeout' ? 'budget-exhausted' : 'transport-error');
+    expect(outcome?.stages[0]?.artifacts.some(({ kind }) => kind === 'candidate-patch')).toBe(true);
+  }, 30_000);
+
+  it('fails lifecycle qualification closed when an actual Codex run has no trusted stop status', async () => {
+    const root = tempRoot();
+    const env = nativeWorkspaceFixture(root, 'codex');
+    const executable = fakeNativeExecutable(root, 'codex');
+    const spawnAdapter = visibleCalibrationSpawnAdapter({
+      admissionId: 'synthetic-codex-unknown-stop-test', scope: 'visible-calibration',
+      isolation: 'disabled', heldOut: false, environmentNames: ['PATH'],
+    });
+    const driver = new CodexExecDriver({ executable, version: 'synthetic-fixture-1', model: 'test/native-lifecycle',
+      effort: 'low', artifactDirectory: join(root, 'codex-native-artifacts'), spawnAdapter });
+    const actualEvidence = driver.getLifecycleEvidence.bind(driver);
+    driver.getLifecycleEvidence = (invocationId) => {
+      const evidence = actualEvidence(invocationId);
+      return evidence === undefined ? undefined : {
+        ...evidence, process: { ...evidence.process, status: 'unknown' },
+      };
+    };
+    let conformanceError: WorkspaceConformanceError | undefined;
+    try { await runNativeWorkspaceReceipt(env, driver, 'codex'); }
+    catch (error) { if (error instanceof WorkspaceConformanceError) conformanceError = error; else throw error; }
+
+    expect(conformanceError).toBeDefined();
+    expect(conformanceError!.receipt.workspaceSeparationStatus).toBe('passed');
+    expect(conformanceError!.receipt.status).toBe('failed');
+    expect(conformanceError!.receipt.lifecycle.qualification).toBe('unknown');
+    expect(conformanceError!.receipt.failureCodes).toContain('native-lifecycle-proof-unknown');
+    expect(conformanceError!.receipt.candidate.artifact).not.toBeNull();
   }, 30_000);
 });

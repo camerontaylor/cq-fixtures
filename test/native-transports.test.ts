@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ import { parseJsonEventLines, applyUsageObservation } from '../runner/native/eve
 import { unavailableObservation, type InvocationIdentity } from '../runner/native/observation.ts';
 import { RUNNER_SESSION_DIRECTORY } from '../runner/native/session.ts';
 import { ObservedNativeDriver, createWorkerResult } from '../runner/native/observed-driver.ts';
+import { runNativeConformanceSuite } from '../runner/native/conformance.ts';
 import { runVisibleG1, visibleG1TestInventory } from '../runner/native/run-visible-g1.ts';
 import { createFinalProfileQuotaSource, estimateFinalProfileAdmission, resolveFinalProfileQuotaSource, runBoundedFinalProfileSetup } from '../runner/native/run-final-profile-g1.ts';
 import type { CodexAppServerSession } from '../runner/campaign/codex-app-server.ts';
@@ -21,6 +22,9 @@ import { FileCampaignQueueStore } from '../runner/campaign/persistence.ts';
 import { normalizeG2NativeReceipt, runG2Harness, type G2ProbeFixture, type NativeExecutionReceipt } from '../runner/native/g2-harness.ts';
 import type { LaunchProfile } from '../runner/native/launch-inventory.ts';
 import { SAFE_GIT_CONFIG, snapshotTask } from '../runner/boundary/task-tree.ts';
+import type { ExperimentContext } from '../runner/experiment.ts';
+import { createReviewLoopRepairTask } from '../campaigns/cq-settings/corpus/review-loop-task.ts';
+import { createReviewLoopRunSuiteBundle } from '../runner/workflow-corpus/review-loop-suite.ts';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -725,5 +729,92 @@ describe('visible G1 runSuite entrypoint', () => {
     expect(report.tables.flatMap((table: unknown) => (table as { cells?: unknown[] }).cells ?? []))
       .toContainEqual(expect.objectContaining({ driver: 'codex-exec' }));
     expect(report.budget).toMatchObject({ maxAttempts: 1, maxTokens: null, hardTokenCap: false });
+  }, 90_000);
+});
+
+describe('final-profile oracle source root binding', () => {
+  it('runs the real temporary-bundle runSuite path through host scoring and native capture', async () => {
+    const task = await createReviewLoopRepairTask({ model: 'gpt-6-sol', provider: 'codex' });
+    const bundle = await createReviewLoopRunSuiteBundle(task);
+    const assignmentId = 'final-profile-source-root-regression';
+    const stageId = `${assignmentId}-stage-1`;
+    const attemptId = `${assignmentId}-attempt-1`;
+    const caseId = bundle.suite.cases[0]!.id;
+    const judgeManifest = {
+      sourcePin: bundle.oraclePin.sha256,
+      sourceRootId: 'cq-settings-native-checkout',
+      dependencies: bundle.oraclePin.dependencies,
+    } satisfies ExperimentContext['judgeManifest'];
+    let invokedWorkspace: string | null = null;
+
+    class SimulatedFinalCodexDriver extends ObservedNativeDriver {
+      constructor() {
+        super({ configuredTarget: 'codex/gpt-6-sol', transport: 'codex-exec', executable: 'simulated-codex', executableVersion: 'test', profile: 'final-profile-regression' });
+      }
+
+      protected async runObserved(input: OpInvocation, invocationIdentity: InvocationIdentity): Promise<WorkerResult> {
+        const workspace = input.prompt.match(/^workspace: (.+)$/mu)?.[1];
+        if (!workspace) throw new Error('temporary-bundle runSuite invocation omitted its workspace');
+        invokedWorkspace = workspace;
+        writeFileSync(join(workspace, 'src/settings.mjs'), `export function isValidCampaignLabel(label) {\n  const value = typeof label === 'string' ? label.trim() : '';\n  return value.length > 0 && Array.from(value).length <= 40;\n}\n`);
+        execFileSync('git', ['-C', workspace, 'add', 'src/settings.mjs']);
+        execFileSync('git', ['-C', workspace, '-c', 'user.name=CQ Native Regression', '-c', 'user.email=native-regression@example.invalid', 'commit', '-q', '-m', 'Simulated native candidate']);
+        const observation = this.newObservation(invocationIdentity, input, new Date().toISOString());
+        observation.model.observed = { value: 'gpt-6-sol', source: 'synthetic native event fixture', status: 'observed' };
+        const result = createWorkerResult({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, 'complete', {
+          model: 'gpt-6-sol', structuredOutput: { fixed: true, notes: 'bounded Unicode code point validation' },
+        });
+        this.finishObservation(observation, result);
+        return result;
+      }
+    }
+
+    try {
+      const driver = new SimulatedFinalCodexDriver();
+      const result = await runNativeConformanceSuite({
+        suiteDir: bundle.suiteDir,
+        repoRoot: bundle.repoRoot,
+        artifactRoot: join(bundle.repoRoot, 'artifacts'),
+        driver: bundle.wrapDriver(driver),
+        hostCheckScoringEnvironment: bundle.hostCheckScoringEnvironment,
+        model: 'gpt-6-sol',
+        provider: 'codex',
+        driverName: 'codex-exec',
+        checkTimeoutMs: 20_000,
+        experiment: {
+          campaignId: 'cq-settings-final-profile-g1', cohortId: 'final-profile-G1',
+          experimentId: 'source-root-regression', taskId: task.id, repeatId: 'source-root-regression',
+          assignmentId, stageId, attemptId, track: 'final-profile-G1', strategyId: 'codex-exec-final-http-only-g1',
+          settingsId: 'codex-gpt-6-sol-low', budgetId: 'bounded-test', profileId: 'cq-subscription-http:boundary-unverified',
+          frozenWeight: 1, substrateId: `${task.sourceId}:${task.baselineId}:${task.substrateFamily}`,
+          judgeManifest,
+          caseAssignments: { [caseId]: { assignmentId, stageId, attemptId,
+            substrateId: `${task.sourceId}:${task.baselineId}:${task.substrateFamily}`, judgeManifest } },
+        },
+        expectedCaseIds: [caseId],
+        expectedInvocations: [{ assignmentId, stageId, attemptId }],
+        expectedTransport: 'codex-exec',
+      });
+
+      expect(invokedWorkspace).toBeTruthy();
+      expect(invokedWorkspace).not.toContain(bundle.repoRoot);
+      expect(result.materializationFailures).toBe(0);
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]?.outcome.score).toBe(1);
+      expect(result.tables).toHaveLength(1);
+      expect(result.observations).toHaveLength(1);
+      expect(result.observations[0]?.observation.capture.baselineCommit).toMatch(/^[a-f0-9]{40}$/u);
+      expect(result.judgements).toHaveLength(1);
+      expect(result.rows[0]?.taskOutcome?.judgements[0]?.judgeManifest).toMatchObject({
+        sourceRootId: 'cq-settings-native-checkout',
+        dependencies: bundle.oraclePin.dependencies,
+      });
+      expect(result.tables[0]?.cells).toContainEqual(expect.objectContaining({ driver: 'codex-exec' }));
+      expect(bundle.pinnedBaselineCommit(invokedWorkspace!)).toMatch(/^[a-f0-9]{40}$/u);
+      expect(bundle.pinnedCandidateCommit(invokedWorkspace!)).toBeTruthy();
+    } finally {
+      await bundle.cleanup();
+      await task.cleanup();
+    }
   }, 90_000);
 });

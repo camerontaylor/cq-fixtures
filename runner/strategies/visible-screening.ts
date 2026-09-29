@@ -57,12 +57,12 @@ export interface VisibleReviewLoopResult {
   runNamespace: string;
   reportPath: string;
   strategy: StrategyResult;
-  /** Pipeline-level S1 mapping is intentionally withheld until S4/S1 join validation exists. */
-  taskOutcome: null;
-  rows: readonly [];
-  tables: readonly [];
+  /** Authoritative S1 join of native strategy evidence and the frozen host judgement. */
+  taskOutcome: unknown;
+  rows: readonly unknown[];
+  tables: readonly unknown[];
   pipelineEvidence: {
-    mappingStatus: 'strategy-ledger-only';
+    mappingStatus: 'mapped';
     candidateCorrectness: boolean | null;
     formatCompliance: boolean | null;
     assignedStrategySuccess: boolean | null;
@@ -93,14 +93,64 @@ export interface VisibleReviewLoopResult {
 }
 
 interface S1TaskOutcome {
+  identity: Record<string, unknown>;
   candidateCorrectness: boolean | null;
   assignedStrategySuccess: boolean | null;
   formatConformance: boolean | null;
   operationalStatus: string;
-  judgements: readonly { artifact?: { path: string; sha256: string } }[];
+  judgements: readonly S1Judgement[];
 }
-interface S1Row { case: string; taskOutcome?: S1TaskOutcome; [key: string]: unknown; }
+interface S1Judgement {
+  judgementId: string;
+  version: number;
+  judgePin: string;
+  judgeManifest: { sourcePin: string; dependencies: readonly { path: string; sha256: string }[] };
+  baselineCommit: string | null;
+  baselineTree: string | null;
+  candidateSha256: string;
+  candidateCorrectness: boolean | null;
+  formatConformance: boolean | null;
+  assignedStrategySuccess: boolean | null;
+  operationalStatus: string;
+  artifact: { path: string; sha256: string };
+}
+interface S1Row { case: string; taskOutcome?: S1TaskOutcome; experiment?: Record<string, unknown>; [key: string]: unknown; }
 interface S1RunSuiteResult { rows: S1Row[]; tables: unknown[]; diagnostics?: string[]; }
+interface S1ExperimentContext {
+  campaignId: string; cohortId: string; experimentId: string; taskId: string; repeatId: string;
+  assignmentId: string; stageId: string; attemptId: string; track: string; strategyId: string;
+  settingsId: string; budgetId: string; profileId: string; frozenWeight: number; substrateId: string;
+  judgeManifest: { sourcePin: string; dependencies: readonly { path: string; sha256: string }[] };
+}
+interface S1MappingResult { taskOutcome: unknown; rows: unknown[]; tables: unknown[]; }
+type PipelineCounter = 'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'reasoning' | 'tokenTotal';
+interface S1PipelineUsageCounter {
+  value: number | null;
+  availability: string;
+  semantics: string;
+  inclusion: string | null;
+}
+interface S1PipelineStage {
+  assignmentId: string; stageId: string; attemptId: string; invocationId: string | null;
+  kind: string; routeId: string | null; status: string; launched: boolean | null;
+  terminalCause: string | null; transportException: { name: string; message: string } | null;
+  usage: Record<PipelineCounter, S1PipelineUsageCounter>;
+}
+interface S1PipelineMappingInput {
+  strategy: {
+    assignmentId: string; taskId: string; finalCandidate: { sha256: string | null } | null;
+    candidateCorrectness: boolean | null; operationalStatus: StrategyResult['operationalStatus'];
+    authorizedBudgetStop: boolean; stages: readonly S1PipelineStage[]; accounting: { endToEndMs: number };
+  };
+  judgeResult: S1RunSuiteResult;
+  caseId: string;
+  context: S1ExperimentContext;
+  selection: { judgementId: string; version: number; judgePin: string; candidateSha256: string } | null;
+  recipeEvidence: { formatConformance: boolean | null; assignedStrategySuccess: boolean | null };
+  pipelineJudgementArtifact?: { judgementId: string; version: number; artifact: { path: string; sha256: string } };
+  rowMetadata: { role: 'fixer-worker'; suite: string; case: string; model: string; driver: string; runId: string; timestamp: string; expectedCases: number };
+  stageEvidence: Readonly<Record<string, { artifacts: readonly { kind: string; path: string; sha256: string }[]; observation?: { path: string; sha256: string } }>>;
+}
 interface ReviewTask {
   worktreePath: string;
   baselineCommit: string;
@@ -122,6 +172,8 @@ interface S1Bindings {
   createReviewLoopRepairTask(input: { model: string; provider: string }, root: string): Promise<ReviewTask>;
   executeReviewLoopRepairTask(task: ReviewTask, driver: Driver): Promise<{ status: string; error?: unknown; reason?: unknown; value?: unknown }>;
   runSuite(input: Record<string, unknown>): Promise<S1RunSuiteResult>;
+  mapPipelineCampaignEvidence(input: S1PipelineMappingInput): S1MappingResult;
+  ArtifactStore: new (root: string) => { write(context: S1ExperimentContext, name: string, content: string | Buffer): { path: string; sha256: string } };
   experimentId(input: unknown): string;
   suiteTaskId(suite: string, task: string): string;
   createReviewLoopRunSuiteBundle(task: ReviewTask, root: string): Promise<ReviewBundle>;
@@ -160,13 +212,14 @@ function findOwnRepositoryRoot(startDirectory: string): string | null {
 /** Load the sibling S1 integration at runtime so this runner package keeps its own build boundary. */
 async function loadS1Bindings(root: string): Promise<S1Bindings> {
   const at = (path: string): string => pathToFileURL(join(root, path)).href;
-  const [corpus, runner, experiment, suite] = await Promise.all([
+  const [corpus, runner, experiment, suite, artifacts] = await Promise.all([
     import(at('campaigns/cq-settings/corpus/review-loop-task.ts')),
     import(at('runner/index.ts')),
     import(at('runner/experiment.ts')),
     import(at('runner/workflow-corpus/review-loop-suite.ts')),
+    import(at('runner/artifacts/index.ts')),
   ]);
-  return { ...corpus, ...runner, ...experiment, ...suite } as unknown as S1Bindings;
+  return { ...corpus, ...runner, ...experiment, ...suite, ...artifacts } as unknown as S1Bindings;
 }
 
 function hash(value: string | Uint8Array): string {
@@ -227,6 +280,7 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
     const experimentRunId = identity;
     const substrateId = `${s1.REVIEW_LOOP_SOURCE_ID}:${s1.REVIEW_LOOP_BASELINE_ID}:campaign-settings-module-v1`;
     const judgeManifest = { sourcePin: bundle.oraclePin.sha256, dependencies: bundle.oraclePin.dependencies };
+    let frozenSelection: { judgementId: string; version: number; judgePin: string; candidateSha256: string } | null = null;
 
     const allocateClone = (workspaceId: string, attemptId: string): CandidateWorkspace => {
       const clonePath = join(tempRoot, `candidate-${safe(attemptId)}`);
@@ -258,6 +312,13 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
             },
           };
           const started = performance.now();
+          const judgeContext: S1ExperimentContext = {
+            campaignId: 'cq-settings-visible-screening', cohortId: 'visible-calibration', experimentId: experimentRunId,
+            taskId: s1.suiteTaskId(bundle!.suite.name, substrateId), repeatId: hash(options.runNamespace).slice(0, 16),
+            assignmentId: request.assignmentId, stageId: request.stageId, attemptId: request.attemptId,
+            track: 'visible-review-loop-screening', strategyId: identity, settingsId: options.settingsId,
+            budgetId: tier.id, profileId: options.profileId, frozenWeight: 1, substrateId, judgeManifest,
+          };
           const result = await s1.runSuite({
             suiteDir: bundle!.suiteDir,
             repoRoot: bundle!.repoRoot,
@@ -268,19 +329,23 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
             driverName: DRIVER_LABEL[options.route.transport],
             checkTimeoutMs: VISIBLE_REVIEW_LOOP_LIMITS.independentJudgeMs,
             hostCheckScoringEnvironment: (workspace: string, baseline: string) => bundle!.hostCheckScoringEnvironment(workspace, baseline),
-            experiment: {
-              campaignId: 'cq-settings-visible-screening', cohortId: 'visible-calibration', experimentId: experimentRunId,
-              taskId: s1.suiteTaskId(bundle!.suite.name, substrateId), repeatId: hash(options.runNamespace).slice(0, 16),
-              assignmentId: request.assignmentId, stageId: request.stageId, attemptId: request.attemptId,
-              track: 'visible-review-loop-screening', strategyId: identity, settingsId: options.settingsId,
-              budgetId: tier.id, profileId: options.profileId, frozenWeight: 1, substrateId, judgeManifest,
-            },
+            experiment: judgeContext,
           });
           runSuiteResults.push(result);
           const row = result.rows.find((entry) => entry.case === bundle!.suite.cases[0]?.id);
           const outcome = row?.taskOutcome;
           if (!outcome) return { status: 'failed', usage: unknownUsage(), serviceTimeMs: performance.now() - started,
             launched: false, judgement: { status: 'unavailable', correctness: null, detail: 'S1 runSuite produced no TaskOutcome' } };
+          const candidateHash = candidate.sha256;
+          const exact = outcome.judgements.filter((entry) => entry.candidateSha256 === candidateHash
+            && entry.judgePin === bundle!.oraclePin.sha256);
+          if (exact.length !== 1) return { status: 'failed', usage: unknownUsage(), serviceTimeMs: performance.now() - started,
+            launched: false, judgement: { status: 'unavailable', correctness: null,
+              detail: `S1 runSuite supplied ${exact.length} exact candidate and judge pin matches` } };
+          const selected = exact[0]!;
+          // Freeze the precise host judgement while this assigned stage is running.
+          frozenSelection = { judgementId: selected.judgementId, version: selected.version,
+            judgePin: selected.judgePin, candidateSha256: selected.candidateSha256 };
           return {
             status: 'completed', usage: unknownUsage(), serviceTimeMs: performance.now() - started,
             launched: false,
@@ -369,20 +434,91 @@ export async function runVisibleReviewLoopScreening(options: VisibleReviewLoopOp
     };
     const strategy = await runStrategy(strategyTask, recipe, tier, executor, { assignmentId: options.assignmentId });
     const finalResult = runSuiteResults.at(-1);
-    const localOutcome = finalResult?.rows[0]?.taskOutcome ?? null;
-    const status = strategy.operationalStatus === 'complete' && strategy.recipeCompleted && localOutcome !== null ? 'complete' : 'incomplete';
+    const assignedCaseId = bundle!.suite.cases[0]!.id;
+    const localOutcome = finalResult?.rows.find((row) => row.case === assignedCaseId)?.taskOutcome ?? null;
     const runIdentity = visibleRunIdentity(identity, options.assignmentId, options.runNamespace);
+    const selectedHostJudgement = frozenSelection as { judgementId: string; version: number; judgePin: string; candidateSha256: string } | null;
     const modelStages = strategy.stages.filter((stage) => stage.routeId !== null);
+    const judgeStage = strategy.stages.find((stage) => stage.kind === 'independent-judge');
+    const mappingContext: S1ExperimentContext = {
+      campaignId: 'cq-settings-visible-screening', cohortId: 'visible-calibration', experimentId: experimentRunId,
+      taskId: s1.suiteTaskId(bundle!.suite.name, substrateId), repeatId: hash(options.runNamespace).slice(0, 16),
+      assignmentId: options.assignmentId,
+      stageId: judgeStage?.stageId ?? `judge-${runIdentity.slice(0, 24)}`,
+      attemptId: judgeStage?.attemptId ?? 'not-launched',
+      track: 'visible-review-loop-screening', strategyId: identity, settingsId: options.settingsId,
+      budgetId: tier.id, profileId: options.profileId, frozenWeight: 1, substrateId, judgeManifest,
+    };
+    const stageEvidence: Record<string, { artifacts: readonly { kind: string; path: string; sha256: string }[] }> = {};
+    for (const stage of modelStages) {
+      if (!stage.invocationId) throw new Error(`native stage ${stage.stageId}/${stage.attemptId} has no invocation ID`);
+      stageEvidence[stage.invocationId] = { artifacts: [] };
+    }
+    const mapInput: S1PipelineMappingInput = {
+      strategy: {
+        assignmentId: strategy.assignmentId, taskId: strategy.taskId,
+        finalCandidate: strategy.finalCandidate ? { sha256: strategy.finalCandidate.sha256 } : null,
+        candidateCorrectness: strategy.candidateCorrectness, operationalStatus: strategy.operationalStatus,
+        authorizedBudgetStop: strategy.authorizedBudgetStop,
+        stages: strategy.stages.map((stage) => ({
+          assignmentId: stage.assignmentId, stageId: stage.stageId, attemptId: stage.attemptId,
+          invocationId: stage.invocationId, kind: stage.kind, routeId: stage.routeId, status: stage.status,
+          launched: stage.launched, terminalCause: stage.terminalCause, transportException: stage.transportException,
+          usage: Object.fromEntries((['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'tokenTotal'] as const)
+            .map((counter) => [counter, {
+              value: stage.usage[counter].value, availability: stage.usage[counter].availability,
+              semantics: stage.usage[counter].semantics, inclusion: stage.usage[counter].inclusion,
+            }])) as Record<PipelineCounter, S1PipelineUsageCounter>,
+        })),
+        accounting: { endToEndMs: strategy.accounting.endToEndMs },
+      },
+      judgeResult: { rows: finalResult?.rows ?? [], tables: finalResult?.tables ?? [] },
+      caseId: assignedCaseId, context: mappingContext, selection: selectedHostJudgement,
+      recipeEvidence: { formatConformance: strategy.formatCompliance,
+        assignedStrategySuccess: strategy.assignedStrategySuccess },
+      rowMetadata: {
+        role: 'fixer-worker' as const, suite: bundle!.suite.name, case: assignedCaseId,
+        model: options.model, driver: DRIVER_LABEL[options.route.transport], runId: runIdentity,
+        timestamp: new Date().toISOString(), expectedCases: bundle!.suite.cases.length,
+      },
+      stageEvidence,
+    };
+    let pipelineJudgementArtifact: { judgementId: string; version: number; artifact: { path: string; sha256: string } } | undefined;
+    if (selectedHostJudgement && localOutcome) {
+      const historical = localOutcome.judgements;
+      const version = Math.max(0, ...historical.map((entry) => entry.version)) + 1;
+      const judgementId = `recipe-${hash(`${runIdentity}\0${selectedHostJudgement.judgementId}\0${selectedHostJudgement.version}`).slice(0, 32)}`;
+      const contents = `${JSON.stringify({
+        schemaVersion: 1, assignmentId: options.assignmentId, runNamespace: options.runNamespace,
+        recipeHash: strategy.recipeHash, candidateSha256: selectedHostJudgement.candidateSha256,
+        selectedHostJudgement, formatConformance: strategy.formatCompliance,
+        assignedStrategySuccess: strategy.assignedStrategySuccess, operationalStatus: strategy.operationalStatus,
+        stageInvocationIds: modelStages.map((stage) => stage.invocationId),
+      }, null, 2)}\n`;
+      const digest = hash(contents);
+      const artifact = { path: 'pending-recipe-judgement.json', sha256: digest };
+      const pipelineJudgement = { judgementId, version, artifact };
+      // Validate the full join before creating an immutable artifact, then map again to retain its real ref.
+      s1.mapPipelineCampaignEvidence({ ...mapInput, pipelineJudgementArtifact: pipelineJudgement });
+      const store = new s1.ArtifactStore(artifactRoot);
+      const stored = store.write(mappingContext, `recipe-${hash(judgementId).slice(0, 24)}.json`, contents);
+      pipelineJudgementArtifact = { judgementId, version, artifact: stored };
+    }
+    const mapped = s1.mapPipelineCampaignEvidence({ ...mapInput,
+      ...(pipelineJudgementArtifact ? { pipelineJudgementArtifact } : {}) });
+    const status = strategy.operationalStatus === 'complete' && strategy.recipeCompleted
+      && mapped.taskOutcome !== null && (mapped.taskOutcome as { candidateCorrectness?: unknown }).candidateCorrectness !== null
+      ? 'complete' : 'incomplete';
     const report: VisibleReviewLoopResult = {
       schemaVersion: 1, status, visibleOnly: true, heldOut: false, experimentId: identity,
       runIdentity, runNamespace: options.runNamespace,
       reportPath: join(outputRoot, `visible-screening-${runIdentity}.json`),
-      strategy, taskOutcome: null, rows: [], tables: [],
+      strategy, taskOutcome: mapped.taskOutcome, rows: mapped.rows, tables: mapped.tables,
       pipelineEvidence: {
-        mappingStatus: 'strategy-ledger-only',
-        candidateCorrectness: strategy.candidateCorrectness,
-        formatCompliance: strategy.formatCompliance,
-        assignedStrategySuccess: strategy.assignedStrategySuccess,
+        mappingStatus: 'mapped',
+        candidateCorrectness: (mapped.taskOutcome as { candidateCorrectness: boolean | null }).candidateCorrectness,
+        formatCompliance: (mapped.taskOutcome as { formatConformance: boolean | null }).formatConformance,
+        assignedStrategySuccess: (mapped.taskOutcome as { assignedStrategySuccess: boolean | null }).assignedStrategySuccess,
         operationalStatus: strategy.operationalStatus,
         execution: {
           launched: modelStages.some((stage) => stage.launched === true) ? true

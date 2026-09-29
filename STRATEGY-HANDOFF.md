@@ -139,10 +139,21 @@ not send a token cap for these unsupported routes.
 ## Visible review-loop strategy runner
 
 `runner/strategies/visible-screening.ts` wires the bounded same-model
-verify/repair recipe to the real review-loop `runSuite` path. The final
-independent S1 run produces the `TaskOutcome`, row, tables, and artifact; model
-stage observations remain in the S4 stage ledger and count toward full
-pipeline usage.
+verify/repair recipe to the real review-loop `runSuite` host oracle. Its
+synthetic, no-model S1 driver makes those rows local-judge diagnostics only:
+they are under `localJudge`, marked `pipelineCampaignEvidence: false`, and
+excluded from top-level pipeline rows/tables. The pipeline `TaskOutcome` stays
+null until the S4 stage ledger can be joined to S1 using validated invocation
+evidence. Pipeline candidate correctness and recipe success come from S4's
+bounded strategy result; format compliance stays unknown because the synthetic
+S1 driver supplies a fixed structured response.
+
+`pipelineEvidence.stages` preserves every model-stage ID, attempt ID, native
+invocation ID when known, terminal cause, transport exception, nullable usage
+counters, and counter inclusion semantics. Missing observations stay unknown;
+the local S1 judge is not assigned numeric zero model usage. The aggregate
+token total therefore remains null when local judge usage is not a model
+observation.
 
 Each draft starts from an isolated worktree with the exact pinned seed commit
 and tree. Repair and verification also start from that seed, with the captured,
@@ -153,9 +164,21 @@ unenforced pending native supervisor support, so this runner makes no hard
 total-bound claim. Caller configuration must attest route effort and supply
 the already admitted driver and native supervisor. The runner performs no
 credential resolution or public calls, and it has no held-out cohort input.
+The S1 checkout is discovered from nearby source/worktree roots or supplied
+through `s1DependencyRoot`; source files and judge dependencies are content
+pinned in the experiment identity. A required frozen `runNamespace` combines
+with the parent assignment ID to scope stage identities and report paths.
+Candidate capture rebuilds a temporary trusted Git repository from
+parent-owned baseline files, then copies candidate file contents without
+reading mutable worker Git metadata. It preserves committed edits and
+untracked additions and bounds capture to 10,000 files, 8 MiB per file, and
+32 MiB total. S1's trusted capture routine remains private to its runner;
+exposing it as a shared helper would give both paths one hardened capture
+contract and remove this strategy-local implementation.
 
-The focused test uses a fake model driver while exercising the real artifact
-store and S1 `runSuite`/host oracle. The corpus expansion currently has nine
+Focused tests use a fake model driver while exercising the real artifact
+store and S1 `runSuite`/host oracle, plus isolated Git capture and root
+discovery fixtures. The corpus expansion currently has nine
 substrates across five families, but only five model-call task types:
 review-loop (one), analyze (two), and merge (two). Ratchet and fleet are
 deterministic operation samples and do not increase that model-call count.

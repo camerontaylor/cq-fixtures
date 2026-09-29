@@ -194,17 +194,33 @@ rule that disables filters and text conversions. S1's trusted capture routine re
 exposing it as a shared helper would give both paths one hardened capture
 contract and remove this strategy-local implementation.
 
-The current S1 `runSuite` host-check API has no cancellation/reap handle. The
-visible entrypoint therefore requires an `IndependentJudgeSupervisor`: its
-`run` must place the host judge and check process in a cancellable OS boundary,
-and `cancelAndWait` must return matching assignment/stage/attempt identity,
-stopped-and-reaped process-tree proof, settled execution, and completed
-cleanup. A failed, missing, or quarantined proof suppresses the verdict and
-candidate progression; recovery resources remain retained. S2's native
-supervisor cannot stand in for this proof because it only controls the
-configured native Driver invocation. Parent integration must implement this
-additive judge-boundary adapter before screening; calling the current
-in-process `runSuite` API by itself does not meet the contract.
+The visible runner's independent judge now crosses a serializable process
+boundary. The parent freezes the review-loop task snapshot, candidate patch
+and hash, baseline commit/tree, S1 source and dependency pins, prompt, and
+experiment identity into a private JSON request. `judge-child.ts` validates
+those pins, runs the actual S1 `runSuite` with deterministic local candidate
+injection, and invokes the protected host oracle. It atomically writes a
+bounded, hash-validated result file; executable closures and code are never
+passed to the child. The parent validates the exact selected judgement ID,
+version, semantic oracle pin, and candidate hash before mapping S1 evidence.
+
+`IndependentJudgeProcessSupervisor` launches this fixed child in a detached
+POSIX process group. It enforces the judge decision deadline, bounds stdout,
+stderr, and result size, then terminates and waits for the group to disappear
+before accepting a result or allowing capture/cleanup. Timeout, malformed or
+mismatched result, output overflow, and missing stop proof fail closed. A
+failed stop proof retains the process/artifact root for recovery and suppresses
+the judgement. S2's native supervisor still controls native Driver
+invocations; it is not used as proof for the separate host-judge process.
+The process environment keeps a private HOME and exposes only S1's fixed local
+protected-oracle socket through a symlink; provider credentials are not passed.
+
+This proves the OS process group stopped and the child leader exited. It does
+not enforce lifetime of detached processes that deliberately escape that
+group, all external resources, or a global token cap. Those limits remain
+unsupported and are recorded as such. The bounded cleanup window is separate
+from the decision deadline. Parent cleanup must retain/quarantine roots unless
+the child process group stop proof succeeds.
 
 Focused tests use a fake model driver while exercising the real artifact
 store and S1 `runSuite`/host oracle, plus isolated Git capture and root
@@ -214,6 +230,9 @@ review-loop (one), analyze (two), and merge (two). Ratchet and fleet are
 deterministic operation samples and do not increase that model-call count.
 This runner intentionally screens review-loop only; expand task coverage after
 parent verification.
+The focused no-model S1 integration completes and persists the host judgement;
+the current protected behavior probe reports candidate correctness `false`,
+which is preserved as that verdict rather than upgraded from execution success.
 
 ## Bounds and outcome fields
 
@@ -244,15 +263,16 @@ assigned result fail.
 
 ## Integration seam for S1/S2
 
-The parent integration should implement the native adapter outside this owned
+The parent integration supplies the native adapter outside this owned
 directory, mapping `InvocationIdentity` into S1 `beginInvocation` and
-`getObservation(invocationId)`, plus the supervised S1 judge boundary above.
-S1 persists transport evidence; this engine returns strategy state and
-nullable accounting. Verify route setting inventories
-against the frozen profile pins and carry assignment identity from the campaign
-roster. Persist candidate content before workspace cleanup. Keep native and
-diagnostic tracks separate in storage and comparison tables.
+`getObservation(invocationId)`. This branch owns the serializable S1 judge
+child boundary described above. S1 persists transport evidence; this engine
+returns strategy state and nullable accounting. Verify route setting
+inventories against the frozen profile pins and carry assignment identity from
+the campaign roster. Persist candidate content before workspace cleanup.
+Keep native and diagnostic tracks separate in storage and comparison tables.
 
-Focused verification for this follow-up: `npx tsc --noEmit` and
-`npx vitest run test/campaign-strategies.test.ts`. No paid provider calls are
-part of the strategy fake tests.
+Focused verification for this follow-up: `npx tsc --noEmit`, `npx eslint`
+over the owned paths, `npx tsc -p tsconfig.build.json`, the isolated process
+supervisor tests, and the real S1 ArtifactStore/runSuite fake-driver mapping
+test. No paid provider calls are part of these tests.

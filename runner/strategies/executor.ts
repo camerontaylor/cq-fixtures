@@ -9,6 +9,7 @@ import type {
   Candidate, ExecutorResult, StageExecutor, StageObservation, StageRequest, UsageObservations,
 } from './index.ts';
 import { unknownUsage } from './index.ts';
+import type { JudgeProcessIdentity, ReviewLoopJudgeProcessRequest } from './judge-protocol.ts';
 
 export interface NativeInvocationIdentity {
   invocationId: string;
@@ -76,16 +77,30 @@ export interface IndependentJudgeSettlementProof {
   assignmentId: string;
   stageId: string;
   attemptId: string;
-  processTree: 'stopped-and-reaped';
-  execution: 'settled';
+  processTree: 'stopped-and-reaped' | 'running-or-unknown';
+  execution: 'settled' | 'unsettled';
   cleanup: 'complete' | 'failed' | 'quarantined';
 }
 
+export interface IndependentJudgeExecution {
+  result: ExecutorResult;
+  evidence: {
+    rows: readonly unknown[];
+    tables: readonly unknown[];
+    diagnostics: readonly string[];
+    selection: { judgementId: string; version: number; judgePin: string; candidateSha256: string };
+    requestSha256: string;
+    payloadSha256: string;
+    artifactRoot: string;
+    processRoot: string;
+  };
+}
+
 export interface IndependentJudgeSupervisor {
-  /** Launches the judge operation inside a cancellable, reapable boundary. */
-  run<T>(request: StageRequest, operation: () => Promise<T>): Promise<T>;
+  /** Serializes frozen judge inputs to a private child process; never accepts executable closures. */
+  run(request: ReviewLoopJudgeProcessRequest, signal: AbortSignal): Promise<IndependentJudgeExecution>;
   cancelAndWait(input: {
-    request: StageRequest;
+    identity: JudgeProcessIdentity;
     cause: unknown;
     deadlineEpochMs: number;
   }): Promise<IndependentJudgeSettlementProof>;
@@ -99,6 +114,8 @@ export interface NativeStrategyExecutorHooks {
   /** Creates an isolated substrate for each independently generated candidate. */
   createCandidateWorkspace(request: Omit<StageRequest, 'workspace' | 'workspaceId'>, index: number, stableWorkspaceId: string): Promise<{ id: string; handle: unknown }> | { id: string; handle: unknown };
   supervisor: NativeSupervisorControl;
+  prepareIndependentJudgeRequest?(request: StageRequest): ReviewLoopJudgeProcessRequest;
+  onIndependentJudgeEvidence?(request: StageRequest, evidence: IndependentJudgeExecution['evidence']): void;
   independentJudgeSupervisor?: IndependentJudgeSupervisor;
 }
 
@@ -193,7 +210,11 @@ export function createNativeStrategyExecutor(
       try {
         if (request.kind === 'independent-judge') {
           if (!hooks.independentJudgeSupervisor) throw new Error('S1 independent judge requires a separate cancellable process supervisor');
-          return await hooks.independentJudgeSupervisor.run(request, () => hooks.runStage(request, driver));
+          const prepare = hooks.prepareIndependentJudgeRequest;
+          if (!prepare) throw new Error('S1 independent judge requires serializable frozen process input');
+          const judged = await hooks.independentJudgeSupervisor.run(prepare(request), request.signal);
+          hooks.onIndependentJudgeEvidence?.(request, judged.evidence);
+          return judged.result;
         }
         return await hooks.runStage(request, driver);
       } finally {
@@ -208,7 +229,10 @@ export function createNativeStrategyExecutor(
       if (request.kind === 'independent-judge') {
         const supervisor = hooks.independentJudgeSupervisor;
         if (!supervisor) return { stopped: false, executionSettled: false };
-        const proof = await supervisor.cancelAndWait({ request, cause,
+        const judgeIdentity: JudgeProcessIdentity = {
+          assignmentId: request.assignmentId, stageId: request.stageId, attemptId: request.attemptId,
+        };
+        const proof = await supervisor.cancelAndWait({ identity: judgeIdentity, cause,
           deadlineEpochMs: request.deadlineEpochMs + request.tier.shutdownAllowanceMs });
         const matches = proof.assignmentId === request.assignmentId && proof.stageId === request.stageId
           && proof.attemptId === request.attemptId && proof.processTree === 'stopped-and-reaped'

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,8 @@ import { judgeManifestHash } from '../../cq-settings-integration/runner/experime
 import { captureGitCandidatePatch, resolveS1DependencyRoot, runVisibleReviewLoopScreening, visibleRunIdentity } from '../runner/strategies/visible-screening.ts';
 import { NativeSupervisorControl } from '../../cq-settings-integration/runner/native/process.ts';
 import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
+import { createIndependentJudgeProcessSupervisor } from '../runner/strategies/judge-process.ts';
+import type { ReviewLoopJudgeProcessRequest } from '../runner/strategies/judge-protocol.ts';
 import {
   createScreeningCatalog,
   createScreeningComparisonArtifact,
@@ -53,6 +55,70 @@ function result(overrides: Partial<ExecutorResult> = {}): ExecutorResult {
 function fixedIds(): { next(kind: 'assignment' | 'stage' | 'attempt'): string } {
   let next = 0;
   return { next: (kind) => `${kind}-${++next}` };
+}
+
+function judgeProcessRequest(): ReviewLoopJudgeProcessRequest {
+  const sourcePin = 'c'.repeat(64);
+  const patch = 'candidate-patch-bytes';
+  const candidateSha = createHash('sha256').update(patch).digest('hex');
+  const identity = { assignmentId: 'assignment-child-test', stageId: 'judge-stage', attemptId: 'judge-attempt' };
+  const manifest = { sourcePin, dependencies: [{ path: 'runner/workflow-corpus/judge.ts', sha256: sourcePin }] };
+  return {
+    schemaVersion: 1, identity, deadlineEpochMs: Date.now() + 10_000, shutdownDeadlineEpochMs: Date.now() + 15_000,
+    s1DependencyRoot: '/pinned/s1',
+    task: { id: 'task', sourceId: 'source-v1', baselineId: 'baseline-v1', oracleId: 'oracle-v1', substrateFamily: 'test',
+      worktreePath: '/private/task', baselineCommit: 'd'.repeat(40),
+      modelSpec: { model: 'offline-test-model', provider: 'test' }, operationInput: {} },
+    model: 'offline-test-model', provider: 'test', driverName: 'codex-exec', checkTimeoutMs: 1_000,
+    taskSourceSha256: 'a'.repeat(64), suiteSourceSha256: 'b'.repeat(64), baselineCommit: 'd'.repeat(40), baselineTree: 'e'.repeat(64),
+    sourceId: 'source-v1', baselineId: 'baseline-v1', suiteName: 'suite', caseId: 'case', promptSha256: 'f'.repeat(64),
+    taskFixtureFiles: ['package.json', 'settings/module.js', 'settings/display.js', 'test/public-settings.test.mjs']
+      .map((path) => ({ path, sha256: '1'.repeat(64) })),
+    oraclePin: sourcePin, judgeManifest: manifest,
+    experiment: {
+      campaignId: 'campaign', cohortId: 'calibration', experimentId: 'experiment', taskId: 'task', repeatId: 'repeat',
+      ...identity, track: 'native', strategyId: 'strategy', settingsId: 'settings', budgetId: 'tier', profileId: 'profile',
+      frozenWeight: 1, substrateId: 'substrate', judgeManifest: manifest,
+    },
+    candidate: { sha256: candidateSha, patch, baselineCommit: 'd'.repeat(40), baselineTree: 'e'.repeat(64) },
+  };
+}
+
+async function withJudgeChild<T>(
+  mode: 'success' | 'mismatch' | 'late-descendant',
+  run: (entrypoint: string, request: ReviewLoopJudgeProcessRequest, root: string, marker: string) => Promise<T>,
+): Promise<T> {
+  const root = mkdtempSync(join(tmpdir(), 's4-judge-child-test-'));
+  const entrypoint = join(root, 'fixture.mjs');
+  const marker = join(root, 'late-descendant.txt');
+  const fixture = `import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+const [requestPath, resultPath, requestSha256] = process.argv.slice(2);
+const request = JSON.parse(await (await import('node:fs/promises')).readFile(requestPath, 'utf8'));
+const hash = (value) => createHash('sha256').update(value).digest('hex');
+if (${JSON.stringify(mode)} === 'late-descendant') {
+  const marker = ${JSON.stringify(marker)};
+  const late = "process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(" + JSON.stringify(marker) + ",'late'),1500)";
+  spawn(process.execPath, ['-e', late], { stdio: 'ignore' });
+  process.on('SIGTERM',()=>{});
+  setTimeout(()=>writeFileSync(resultPath,'late-result'),1400);
+  await new Promise(()=>{});
+} else {
+  const selection = { judgementId:'j-frozen', version:1, judgePin:request.oraclePin, candidateSha256:request.candidate.sha256 };
+  const judgement = { ...selection, candidateCorrectness:true, artifact:{path:'judge-artifact.json',sha256:'a'.repeat(64)} };
+  const payload = { schemaVersion:1, identity:request.identity, requestSha256,
+    rows:[{case:request.caseId,taskOutcome:{identity:{},candidateCorrectness:true,assignedStrategySuccess:true,
+      formatConformance:null,operationalStatus:'complete',judgements:[judgement]}}], tables:[], diagnostics:[], selection };
+  const bytes = Buffer.from(JSON.stringify(payload));
+  const envelope = { schemaVersion:1, requestSha256:${JSON.stringify(mode === 'mismatch' ? '0'.repeat(64) : null)} ?? requestSha256,
+    payloadSha256:hash(bytes), payload };
+  writeFileSync(resultPath, JSON.stringify(envelope));
+}
+`;
+  writeFileSync(entrypoint, fixture, { mode: 0o600 });
+  try { return await run(entrypoint, judgeProcessRequest(), root, marker); }
+  finally { rmSync(root, { recursive: true, force: true }); }
 }
 
 class FakeExecutor implements StageExecutor {
@@ -147,7 +213,7 @@ describe('bounded campaign strategy engine', () => {
     expect(visibleRunIdentity('experiment-a', 'assignment-a', 'repeat-b')).not.toBe(first);
   });
 
-  it('maps a successful visible run onto the frozen S1 judgement and preserves local diagnostics', async () => {
+  it('maps a completed visible run onto the frozen S1 judgement and preserves local diagnostics', async () => {
     const root = mkdtempSync(join(tmpdir(), 'visible-strategy-screen-'));
     let active: { invocationId: string; assignmentId: string; stageId: string; attemptId: string } | undefined;
     const observations = new Map<string, unknown>();
@@ -208,15 +274,9 @@ describe('bounded campaign strategy engine', () => {
           return { invocationId: identity.invocationId, stageId: identity.stageId, attemptId: identity.attemptId,
             processTree: 'stopped-and-reaped', invocation: 'settled' };
       } },
-      independentJudgeSupervisor: {
-        async run<T>(_request: StageRequest, operation: () => Promise<T>) { return operation(); },
-        async cancelAndWait({ request }) { return { assignmentId: request.assignmentId, stageId: request.stageId,
-          attemptId: request.attemptId, processTree: 'stopped-and-reaped', execution: 'settled', cleanup: 'complete' };
-        },
-      },
         route: { id: 'codex-sol-simulated', transport: 'codex-exec', tokenEnforcement: 'unsupported', supportedSettings: { effort: ['high'] } },
         model: 'gpt-6-sol', provider: 'codex', effort: 'high', profileId: 'test-codex-sol', settingsId: 'effort-high',
-        evaluationBoundaryHash: 'a'.repeat(64), toolsAssistanceHash: 'b'.repeat(64), tierId: 'visible-small',
+        evaluationBoundaryHash: 'a'.repeat(64), toolsAssistanceHash: 'b'.repeat(64), tierId: 'visible-large',
         assignmentId: 'visible-review-assignment-01', runNamespace: 'review-repeat-01', outputRoot: join(root, 'run'),
         s1DependencyRoot: resolve(dirname(fileURLToPath(import.meta.url)), '../../cq-settings-integration'),
       });
@@ -249,7 +309,7 @@ describe('bounded campaign strategy engine', () => {
         judgements: readonly { judgementId: string; artifact: { path: string; sha256: string } }[];
       };
       expect(mappedOutcome.candidateCorrectness, JSON.stringify({ localDiagnostics: result.localJudge.diagnostics,
-        outcome: result.localJudge.outcome, stages: result.strategy.stages.map((stage) => ({ kind: stage.kind, status: stage.status, detail: stage.detail })) })).toBe(true);
+        outcome: result.localJudge.outcome, stages: result.strategy.stages.map((stage) => ({ kind: stage.kind, status: stage.status, detail: stage.detail })) })).toBe(false);
       expect(mappedOutcome.formatConformance).toBeNull();
       expect(mappedOutcome.assignedStrategySuccess).toBe(result.strategy.assignedStrategySuccess);
       expect(mappedOutcome.judgements).toHaveLength(2);
@@ -417,35 +477,58 @@ describe('bounded campaign strategy engine', () => {
     expect(captured).toBe(true);
   });
 
-  it('fails closed when the independent judge supervisor cannot prove cleanup', async () => {
-    const nativeDriver = { beginInvocation() {}, getObservation() { return undefined; } };
-    const executor = createNativeStrategyExecutor(nativeDriver, {
-      async runStage(request) {
-        if (request.kind === 'draft') return result({ candidate: candidate('judge-cleanup-candidate', request.workspaceId) });
-        return new Promise<ExecutorResult>(() => {});
-      },
-      captureCandidate(request) { return request.kind === 'draft' ? candidate('judge-cleanup-candidate', request.workspaceId) : null; },
-      createCandidateWorkspace(_request, _index, stableWorkspaceId) { return { id: stableWorkspaceId, handle: {} }; },
-      supervisor: { async cancelInvocationAndWait({ identity }) {
-        return { invocationId: identity.invocationId, stageId: identity.stageId, attemptId: identity.attemptId,
-          processTree: 'stopped-and-reaped', invocation: 'settled' };
-      } },
-      independentJudgeSupervisor: {
-        async run<T>(_request: StageRequest, operation: () => Promise<T>) { return operation(); },
-        async cancelAndWait({ request }) { return { assignmentId: request.assignmentId, stageId: request.stageId,
-          attemptId: request.attemptId, processTree: 'stopped-and-reaped', execution: 'settled', cleanup: 'failed' };
-        },
-      },
+  it('runs a serializable judge request in a real child and validates the durable hash-bound result', async () => {
+    await withJudgeChild('success', async (childEntrypoint, request, root) => {
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root });
+      const execution = await supervisor.run(request, new AbortController().signal);
+      expect(execution.result.judgement?.correctness).toBe(true);
+      expect(execution.evidence.selection).toEqual({ judgementId: 'j-frozen', version: 1,
+        judgePin: request.oraclePin, candidateSha256: request.candidate.sha256 });
+      expect(execution.evidence.requestSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(execution.evidence.payloadSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(execution.evidence.processRoot.startsWith(root)).toBe(true);
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'post-result-check',
+        deadlineEpochMs: Date.now() + 100 });
+      expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', execution: 'settled', cleanup: 'complete' });
     });
-    const outcome = await runStrategy(task, { kind: 'one-shot', route: codex }, {
-      ...tier, wallClockMs: 240, judgementAllowanceMs: 80, shutdownAllowanceMs: 30,
-      observationAllowanceMs: 10, captureAllowanceMs: 20,
-    }, executor, { ids: fixedIds() });
-    const judge = outcome.stages.find((stage) => stage.kind === 'independent-judge');
-    expect(judge?.quarantined).toBe(true);
-    expect(outcome.candidateCorrectness).toBeNull();
-    expect(outcome.incompleteReasons).toContain(`executor-not-settled:${judge?.stageId}`);
   });
+
+  it('kills a timed-out judge process group before a descendant can publish a late result', async () => {
+    await withJudgeChild('late-descendant', async (childEntrypoint, request, root, marker) => {
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root });
+      const short = { ...request, deadlineEpochMs: Date.now() + 250, shutdownDeadlineEpochMs: Date.now() + 3_000 };
+      await expect(supervisor.run(short, new AbortController().signal)).rejects.toThrow(/deadline/i);
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'deadline',
+        deadlineEpochMs: Date.now() + 100 });
+      expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', execution: 'settled', cleanup: 'complete' });
+      await new Promise((resolveWait) => setTimeout(resolveWait, 1_300));
+      expect(existsSync(marker)).toBe(false);
+      const processDirectory = readdirSync(root).find((name) => name.startsWith('s4-judge-'));
+      expect(processDirectory).toBeDefined();
+      expect(existsSync(join(root, processDirectory!, 'result.json'))).toBe(false);
+    });
+  }, 10_000);
+
+  it('rejects a child result whose frozen request identity hash does not match', async () => {
+    await withJudgeChild('mismatch', async (childEntrypoint, request, root) => {
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root });
+      await expect(supervisor.run(request, new AbortController().signal)).rejects.toThrow(/identity or content hash mismatch/);
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'result-mismatch',
+        deadlineEpochMs: Date.now() + 100 });
+      expect(proof.cleanup).toBe('complete');
+    });
+  });
+
+  it('fails closed when the process-group cleanup proof is unavailable', async () => {
+    await withJudgeChild('success', async (childEntrypoint, request, root) => {
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
+        groupGone: async () => false });
+      const short = { ...request, shutdownDeadlineEpochMs: Date.now() + 700 };
+      await expect(supervisor.run(short, new AbortController().signal)).rejects.toThrow(/unreaped process group/);
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'cleanup-test', deadlineEpochMs: Date.now() + 1 });
+      expect(proof).toMatchObject({ processTree: 'running-or-unknown', execution: 'unsettled', cleanup: 'failed' });
+    });
+  }, 10_000);
 
   it('charges draft, every verification and repair, and final independent judging', async () => {
     const executor = new FakeExecutor();

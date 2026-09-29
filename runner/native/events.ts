@@ -21,6 +21,9 @@ export function parseJsonEventLines(raw: string, transport: 'codex' | 'pi'): Par
   const usage: ParsedEvents['usage'] = {};
   const seenTurns = new Set<string>();
   const seenMessages = new Set<string>();
+  let piAssistantResponses = 0;
+  let piTokenTotalFramesComplete = true;
+  let piTokenTotal = 0;
   for (const value of events) {
     if (!record(value)) continue;
     const event = value;
@@ -63,6 +66,7 @@ export function parseJsonEventLines(raw: string, transport: 'codex' | 'pi'): Par
         const key = stableId(message.id ?? message.responseId, message);
         if (!seenMessages.has(key)) {
           seenMessages.add(key);
+          piAssistantResponses += 1;
           const content = Array.isArray(message.content) ? message.content : [];
           const messageText = content.filter((block) => record(block) && block.type === 'text' && typeof block.text === 'string')
             .map((block) => (block as Record<string, unknown>).text as string).join('');
@@ -71,12 +75,14 @@ export function parseJsonEventLines(raw: string, transport: 'codex' | 'pi'): Par
           if (record(message.usage)) {
             const parsedUsage = parsePiUsage(message.usage);
             addUsage(usage, parsedUsage);
-            setReportedTotal(usage, usage.tokenTotal === undefined ? parsedUsage.tokenTotal : usage.tokenTotal + (parsedUsage.tokenTotal ?? 0));
-          }
+            if (typeof parsedUsage.tokenTotal === 'number') piTokenTotal += parsedUsage.tokenTotal;
+            else piTokenTotalFramesComplete = false;
+          } else piTokenTotalFramesComplete = false;
         }
       }
     }
   }
+  if (transport === 'pi' && piAssistantResponses > 0 && piTokenTotalFramesComplete) usage.tokenTotal = piTokenTotal;
   return { text: transcript.join('\n').trim(), finalText: finalText.trim(), model, usage };
 }
 

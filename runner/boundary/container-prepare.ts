@@ -1,6 +1,8 @@
+import { assignmentResourceOwner } from './assignment-supervisor-owner.ts';
+import { assertG2DaemonPreregistration } from './g2-daemon-contract.ts';
 import { FINAL_BROKER_RUNTIME_IDENTITY, verifyLiveBrokerToolchain } from './broker-toolchain.ts';
 import { compileBroker } from './egress-broker.ts';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -25,20 +27,28 @@ interface Container { State: { Running: boolean; Pid: number }; HostConfig: { Pr
  */
 export function containerPreparer(specification: ContainerBoundarySpec, stagingInput?: TaskStageReceipt,
   brokerInput?: { containerId: string; imageId: string; configPath: string; publicAssetVolume?: string; runtimeRunId?: string }) {
+  return containerPreparerOwned(specification, stagingInput, brokerInput, assignmentResourceOwner());
+}
+
+/** Parent-owned variant registers the exact name before Docker creates it. */
+export function containerPreparerOwned(specification: ContainerBoundarySpec, stagingInput: TaskStageReceipt | undefined,
+  brokerInput: { containerId: string; imageId: string; configPath: string; publicAssetVolume?: string; runtimeRunId?: string } | undefined,
+  preregister: (resource: { kind: 'container'; id: string }) => Promise<void>) {
   const policy = compileContainerBoundary(specification);
   const staging = structuredClone(stagingInput);
   const broker = structuredClone(brokerInput);
   return async (args: string[], identity: string) => {
     if (!staging || !broker) throw new Error('private staging inventory and live broker receipt required');
     if (staging.receiptHash !== policy.spec.stagingEvidence || staging.taskVolume !== policy.spec.taskVolume || staging.contextVolume !== policy.spec.contextVolume || staging.daemonId !== policy.spec.daemonId) throw new Error('intended task identity mismatch');
-    const control = new DockerControl();
+    assertG2DaemonPreregistration(policy.spec.daemonId, staging.daemonId);
+    const control = new DockerControl(preregister);
     const docker = (args: string[]) => control.run(args);
     try {
       if (identity !== policy.identity || JSON.stringify(args) !== JSON.stringify(policy.createArgs)) throw new Error('prepare recipe changed');
       const vmConfig = readFileSync(join(homedir(), '.colima/_lima/colima-cq-boundary-s5/lima.yaml'));
       if (createHash('sha256').update(vmConfig).digest('hex') !== policy.spec.vmConfigHash ||
           /\nmounts:|forwardAgent: true/.test(vmConfig.toString())) throw new Error('dedicated VM config changed or host mounts enabled');
-      if (await docker(['info', '--format', '{{.ID}}']) !== policy.spec.daemonId) throw new Error('dedicated daemon changed');
+      assertG2DaemonPreregistration(policy.spec.daemonId, await docker(['info', '--format', '{{.ID}}']));
       const image = JSON.parse(await docker(['image', 'inspect', policy.spec.image]))[0] as Image;
       if (policy.spec.image.startsWith('sha256:') ? image.Id !== policy.spec.image : !image.RepoDigests?.includes(policy.spec.image)) throw new Error('image content pin changed');
       if (image.Config.Env.some((pair) => !['PATH', 'NODE_VERSION', 'YARN_VERSION', 'LANG'].includes(pair.split('=')[0]))) {
@@ -62,11 +72,13 @@ export function containerPreparer(specification: ContainerBoundarySpec, stagingI
       }
       let containerId: string | null = null;
       let disposition: Promise<void> | undefined;
-      const dispose = () => disposition ??= (async () => { if (containerId) await teardownContainer(control, containerId); control.close(); })();
+      const dispose = () => disposition ??= (async () => { try { if (containerId) await teardownContainer(control, containerId); } finally { control.close(); } })();
       try {
         // Explicit entrypoint overrides any image autoload/entrypoint. No task code runs
         // until namespace ACLs have been installed and read back through the VM admin.
-        containerId = await docker([...args.slice(2), '--entrypoint', '/usr/local/bin/node', policy.spec.image, '-e', 'setInterval(()=>{},10000)']);
+        const name = 'cq-s5-worker-' + randomBytes(8).toString('hex');
+        await preregister({ kind: 'container', id: name });
+        containerId = await docker([...args.slice(2), '--name', name, '--entrypoint', '/usr/local/bin/node', policy.spec.image, '-e', 'setInterval(()=>{},10000)']);
         if (!/^[a-f0-9]{64}$/.test(containerId)) throw new Error('invalid fresh container ID');
         await docker(['start', containerId]);
         const container = JSON.parse(await docker(['inspect', containerId]))[0] as Container;
@@ -90,7 +102,7 @@ export function containerPreparer(specification: ContainerBoundarySpec, stagingI
           ':INPUT DROP', ':FORWARD DROP', ':OUTPUT DROP'];
         if (JSON.stringify(canonical) !== JSON.stringify(expected)) throw new Error('read-back complete namespace ACL mismatch');
         return { containerId, identity, aclVerified: true, aclHash: createHash('sha256').update(rules).digest('hex'), dispose };
-      } catch (error) { await dispose(); throw error; }
+      } catch (error) { try { await dispose(); } catch { /* preserve first provisioning cause */ } throw error; }
     } catch (error) { control.close(); throw error; }
   };
 }

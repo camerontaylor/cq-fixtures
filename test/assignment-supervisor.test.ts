@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { withAssignmentResourceOwner } from '../runner/boundary/assignment-supervisor-owner.ts';
+import { DockerControl } from '../runner/boundary/docker-control.ts';
 import { superviseAssignment } from '../runner/boundary/assignment-supervisor.ts';
 import type { AssignmentPhase } from '../runner/boundary/assignment-supervisor.ts';
 import { NativeSupervisorControl, runSupervised } from '../runner/native/process.ts';
@@ -51,7 +53,7 @@ describe('independently owned assignment lifetime', () => {
     await expect(superviseAssignment(f.input)).rejects.toThrow(/allowed module/);
   });
   it('fails an executor crash with retained registry rather than claiming namespace proof',async()=>{
-    const f=fixture('export function execute(){process.exit(2)}', 'preparation',1500);
+    const f=fixture('export function execute(){process.exit(2)}', 'preparation',4000);
     expect(await superviseAssignment(f.input)).toMatchObject({terminal:'failed',hostProcessTree:'stopped-and-reaped',resourceLifetime:'unsupported'});
   });
 });
@@ -79,4 +81,35 @@ it('daemon preregistration stays explicit and rejects drift',()=>{
   expect(g2DaemonEndpoint('/home/synthetic')).toBe('unix:///home/synthetic/.colima/cq-boundary-s5/docker.sock');
   expect(()=>assertG2DaemonPreregistration(G2_EXPECTED_DAEMON_ID,'rebuilt-daemon')).toThrow(/preregistration/);
   expect(()=>assertG2DaemonPreregistration('self-consistent','self-consistent')).toThrow(/preregistration/);
+});
+
+it('propagates parent preregistration through legacy utility callers before creation',async()=>{
+  const events:string[]=[];
+  await withAssignmentResourceOwner(async r=>{events.push('register:'+r.id)},async()=>{
+    const control=new DockerControl();
+    control.run=async args=>{events.push(args[0]);return ''};
+    try { await control.utility(['--rm','synthetic-no-launch']); } finally { control.close(); }
+  });
+  expect(events[0]).toMatch(/^register:cq-s5-utility-/);expect(events.slice(1)).toEqual(['run','ps']);
+});
+it('binds trusted early refusal and unknown factory failure without inferred stop proof',async()=>{
+  const f=fixture('export function execute(){}');
+  const early=await runSupervised('unused',[],{cwd:f.root,identity,timeoutMs:10,hardDeadlineEpochMs:Date.now()-1});
+  expect(early.processEvidence).toMatchObject({identity,status:'trusted-no-spawn'});
+  const unknown=await runSupervised('unused',[],{cwd:f.root,identity,timeoutMs:10,spawnAdapterFactory:async()=>{throw Error('factory unobserved')}});
+  expect(unknown.processEvidence).toMatchObject({identity,status:'unknown'});expect(unknown.treeStopped).toBe(false);
+});
+
+it('rejects unsupported hard resource freeze before launching an executor',async()=>{
+  const f=fixture('export function execute(){throw Error()}');
+  await expect(superviseAssignment({...f.input,requiredGuarantee:'hard-resource-lifetime'})).rejects.toThrow(/freeze refused/);
+});
+
+it('binds ordered preparation and shutdown private results to one outer identity',async()=>{
+  const f=fixture("export function execute(c){return {prior:c.priorResults.length}}",'preparation',4000);
+  const first=f.input.operations[0];
+  f.input.operations=[{...first,deadlineEpochMs:Date.now()+2500},{...first,phase:'shutdown',deadlineEpochMs:f.input.resourceDeadlineEpochMs}];
+  const receipt=await superviseAssignment(f.input);
+  expect(receipt.terminal).toBe('completed');expect(receipt.results.map(r=>r.phase)).toEqual(['preparation','shutdown']);
+  expect(JSON.parse(readFileSync(receipt.results[1].path,'utf8'))).toEqual({prior:1});
 });

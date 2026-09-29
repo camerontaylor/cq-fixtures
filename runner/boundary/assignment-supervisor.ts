@@ -63,10 +63,13 @@ export async function superviseAssignment(input: {
   resources: AssignmentResource[];
   resourceDeadlineEpochMs: number; reapDeadlineEpochMs: number; quarantineDeadlineEpochMs: number;
   signal?: AbortSignal;
+  /** Remote daemon hard lifetime is unsupported and rejected before launch. */
+  requiredGuarantee?: 'host-process-group' | 'hard-resource-lifetime';
   /** Parent-only hook; observes durable registry AFTER host reap. Timeout never
    * grants namespace absence. Recovery deletion is not part of this API. */
   quarantine?: (request: { identity: SupervisedInvocationIdentity; resources: AssignmentResource[]; deadlineEpochMs: number; signal: AbortSignal }) => Promise<void>;
 }): Promise<AssignmentReceipt> {
+  if (input.requiredGuarantee === 'hard-resource-lifetime') throw new Error('hard resource lifetime unsupported; freeze refused');
   if (process.platform === 'win32') throw new Error('independent process-group reap unavailable');
   const root = resolve(input.privateRoot), stat = lstatSync(root);
   if (realpathSync(root) !== root || !stat.isDirectory() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) throw new Error('exclusive private supervisor root required');
@@ -114,13 +117,16 @@ export async function superviseAssignment(input: {
   child.once('exit', () => end('failed', 'ExecutorExit'));
   child.on('message', raw => {
     if (done || Date.now() >= limits[0]) { end('timeout', 'DeadlineExceeded'); return; }
+    if (!raw || typeof raw !== 'object') { end('failed', 'InvalidExecutorMessage'); return; }
     const m = raw as { identity?: SupervisedInvocationIdentity; type?: string; phase?: AssignmentPhase; resource?: AssignmentResource; sequence?: number; path?: string; sha256?: string };
     if (JSON.stringify(m.identity) !== JSON.stringify(identity)) { end('failed', 'ExecutorIdentityMismatch'); return; }
     if (m.type === 'register') {
       if (!m.resource || !validResource(m.resource, root) || resources.length >= 256) { end('failed', 'InvalidResourceRegistration'); return; }
       if (!resources.some(r => r.id === m.resource!.id && r.kind === m.resource!.kind)) resources.push(m.resource);
-      save(registryPath, registry); // durable before ACK; child must not create before ACK
-      if (child.connected) child.send({ type: 'registered', sequence: m.sequence });
+      try {
+        save(registryPath, registry); // durable before ACK; child must not create before ACK
+        if (child.connected) child.send({ type: 'registered', sequence: m.sequence }, error => { if (error) end('failed', 'RegistrationAckFailed'); });
+      } catch { end('failed', 'OwnershipPersistenceFailed'); }
     } else if (m.type === 'result') {
       const op = input.operations[results.length];
       if (!op || m.phase !== op.phase || Date.now() >= op.deadlineEpochMs || m.path !== join(root, `result-${identity.invocationId}-${results.length}.json`)) { end('failed', 'InvalidPhaseResult'); return; }

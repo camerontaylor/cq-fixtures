@@ -7,11 +7,11 @@ import { pathToFileURL } from 'node:url';
 const hash = value => createHash('sha256').update(value).digest('hex');
 function privateJson(path) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try { const s = fstatSync(fd); if (!s.isFile() || s.nlink !== 1 || (s.mode & 0o077) || s.size > 1024 * 1024) throw new Error('private control file unavailable'); return JSON.parse(readFileSync(fd, 'utf8')); }
+  try { const s = fstatSync(fd); if (!s.isFile() || s.nlink !== 1 || s.uid !== process.getuid?.() || (s.mode & 0o077) || s.size > 1024 * 1024) throw new Error('private control file unavailable'); return JSON.parse(readFileSync(fd, 'utf8')); }
   finally { closeSync(fd); }
 }
 const save = (path, data) => writeFileSync(path, JSON.stringify(data), { mode: 0o600 });
-export async function createPreparedFinalG1Runtime(plan, { verify = true } = {}) {
+export async function createPreparedFinalG1Runtime(plan, { verify = true, preregister = async () => {} } = {}) {
   const root = resolve(plan.repoRoot), privateRoot = resolve(plan.privateRoot);
   const load = relative => import(pathToFileURL(join(root, relative)).href);
   const [{ DockerControl, teardownContainer }, profile, staging, { compileContainerBoundary }, { compileBroker }] = await Promise.all([
@@ -34,7 +34,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
     for (const [path, digest] of Object.entries(plan.sourcePins)) if (hash(readFileSync(join(root, path))) !== digest) throw new Error('reviewed G1 source changed');
   }
   async function verifyInfrastructure() {
-    await verifySources(); const c = new DockerControl();
+    await verifySources(); const c = new DockerControl(preregister);
     try {
       if (await c.run(['info', '--format', '{{.ID}}']) !== pins.daemon.id || hash(readFileSync(pins.vm.configPath)) !== pins.vm.configHash) throw new Error('pinned daemon/VM changed');
       for (const image of [pins.workerImage, pins.brokerImage, plan.utilityImage]) if (JSON.parse(await c.run(['image', 'inspect', image]))[0].Id !== image) throw new Error('pinned image unavailable');
@@ -52,7 +52,10 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
   }
   async function cleanup({ removeRecovery = false, dispositionReceiptPath } = {}) {
     note('runtime-cleanup-start');
-    const latest = privateJson(statePath), c = new DockerControl();
+    const latest = privateJson(statePath), c = new DockerControl(preregister);
+    const recoveryPath = join(privateRoot, 'recovery-receipt.json');
+    const recovery = { version: 'assignment-recovery-v1', runId: plan.runId, resources: [], complete: false, baselineCommit: latest.stage?.baselineCommit, disposition: 'unknown', expectedResources: [latest.stage?.taskVolume,latest.stage?.contextVolume,latest.authRoot,latest.hostTaskRoot].filter(Boolean) };
+    save(recoveryPath,recovery);
     if (latest.authRoot !== plan.privateAuthRoot || latest.network !== plan.network || latest.broker.containerId !== plan.brokerContainerId || latest.stage && (!/^cq-s5-task-[a-f0-9]{16}$/.test(latest.stage.taskVolume) || !/^cq-s5-context-[a-f0-9]{16}$/.test(latest.stage.contextVolume) || !/^[a-f0-9]{64}$/.test(latest.stage.receiptHash))) { c.close(); throw new Error('private setup ownership record changed'); }
     try {
       if (await c.run(['info', '--format', '{{.ID}}']) !== pins.daemon.id) throw new Error('cleanup daemon changed');
@@ -93,6 +96,33 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
         await c.run(['network', 'rm', latest.network]);
       }
       if (!latest.handedOff || removeRecovery) rmSync(latest.authRoot, { recursive: true, force: true });
+      recovery.disposition = latest.handedOff && !removeRecovery ? 'quarantined' : 'disposed';
+      if (latest.handedOff && !removeRecovery && latest.stage) {
+        const receipt = { ...latest.stage };
+        for (const volume of [receipt.taskVolume, receipt.contextVolume]) {
+          const io = readFileSync(join(root, 'runner/boundary/volume-io.mjs'), 'utf8');
+          const entries = JSON.parse(await c.utility(['--rm','--pull=never','--network','none','--user','1000:1000','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--mount',`type=volume,source=${volume},target=/task,readonly,volume-nocopy`,'--entrypoint','/usr/local/bin/node',plan.utilityImage,'-e',io,'read'], undefined, 100 * 1024 * 1024));
+          const { validateTaskEntries } = await load('runner/boundary/task-tree.ts');
+          const tree = validateTaskEntries(entries, false, volume === receipt.taskVolume);
+          if (volume === receipt.contextVolume && tree.inventoryHash !== receipt.contextInventoryHash) throw new Error('retained context inventory changed');
+          const baseline = volume === receipt.taskVolume ? staging.verifyGitBaseline(tree, receipt.baselineCommit) : undefined;
+          recovery.resources.push({ kind:'volume', id:volume, inventoryHash:tree.inventoryHash, ...(baseline ? { head:baseline.head, baselineTree:baseline.baselineTree } : {}) }); save(recoveryPath,recovery);
+        }
+        const { snapshotTask } = await load('runner/boundary/task-tree.ts');
+        for (const path of [latest.authRoot, latest.hostTaskRoot].filter(Boolean)) recovery.resources.push({ kind:'private-tree', path, inventoryHash:snapshotTask(path, false).inventoryHash });
+        const { existsSync, lstatSync } = await import('node:fs');
+        const publicationPath = join(privateRoot, 'publication-recovery.json');
+        if (existsSync(publicationPath)) {
+          const publication = privateJson(publicationPath);
+          const { dirname } = await import('node:path');
+          for (const path of [publication.exported, publication.backupRoot, publication.recoveryManifest].filter(Boolean)) {
+            if (dirname(path) !== dirname(latest.hostTaskRoot) || !(path.startsWith(latest.hostTaskRoot + '.cq-original-') || path.split('/').at(-1).startsWith('.cq-stopped-export-'))) throw new Error('publication recovery ownership changed');
+            if (existsSync(path)) recovery.resources.push(lstatSync(path).isDirectory() ? {kind:'private-tree',path,inventoryHash:snapshotTask(path,false).inventoryHash} : {kind:'private-file',path,sha256:hash(readFileSync(path))});
+          }
+          recovery.resources.push({kind:'private-file',path:publicationPath,sha256:hash(readFileSync(publicationPath))});
+        }
+      }
+      recovery.complete = true; save(join(privateRoot, 'recovery-receipt.json'), recovery);
       latest.infrastructureDisposed = true; latest.recoveryRetained = !!latest.handedOff && !removeRecovery; save(statePath, latest);
       note('runtime-cleanup-done');
       return { infrastructureDisposed: true, recoveryRetained: latest.recoveryRetained };
@@ -128,8 +158,8 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
           const baseline = head.startsWith('ref: ') ? Buffer.from(tree.entries.find(e => e.path === '.git/' + head.slice(5)).data, 'base64').toString().trim() : head;
           staging.verifyGitBaseline(tree, baseline);
           if (aborted || context.signal.aborted || Date.now() >= setupCutoff) throw new Error('setup cutoff elapsed before volume creation');
-          const receipt = await staging.stageTaskClone({ taskRoot: context.cwd, contextRoot: join(state.authRoot, 'payload'), baselineCommit: baseline, utilityImage: plan.utilityImage });
-          state.stage = { taskVolume: receipt.taskVolume, contextVolume: receipt.contextVolume, receiptHash: receipt.receiptHash }; save(statePath, state);
+          const receipt = await staging.stageTaskCloneOwned({ taskRoot: context.cwd, contextRoot: join(state.authRoot, 'payload'), baselineCommit: baseline, utilityImage: plan.utilityImage }, preregister);
+          state.stage = { taskVolume: receipt.taskVolume, contextVolume: receipt.contextVolume, receiptHash: receipt.receiptHash, taskInventoryHash: receipt.task.inventoryHash, contextInventoryHash: receipt.context.inventoryHash, baselineCommit: receipt.baselineCommit }; save(statePath, state);
           const specification = {
             profile: 'cq-boundary-s5', daemonId: pins.daemon.id, vmConfigHash: pins.vm.configHash, image: pins.workerImage,
             taskVolume: receipt.taskVolume, contextVolume: receipt.contextVolume, stagingEvidence: receipt.receiptHash,
@@ -148,7 +178,7 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
           // No independent post-handoff timer may race the active adapter.
           // The assignment deadline is a decision cutoff, not a lifetime guarantee.
           return { specification, staging: receipt, broker: state.broker, hostTaskRoot: resolve(context.cwd), exportRoot: resolve(context.cwd), lifecycleEvidencePath };
-        } catch { await cleanup(); throw new Error('private G1 preparation unavailable; setup disposed or private recovery retained'); }
+        } catch (error) { try { await cleanup(); } catch { /* retain first failure and quarantine */ } throw error; }
         finally { clearTimeout(timer); context.signal.removeEventListener('abort', onAbort); settlePrepare(); }
       },
       async cleanupInvocation(request) {
@@ -167,8 +197,28 @@ export async function createPreparedFinalG1Runtime(plan, { verify = true } = {})
         const grant = privateJson(join(privateRoot, 'parent-approval.json'));
         if (plan.sourceIsProvisional || grant.sourceIsProvisional !== false || grant.repositoryHead !== plan.repositoryHead || grant.runtimeModuleSha256 !== hash(readFileSync(join(privateRoot, 'runtime.mjs'))) || grant.planSha256 !== hash(JSON.stringify(plan)) || grant.approved !== true || grant.runId !== plan.runId || grant.runtimeSourceSha256 !== plan.runtimeSourceSha256 || grant.sourcePin !== plan.sourcePin || grant.publicInputsSha256 !== plan.publicInputsSha256 || grant.assignmentId !== assignmentId || grant.attemptId !== attemptId || grant.allowVerifiedDynamicPrivateStaging !== true || grant.stage !== 'final-profile-G1' || grant.modelBudgetSeconds !== 90 || grant.heldOut !== false || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= Date.now() || grant.expiresAt > Date.now() + 900000) throw new Error('separate reviewed parent G1 approval unavailable');
         return { assignmentId, attemptId, sourcePin: plan.sourcePin, receipt: { admissionId: grant.admissionId, stage: expected.stage, profile: 'cq-subscription-http', boundaryIdentity: expected.boundaryIdentity, invocationIdentity: expected.invocationIdentity, expiresAt: grant.expiresAt, heldOut: false } };
-        } catch { await cleanup(); throw new Error('parent approval refused; private recovery retained'); }
+        } catch (error) { try { await cleanup(); } catch { /* retain primary admission failure */ } throw error; }
       },
     }, cleanup, verifyInfrastructure,
   };
+}
+
+/** Operation for PK04's outer owner. Private descriptor contains the trusted plan;
+ * only its path crosses the executor boundary. All runSuite capture/judge/finally
+ * code runs inside this independently reapable executor. Live authority remains
+ * the separate immutable parent approval and scheduler, never this adapter. */
+export async function executePreparedFinalG1Assignment(context) {
+  const descriptor = privateJson(context.privateInputPath);
+  if (descriptor.preparationResultPath && !context.priorResults?.some(r => r.phase==='preparation' && r.path===descriptor.preparationResultPath && hash(readFileSync(r.path))===r.sha256)) throw Error('preparation result lacks invocation-bound accepted proof');
+  const prepared = descriptor.preparationResultPath ? privateJson(descriptor.preparationResultPath) : descriptor;
+  const plan = descriptor.plan ?? privateJson(prepared.planPath);
+  if (prepared.planSha256 && hash(JSON.stringify(plan)) !== prepared.planSha256) throw Error('prepared plan changed');
+  const assignmentId='final-profile-g1-' + plan.runId;
+  if(context.identity.assignmentId!==assignmentId || context.identity.attemptId!==assignmentId+'-attempt-1') throw Error('outer assignment identity differs from native plan');
+  const runtime = await createPreparedFinalG1Runtime(plan, { preregister: context.preregister });
+  const native = await import(pathToFileURL(join(plan.repoRoot, 'runner/native/run-final-profile-g1.ts')).href);
+  let primary;
+  try { return await native.runFinalProfileG1(runtime.options); }
+  catch(error) { primary=error; throw error; }
+  finally { try { await runtime.cleanup(); } catch(error) { if(!primary) throw error; } }
 }

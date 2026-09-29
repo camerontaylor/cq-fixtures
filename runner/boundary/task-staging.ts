@@ -56,7 +56,7 @@ export function verifyGitBaseline(tree: TaskTree, baselineCommit: string): { hea
   }
 }
 
-async function volumeEntries(control: DockerControl, receipt: TaskStageReceipt, volume: string): Promise<TaskTree> {
+export async function volumeEntries(control: DockerControl, receipt: TaskStageReceipt, volume: string): Promise<TaskTree> {
   const script = volumeScript();
   const output = await control.utility([ '--rm', '--pull=never', '--network', 'none', '--user', '1000:1000', '--read-only',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '768m', '--cpus', '1',
@@ -78,6 +78,11 @@ export async function verifyStageVolumes(control: DockerControl, receipt: TaskSt
 }
 
 export async function stageTaskClone(request: { taskRoot: string; contextRoot: string; baselineCommit: string; utilityImage: string }): Promise<TaskStageReceipt> {
+  return stageTaskCloneOwned(request, async () => {});
+}
+/** Internal outer-owner seam: durable parent ACK precedes volume creation. */
+export async function stageTaskCloneOwned(request: Parameters<typeof stageTaskClone>[0],
+  preregister: (resource: { kind: 'volume'; id: string }) => Promise<void>): Promise<TaskStageReceipt> {
   if (!IMAGE.test(request.utilityImage)) throw new Error('content-pinned utility image required');
   const task = snapshotTask(request.taskRoot, true); const context = snapshotTask(request.contextRoot, false, false);
   const baseline = verifyGitBaseline(task, request.baselineCommit);
@@ -91,6 +96,7 @@ export async function stageTaskClone(request: { taskRoot: string; contextRoot: s
   try {
     for (const [volume, kind, tree] of [[receipt.taskVolume, 'task', task], [receipt.contextVolume, 'context', context]] as const) {
       if ((await control.run(['volume', 'ls', '-q'])).split('\n').includes(volume)) throw new Error('volume name already exists');
+      await preregister({ kind: 'volume', id: volume });
       await control.run(['volume', 'create', '--label', `cq.boundary.staging=${receipt.receiptHash}`, '--label', `cq.boundary.kind=${kind}`, volume]); created.push(volume);
       const script = volumeScript();
       // Trusted stager has only CHOWN; it is never a worker and gets no network/auth.
@@ -100,7 +106,7 @@ export async function stageTaskClone(request: { taskRoot: string; contextRoot: s
         receipt.utilityImage, '-e', script, 'write'], JSON.stringify(tree.entries));
     }
     await verifyStageVolumes(control, receipt); return receipt;
-  } catch (e) { for (const volume of created.reverse()) await control.run(['volume', 'rm', volume]); throw e; }
+  } catch (e) { for (const volume of created.reverse()) { try { await control.run(['volume', 'rm', volume]); } catch { /* parent retains exact registry and first cause */ } } throw e; }
   finally { control.close(); }
 }
 

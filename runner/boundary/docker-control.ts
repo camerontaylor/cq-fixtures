@@ -1,3 +1,5 @@
+import { assignmentResourceOwner } from './assignment-supervisor-owner.ts';
+import { g2DaemonEndpoint } from './g2-daemon-contract.ts';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, chmodSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -8,28 +10,33 @@ export class DockerControl {
   readonly configDirectory = mkdtempSync(join(tmpdir(), 'cq-s5-docker-config-'));
   readonly environment = { HOME: homedir(), PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' };
   readonly prefix: string[];
-  constructor() {
+  constructor(private readonly preregister: (resource: { kind: 'container'; id: string }) => Promise<void> = assignmentResourceOwner()) {
     chmodSync(this.configDirectory, 0o700); writeFileSync(join(this.configDirectory, 'config.json'), '{}\n', { mode: 0o600 });
-    this.prefix = ['--config', this.configDirectory, '--host', `unix://${join(homedir(), '.colima/cq-boundary-s5/docker.sock')}`];
+    this.prefix = ['--config', this.configDirectory, '--host', g2DaemonEndpoint()];
   }
   async run(args: string[], input?: string, maxBytes = 256 * 1024, timeoutMs = 30_000): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = spawn('/usr/local/bin/docker', [...this.prefix, ...args], { env: this.environment, stdio: ['pipe', 'pipe', 'pipe'] });
-      const out: Buffer[] = []; const err: Buffer[] = []; let bytes = 0; let failed = false;
-      const timer = setTimeout(() => { failed = true; child.kill('SIGKILL'); }, Math.max(1, Math.min(30_000, timeoutMs)));
-      child.stdout.on('data', (b: Buffer) => { bytes += b.length; if (bytes > maxBytes) { failed = true; child.kill('SIGKILL'); } else out.push(b); });
+      const out: Buffer[] = []; const err: Buffer[] = []; let bytes = 0; let failed = false; let failureClass = 'DockerOperationFailed';
+      const timer = setTimeout(() => { failed = true; failureClass = 'DeadlineExceeded'; child.kill('SIGKILL'); }, Math.max(1, Math.min(30_000, timeoutMs)));
+      child.stdout.on('data', (b: Buffer) => { bytes += b.length; if (bytes > maxBytes) { failed = true; failureClass = 'OutputLimitExceeded'; child.kill('SIGKILL'); } else out.push(b); });
       child.stderr.on('data', (b: Buffer) => { if (err.reduce((n, c) => n + c.length, 0) < 8192) err.push(b); });
       child.once('error', (e) => { clearTimeout(timer); reject(e); });
-      child.once('close', (code) => { clearTimeout(timer); if (failed || code !== 0) reject(new Error(`bounded Docker operation failed (${args[0]}, ${code})`)); else resolve(Buffer.concat(out).toString().trim()); });
+      child.once('close', (code) => { clearTimeout(timer); if (failed || code !== 0) reject(Object.assign(new Error(`bounded Docker operation failed (${args[0]}, ${code})`), { name: failureClass })); else resolve(Buffer.concat(out).toString().trim()); });
       child.stdin.on('error', () => {}); child.stdin.end(input);
     });
   }
   async utility(args: string[], input?: string, maxBytes?: number): Promise<string> {
     const name = 'cq-s5-utility-' + (await import('node:crypto')).randomBytes(8).toString('hex');
+    await this.preregister({ kind: 'container', id: name });
+    let primary: unknown;
     try { return await this.run(['run', '--name', name, ...args], input, maxBytes); }
+    catch (error) { primary = error; throw error; }
     finally {
-      const ids = await this.run(['ps', '-aq', '--no-trunc', '--filter', `name=^/${name}$`]);
-      if (ids) await teardownContainer(this, ids);
+      try {
+        const ids = await this.run(['ps', '-aq', '--no-trunc', '--filter', `name=^/${name}$`]);
+        if (ids) await teardownContainer(this, ids);
+      } catch (error) { if (!primary) throw error; }
     }
   }
   close(): void { rmSync(this.configDirectory, { recursive: true, force: true }); }

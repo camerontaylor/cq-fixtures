@@ -1,5 +1,5 @@
 {
-  "manifestVersion": 3,
+  "manifestVersion": 4,
   "status": "visible-calibration-in-progress",
   "latestFullCorpusRun": {
     "sessionId": 15920,
@@ -32,7 +32,7 @@
       "boundedOracle": "Only the candidate settings module is staged into a fresh sanitized Git snapshot and invoked with executeProtectedJudgeChild (5000ms); visible setting regression vectors use that protected result, while display preservation is checked against the pinned unchanged source bytes. Parent expected values stay host-side and stdout is private/untrusted.",
       "oracleImplementation": "runner/workflow-corpus/review-loop-judge.ts#judgeReviewLoopRepairTask and #judgeReviewLoopWorkspace",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/review-loop-oracle-pin.json",
-      "oraclePinSha256": "db402f5ecb554fe4a872fbf48e91ff84959b7da2db8c3e5b7b97459d4ef97772",
+      "oraclePinSha256": "a9389211615966d6b2b983b82a65afa9a0bf679f6d13efa83a51d85e49cc5a3e",
       "preservedFirstActualRunOraclePin": "campaigns/cq-settings/corpus/review-loop-oracle-pin-v1.json; prior manifest SHA256 eba81317198a52dff7fceba98a9c96b310ace7b992e6d984e52c8bc39b44292e",
       "candidateIdentity": "full commit SHA, recorded baseline ancestry, clean Git state, and SHA256 of actual binary patch are separately reported from semantic conformance"
     },
@@ -52,7 +52,7 @@
       "pristineBaselineIntegrity": "fresh Git commit SHA captured at materialization; initial module and failure fixture are committed before operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeAnalysisRemediationProposal",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "ca6ea71d2f4708344686bbeaafe6deb2bb90284ed3220c8e07a8b03bd440d929",
+      "oraclePinSha256": "825bb045e34cf2f49e8792f5a08c9047fb2504caf46f70ab088dc48d13727d5f",
       "boundedOracle": "candidate module runs in a child process with a 5000ms wall limit; process/host confinement is not claimed"
     },
     {
@@ -71,7 +71,7 @@
       "pristineBaselineIntegrity": "fresh Git commit SHA captured at materialization; source and failure fixture are committed before operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeAnalysisRemediationProposal",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "ca6ea71d2f4708344686bbeaafe6deb2bb90284ed3220c8e07a8b03bd440d929",
+      "oraclePinSha256": "825bb045e34cf2f49e8792f5a08c9047fb2504caf46f70ab088dc48d13727d5f",
       "boundedOracle": "candidate module runs in a child process with a 5000ms wall limit; process/host confinement is not claimed"
     },
     {
@@ -90,7 +90,7 @@
       "pristineBaselineIntegrity": "fresh source commit SHA precedes baseline capture; task records the full commit SHA",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeRatchetOutcomes",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "ca6ea71d2f4708344686bbeaafe6deb2bb90284ed3220c8e07a8b03bd440d929"
+      "oraclePinSha256": "825bb045e34cf2f49e8792f5a08c9047fb2504caf46f70ab088dc48d13727d5f"
     },
     {
       "id": "ratchet-higher-coverage-01",
@@ -108,7 +108,7 @@
       "pristineBaselineIntegrity": "fresh source commit SHA precedes baseline capture; task records the full commit SHA",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeRatchetOutcomes",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "oraclePinSha256": "ca6ea71d2f4708344686bbeaafe6deb2bb90284ed3220c8e07a8b03bd440d929"
+      "oraclePinSha256": "825bb045e34cf2f49e8792f5a08c9047fb2504caf46f70ab088dc48d13727d5f"
     },
     {
       "id": "merge-unicode-label-limit-01",
@@ -126,7 +126,7 @@
       "pristineBaselineIntegrity": "full local Git baseline commit SHA captured before the operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
+      "oraclePinSha256": "8c37b92c760ea58ea410ee7482a31547c90a893ff20d0970b8d395dc5845c49a"
     },
     {
       "id": "merge-reserved-prefix-01",
@@ -144,7 +144,7 @@
       "pristineBaselineIntegrity": "full local Git baseline commit SHA captured before the operation",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeMergeConflictWorkspace",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
+      "oraclePinSha256": "8c37b92c760ea58ea410ee7482a31547c90a893ff20d0970b8d395dc5845c49a"
     },
     {
       "id": "fleet-nested-test-unit-01",
@@ -162,7 +162,7 @@
       "pristineBaselineIntegrity": "baseline commit captured before changed-file commit",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeFleetSweepPlan",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
+      "oraclePinSha256": "8c37b92c760ea58ea410ee7482a31547c90a893ff20d0970b8d395dc5845c49a"
     },
     {
       "id": "fleet-service-leaf-test-01",
@@ -180,7 +180,7 @@
       "pristineBaselineIntegrity": "baseline commit captured before changed-file commit",
       "oracleImplementation": "runner/workflow-corpus/operation-workflow-judges.ts#judgeFleetSweepPlan",
       "oracleDependencyManifest": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "oraclePinSha256": "b0efa64771187fb29b281e8a83423a8f3f48052f873dca14444d6ca4f0575cc2"
+      "oraclePinSha256": "8c37b92c760ea58ea410ee7482a31547c90a893ff20d0970b8d395dc5845c49a"
     }
   ],
   "operationIntegrationOnly": [
@@ -296,10 +296,10 @@
   },
   "wholeWorkflowG2Readiness": {
     "status": "blocked",
-    "blocker": "Existing workflow oracle callers still need migration from host-side candidate evaluation to the committed protected executor.",
-    "dependency": "runner/boundary/judge-child.ts was committed as 3f63fc7 and cherry-picked into this branch as c659929. S0 owns adapting the existing oracle callers; the six new task-local semantic judges use the documented API.",
+    "blocker": "Protected candidate execution and its source pins are in place, but actual-route G2 still needs accepted native strategy/admission wiring and independently verified runtime receipts; this corpus pin refresh does not establish route conformance.",
+    "dependency": "Integrated boundary source at 95a1462281f8f01b6a11db89560acd7cd1687eae includes judge-child.ts, docker-control.ts, judge-ownership.ts, and the public transitive source closure at runner/boundary/evidence/fallback/judge-ownership-source-closure.public.json. Active review, operation, and integration oracle dependency manifests pin the exact closure bytes; historical run-16 through run-19 pins and reports remain unchanged.",
     "expectedCallerApi": "executeProtectedJudgeChild({candidateRoot, module, exportName, requests, timeoutMs}) -> private {stdout: Buffer, exitCode, timedOut, containerAbsentVerified, scope:'protected-candidate-execution'}; module is a relative js/mjs/cjs/ts path; requests are unknown[][] with at most 128 cases and 64 KiB total; timeoutMs is at most 15000.",
-    "callerAdaptation": "S0 owns existing oracle callers. New corpus callers import executeProtectedJudgeChild directly, keep stdout private, parse bounded results, and report host booleans only.",
+    "callerAdaptation": "Active corpus review, operation, and integration oracle callers use executeProtectedJudgeChild. Candidate stdout stays private/untrusted and parent-side semantic values remain host-owned. Current source-closure hashes are recorded per active task oracle pin.",
     "stdoutPolicy": "The generic bootstrap imports the candidate module and invokes the named export with each request tuple. Protected child stdout remains private/untrusted; parse bounded behavior results into host booleans/logs and never put raw stdout in model context."
   },
   "heldoutReserve": {
@@ -384,5 +384,32 @@
     "hostOracleExpansion": "all five non-review operations invoke family-specific host judges; analyze/remediate and merge each have two runnable local Driver tasks; ratchet and fleet each have two deterministic operation tasks; test-fix remains no-role-call evidence because the selected plan has a source-scope leak",
     "reviewLoopPin": "review-loop-oracle-pin.json pins review-loop-judge.ts and review-loop-task.ts by content SHA256; review-loop-pin.ts exposes the equivalent API and the bundle supplies materialized baseline SHA plus oracle pin for S1 host-check scoring",
     "scopeLimit": "five model Driver calibration tasks across three families and four deterministic operation tasks; these are visible calibration only, with no held-out isolation claim; test-fix scope remains unsafe and is recorded as a detected toolkit limitation"
+  },
+  "protectedJudgeSourceClosure": {
+    "manifestPath": "runner/boundary/evidence/fallback/judge-ownership-source-closure.public.json",
+    "manifestSha256": "f23d8b375e4c7fbfbdc2a9f2591c18f3ca128428b699507961698efe48750c5d",
+    "integratedAt": "95a1462281f8f01b6a11db89560acd7cd1687eae",
+    "boundaryEntrypoints": [
+      "runner/boundary/judge-ownership.ts",
+      "runner/boundary/judge-child.ts"
+    ],
+    "activeOraclePinsIncludeClosure": true,
+    "historicalRunPinsUnchanged": true
+  },
+  "activeOraclePinFiles": {
+    "reviewLoop": {
+      "path": "campaigns/cq-settings/corpus/review-loop-oracle-pin.json",
+      "fileSha256": "a9389211615966d6b2b983b82a65afa9a0bf679f6d13efa83a51d85e49cc5a3e",
+      "runtimePinSha256": "690b63a05f9ba8e6adc17dc16d00adcec6047cb4a1d2c48c2846fb68bb2de2a5",
+      "count": 22
+    },
+    "operation": {
+      "path": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
+      "fileSha256": "825bb045e34cf2f49e8792f5a08c9047fb2504caf46f70ab088dc48d13727d5f"
+    },
+    "integration": {
+      "path": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
+      "fileSha256": "8c37b92c760ea58ea410ee7482a31547c90a893ff20d0970b8d395dc5845c49a"
+    }
   }
 }

@@ -63,10 +63,13 @@ Factories and task-local oracle definitions are in place. The six entries in
 analysis variants through the existing operation and a local injected Driver.
 They remain excluded from the validated counts pending complete acceptance
 evidence. `npm run typecheck` also passes. The protected judge-child API is
-committed as `3f63fc7` and
-available in this branch; new task-local behavior judges use it with private,
-untrusted stdout. Existing oracle caller migration remains assigned to S0. No
-model calls were made.
+integrated with the judge-ownership source closure at runner HEAD
+`95a1462281f8f01b6a11db89560acd7cd1687eae`. Active review, operation, and
+integration oracle manifests pin the exact closure bytes, including
+`judge-ownership.ts`, `docker-control.ts`, and the public closure manifest.
+Task-local behavior judges keep protected stdout private and untrusted. The
+run-16 through run-19 reports and original oracle pins remain unchanged. No
+model calls were made for this pin refresh.
 
 The active review-loop task is v2 (`settings/module.js` and
 `settings/display.js`); the v1 oracle manifest is archived with its original

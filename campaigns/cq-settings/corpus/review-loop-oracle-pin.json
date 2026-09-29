@@ -8,20 +8,88 @@
     },
     {
       "path": "runner/workflow-corpus/review-loop-pin.ts",
-      "sha256": "5829210c227771aacacf2e6d50dd64a340d2f6d01061da214707e1abe0a8c853"
+      "sha256": "8fe2a1731217595cb32e062474cafc0b6c459ab356a1272d077a1a47c2f7dca5"
     },
     {
       "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
       "sha256": "89f3349bf45e26d72cddf618061b4172a54baaf226ec5ff7d0a6357859a3558f"
     },
     {
+      "path": "campaigns/cq-settings/corpus/review-task-oracles.ts",
+      "sha256": "061d1a5fb9158c7d1c350560bf47b4dd8e38f1e53fda73acc6c31b624473c1fe"
+    },
+    {
+      "path": "campaigns/cq-settings/corpus/protected-candidate-snapshot.ts",
+      "sha256": "389115f2614e3fe3ed0737f251168a07d7ca6f5a27c17b1c9de33bda2c15b57f"
+    },
+    {
+      "path": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
+      "sha256": "825bb045e34cf2f49e8792f5a08c9047fb2504caf46f70ab088dc48d13727d5f"
+    },
+    {
+      "path": "runner/boundary/evidence/fallback/judge-ownership-source-closure.public.json",
+      "sha256": "f23d8b375e4c7fbfbdc2a9f2591c18f3ca128428b699507961698efe48750c5d"
+    },
+    {
+      "path": "runner/boundary/broker-toolchain.ts",
+      "sha256": "0150bb5add0b4b012489faa5eee85918908a4a1b751e1743b7c6ff196a752e1c"
+    },
+    {
+      "path": "runner/boundary/codex-final-profile.ts",
+      "sha256": "a32dd49982589d3dca43bca5f3ef4374ffae0bfc65d860d9bd8af32d51d981b8"
+    },
+    {
+      "path": "runner/boundary/container-prepare.ts",
+      "sha256": "93489d63cb817ddaa08b275a9fb974a88a265479241603ba16615c5338e2f7f4"
+    },
+    {
+      "path": "runner/boundary/container.ts",
+      "sha256": "4970c1d40bb7a5f96272def60d956cfb860202aeee139518ed6602badad951c3"
+    },
+    {
+      "path": "runner/boundary/docker-control.ts",
+      "sha256": "75a766553da425ab6d56e27cb1e121995d29952922a3abe6f0be3a38c40eab6a"
+    },
+    {
+      "path": "runner/boundary/egress-broker.ts",
+      "sha256": "53d3bd3751bd790d991c0869146144f85f0c95788b96c744b0e3c994e65a1977"
+    },
+    {
       "path": "runner/boundary/judge-child.ts",
-      "sha256": "62a4c5a49122add1bce86531dfd4e47592db5efe4912b99ecde95ddbe7847d6a"
+      "sha256": "37a21867c5b14d444884359b1819d0ab40797e919eee2dec92aadda71340270b"
+    },
+    {
+      "path": "runner/boundary/judge-ownership.ts",
+      "sha256": "450ff691a4762b2fb5dab76aedda67c48067eb11794559653d477d35acdf3068"
+    },
+    {
+      "path": "runner/boundary/lifecycle-evidence.ts",
+      "sha256": "db5dd3d40da8dea6aa49a0cb37629f6d922d4b15f0dc4f6ba129f6c4fd223ce3"
+    },
+    {
+      "path": "runner/boundary/namespace-acl.sh",
+      "sha256": "6abafb0afac7421ce082b42865a70c7e11b6e623e6ed9f046156bccc2050da73"
+    },
+    {
+      "path": "runner/boundary/subscription-auth.ts",
+      "sha256": "01272211582643229a34b1d8f5cf31c4f0c12a92f20cadbac158cfc96b0cc252"
+    },
+    {
+      "path": "runner/boundary/task-session.ts",
+      "sha256": "b30bda6a6e4f5bdbf3333b2e901ff3747de795fd97a331df84ded436d6047d8d"
+    },
+    {
+      "path": "runner/boundary/task-staging.ts",
+      "sha256": "8508a20b0a16c5cf48b685da419db997aa9214cef23270e4d0cb130062942685"
     },
     {
       "path": "runner/boundary/task-tree.ts",
       "sha256": "2baca75b07bbb185753f80c4db83f5405586c33788bb0a52ae8f31538259179f"
+    },
+    {
+      "path": "runner/boundary/volume-io.mjs",
+      "sha256": "324ff955dfc89c774232f16d763376b225a4ba866477c5e6adfe4a7a3abe88bd"
     }
   ],
-  "sha256": "e178dd958c9371588b8bbedd18d1c0b022863b23a8e8e4539ba0614aae2d97bb"
+  "sha256": "690b63a05f9ba8e6adc17dc16d00adcec6047cb4a1d2c48c2846fb68bb2de2a5"
 }

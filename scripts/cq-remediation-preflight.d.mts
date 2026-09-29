@@ -6,7 +6,14 @@ export interface SourcePreflightResult {
   taskIdExport: 'runner/experiment.ts#suiteTaskId';
   closureCount: number;
   closure: Record<string, string>;
+  implicitRuntimeAssets: Record<string, string>;
 }
+
+/** Verify required non-import runtime assets against exact SHA-256 pins. */
+export function verifyImplicitRuntimeAssets(
+  rootPath?: string,
+  expectedPins?: Readonly<Record<string, string>>,
+): Promise<Record<string, string>>;
 
 /** Resolve and validate the transitive local source/data closure. */
 export function discoverSourceClosure(

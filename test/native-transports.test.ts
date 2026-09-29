@@ -14,8 +14,10 @@ import { unavailableObservation, type InvocationIdentity } from '../runner/nativ
 import { RUNNER_SESSION_DIRECTORY } from '../runner/native/session.ts';
 import { ObservedNativeDriver, createWorkerResult } from '../runner/native/observed-driver.ts';
 import { runVisibleG1, visibleG1TestInventory } from '../runner/native/run-visible-g1.ts';
-import { createFinalProfileQuotaSource, resolveFinalProfileQuotaSource, runBoundedFinalProfileSetup } from '../runner/native/run-final-profile-g1.ts';
+import { createFinalProfileQuotaSource, estimateFinalProfileAdmission, resolveFinalProfileQuotaSource, runBoundedFinalProfileSetup } from '../runner/native/run-final-profile-g1.ts';
 import type { CodexAppServerSession } from '../runner/campaign/codex-app-server.ts';
+import { CampaignScheduler, type CampaignAssignment } from '../runner/campaign/scheduler.ts';
+import { FileCampaignQueueStore } from '../runner/campaign/persistence.ts';
 import { normalizeG2NativeReceipt, runG2Harness, type G2ProbeFixture, type NativeExecutionReceipt } from '../runner/native/g2-harness.ts';
 import type { LaunchProfile } from '../runner/native/launch-inventory.ts';
 import { SAFE_GIT_CONFIG, snapshotTask } from '../runner/boundary/task-tree.ts';
@@ -316,6 +318,72 @@ describe('final-profile G1 quota source selection', () => {
     const source = { async refresh() { return { fetchedAt: new Date().toISOString(), providers: [] }; } };
     expect(resolveFinalProfileQuotaSource(undefined, () => { created = true; return source; })).toBe(source);
     expect(created).toBe(true);
+  });
+});
+
+describe('final-profile G1 scheduler deadline estimate', () => {
+  it('admits through CampaignScheduler after nonzero preflight and the bounded quota refresh reserve', async () => {
+    const root = tempRoot();
+    const startedAt = Date.parse('2026-09-29T01:00:00.000Z');
+    let clockNow = startedAt + 20_000;
+    const decisionDeadlineEpochMs = startedAt + 240_000;
+    const estimate = estimateFinalProfileAdmission({ startedAt, enqueuedAt: clockNow, decisionDeadlineEpochMs });
+    expect(estimate).toMatchObject({ preflightElapsedMs: 20_000, quotaRefreshReserveMs: 45_000, estimatedRuntimeMs: 175_000 });
+    const assignmentId = 'final-profile-g1-fakeclock';
+    const scheduler = new CampaignScheduler({
+      store: new FileCampaignQueueStore(root),
+      clock: { now: () => clockNow },
+      quota: { async refresh() { clockNow += 40_000; return null; } },
+      config: { maxConcurrentPerProvider: 1, reservationTtlMs: 240_000,
+        diagnostic: { maxAttempts: 1, maxEstimatedUnits: 0, usedAttempts: 0, usedEstimatedUnits: 0, allowUnknownUsage: true } },
+    });
+    const assignment: CampaignAssignment = {
+      id: assignmentId, provider: 'codex', kind: 'validity', state: 'queued', dependencies: [],
+      estimatedRuntimeMs: estimate.estimatedRuntimeMs, estimatedUsageUnits: null, estimatedUsageConfidence: null,
+      createdAt: new Date(clockNow).toISOString(), deadlineAt: estimate.decisionDeadlineAt,
+      stageId: `${assignmentId}-stage-1`, attemptId: `${assignmentId}-attempt-1`, attemptIds: [`${assignmentId}-attempt-1`],
+    };
+    await scheduler.enqueue(assignment);
+    const decision = await scheduler.admitNext();
+    expect(decision).toMatchObject({
+      admitted: true, assignmentId, reason: 'bounded-unknown-usage-diagnostic-no-capacity-claim',
+      reservation: { diagnostic: true, windowClaims: [], estimatedUsageUnits: null },
+    });
+    expect(clockNow + estimate.estimatedRuntimeMs).toBeLessThanOrEqual(decisionDeadlineEpochMs);
+  });
+
+  it('retains the scheduler feasibility denial for the former full-deadline estimate', async () => {
+    const root = tempRoot();
+    const startedAt = Date.parse('2026-09-29T01:00:00.000Z');
+    let clockNow = startedAt + 20_000;
+    const assignmentId = 'final-profile-g1-old-estimate';
+    const scheduler = new CampaignScheduler({
+      store: new FileCampaignQueueStore(root),
+      clock: { now: () => clockNow },
+      quota: { async refresh() { clockNow += 40_000; return null; } },
+      config: { maxConcurrentPerProvider: 1, reservationTtlMs: 240_000,
+        diagnostic: { maxAttempts: 1, maxEstimatedUnits: 0, usedAttempts: 0, usedEstimatedUnits: 0, allowUnknownUsage: true } },
+    });
+    const deniedInternally: Array<{ admitted: boolean; reason: string }> = [];
+    // CampaignScheduler.admitNext() currently drops denied candidate details;
+    // observe the actual assessor return here so the regression retains its reason.
+    const internal = scheduler as unknown as {
+      assess: (...args: unknown[]) => { admitted: boolean; reason: string };
+    };
+    const assess = internal.assess.bind(scheduler);
+    internal.assess = (...args) => {
+      const result = assess(...args);
+      deniedInternally.push(result);
+      return result;
+    };
+    await scheduler.enqueue({
+      id: assignmentId, provider: 'codex', kind: 'validity', state: 'queued', dependencies: [],
+      estimatedRuntimeMs: 240_000, estimatedUsageUnits: null, estimatedUsageConfidence: null,
+      createdAt: new Date(clockNow).toISOString(), deadlineAt: new Date(startedAt + 240_000).toISOString(),
+      stageId: `${assignmentId}-stage-1`, attemptId: `${assignmentId}-attempt-1`,
+    });
+    expect(await scheduler.admitNext()).toBeNull();
+    expect(deniedInternally).toContainEqual(expect.objectContaining({ admitted: false, reason: 'assignment-deadline-not-feasible' }));
   });
 });
 

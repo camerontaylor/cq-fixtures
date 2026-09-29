@@ -38,6 +38,9 @@ const SETUP_BUDGET_MS = 60_000;
 const MODEL_BUDGET_MS = 90_000;
 const TEARDOWN_BUDGET_MS = 30_000;
 const JUDGE_BUDGET_MS = 60_000;
+// CodexBar's two account reads run concurrently and each is bounded at 40s.
+// Keep five seconds for the app-server shutdown and scheduler/store overhead.
+const SCHEDULER_QUOTA_REFRESH_RESERVE_MS = 45_000;
 const SOURCE_FILES = [
   'campaigns/cq-settings/corpus/review-loop-task.ts',
   'runner/workflow-corpus/review-loop-suite.ts', 'runner/workflow-corpus/review-loop-judge.ts',
@@ -94,6 +97,38 @@ export interface FinalProfileG1Options {
   launchInventory?: NativeLaunchInventory;
   executable?: string;
   now?: () => number;
+}
+
+export interface FinalProfileAdmissionEstimate {
+  estimatedRuntimeMs: number;
+  preflightElapsedMs: number;
+  quotaRefreshReserveMs: number;
+  decisionDeadlineAt: string;
+}
+
+/**
+ * Budget the scheduler's remaining assignment runway after preflight and its
+ * bounded quota read. The global decision deadline remains fixed at start+240s.
+ */
+export function estimateFinalProfileAdmission(input: {
+  startedAt: number;
+  enqueuedAt: number;
+  decisionDeadlineEpochMs: number;
+  quotaRefreshReserveMs?: number;
+}): FinalProfileAdmissionEstimate {
+  const reserveMs = input.quotaRefreshReserveMs ?? SCHEDULER_QUOTA_REFRESH_RESERVE_MS;
+  if (![input.startedAt, input.enqueuedAt, input.decisionDeadlineEpochMs, reserveMs].every(Number.isFinite) || reserveMs < 0) {
+    throw new RangeError('final-profile admission estimate needs finite clock values and a nonnegative quota-read reserve');
+  }
+  if (input.enqueuedAt < input.startedAt || input.decisionDeadlineEpochMs <= input.enqueuedAt + reserveMs) {
+    throw new Error('final-profile G1 has insufficient decision time remaining after preflight and quota refresh');
+  }
+  return {
+    estimatedRuntimeMs: input.decisionDeadlineEpochMs - input.enqueuedAt - reserveMs,
+    preflightElapsedMs: input.enqueuedAt - input.startedAt,
+    quotaRefreshReserveMs: reserveMs,
+    decisionDeadlineAt: new Date(input.decisionDeadlineEpochMs).toISOString(),
+  };
 }
 
 /** Fresh authenticated, read-only sources used by the native schedulers. */
@@ -344,9 +379,13 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   const stageId = `${assignmentId}-stage-1`;
   const attemptId = `${assignmentId}-attempt-1`;
   const caseId = bundle.suite.cases[0]!.id;
+  const enqueuedAt = now();
+  const admissionEstimate = estimateFinalProfileAdmission({
+    startedAt: started, enqueuedAt, decisionDeadlineEpochMs: deadlineEpochMs,
+  });
   await withinAssignment(scheduler.enqueue({ id: assignmentId, provider: 'codex', kind: 'validity', state: 'queued', dependencies: [],
-    estimatedRuntimeMs: TOTAL_ASSIGNMENT_MS, estimatedUsageUnits: null, estimatedUsageConfidence: null,
-    createdAt: new Date(now()).toISOString(), deadlineAt: new Date(deadlineEpochMs).toISOString(), stageId, attemptId, attemptIds: [attemptId] }));
+    estimatedRuntimeMs: admissionEstimate.estimatedRuntimeMs, estimatedUsageUnits: null, estimatedUsageConfidence: null,
+    createdAt: new Date(enqueuedAt).toISOString(), deadlineAt: admissionEstimate.decisionDeadlineAt, stageId, attemptId, attemptIds: [attemptId] }));
   const decision = await withinAssignment(scheduler.admitNext());
   if (!decision?.admitted || !decision.reservation?.diagnostic || decision.reason !== 'bounded-unknown-usage-diagnostic-no-capacity-claim') {
     await bundle.cleanup(); await task.cleanup();
@@ -487,7 +526,8 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
       schemaVersion: 1, status: 'complete', visibleOnly: false, heldOut: false, stage: 'final-profile-G1',
       createdAt: new Date(now()).toISOString(), experimentId: experiment, runId: options.runId,
       assignment: { assignmentId, stageId, attemptId, admissionReason: decision.reason, diagnostic: admission,
-        finalAdmissionId: (launchEvidence[0] as { admissionId?: string }).admissionId ?? null },
+        finalAdmissionId: (launchEvidence[0] as { admissionId?: string }).admissionId ?? null,
+        schedulerEstimate: admissionEstimate },
       profile: { model: 'gpt-6-sol', effort: 'low', provider: 'cq-subscription-http', sandbox: 'danger-full-access',
         launchScope: 'boundary', isolation: 'unverified' },
       task: { taskId: task.id, sourceId: task.sourceId, baselineId: task.baselineId, sourceBaselineCommit: task.baselineCommit,

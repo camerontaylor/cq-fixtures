@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { cpSync, lstatSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import ajvFormats from 'ajv-formats';
@@ -104,17 +104,23 @@ function validateJudgeManifest(repoRoot: string, manifest: JudgeDependencyManife
   if (manifest.sourcePin.trim() === '' || manifest.dependencies.length === 0) {
     throw new Error('campaign judge manifest must pin its source and list dependencies');
   }
+  const configuredRoot = manifest.sourceRootId === undefined ? repoRoot : TRUSTED_JUDGE_SOURCE_ROOTS[manifest.sourceRootId];
+  if (configuredRoot === undefined) throw new Error(`campaign judge manifest has unknown trusted sourceRootId '${manifest.sourceRootId}'`);
+  const trustedRoot = realpathSync(configuredRoot);
   const seen = new Set<string>();
   for (const dependency of manifest.dependencies) {
-    if (isAbsolute(dependency.path) || dependency.path.split(/[\\/]/).includes('..') || seen.has(dependency.path)) {
+    if (typeof dependency.path !== 'string' || dependency.path === '' || isAbsolute(dependency.path)
+      || /^[A-Za-z]:/.test(dependency.path) || dependency.path.includes('\\')
+      || posix.normalize(dependency.path) !== dependency.path || dependency.path === '.'
+      || dependency.path.startsWith('../') || seen.has(dependency.path)) {
       throw new Error(`campaign judge dependency has an unsafe or duplicate path: ${dependency.path}`);
     }
     seen.add(dependency.path);
-    const path = resolve(repoRoot, dependency.path);
-    const rel = relative(resolve(repoRoot), path);
+    const path = resolve(trustedRoot, dependency.path);
+    const rel = relative(trustedRoot, path);
     if (rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('campaign judge dependency escaped repo root');
     const actualPath = realpathSync(path);
-    const actualRel = relative(realpathSync(repoRoot), actualPath);
+    const actualRel = relative(trustedRoot, actualPath);
     if (actualRel === '..' || actualRel.startsWith(`..${sep}`)) throw new Error('campaign judge dependency escaped repo root through symlink');
     const actualHash = sha256(readFileSync(actualPath));
     if (!/^[a-f0-9]{64}$/.test(dependency.sha256) || actualHash !== dependency.sha256) {
@@ -274,6 +280,9 @@ export interface RunSuiteResult {
 }
 
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const TRUSTED_JUDGE_SOURCE_ROOTS: Readonly<Record<string, string>> = Object.freeze({
+  'cq-settings-native-checkout': DEFAULT_REPO_ROOT,
+});
 
 // F6 (WB-5.2a): the persisted fixer patch is a `git diff` of the materialized
 // workspace against its pristine copy. Git is initialized in the workspace and

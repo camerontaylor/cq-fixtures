@@ -533,7 +533,7 @@ describe('writable workspace (fixer fixture round-trip)', () => {
     const tripwire = (marker: string) => `printf hit > '${marker}'`;
     let workerBaselineCommit: string | undefined;
     let hostBaselinePin: string | undefined;
-    let workerMetadata: { head: Buffer; index: Buffer } | undefined;
+    let workerMetadata: { head: Buffer; index: Buffer; config: Buffer; attributes: Buffer } | undefined;
     const hostileWorkspace: Driver = {
       async run(invocation: OpInvocation): Promise<WorkerResult> {
         const workspace = /workspace: (.+)$/m.exec(invocation.prompt)?.[1];
@@ -564,7 +564,10 @@ describe('writable workspace (fixer fixture round-trip)', () => {
           '',
         ].join('\n'));
         writeFileSync(join(dotGit, 'info', 'attributes'), '* filter=tripwire diff=tripwire\n');
-        workerMetadata = { head: readFileSync(join(dotGit, 'HEAD')), index: readFileSync(join(dotGit, 'index')) };
+        workerMetadata = {
+          head: readFileSync(join(dotGit, 'HEAD')), index: readFileSync(join(dotGit, 'index')),
+          config: readFileSync(join(dotGit, 'config')), attributes: readFileSync(join(dotGit, 'info', 'attributes')),
+        };
         return {
           model: invocation.modelSpec.model,
           structuredOutput: { fixed: true, notes: 'updated state.txt' },
@@ -583,6 +586,8 @@ describe('writable workspace (fixer fixture round-trip)', () => {
         // including their cached stat inventory. Inspect before the judge runs.
         expect(readFileSync(join(_workspace, '.git', 'HEAD'))).toEqual(workerMetadata?.head);
         expect(readFileSync(join(_workspace, '.git', 'index'))).toEqual(workerMetadata?.index);
+        expect(readFileSync(join(_workspace, '.git', 'config'))).toEqual(workerMetadata?.config);
+        expect(readFileSync(join(_workspace, '.git', 'info', 'attributes'))).toEqual(workerMetadata?.attributes);
         return {};
       },
     });

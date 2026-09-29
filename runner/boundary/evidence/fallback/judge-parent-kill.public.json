@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "noModels": true,
+  "candidateStartEventObserved": true,
+  "hostProcessGroupKilledAndReaped": true,
+  "daemonVerified": true,
+  "ownershipVerified": true,
+  "containersAbsent": true,
+  "processTree": "stopped-and-reaped",
+  "cleanup": "complete",
+  "volumeDisposition": "quarantined",
+  "inventoryContentVerified": false,
+  "privateReceiptSha256": "4df9f93ba5e7d0e553334a6590b75a786e791aa48a4491a41a6e05c73278a7f5",
+  "planSha256": "8242d638e138fae0a006b173cb6c5538e6b5e39012859e7105a9af87b973919d",
+  "inventoryHash": "b77bf987ba5806b068216bdb74426346577caf7fe1ad875cc1a5caa00bf60a44",
+  "scope": "exact-preregistered-synthetic-judge-invocation",
+  "globalLifetimeClaim": false,
+  "actualRouteG2Qualified": false,
+  "sourceClosureSha256": "f23d8b375e4c7fbfbdc2a9f2591c18f3ca128428b699507961698efe48750c5d"
+}

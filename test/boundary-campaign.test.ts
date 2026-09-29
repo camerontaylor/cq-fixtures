@@ -786,3 +786,69 @@ describe('canonical G2 collector evidence', () => {
     expect(normalize(receipt, { verifyDenialEvidence: () => true }).traces[0].complete).toBe(false);
   });
 });
+
+describe('parent protected judge namespace ownership', () => {
+  async function setup() {
+    const api = await import('../runner/boundary/judge-ownership.ts');
+    const fs = await import('node:fs');
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cq-judge-parent-test-'))); roots.push(root); fs.chmodSync(root, 0o700);
+    const tree = api.stableJudgeCandidateInventory('settings/module.js', Buffer.from('export const f=()=>1;'));
+    const handle = api.createJudgeNamespacePlan({ privateParentRoot: root, identity: { assignmentId: 'fake-assignment', stageId: 'fake-stage', attemptId: 'fake-attempt' }, candidateSha256: 'a'.repeat(64), oraclePin: 'b'.repeat(64), inventoryHashes: [tree.inventoryHash] });
+    const slot = handle.plan.slots[0], id = 'c'.repeat(64); let present = true, mutations = 0, closed = false;
+    const labels = api.judgeSlotLabels(handle, slot);
+    const container = { Id: id, Name: '/' + slot.candidate, Image: handle.plan.image, Config: { Image: handle.plan.image, Labels: labels, User: '1000:1000' }, HostConfig: { NetworkMode: 'none', Privileged: false, PidMode: '', ReadonlyRootfs: true }, Mounts: [{ Type: 'volume', Name: slot.volume, Destination: '/task', RW: false }] };
+    const control: import('../runner/boundary/judge-ownership.ts').JudgeOwnershipControl = {
+      async run(args, _input, _max, timeout) {
+        expect(timeout).toBeGreaterThan(0); expect(timeout).toBeLessThanOrEqual(30000);
+        if (args[0] === 'info') return handle.plan.daemonId;
+        if (args[0] === 'inspect') return JSON.stringify([container]);
+        if (args[0] === 'ps') return present && (args.at(-1)!.includes(slot.candidate) || args.at(-1)!.includes('volume=') || args.at(-1)!.includes('label=')) ? id : '';
+        if (args[0] === 'volume' && args[1] === 'ls') return slot.volume;
+        if (args[0] === 'volume' && args[1] === 'inspect') return JSON.stringify([{ Name: slot.volume, Driver: 'local', Options: {}, Labels: labels }]);
+        if (args[0] === 'rm') { mutations++; present = false; return id; }
+        throw new Error('fake daemon unsupported');
+      }, close() { closed = true; },
+    };
+    return { api, fs, handle, tree, slot, container, control, mutations: () => mutations, closed: () => closed };
+  }
+  it('preregisters stable exact inventory and exclusive single-use slots without Git metadata', async () => {
+    const f = await setup();
+    expect(f.tree.entries.map(e => e.path)).toEqual(['settings', 'settings/module.js']);
+    expect(f.api.stableJudgeCandidateInventory('settings/module.js', Buffer.from('export const f=()=>1;')).inventoryHash).toBe(f.tree.inventoryHash);
+    expect(() => f.api.claimJudgeNamespaceSlot(f.handle.planPath, 'd'.repeat(64))).toThrow(/preregistered/);
+    expect(f.api.claimJudgeNamespaceSlot(f.handle.planPath, f.tree.inventoryHash).slot).toEqual(f.slot);
+    expect(() => f.api.claimJudgeNamespaceSlot(f.handle.planPath, f.tree.inventoryHash)).toThrow(/preregistered/);
+    expect(() => f.api.stableJudgeCandidateInventory('../hidden.js', Buffer.from('fake'))).toThrow();
+  });
+  it('reaps exactly preregistered containers after host stop and quarantines inventory-unverified volume', async () => {
+    const f = await setup();
+    const proof = await f.api.cleanupJudgeNamespace(f.handle, { hostProcessStopped: true, deadlineEpochMs: Date.now() + 15000 }, f.control);
+    expect(proof).toMatchObject({ daemonVerified: true, ownershipVerified: true, containersAbsent: true, processTree: 'stopped-and-reaped', volumeDisposition: 'quarantined', cleanup: 'complete', inventoryContentVerified: false });
+    expect(f.mutations()).toBe(1); expect(f.closed()).toBe(true); expect(proof.resourceIds).toContain(f.slot.volume);
+  });
+  it('refuses foreign labels, hidden mounts, changed image, wrong daemon and incomplete host stop without deletion', async () => {
+    for (const kind of ['labels','mount','image','daemon','host','volume','extra','failure']) {
+      const f = await setup();
+      if (kind === 'labels') f.container.Config.Labels = { ...f.container.Config.Labels, 'cq.boundary.judge.plan': 'foreign' };
+      if (kind === 'mount') f.container.Mounts.push({ Type: 'bind', Name: 'foreign', Destination: '/hidden', RW: false });
+      if (kind === 'image') f.container.Config.Image = 'foreign';
+      const control = { ...f.control, async run(...args: Parameters<typeof f.control.run>) {
+        if (kind === 'daemon') return 'foreign';
+        if (kind === 'failure') throw new Error('synthetic unavailable daemon');
+        if (kind === 'volume' && args[0][0] === 'volume' && args[0][1] === 'inspect') return JSON.stringify([{ Name: f.slot.volume, Driver: 'local', Options: {}, Labels: {} }]);
+        if (kind === 'extra' && args[0][0] === 'ps' && args[0].at(-1)!.includes('label=')) return 'c'.repeat(64) + '\n' + 'f'.repeat(64);
+        return f.control.run(...args);
+      } };
+      const proof = await f.api.cleanupJudgeNamespace(f.handle, { hostProcessStopped: kind !== 'host', deadlineEpochMs: Date.now() + 15000 }, control);
+      expect(proof.cleanup).toBe('failed'); expect(proof.processTree).toBe('unproven'); expect(proof.containersAbsent).toBe(false); expect(f.mutations()).toBe(0);
+    }
+  });
+  it('fails closed on changed private plan and expired or overlong cleanup deadline', async () => {
+    const f = await setup();
+    expect((await f.api.cleanupJudgeNamespace({ ...f.handle }, { hostProcessStopped: true, deadlineEpochMs: Date.now()+15000 }, f.control)).cleanup).toBe('failed');
+    f.fs.writeFileSync(f.handle.planPath, JSON.stringify({ ...f.handle.plan, namespace: 'e'.repeat(24) }));
+    expect((await f.api.cleanupJudgeNamespace(f.handle, { hostProcessStopped: true, deadlineEpochMs: Date.now()+15000 }, f.control)).cleanup).toBe('failed');
+    for (const deadlineEpochMs of [Date.now()-1, Date.now()+60000]) expect((await f.api.cleanupJudgeNamespace(f.handle, { hostProcessStopped: true, deadlineEpochMs }, f.control)).cleanup).toBe('failed');
+    expect(f.mutations()).toBe(0);
+  });
+});

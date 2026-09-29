@@ -467,3 +467,70 @@ observation provenance, not echo `verified:true` or model output. No production
 instrumentation producer is claimed available; absent/negative verification
 makes denials unavailable. Synthetic positive verification only tests this seam.
 No models, credentials, quota, namespaces or preserved recovery were accessed.
+
+### Protected oracle parent cleanup ownership (2026-09-29)
+
+`runner/boundary/judge-ownership.ts` exports `createJudgeNamespacePlan`,
+`claimJudgeNamespaceSlot`, `cleanupJudgeNamespace`, `judgeSlotLabels`, and
+`stableJudgeCandidateInventory`, with `JudgeAttemptIdentity`,
+`JudgeNamespacePlan`, `JudgeNamespaceHandle`, `JudgeNamespaceCleanupProof`.
+The parent creates an exclusive private 0600 plan under its canonical 0700 root
+before spawning the trusted oracle. Frozen assignment/stage/attempt, candidate
+patch SHA, oracle pin and 1–8 exact inventory hashes bind the plan. Opaque S5
+namespace names are generated internally; callers cannot choose daemon, image,
+labels or container/volume names. Each slot has a deterministic writer, candidate
+and task-volume name. A private wx claim consumes only a matching inventory slot
+before any Docker creation. S4 passes `CQ_PROTECTED_JUDGE_PLAN` in the private
+host child environment; credentials and plan paths never enter the container.
+
+The stable inventory is exactly the requested module bytes at its validated
+relative path, with ancestor directories 0755 and file 0644. Git metadata and
+other files are excluded from staging. The parent must independently reconstruct
+those bytes and compute the exported projection before preregistration. This
+changes the effective oracle task inventory; S1/S4 caller closure and transitive
+pins must be refreshed before actual route use. Load exports only from the exact
+parent-trusted pinned dependency root, never an arbitrary checkout. The closure
+includes judge-child.ts, judge-ownership.ts, task-tree.ts, docker-control.ts,
+codex-final-profile.ts and their imports plus volume-io.mjs.
+
+After independently stopping/reaping the host group, the parent calls
+`cleanupJudgeNamespace(handle,{hostProcessStopped:true,deadlineEpochMs})` with a
+remaining window at most 30 seconds. Every Docker command is bounded by that
+remaining window. Cleanup rereads the private plan and compares its bytes/hash
+and original in-memory handle, pins the dedicated daemon, inspects only exact
+preregistered names and the exact plan-label scope, checks image/user/network/
+readonly root/sole task-volume mount and labels, and refuses foreign attachments,
+extra resources, changed plans or ownership before deleting any container.
+Container removal and scoped absence are independently read back. Success means
+only those namespaces are absent, never a global lifetime guarantee. Volume bytes
+are not attested by labels: `inventoryContentVerified:false` is explicit, and
+retained volumes are quarantined. There is no volume-deletion API in this seam.
+Failure/deadline/unknown ownership returns failed/unproven proof and retains
+recovery; it must not set protectedOracleCleanup observed.
+
+Legacy direct oracle calls without a plan retain their existing local cleanup
+path and have no independently parent-observed cleanup proof. The strategy route
+must require its preregistered plan and awaited parent cleanup on every success,
+failure, cancellation and late-result path; boundary code does not assert that
+S4 has installed that wiring. No prior run16–19 artifacts are modified.
+
+The bounded real-daemon no-model probe (`probe-judge-parent-cleanup.mjs`) observed
+an authentic Docker candidate start event, killed and reaped the detached host
+oracle process group with SIGKILL, then obtained independent exact-plan cleanup:
+containers absent, daemon/ownership verified, task volume quarantined. Its private
+receipt is `/Users/ctaylor/.tmp/cq-judge-kill-probe-clsi43/receipt.json`; a sanitized
+hashed receipt is `runner/boundary/evidence/fallback/judge-parent-kill.public.json`.
+The synthetic module only awaited forever; no candidate was executed on the host.
+Pure tests additionally reject foreign labels/mounts/image/daemon/volume ownership,
+undeclared same-plan resources, daemon failures, changed private plans and invalid
+cleanup windows without deleting any object. They do not upgrade actual-route G2.
+
+Cleanup accepts only the original parent-issued handle registered in that live
+parent process. Reconstructed/child-returned handles cannot escalate discovery.
+A parent-process crash requires a separately reviewed recovery protocol; loading
+a serialized handle is deliberately not accepted as automatic cleanup authority.
+
+Final validation: five focused protected-parent/input tests passed (58 skipped,
+489 ms); typecheck, owned-file lint and diff-check passed. Final real-daemon
+probe also passed after private-plan authority and fresh-volume ownership checks.
+No full suite was run. Earlier synthetic recovery remains quarantined.

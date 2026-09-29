@@ -12,11 +12,11 @@ export class DockerControl {
     chmodSync(this.configDirectory, 0o700); writeFileSync(join(this.configDirectory, 'config.json'), '{}\n', { mode: 0o600 });
     this.prefix = ['--config', this.configDirectory, '--host', `unix://${join(homedir(), '.colima/cq-boundary-s5/docker.sock')}`];
   }
-  async run(args: string[], input?: string, maxBytes = 256 * 1024): Promise<string> {
+  async run(args: string[], input?: string, maxBytes = 256 * 1024, timeoutMs = 30_000): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = spawn('/usr/local/bin/docker', [...this.prefix, ...args], { env: this.environment, stdio: ['pipe', 'pipe', 'pipe'] });
       const out: Buffer[] = []; const err: Buffer[] = []; let bytes = 0; let failed = false;
-      const timer = setTimeout(() => { failed = true; child.kill('SIGKILL'); }, 30_000);
+      const timer = setTimeout(() => { failed = true; child.kill('SIGKILL'); }, Math.max(1, Math.min(30_000, timeoutMs)));
       child.stdout.on('data', (b: Buffer) => { bytes += b.length; if (bytes > maxBytes) { failed = true; child.kill('SIGKILL'); } else out.push(b); });
       child.stderr.on('data', (b: Buffer) => { if (err.reduce((n, c) => n + c.length, 0) < 8192) err.push(b); });
       child.once('error', (e) => { clearTimeout(timer); reject(e); });

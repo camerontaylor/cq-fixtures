@@ -80,6 +80,7 @@ function stopProof(identity: JudgeProcessIdentity, stopped: boolean): Independen
     ...identity,
     processTree: stopped ? 'stopped-and-reaped' : 'running-or-unknown',
     execution: stopped ? 'settled' : 'unsettled',
+    protectedOracleCleanup: 'unobserved',
     cleanup: stopped ? 'complete' : 'failed',
   };
 }
@@ -148,6 +149,7 @@ export interface IndependentJudgeProcessSupervisorOptions {
 export class IndependentJudgeProcessSupervisor {
   private readonly active = new Map<string, ProcessControl>();
   private readonly completed = new Map<string, IndependentJudgeSettlementProof>();
+  private readonly admittedAttempts = new Set<string>();
   private readonly childEntrypoint: string;
   private readonly groupGone: (pgid: number, deadlineEpochMs: number) => Promise<boolean>;
   private readonly privateRoot: string;
@@ -164,7 +166,9 @@ export class IndependentJudgeProcessSupervisor {
     assertRequest(request);
     if (signal.aborted) throw signal.reason ?? new Error('independent judge cancelled before process launch');
     if (Date.now() >= request.deadlineEpochMs) throw new Error('independent judge deadline elapsed before process launch');
-    if (this.active.has(request.identity.attemptId)) throw new Error('independent judge attempt already has an active process');
+    if (this.admittedAttempts.has(request.identity.attemptId)) {
+      throw new Error('independent judge attempt identity was already admitted');
+    }
 
     const processRoot = mkdtempSync(join(this.privateRoot, `s4-judge-${randomUUID()}-`));
     const requestPath = join(processRoot, 'request.json');
@@ -194,6 +198,7 @@ export class IndependentJudgeProcessSupervisor {
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    this.admittedAttempts.add(request.identity.attemptId);
     const control: ProcessControl = {
       identity: request.identity, child, resultPath,
       exit: new Promise((resolveExit, rejectExit) => {
@@ -251,18 +256,29 @@ export class IndependentJudgeProcessSupervisor {
         if (proof.cleanup !== 'complete') throw new Error('independent judge process group did not stop within the bounded cleanup window');
         throw stopCause instanceof Error ? stopCause : new Error(String(stopCause));
       }
-      if (Date.now() >= request.deadlineEpochMs || signal.aborted) {
+      const decisionUnavailable = (): string | null => signal.aborted
+        ? 'independent judge was cancelled before its result was accepted'
+        : Date.now() >= request.deadlineEpochMs
+          ? 'independent judge result arrived after its decision deadline'
+          : null;
+      const initialDecisionFailure = decisionUnavailable();
+      if (initialDecisionFailure) {
         requestStop(signal.reason ?? new Error('independent judge result arrived after its decision deadline'));
         const proof = await stopPromise!;
         this.completed.set(request.identity.attemptId, proof);
         if (proof.cleanup !== 'complete') throw new Error('late judge process cleanup could not be proven');
-        throw new Error('independent judge result arrived after its decision deadline');
+        throw new Error(initialDecisionFailure);
       }
 
       const naturalExitProof = await terminate(control, Math.min(request.shutdownDeadlineEpochMs, Date.now() + 5_000), this.groupGone);
       this.completed.set(request.identity.attemptId, naturalExitProof);
       if (naturalExitProof.cleanup !== 'complete') throw new Error('independent judge child left an unreaped process group');
-      if (first.exit.code !== 0) throw new Error(`independent judge child exited with status ${String(first.exit.code)} / ${String(first.exit.signal)}: ${control.stderrTail.trim() || '(no stderr)'}`);
+      const afterSettlementFailure = decisionUnavailable();
+      if (afterSettlementFailure) throw new Error(afterSettlementFailure);
+      if (first.exit.code !== 0) {
+        const exitClass = first.exit.signal ? 'signal' : first.exit.code === null ? 'unknown' : 'nonzero';
+        throw new Error(`independent judge child failed (${exitClass} exit)`);
+      }
       if (control.outputOverflow) throw new Error('independent judge child exceeded the bounded stdout/stderr allowance');
       const stat = lstatSync(resultPath);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_RESULT_BYTES) throw new Error('independent judge child result is missing or outside its size bound');
@@ -283,6 +299,8 @@ export class IndependentJudgeProcessSupervisor {
         && item.judgePin === request.oraclePin);
       if (!outcome || !selected || outcome.judgements.filter((item) => item.judgementId === selected.judgementId
         && item.version === selected.version).length !== 1) throw new Error('independent judge child output does not contain the exact frozen judgement');
+      const afterValidationFailure = decisionUnavailable();
+      if (afterValidationFailure) throw new Error(afterValidationFailure);
       const serviceTimeMs = Math.max(0, performance.now() - startedAt);
       const evidence = {
         rows: envelope.payload.rows, tables: envelope.payload.tables, diagnostics: envelope.payload.diagnostics,

@@ -216,11 +216,15 @@ The process environment keeps a private HOME and exposes only S1's fixed local
 protected-oracle socket through a symlink; provider credentials are not passed.
 
 This proves the OS process group stopped and the child leader exited. It does
-not enforce lifetime of detached processes that deliberately escape that
-group, all external resources, or a global token cap. Those limits remain
-unsupported and are recorded as such. The bounded cleanup window is separate
-from the decision deadline. Parent cleanup must retain/quarantine roots unless
-the child process group stop proof succeeds.
+not prove that protected-oracle daemon-side containers were stopped or cleaned
+when the child is killed. `protectedOracleCleanup: unobserved` is explicit in
+the settlement proof. Keep the protected-oracle cleanup admission gate closed
+until a separately bounded daemon cleanup proof is available. It also does not
+enforce lifetime of detached processes that deliberately escape the group, all
+external resources, or a global token cap. Those limits remain unsupported
+and are recorded as such. The bounded cleanup window is separate from the
+decision deadline. Parent cleanup must retain/quarantine roots unless the
+child process group stop proof succeeds.
 
 Focused tests use a fake model driver while exercising the real artifact
 store and S1 `runSuite`/host oracle, plus isolated Git capture and root

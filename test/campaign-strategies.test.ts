@@ -85,7 +85,7 @@ function judgeProcessRequest(): ReviewLoopJudgeProcessRequest {
 }
 
 async function withJudgeChild<T>(
-  mode: 'success' | 'mismatch' | 'late-descendant',
+  mode: 'success' | 'mismatch' | 'late-descendant' | 'stderr-failure',
   run: (entrypoint: string, request: ReviewLoopJudgeProcessRequest, root: string, marker: string) => Promise<T>,
 ): Promise<T> {
   const root = mkdtempSync(join(tmpdir(), 's4-judge-child-test-'));
@@ -104,6 +104,9 @@ if (${JSON.stringify(mode)} === 'late-descendant') {
   process.on('SIGTERM',()=>{});
   setTimeout(()=>writeFileSync(resultPath,'late-result'),1400);
   await new Promise(()=>{});
+} else if (${JSON.stringify(mode)} === 'stderr-failure') {
+  process.stderr.write('PRIVATE_SENTINEL_ORACLE_DETAIL');
+  process.exit(7);
 } else {
   const selection = { judgementId:'j-frozen', version:1, judgePin:request.oraclePin, candidateSha256:request.candidate.sha256 };
   const judgement = { ...selection, candidateCorrectness:true, artifact:{path:'judge-artifact.json',sha256:'a'.repeat(64)} };
@@ -489,7 +492,47 @@ describe('bounded campaign strategy engine', () => {
       expect(execution.evidence.processRoot.startsWith(root)).toBe(true);
       const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'post-result-check',
         deadlineEpochMs: Date.now() + 100 });
-      expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', execution: 'settled', cleanup: 'complete' });
+      expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', execution: 'settled',
+        protectedOracleCleanup: 'unobserved', cleanup: 'complete' });
+      await expect(supervisor.run(request, new AbortController().signal)).rejects.toThrow(/already admitted/);
+    });
+  });
+
+  it('does not expose private child stderr in public failures', async () => {
+    await withJudgeChild('stderr-failure', async (childEntrypoint, request, root) => {
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root });
+      let message = '';
+      try { await supervisor.run(request, new AbortController().signal); }
+      catch (error) { message = error instanceof Error ? error.message : String(error); }
+      expect(message).toBe('independent judge child failed (nonzero exit)');
+      expect(message).not.toContain('PRIVATE_SENTINEL_ORACLE_DETAIL');
+    });
+  });
+
+  it('rejects a valid result when process settlement crosses the decision deadline', async () => {
+    await withJudgeChild('success', async (childEntrypoint, request, root) => {
+      let cleanupObserved = false;
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
+        groupGone: async () => {
+          cleanupObserved = true;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 1_200));
+          return true;
+        } });
+      const bounded = { ...request, deadlineEpochMs: Date.now() + 900, shutdownDeadlineEpochMs: Date.now() + 3_000 };
+      await expect(supervisor.run(bounded, new AbortController().signal)).rejects.toThrow(/decision deadline/);
+      expect(cleanupObserved).toBe(true);
+    });
+  }, 10_000);
+
+  it('rejects a valid result when cancellation arrives during process settlement', async () => {
+    await withJudgeChild('success', async (childEntrypoint, request, root) => {
+      const controller = new AbortController();
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
+        groupGone: async () => {
+          controller.abort(new Error('cancelled during process settlement'));
+          return true;
+        } });
+      await expect(supervisor.run(request, controller.signal)).rejects.toThrow(/cancelled before its result was accepted/);
     });
   });
 
@@ -500,7 +543,8 @@ describe('bounded campaign strategy engine', () => {
       await expect(supervisor.run(short, new AbortController().signal)).rejects.toThrow(/deadline/i);
       const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'deadline',
         deadlineEpochMs: Date.now() + 100 });
-      expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', execution: 'settled', cleanup: 'complete' });
+      expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', execution: 'settled',
+        protectedOracleCleanup: 'unobserved', cleanup: 'complete' });
       await new Promise((resolveWait) => setTimeout(resolveWait, 1_300));
       expect(existsSync(marker)).toBe(false);
       const processDirectory = readdirSync(root).find((name) => name.startsWith('s4-judge-'));

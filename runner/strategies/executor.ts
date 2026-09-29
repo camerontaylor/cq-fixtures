@@ -79,6 +79,8 @@ export interface IndependentJudgeSettlementProof {
   attemptId: string;
   processTree: 'stopped-and-reaped' | 'running-or-unknown';
   execution: 'settled' | 'unsettled';
+  /** Process-group proof does not observe protected-oracle daemon/container cleanup. */
+  protectedOracleCleanup: 'unobserved';
   cleanup: 'complete' | 'failed' | 'quarantined';
 }
 

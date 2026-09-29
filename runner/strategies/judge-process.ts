@@ -238,6 +238,11 @@ function persistCleanupReceipt(
   control: ProcessControl,
   rawProof: JudgeNamespaceCleanupProof,
 ): { path: string; sha256: string; privatePath: string } {
+  if (!rawProof || rawProof.inventoryContentVerified !== false || !Array.isArray(rawProof.resourceIds)
+    || !rawProof.identity || rawProof.planSha256 !== control.namespace?.planSha256
+    || !samePlanIdentity(rawProof.identity, control.identity)) {
+    throw new Error('protected-oracle cleanup proof is malformed or unbound');
+  }
   const proof = canonicalCleanupProof(rawProof);
   const relativePath = `s4-cleanup-${hash(control.identity.attemptId).slice(0, 20)}/protected-oracle-cleanup.json`;
   const absolutePath = join(control.artifactRoot, relativePath);
@@ -257,6 +262,9 @@ function persistCleanupReceipt(
   const descriptor = openSync(absolutePath, 'wx', 0o600);
   try { writeFileSync(descriptor, bytes); fsyncSync(descriptor); }
   finally { closeSync(descriptor); }
+  const directoryDescriptor = openSync(receiptDirectory, 'r');
+  try { fsyncSync(directoryDescriptor); }
+  finally { closeSync(directoryDescriptor); }
   try { control.receiptWriteHook?.(absolutePath); }
   catch { throw new Error('protected-oracle cleanup receipt could not be persisted'); }
   const recorded = readFileSync(absolutePath);
@@ -369,6 +377,10 @@ function assertRequest(value: ReviewLoopJudgeProcessRequest): void {
   if (!/^[a-f0-9]{64}$/i.test(value.candidate.sha256) || hash(value.candidate.patch) !== value.candidate.sha256) {
     throw new Error('independent judge candidate hash mismatch');
   }
+  if (!Number.isSafeInteger(value.deadlineEpochMs) || !Number.isSafeInteger(value.shutdownDeadlineEpochMs)
+    || value.shutdownDeadlineEpochMs <= value.deadlineEpochMs) {
+    throw new Error('independent judge decision and shutdown deadlines must be finite and ordered');
+  }
 }
 
 export interface IndependentJudgeProcessSupervisorOptions {
@@ -427,6 +439,9 @@ export class IndependentJudgeProcessSupervisor {
     if (this.admittedAttempts.has(request.identity.attemptId)) {
       throw new Error('independent judge attempt identity was already admitted');
     }
+    // Reserve before any asynchronous ownership load. A failed preparation is
+    // still an admitted attempt and cannot be replayed under the same identity.
+    this.admittedAttempts.add(request.identity.attemptId);
 
     const processRoot = mkdtempSync(join(this.privateRoot, `s4-judge-${randomUUID()}-`));
     const requestPath = join(processRoot, 'request.json');
@@ -447,6 +462,8 @@ export class IndependentJudgeProcessSupervisor {
       throw new Error('independent judge request has no bounded S5 inventory plan');
     }
     const ownership = this.ownershipForTest ?? await loadPinnedOwnership(request);
+    if (signal.aborted) throw new Error('independent judge cancelled during ownership preparation');
+    if (Date.now() >= request.deadlineEpochMs) throw new Error('independent judge decision deadline elapsed during ownership preparation');
     const namespace = ownership.createJudgeNamespacePlan({
       privateParentRoot: processRoot,
       identity: request.identity,
@@ -483,7 +500,6 @@ export class IndependentJudgeProcessSupervisor {
       ...(this.receiptWriteHookForTest ? { receiptWriteHook: this.receiptWriteHookForTest } : {}),
       ...(this.phaseObserverForTest ? { phaseObserver: this.phaseObserverForTest } : {}),
     };
-    this.admittedAttempts.add(request.identity.attemptId);
     const finishBeforeSpawn = async (cause: Error): Promise<never> => {
       control.spawnState = 'failed';
       resolveExit({ kind: 'spawn-error' });

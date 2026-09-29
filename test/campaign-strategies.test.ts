@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { PassThrough } from 'node:stream';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ArtifactStore } from '../../cq-settings-integration/runner/artifacts/index.ts';
@@ -11,6 +13,7 @@ import { captureGitCandidatePatch, resolveS1DependencyRoot, runVisibleReviewLoop
 import { NativeSupervisorControl } from '../../cq-settings-integration/runner/native/process.ts';
 import { createNativeStrategyExecutor, type NativeInvocationIdentity, type NativeStrategyObservation } from '../runner/strategies/executor.ts';
 import { createIndependentJudgeProcessSupervisor } from '../runner/strategies/judge-process.ts';
+import type { ChildProcess } from 'node:child_process';
 import type { ReviewLoopJudgeProcessRequest } from '../runner/strategies/judge-protocol.ts';
 import {
   createScreeningCatalog,
@@ -111,6 +114,14 @@ function fakeJudgeOwnershipForTest(options: { failCleanup?: boolean; events?: st
         cleanup: complete ? 'complete' as const : 'failed' as const, inventoryContentVerified: false as const };
     },
   };
+}
+
+function fakeChildProcess(pid?: number): ChildProcess {
+  const child = new EventEmitter() as EventEmitter & { pid?: number; stdout: PassThrough; stderr: PassThrough };
+  if (pid !== undefined) child.pid = pid;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  return child as unknown as ChildProcess;
 }
 
 async function withJudgeChild<T>(
@@ -524,12 +535,124 @@ describe('bounded campaign strategy engine', () => {
       expect(execution.evidence.processRoot.startsWith(root)).toBe(true);
       expect(execution.evidence.protectedOracleProof).toMatchObject({ daemonVerified: true, ownershipVerified: true,
         containersAbsent: true, volumeDisposition: 'quarantined', inventoryContentVerified: false });
+      const receipt = execution.evidence.protectedOracleCleanupReceipt;
+      const receiptPath = join(execution.evidence.artifactRoot, receipt.path.replace(/^artifacts\//, ''));
+      const receiptBytes = readFileSync(receiptPath);
+      expect(createHash('sha256').update(receiptBytes).digest('hex')).toBe(receipt.sha256);
+      expect(JSON.parse(receiptBytes.toString('utf8'))).toMatchObject({ schemaVersion: 1,
+        identity: request.identity, planSha256: execution.evidence.protectedOracleProof.planSha256,
+        proof: { identity: request.identity, planSha256: execution.evidence.protectedOracleProof.planSha256,
+          daemonVerified: true, ownershipVerified: true, containersAbsent: true,
+          processTree: 'stopped-and-reaped', volumeDisposition: 'quarantined',
+          resourceIds: ['fake-container', 'fake-volume'], cleanup: 'complete', inventoryContentVerified: false } });
       expect(events).toEqual(['plan-created', 'namespace-cleaned']);
       const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'post-result-check',
         deadlineEpochMs: Date.now() + 100 });
       expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', execution: 'settled',
         protectedOracleCleanup: 'proven', cleanup: 'complete' });
       await expect(supervisor.run(request, new AbortController().signal)).rejects.toThrow(/already admitted/);
+    });
+  });
+
+  it('settles an asynchronous pre-spawn error with no pid and records exact-plan cleanup', async () => {
+    await withJudgeChild('success', async (_entrypoint, request, root) => {
+      const events: string[] = [];
+      const supervisor = createIndependentJudgeProcessSupervisor({ privateRoot: root,
+        ownershipForTest: fakeJudgeOwnershipForTest({ events }),
+        spawnChildForTest: (() => {
+          const child = fakeChildProcess();
+          queueMicrotask(() => child.emit('error', Object.assign(new Error('missing executable'), { code: 'ENOENT' })));
+          return child;
+        }) as never,
+      });
+      await expect(supervisor.run(request, new AbortController().signal)).rejects.toThrow('independent judge child failed to spawn');
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'inspect-spawn-error', deadlineEpochMs: Date.now() + 100 });
+      expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', protectedOracleCleanup: 'proven', cleanup: 'complete',
+        protectedOracleCleanupReceipt: { path: expect.stringContaining('protected-oracle-cleanup.json'), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+      expect(events).toEqual(['plan-created', 'namespace-cleaned']);
+    });
+  });
+
+  it('does not claim host absence or invoke namespace cleanup after an error with unknown host state', async () => {
+    await withJudgeChild('success', async (_entrypoint, request, root) => {
+      const events: string[] = [];
+      const supervisor = createIndependentJudgeProcessSupervisor({ privateRoot: root,
+        ownershipForTest: fakeJudgeOwnershipForTest({ events }), groupGone: async () => false,
+        spawnChildForTest: (() => {
+          const child = fakeChildProcess(2_000_000_000);
+          queueMicrotask(() => {
+            child.emit('spawn');
+            child.emit('error', new Error('post-spawn process error'));
+          });
+          return child;
+        }) as never,
+      });
+      const bounded = { ...request, deadlineEpochMs: Date.now() + 80, shutdownDeadlineEpochMs: Date.now() + 850 };
+      await expect(supervisor.run(bounded, new AbortController().signal)).rejects.toThrow(/decision deadline/);
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'unknown-host', deadlineEpochMs: Date.now() + 100 });
+      expect(proof).toMatchObject({ processTree: 'running-or-unknown', execution: 'unsettled',
+        protectedOracleCleanup: 'unobserved', cleanup: 'quarantined' });
+      expect(proof.protectedOracleCleanupReceipt).toBeUndefined();
+      expect(events).toEqual(['plan-created']);
+    });
+  }, 5_000);
+
+  it('rechecks cancellation after namespace preparation and cleans the unlaunched plan', async () => {
+    await withJudgeChild('success', async (_entrypoint, request, root) => {
+      const events: string[] = [];
+      const controller = new AbortController();
+      const supervisor = createIndependentJudgeProcessSupervisor({ privateRoot: root,
+        ownershipForTest: fakeJudgeOwnershipForTest({ events }),
+        beforeSpawnForTest: async () => { controller.abort(new Error('cancelled while preparing')); },
+      });
+      await expect(supervisor.run(request, controller.signal)).rejects.toThrow('independent judge cancelled during preparation');
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'inspect-preparation-cancel', deadlineEpochMs: Date.now() + 100 });
+      expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', protectedOracleCleanup: 'proven', cleanup: 'complete',
+        protectedOracleCleanupReceipt: { sha256: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+      expect(events).toEqual(['plan-created', 'namespace-cleaned']);
+    });
+  });
+
+  it('rechecks the decision deadline after awaited namespace preparation', async () => {
+    await withJudgeChild('success', async (_entrypoint, request, root) => {
+      const events: string[] = [];
+      const supervisor = createIndependentJudgeProcessSupervisor({ privateRoot: root,
+        ownershipForTest: fakeJudgeOwnershipForTest({ events }),
+        beforeSpawnForTest: async () => new Promise((resolveWait) => setTimeout(resolveWait, 35)),
+      });
+      const bounded = { ...request, deadlineEpochMs: Date.now() + 20 };
+      await expect(supervisor.run(bounded, new AbortController().signal)).rejects.toThrow('decision deadline elapsed during preparation');
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'inspect-preparation-deadline', deadlineEpochMs: Date.now() + 100 });
+      expect(proof).toMatchObject({ processTree: 'stopped-and-reaped', protectedOracleCleanup: 'proven', cleanup: 'complete' });
+      expect(events).toEqual(['plan-created', 'namespace-cleaned']);
+    });
+  });
+
+  it('suppresses a valid result when immutable cleanup receipt recording fails', async () => {
+    await withJudgeChild('success', async (childEntrypoint, request, root) => {
+      const events: string[] = [];
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
+        ownershipForTest: fakeJudgeOwnershipForTest({ events }),
+        receiptWriteHookForTest: () => { throw new Error('private recorder detail'); },
+      });
+      await expect(supervisor.run(request, new AbortController().signal)).rejects.toThrow('protected-oracle cleanup receipt could not be persisted');
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'inspect-receipt-failure', deadlineEpochMs: Date.now() + 100 });
+      expect(proof).toMatchObject({ protectedOracleCleanup: 'unobserved', cleanup: 'quarantined' });
+      expect(proof.protectedOracleCleanupReceipt).toBeUndefined();
+      expect(events).toEqual(['plan-created', 'namespace-cleaned']);
+    });
+  });
+
+  it('rejects a cleanup receipt whose bytes change before hash validation', async () => {
+    await withJudgeChild('success', async (childEntrypoint, request, root) => {
+      const supervisor = createIndependentJudgeProcessSupervisor({ childEntrypoint, privateRoot: root,
+        ownershipForTest: fakeJudgeOwnershipForTest(),
+        receiptWriteHookForTest: (path) => { writeFileSync(path, 'tampered'); },
+      });
+      await expect(supervisor.run(request, new AbortController().signal)).rejects.toThrow('protected-oracle cleanup receipt integrity check failed');
+      const proof = await supervisor.cancelAndWait({ identity: request.identity, cause: 'inspect-receipt-tamper', deadlineEpochMs: Date.now() + 100 });
+      expect(proof.protectedOracleCleanup).toBe('unobserved');
+      expect(proof.protectedOracleCleanupReceipt).toBeUndefined();
     });
   });
 

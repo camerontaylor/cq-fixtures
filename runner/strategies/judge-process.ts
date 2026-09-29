@@ -1,7 +1,7 @@
 /** Cancellable POSIX process-group supervisor for serializable host-judge work. */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -17,16 +17,20 @@ const CHILD_ENTRYPOINT = fileURLToPath(new URL('./judge-child.ts', import.meta.u
 
 interface ProcessControl {
   identity: JudgeProcessIdentity;
-  child: ChildProcess;
+  child: ChildProcess | null;
   resultPath: string;
-  exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  exit: Promise<{ kind: 'exit'; code: number | null; signal: NodeJS.Signals | null } | { kind: 'spawn-error' }>;
+  spawnState: 'pending' | 'spawned' | 'failed';
   proof: Promise<IndependentJudgeSettlementProof> | null;
   outputOverflow: boolean;
   stdoutBytes: number;
   stderrBytes: number;
   stderrTail: string;
   namespace: JudgeNamespaceHandle | null;
-  namespaceCleanup: Promise<JudgeNamespaceCleanupProof> | null;
+  namespaceCleanup: Promise<{ proof: JudgeNamespaceCleanupProof; receipt: { path: string; sha256: string; privatePath: string } }> | null;
+  ownership: JudgeOwnershipBindings;
+  artifactRoot: string;
+  receiptWriteHook?: (path: string) => void;
 }
 
 interface JudgeNamespaceIdentity { assignmentId: string; stageId: string; attemptId: string; }
@@ -180,18 +184,70 @@ function validCleanupProof(
 
 async function cleanupNamespace(
   control: ProcessControl,
-  ownership: JudgeOwnershipBindings,
   hostStopped: boolean,
   deadlineEpochMs: number,
-): Promise<JudgeNamespaceCleanupProof | null> {
-  if (!control.namespace) return null;
+): Promise<{ proof: JudgeNamespaceCleanupProof; receipt: { path: string; sha256: string; privatePath: string } } | null> {
+  // S5 cleanup mutates daemon resources. Unknown host state must never be
+  // represented as a stop proof or passed to the namespace cleanup API.
+  if (!control.namespace || !hostStopped) return null;
   if (!control.namespaceCleanup) {
-    control.namespaceCleanup = ownership.cleanupJudgeNamespace(control.namespace, {
+    control.namespaceCleanup = control.ownership.cleanupJudgeNamespace(control.namespace, {
       hostProcessStopped: hostStopped,
       deadlineEpochMs: Math.min(deadlineEpochMs, Date.now() + 30_000),
-    });
+    }).then((proof) => ({ proof, receipt: persistCleanupReceipt(control, proof) }));
   }
   return control.namespaceCleanup;
+}
+
+function canonicalCleanupProof(proof: JudgeNamespaceCleanupProof): JudgeNamespaceCleanupProof {
+  return {
+    identity: { assignmentId: proof.identity.assignmentId, stageId: proof.identity.stageId, attemptId: proof.identity.attemptId },
+    planSha256: proof.planSha256,
+    daemonVerified: proof.daemonVerified,
+    ownershipVerified: proof.ownershipVerified,
+    containersAbsent: proof.containersAbsent,
+    processTree: proof.processTree,
+    volumeDisposition: proof.volumeDisposition,
+    resourceIds: [...proof.resourceIds],
+    cleanup: proof.cleanup,
+    inventoryContentVerified: false,
+  };
+}
+
+function persistCleanupReceipt(
+  control: ProcessControl,
+  rawProof: JudgeNamespaceCleanupProof,
+): { path: string; sha256: string; privatePath: string } {
+  const proof = canonicalCleanupProof(rawProof);
+  const relativePath = `s4-cleanup-${hash(control.identity.attemptId).slice(0, 20)}/protected-oracle-cleanup.json`;
+  const absolutePath = join(control.artifactRoot, relativePath);
+  const artifactStat = lstatSync(control.artifactRoot);
+  if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink()) throw new Error('protected-oracle receipt root is not a private directory');
+  const receiptDirectory = dirname(absolutePath);
+  mkdirSync(receiptDirectory, { recursive: false, mode: 0o700 });
+  const receiptDirectoryStat = lstatSync(receiptDirectory);
+  if (!receiptDirectoryStat.isDirectory() || receiptDirectoryStat.isSymbolicLink()) throw new Error('protected-oracle receipt directory is unsafe');
+  const envelope = {
+    schemaVersion: 1,
+    identity: { ...control.identity },
+    planSha256: control.namespace!.planSha256,
+    proof,
+  };
+  const bytes = Buffer.from(`${JSON.stringify(envelope)}\n`);
+  const descriptor = openSync(absolutePath, 'wx', 0o600);
+  try { writeFileSync(descriptor, bytes); fsyncSync(descriptor); }
+  finally { closeSync(descriptor); }
+  try { control.receiptWriteHook?.(absolutePath); }
+  catch { throw new Error('protected-oracle cleanup receipt could not be persisted'); }
+  const recorded = readFileSync(absolutePath);
+  if (hash(recorded) !== hash(bytes) || !recorded.equals(bytes)) throw new Error('protected-oracle cleanup receipt integrity check failed');
+  const parsed = JSON.parse(recorded.toString('utf8')) as typeof envelope;
+  if (JSON.stringify(parsed) !== JSON.stringify(envelope)
+    || !sameIdentity(parsed.identity, control.identity) || parsed.planSha256 !== control.namespace!.planSha256
+    || parsed.proof.planSha256 !== control.namespace!.planSha256 || !sameIdentity(parsed.proof.identity, control.identity)) {
+    throw new Error('protected-oracle cleanup receipt binding is invalid');
+  }
+  return { path: `artifacts/${relativePath}`, sha256: hash(bytes), privatePath: absolutePath };
 }
 
 function settlementWithNamespace(
@@ -199,6 +255,7 @@ function settlementWithNamespace(
   hostProof: IndependentJudgeSettlementProof,
   handle: JudgeNamespaceHandle | null,
   namespaceProof: JudgeNamespaceCleanupProof | null,
+  cleanupReceipt?: { path: string; sha256: string; privatePath?: string },
 ): IndependentJudgeSettlementProof {
   const valid = !!handle && !!namespaceProof && validCleanupProof(namespaceProof, handle, hostProof.processTree === 'stopped-and-reaped');
   return {
@@ -207,6 +264,7 @@ function settlementWithNamespace(
     processTree: valid ? 'stopped-and-reaped' : 'running-or-unknown',
     execution: hostProof.execution,
     protectedOracleCleanup: valid ? 'proven' : 'unobserved',
+    ...(cleanupReceipt ? { protectedOracleCleanupReceipt: cleanupReceipt } : {}),
     ...(valid && namespaceProof ? { protectedOracleProof: {
       planSha256: namespaceProof.planSha256, daemonVerified: true as const,
       ownershipVerified: true as const, containersAbsent: true as const,
@@ -224,7 +282,12 @@ function terminate(
 ): Promise<IndependentJudgeSettlementProof> {
   if (control.proof) return control.proof;
   control.proof = (async () => {
-    const pgid = control.child.pid;
+    try {
+    // A synchronous throw or Node's pre-spawn error with no pid proves no
+    // host child was created. This is the only no-pid case that permits S5
+    // exact-plan cleanup.
+    if (control.spawnState === 'failed') return stopProof(control.identity, true);
+    const pgid = control.child?.pid;
     if (!pgid) return stopProof(control.identity, false);
     signalGroup(pgid, 'SIGTERM');
     const termDeadline = Math.min(deadlineEpochMs, Date.now() + TERM_GRACE_MS);
@@ -237,6 +300,11 @@ function terminate(
       return stopProof(control.identity, finalLeaderExit && finalGroupGone);
     }
     return stopProof(control.identity, true);
+    } catch {
+      // Probe and termination adapter failures are evidence gaps, never
+      // rejections that bypass the caller's bounded cleanup path.
+      return stopProof(control.identity, false);
+    }
   })();
   return control.proof;
 }
@@ -277,6 +345,10 @@ export interface IndependentJudgeProcessSupervisorOptions {
   readonly privateRoot?: string;
   /** Injected only by offline tests. Production loads the exact pinned S1 dependency closure. */
   readonly ownershipForTest?: JudgeOwnershipBindings;
+  /** Offline adversarial seams; production leaves both unset. */
+  readonly spawnChildForTest?: typeof spawn;
+  readonly beforeSpawnForTest?: () => Promise<void>;
+  readonly receiptWriteHookForTest?: (path: string) => void;
 }
 
 /**
@@ -291,6 +363,9 @@ export class IndependentJudgeProcessSupervisor {
   private readonly groupGone: (pgid: number, deadlineEpochMs: number) => Promise<boolean>;
   private readonly privateRoot: string;
   private readonly ownershipForTest: JudgeOwnershipBindings | undefined;
+  private readonly spawnChild: typeof spawn;
+  private readonly beforeSpawnForTest: (() => Promise<void>) | undefined;
+  private readonly receiptWriteHookForTest: ((path: string) => void) | undefined;
 
   constructor(options: IndependentJudgeProcessSupervisorOptions = {}) {
     if (process.platform === 'win32') throw new Error('independent judge process groups require POSIX detached process semantics');
@@ -298,10 +373,17 @@ export class IndependentJudgeProcessSupervisor {
     this.groupGone = options.groupGone ?? waitForGroupGone;
     this.privateRoot = resolve(options.privateRoot ?? tmpdir());
     this.ownershipForTest = options.ownershipForTest;
+    this.spawnChild = options.spawnChildForTest ?? spawn;
+    this.beforeSpawnForTest = options.beforeSpawnForTest;
+    this.receiptWriteHookForTest = options.receiptWriteHookForTest;
     mkdirSync(this.privateRoot, { recursive: true, mode: 0o700 });
   }
 
   async run(request: ReviewLoopJudgeProcessRequest, signal: AbortSignal): Promise<IndependentJudgeExecution> {
+    assertRequest(request);
+    // Snapshot the serializable DTO before the first await so caller mutation
+    // cannot change the attempt or plan binding during pin loading.
+    request = JSON.parse(JSON.stringify(request)) as ReviewLoopJudgeProcessRequest;
     assertRequest(request);
     if (signal.aborted) throw signal.reason ?? new Error('independent judge cancelled before process launch');
     if (Date.now() >= request.deadlineEpochMs) throw new Error('independent judge deadline elapsed before process launch');
@@ -313,6 +395,7 @@ export class IndependentJudgeProcessSupervisor {
     const requestPath = join(processRoot, 'request.json');
     const resultPath = join(processRoot, 'result.json');
     const artifactRoot = join(processRoot, 'artifacts');
+    mkdirSync(artifactRoot, { mode: 0o700 });
     mkdirSync(join(processRoot, 'home'), { mode: 0o700 });
     mkdirSync(join(processRoot, 'tmp'), { mode: 0o700 });
     // S1's pinned protected-oracle client resolves this one fixed local socket
@@ -354,10 +437,35 @@ export class IndependentJudgeProcessSupervisor {
     const requestBytes = Buffer.from(`${JSON.stringify(childRequest)}\n`);
     const requestSha256 = hash(requestBytes);
     const startedAt = performance.now();
+    let resolveExit!: (exit: ProcessControl['exit'] extends Promise<infer T> ? T : never) => void;
+    const control: ProcessControl = {
+      identity: request.identity, child: null, resultPath,
+      exit: new Promise((resolveExitPromise) => { resolveExit = resolveExitPromise; }),
+      spawnState: 'pending', proof: null, outputOverflow: false, stdoutBytes: 0, stderrBytes: 0,
+      stderrTail: '', namespace, namespaceCleanup: null, ownership, artifactRoot,
+      ...(this.receiptWriteHookForTest ? { receiptWriteHook: this.receiptWriteHookForTest } : {}),
+    };
+    this.admittedAttempts.add(request.identity.attemptId);
+    const finishBeforeSpawn = async (cause: Error): Promise<never> => {
+      control.spawnState = 'failed';
+      resolveExit({ kind: 'spawn-error' });
+      const hostProof = stopProof(request.identity, true);
+      let namespaceResult: Awaited<ReturnType<typeof cleanupNamespace>> = null;
+      try { namespaceResult = await cleanupNamespace(control, true, request.shutdownDeadlineEpochMs); } catch { /* Keep the original launch/cancel error. */ }
+      const settlement = settlementWithNamespace(request.identity, hostProof, namespace,
+        namespaceResult?.proof ?? null, namespaceResult?.receipt);
+      this.completed.set(request.identity.attemptId, settlement);
+      throw cause;
+    };
+    try { await this.beforeSpawnForTest?.(); }
+    catch { return finishBeforeSpawn(new Error('independent judge preparation failed before process launch')); }
+    if (signal.aborted) return finishBeforeSpawn(new Error('independent judge cancelled during preparation before process launch'));
+    if (Date.now() >= request.deadlineEpochMs) return finishBeforeSpawn(new Error('independent judge decision deadline elapsed during preparation before process launch'));
+
     let child: ChildProcess;
     try {
       writeFileSync(requestPath, requestBytes, { flag: 'wx', mode: 0o600 });
-      child = spawn(process.execPath, [
+      child = this.spawnChild(process.execPath, [
         '--disable-warning=ExperimentalWarning', '--experimental-strip-types', this.childEntrypoint,
         requestPath, resultPath, requestSha256,
       ], {
@@ -368,20 +476,19 @@ export class IndependentJudgeProcessSupervisor {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch {
-      const proof = await ownership.cleanupJudgeNamespace(namespace, { hostProcessStopped: true, deadlineEpochMs: Date.now() + 30_000 });
-      if (!validCleanupProof(proof, namespace, true)) throw new Error('protected-judge namespace cleanup failed before child launch');
-      throw new Error('independent judge child could not be launched');
+      return finishBeforeSpawn(new Error('independent judge child could not be launched'));
     }
-    this.admittedAttempts.add(request.identity.attemptId);
-    const control: ProcessControl = {
-      identity: request.identity, child, resultPath,
-      exit: new Promise((resolveExit, rejectExit) => {
-        child.once('error', rejectExit);
-        child.once('exit', (code, signalName) => resolveExit({ code, signal: signalName }));
-      }),
-      proof: null, outputOverflow: false, stdoutBytes: 0, stderrBytes: 0,
-      stderrTail: '', namespace, namespaceCleanup: null,
-    };
+    control.child = child;
+    child.once('spawn', () => { control.spawnState = 'spawned'; });
+    child.once('error', () => {
+      // Node emits an asynchronous error for a spawn failure before the
+      // `spawn` event and with no pid. Other errors do not prove absence.
+      if (control.spawnState === 'pending' && !child.pid) {
+        control.spawnState = 'failed';
+        resolveExit({ kind: 'spawn-error' });
+      }
+    });
+    child.once('exit', (code, signalName) => resolveExit({ kind: 'exit', code, signal: signalName }));
     this.active.set(request.identity.attemptId, control);
     const overflowController = new AbortController();
     const collect = (stream: NodeJS.ReadableStream | null, which: 'stdout' | 'stderr'): void => {
@@ -418,6 +525,10 @@ export class IndependentJudgeProcessSupervisor {
     const abortListener = () => requestStop(signal.reason ?? new Error('independent judge cancelled'));
     signal.addEventListener('abort', abortListener, { once: true });
     const timer = setTimeout(() => requestStop(new Error('independent judge decision deadline exceeded')), positiveDeadlineMs(request.deadlineEpochMs));
+    // Cancellation can land after the pre-launch check and before listener
+    // installation. Recheck here before accepting any child completion.
+    if (signal.aborted) requestStop(signal.reason ?? new Error('independent judge cancelled'));
+    else if (Date.now() >= request.deadlineEpochMs) requestStop(new Error('independent judge decision deadline exceeded'));
 
     try {
       const first = await Promise.race([
@@ -426,10 +537,11 @@ export class IndependentJudgeProcessSupervisor {
       ]);
       if (first.kind === 'stop') {
         const hostProof = await stopPromise!;
-        const namespaceProof = await cleanupNamespace(control, ownership, hostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs);
-        const proof = settlementWithNamespace(request.identity, hostProof, namespace, namespaceProof);
+        let namespaceResult: Awaited<ReturnType<typeof cleanupNamespace>> = null;
+        try { namespaceResult = await cleanupNamespace(control, hostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs); }
+        catch { /* Keep the cancellation/deadline as the primary cause; proof remains unobserved. */ }
+        const proof = settlementWithNamespace(request.identity, hostProof, namespace, namespaceResult?.proof ?? null, namespaceResult?.receipt);
         this.completed.set(request.identity.attemptId, proof);
-        if (proof.cleanup !== 'complete') throw new Error('independent judge and protected namespace cleanup could not be proven');
         throw stopCause instanceof Error ? stopCause : new Error(String(stopCause));
       }
       const decisionUnavailable = (): string | null => signal.aborted
@@ -441,21 +553,26 @@ export class IndependentJudgeProcessSupervisor {
       if (initialDecisionFailure) {
         requestStop(signal.reason ?? new Error('independent judge result arrived after its decision deadline'));
         const hostProof = await stopPromise!;
-        const namespaceProof = await cleanupNamespace(control, ownership, hostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs);
-        const proof = settlementWithNamespace(request.identity, hostProof, namespace, namespaceProof);
+        let namespaceResult: Awaited<ReturnType<typeof cleanupNamespace>> = null;
+        try { namespaceResult = await cleanupNamespace(control, hostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs); }
+        catch { /* Preserve deadline as the primary failure and retain unknown proof. */ }
+        const proof = settlementWithNamespace(request.identity, hostProof, namespace, namespaceResult?.proof ?? null, namespaceResult?.receipt);
         this.completed.set(request.identity.attemptId, proof);
-        if (proof.cleanup !== 'complete') throw new Error('late judge process cleanup could not be proven');
         throw new Error(initialDecisionFailure);
       }
 
-      const naturalHostProof = await terminate(control, Math.min(request.shutdownDeadlineEpochMs, Date.now() + 5_000), this.groupGone);
-      const naturalNamespaceProof = await cleanupNamespace(control, ownership,
+      const naturalHostProof = first.exit.kind === 'spawn-error'
+        ? stopProof(request.identity, true)
+        : await terminate(control, Math.min(request.shutdownDeadlineEpochMs, Date.now() + 5_000), this.groupGone);
+      const naturalNamespaceProof = await cleanupNamespace(control,
         naturalHostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs);
-      const naturalExitProof = settlementWithNamespace(request.identity, naturalHostProof, namespace, naturalNamespaceProof);
+      const naturalExitProof = settlementWithNamespace(request.identity, naturalHostProof, namespace,
+        naturalNamespaceProof?.proof ?? null, naturalNamespaceProof?.receipt);
       this.completed.set(request.identity.attemptId, naturalExitProof);
       if (naturalExitProof.cleanup !== 'complete') throw new Error('independent judge or protected namespace cleanup could not be proven');
       const afterSettlementFailure = decisionUnavailable();
       if (afterSettlementFailure) throw new Error(afterSettlementFailure);
+      if (first.exit.kind === 'spawn-error') throw new Error('independent judge child failed to spawn');
       if (first.exit.code !== 0) {
         const exitClass = first.exit.signal ? 'signal' : first.exit.code === null ? 'unknown' : 'nonzero';
         throw new Error(`independent judge child failed (${exitClass} exit)`);
@@ -487,6 +604,7 @@ export class IndependentJudgeProcessSupervisor {
         rows: envelope.payload.rows, tables: envelope.payload.tables, diagnostics: envelope.payload.diagnostics,
         selection: envelope.payload.selection, requestSha256, payloadSha256: envelope.payloadSha256,
         artifactRoot, processRoot, protectedOracleProof: naturalExitProof.protectedOracleProof!,
+        protectedOracleCleanupReceipt: naturalExitProof.protectedOracleCleanupReceipt!,
       };
       return {
         result: {
@@ -506,12 +624,14 @@ export class IndependentJudgeProcessSupervisor {
         const hostProof = control.proof
           ? await control.proof
           : await terminate(control, request.shutdownDeadlineEpochMs, this.groupGone);
-        const namespaceProof = await cleanupNamespace(control, ownership,
+        const namespaceResult = await cleanupNamespace(control,
           hostProof.processTree === 'stopped-and-reaped', request.shutdownDeadlineEpochMs);
-        this.completed.set(request.identity.attemptId, settlementWithNamespace(request.identity, hostProof, namespace, namespaceProof));
+        this.completed.set(request.identity.attemptId, settlementWithNamespace(request.identity, hostProof, namespace,
+          namespaceResult?.proof ?? null, namespaceResult?.receipt));
       } catch {
-        this.completed.set(request.identity.attemptId, settlementWithNamespace(request.identity,
-          stopProof(request.identity, false), namespace, null));
+        const hostProof = control.proof ? await control.proof.catch(() => stopProof(request.identity, false))
+          : stopProof(request.identity, false);
+        this.completed.set(request.identity.attemptId, settlementWithNamespace(request.identity, hostProof, namespace, null));
       }
       this.active.delete(request.identity.attemptId);
     }
@@ -526,14 +646,11 @@ export class IndependentJudgeProcessSupervisor {
     if (control) {
       if (!sameIdentity(control.identity, input.identity)) return stopProof(input.identity, false);
       const hostProof = await terminate(control, input.deadlineEpochMs, this.groupGone);
-      let namespaceProof: JudgeNamespaceCleanupProof | null = null;
-      try {
-        const requestPath = join(dirname(control.resultPath), 'request.json');
-        const request = JSON.parse(readFileSync(requestPath, 'utf8')) as ReviewLoopJudgeProcessRequest;
-        const ownership = this.ownershipForTest ?? await loadPinnedOwnership(request);
-        namespaceProof = await cleanupNamespace(control, ownership, hostProof.processTree === 'stopped-and-reaped', input.deadlineEpochMs);
-      } catch { /* Keep the result unobserved and quarantined when pinning or cleanup fails. */ }
-      const proof = settlementWithNamespace(input.identity, hostProof, control.namespace, namespaceProof);
+      let namespaceResult: Awaited<ReturnType<typeof cleanupNamespace>> = null;
+      try { namespaceResult = await cleanupNamespace(control, hostProof.processTree === 'stopped-and-reaped', input.deadlineEpochMs); }
+      catch { /* Preserve host settlement; missing immutable receipt keeps cleanup unobserved. */ }
+      const proof = settlementWithNamespace(input.identity, hostProof, control.namespace,
+        namespaceResult?.proof ?? null, namespaceResult?.receipt);
       this.completed.set(input.identity.attemptId, proof);
       return proof;
     }

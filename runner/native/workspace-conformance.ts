@@ -21,8 +21,25 @@ export interface WorkspaceConformanceTestHooks {
   afterWorkerForTest?: (controlWorkspace: string, invocation: OpInvocation) => void | Promise<void>;
 }
 
+export interface LifecycleEvidenceArtifactRef {
+  kind: string;
+  path: string;
+  sha256: string;
+}
+
+/** Native lifecycle claim tied to one invocation and referenced by its observation artifacts. */
+export interface NativeLifecycleEvidence {
+  identity: InvocationIdentity;
+  process: { status: 'stopped' | 'not-started' | 'running' | 'unknown'; evidence: LifecycleEvidenceArtifactRef | null };
+  settlement: { status: 'settled' | 'unsettled' | 'unknown'; evidence: LifecycleEvidenceArtifactRef | null };
+}
+
+export interface LifecycleObservedDriver {
+  getLifecycleEvidence?(invocationId: string): NativeLifecycleEvidence | undefined | Promise<NativeLifecycleEvidence | undefined>;
+}
+
 export interface WorkspaceConformanceRequest<Result extends RunSuiteResult = RunSuiteResult> {
-  driver: Driver & ObservedDriver;
+  driver: Driver & ObservedDriver & LifecycleObservedDriver;
   experiment: ExperimentContext;
   suiteName: string;
   caseId: string;
@@ -44,6 +61,15 @@ export interface WorkspaceConformanceRequest<Result extends RunSuiteResult = Run
 export interface WorkspaceConformanceReceipt {
   schemaVersion: 1;
   status: 'passed' | 'failed';
+  workspaceSeparationStatus: 'passed' | 'failed';
+  lifecycle: {
+    qualification: 'qualified' | 'unknown' | 'failed';
+    identityMatched: boolean;
+    processStatus: NativeLifecycleEvidence['process']['status'] | null;
+    processEvidence: LifecycleEvidenceArtifactRef | null;
+    settlementStatus: NativeLifecycleEvidence['settlement']['status'] | null;
+    settlementEvidence: LifecycleEvidenceArtifactRef | null;
+  };
   failureCodes: readonly string[];
   identity: {
     campaignId: string;
@@ -66,6 +92,7 @@ export interface WorkspaceConformanceReceipt {
     contentSha256: string;
     runSuiteCommit: string | null;
     runSuiteTree: string | null;
+    taskCommitRelation: 'same-commit' | 'different-commit-same-tree' | 'different-unverified' | 'tree-mismatch' | 'unknown' | null;
   };
   workspaces: {
     assigned: {
@@ -173,15 +200,15 @@ export async function runWorkspaceConformance<Result extends RunSuiteResult = Ru
   const state: {
     identity?: InvocationIdentity; sessionRef?: string; workspace?: string; controlRoot?: string; controlWorkspace?: string;
     assignedBefore?: WorkspaceInventory; controlBefore?: WorkspaceInventory; assignedAfterWorker?: WorkspaceInventory;
-    controlAfterWorker?: WorkspaceInventory; controlAfterRun?: WorkspaceInventory; suiteFailed: boolean;
+    controlAfterWorker?: WorkspaceInventory; controlAfterRun?: WorkspaceInventory;
+    lifecycle?: NativeLifecycleEvidence; lifecycleLookupFailed?: boolean; suiteFailed: boolean;
   } = { suiteFailed: false };
   let result: Result | undefined;
   let suiteError: unknown;
 
   const observedDriver = request.driver;
-  const wrapper: Driver & ObservedDriver = {
-    campaignBudgetCapabilities: observedDriver.campaignBudgetCapabilities,
-    async beginInvocation(identity) {
+  const interceptedMethods = {
+    async beginInvocation(identity: InvocationIdentity) {
       if (identity.assignmentId !== frozen.assignmentId || identity.stageId !== frozen.stageId || identity.attemptId !== frozen.attemptId) {
         failureCodes.push('frozen-invocation-identity-mismatch');
         throw new Error('workspace conformance invocation identity differs from frozen assignment');
@@ -256,7 +283,7 @@ export async function runWorkspaceConformance<Result extends RunSuiteResult = Ru
         }
       }
     },
-    async getObservation(invocationId) {
+    async getObservation(invocationId: string) {
       return await observedDriver.getObservation(invocationId);
     },
     ...(observedDriver.getLaunchEvidence === undefined ? {} : {
@@ -264,7 +291,22 @@ export async function runWorkspaceConformance<Result extends RunSuiteResult = Ru
         return await observedDriver.getLaunchEvidence!(invocationId);
       },
     }),
+    ...(observedDriver.getLifecycleEvidence === undefined ? {} : {
+      async getLifecycleEvidence(invocationId: string): Promise<NativeLifecycleEvidence | undefined> {
+        return await observedDriver.getLifecycleEvidence!(invocationId);
+      },
+    }),
   };
+  // Intercept only the invocation boundary. All other present and future
+  // driver methods/capabilities resolve from the original object and are
+  // bound to it so stateful native methods keep their receiver.
+  const wrapper = new Proxy(observedDriver, {
+    get(target, property) {
+      if (Reflect.has(interceptedMethods, property)) return Reflect.get(interceptedMethods, property);
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as Driver & ObservedDriver & LifecycleObservedDriver;
 
   try { result = await request.runSuite(wrapper); }
   catch (error) { suiteError = error; state.suiteFailed = true; failureCodes.push('runSuite-threw'); }
@@ -272,6 +314,11 @@ export async function runWorkspaceConformance<Result extends RunSuiteResult = Ru
     try {
       if (state.controlWorkspace !== undefined && existsSync(state.controlWorkspace)) state.controlAfterRun = inventoryTaskWorkspace(state.controlWorkspace);
     } catch { failureCodes.push('control-final-inventory-failed'); }
+  }
+
+  if (state.identity !== undefined && observedDriver.getLifecycleEvidence !== undefined) {
+    try { state.lifecycle = await observedDriver.getLifecycleEvidence(state.identity.invocationId); }
+    catch { state.lifecycleLookupFailed = true; }
   }
 
   const suiteOutcome = result?.taskOutcomes.filter(({ outcome }) =>
@@ -313,6 +360,45 @@ export async function runWorkspaceConformance<Result extends RunSuiteResult = Ru
   if (nativeObservation?.capture.baselineCommit === null || nativeObservation?.capture.baselineCommit === undefined) {
     failureCodes.push('runSuite-baseline-commit-missing');
   }
+  const taskCommitRelation: WorkspaceConformanceReceipt['baseline']['taskCommitRelation'] = request.frozenBaseline.taskCommit === null
+    ? null
+    : nativeObservation?.capture.baselineCommit === null || nativeObservation?.capture.baselineCommit === undefined
+      ? 'unknown'
+      : nativeObservation.capture.baselineCommit === request.frozenBaseline.taskCommit
+        ? 'same-commit'
+        : request.frozenBaseline.taskTree !== null && nativeObservation.capture.baselineTree === request.frozenBaseline.taskTree
+          ? 'different-commit-same-tree'
+          : request.frozenBaseline.taskTree === null ? 'different-unverified' : 'tree-mismatch';
+  if (taskCommitRelation === 'tree-mismatch') failureCodes.push('runSuite-baseline-task-tree-mismatch');
+  const executionLaunched = outcome?.execution?.launched ?? null;
+  const lifecycle = state.lifecycle;
+  const lifecycleIdentityMatched = lifecycle !== undefined && state.identity !== undefined &&
+    lifecycle.identity.invocationId === state.identity.invocationId &&
+    lifecycle.identity.assignmentId === state.identity.assignmentId &&
+    lifecycle.identity.stageId === state.identity.stageId && lifecycle.identity.attemptId === state.identity.attemptId;
+  const artifactMatchesObservation = (ref: LifecycleEvidenceArtifactRef | null): boolean => ref !== null &&
+    /^[a-f0-9]{64}$/.test(ref.sha256) && typeof ref.kind === 'string' && ref.kind.length > 0 &&
+    typeof ref.path === 'string' && ref.path.length > 0 &&
+    nativeObservation?.artifacts.some((artifact) => artifact.kind === ref.kind && artifact.path === ref.path && artifact.sha256 === ref.sha256) === true;
+  let lifecycleQualification: WorkspaceConformanceReceipt['lifecycle']['qualification'] = 'unknown';
+  if (lifecycle === undefined) {
+    failureCodes.push(state.lifecycleLookupFailed ? 'native-lifecycle-evidence-retrieval-failed' : 'native-lifecycle-evidence-unavailable');
+  } else if (!lifecycleIdentityMatched) {
+    lifecycleQualification = 'failed';
+    failureCodes.push('native-lifecycle-identity-mismatch');
+  } else if (lifecycle.process.status === 'unknown' || lifecycle.settlement.status === 'unknown' || executionLaunched === null) {
+    failureCodes.push('native-lifecycle-proof-unknown');
+  } else {
+    const processMatchesLaunch = executionLaunched === true ? lifecycle.process.status === 'stopped'
+      : lifecycle.process.status === 'not-started';
+    const refsMatch = artifactMatchesObservation(lifecycle.process.evidence) && artifactMatchesObservation(lifecycle.settlement.evidence);
+    if (!processMatchesLaunch || lifecycle.settlement.status !== 'settled' || !refsMatch) {
+      lifecycleQualification = 'failed';
+      failureCodes.push(!refsMatch ? 'native-lifecycle-evidence-reference-mismatch' : 'native-lifecycle-stop-or-settlement-unproven');
+    } else {
+      lifecycleQualification = 'qualified';
+    }
+  }
   const assignedIdentitySha256 = state.workspace === undefined ? null : sha256(state.workspace);
   const controlIdentitySha256 = state.controlWorkspace === undefined ? null : sha256(state.controlWorkspace);
   if (assignedIdentitySha256 !== null && assignedIdentitySha256 === controlIdentitySha256) failureCodes.push('workspace-identities-not-distinct');
@@ -334,9 +420,32 @@ export async function runWorkspaceConformance<Result extends RunSuiteResult = Ru
   }
   if (suiteError !== undefined) failureCodes.push('runSuite-failed');
 
+  const workspaceFailureCodes = new Set([
+    'missing-session-ref', 'missing-invocation-identity', 'session-resolution-failed', 'session-not-found-or-invalid',
+    'assigned-workspace-unavailable', 'assigned-workspace-not-directory', 'assigned-workspace-does-not-match-frozen-task',
+    'control-workspace-not-distinct', 'control-baseline-copy-mismatch', 'control-workspace-leaked-to-invocation',
+    'assigned-post-run-inventory-failed', 'control-workspace-mutated', 'control-post-run-inventory-or-hook-failed',
+    'control-final-inventory-failed', 'workspace-identities-not-distinct', 'control-workspace-not-unchanged',
+    'control-cleanup-failed', 'control-cleanup-incomplete', 'assigned-workspace-cleanup-incomplete',
+    'session-record-cleanup-incomplete', 'session-cleanup-verification-failed',
+  ]);
+  const workspaceSeparationStatus = failureCodes.some((code) => workspaceFailureCodes.has(code)) ||
+    state.assignedBefore === undefined || state.assignedAfterWorker === undefined || state.controlBefore === undefined ||
+    state.controlAfterWorker === undefined || state.controlAfterRun === undefined || !controlSame || !controlRemoved || !assignedRemoved
+    ? 'failed' : 'passed';
+
   const receipt: WorkspaceConformanceReceipt = {
     schemaVersion: 1,
-    status: failureCodes.length === 0 ? 'passed' : 'failed',
+    status: failureCodes.length === 0 && workspaceSeparationStatus === 'passed' && lifecycleQualification === 'qualified' ? 'passed' : 'failed',
+    workspaceSeparationStatus,
+    lifecycle: {
+      qualification: lifecycleQualification,
+      identityMatched: lifecycleIdentityMatched,
+      processStatus: lifecycle?.process.status ?? null,
+      processEvidence: lifecycle?.process.evidence ?? null,
+      settlementStatus: lifecycle?.settlement.status ?? null,
+      settlementEvidence: lifecycle?.settlement.evidence ?? null,
+    },
     failureCodes: [...new Set(failureCodes)],
     identity: {
       campaignId: frozen.campaignId, cohortId: frozen.cohortId, experimentId: frozen.experimentId,
@@ -352,6 +461,7 @@ export async function runWorkspaceConformance<Result extends RunSuiteResult = Ru
       contentSha256: request.frozenBaseline.contentSha256,
       runSuiteCommit: nativeObservation?.capture.baselineCommit ?? null,
       runSuiteTree: nativeObservation?.capture.baselineTree ?? null,
+      taskCommitRelation,
     },
     workspaces: {
       assigned: {

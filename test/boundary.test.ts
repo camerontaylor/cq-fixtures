@@ -169,8 +169,8 @@ describe('toolkit package boundary (public surface only)', () => {
     // fake-driver, dimensions/schemaCompliance, score/fixerWorker,
     // score/reviewClassifier): fewer means the build dropped a module.
     expect(built.length).toBeGreaterThanOrEqual(8);
-    expect(built.some((f) => f.label === 'dist/index.js')).toBe(true);
-    expect(built.some((f) => f.label === 'dist/cli.js')).toBe(true);
+    expect(built.some((f) => f.label === 'dist/runner/index.js')).toBe(true);
+    expect(built.some((f) => f.label === 'dist/runner/cli.js')).toBe(true);
     // Test files import the toolkit bare today; boundary.test.ts itself is
     // excluded (it holds synthetic violation specimens — see testEntries).
     expect(tests.length).toBeGreaterThanOrEqual(8);

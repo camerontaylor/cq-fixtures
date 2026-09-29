@@ -6,6 +6,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { snapshotTask } from './task-tree.ts';
 import { DockerControl, teardownContainer } from './docker-control.ts';
+import { claimJudgeNamespaceSlot, stableJudgeCandidateInventory } from './judge-ownership.ts';
 import { FINAL_NATIVE_IMAGE } from './codex-final-profile.ts';
 
 export const JUDGE_CHILD_BOOTSTRAP = `let s='';process.stdin.on('data',b=>{s+=b;if(s.length>65536)process.exit(125)});process.stdin.on('end',async()=>{try{const r=JSON.parse(s);const m=await import('file:///task/'+r.module);const f=m[r.exportName];if(typeof f!=='function')throw Error();const out=[];for(const args of r.requests)out.push(await f(...args));process.stdout.write(JSON.stringify(out))}catch{process.exit(125)}})`;
@@ -18,21 +19,32 @@ export function validateJudgeChildRequest(request: JudgeChildRequest): string {
 }
 export async function executeProtectedJudgeChild(request: JudgeChildRequest): Promise<PrivateJudgeChildResult> {
   const payload = validateJudgeChildRequest(request);
-  const tree = snapshotTask(request.candidateRoot, false, false);
-  if (!tree.entries.some(e => e.path === request.module && e.kind === 'file')) throw new Error('plain candidate module required');
-  const control = new DockerControl(); const nonce = randomBytes(8).toString('hex'); const volume = 'cq-s5-judge-' + nonce;
+  const snapshot = snapshotTask(request.candidateRoot, false, false);
+  const moduleEntry = snapshot.entries.find(e => e.path === request.module && e.kind === 'file');
+  if (!moduleEntry) throw new Error('plain candidate module required');
+  const tree = stableJudgeCandidateInventory(request.module, Buffer.from(moduleEntry.data!, 'base64'));
+  const planPath = process.env.CQ_PROTECTED_JUDGE_PLAN;
+  const owned = planPath ? claimJudgeNamespaceSlot(planPath, tree.inventoryHash) : undefined;
+  const control = new DockerControl(); const nonce = randomBytes(8).toString('hex'); const volume = owned?.slot.volume ?? 'cq-s5-judge-' + nonce;
   const identity = createHash('sha256').update(tree.inventoryHash + nonce).digest('hex');
+  const labels = owned?.labels ?? { 'cq.boundary.judge': identity };
+  const labelArgs = Object.entries(labels).flatMap(([key,value]) => ['--label', key + '=' + value]);
   let created = false; let container: string | undefined; let phase = 'daemon';
   try {
     if (await control.run(['info', '--format', '{{.ID}}']) !== 'e15e4bd0-8a2f-4f5b-b335-2bd18da11100') throw new Error('dedicated judge daemon changed');
-    if ((await control.run(['volume', 'ls', '-q'])).split('\n').includes(volume)) throw new Error('judge private volume exists');
+    if ((await control.run(['volume', 'ls', '-q', '--filter', 'name=^' + volume + '$'])).split('\n').includes(volume)) throw new Error('judge private volume exists');
+    if (owned) for (const name of [owned.slot.writer, owned.slot.candidate]) if (await control.run(['ps','-aq','--filter',`name=^/${name}$`])) throw new Error('judge preregistered container collision');
     phase = 'volume';
-    await control.run(['volume', 'create', '--label', 'cq.boundary.judge=' + identity, volume]); created = true;
+    await control.run(['volume', 'create', ...labelArgs, volume]); created = true;
+    const stagedVolume = JSON.parse(await control.run(['volume','inspect',volume]))[0];
+    if (stagedVolume.Name !== volume || stagedVolume.Driver !== 'local' || Object.keys(stagedVolume.Options ?? {}).length || Object.entries(labels).some(([k,v]) => stagedVolume.Labels?.[k] !== v) || await control.run(['ps','-aq','--filter','volume=' + volume])) throw new Error('judge new volume ownership changed');
     const writer = readFileSync(new URL('./volume-io.mjs', import.meta.url), 'utf8');
     phase = 'staging';
-    await control.utility(['--rm', '-i', '--pull=never', '--network', 'none', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '768m', '--cpus', '0.5', '--mount', `type=volume,source=${volume},target=/task,volume-nocopy`, '--entrypoint', '/usr/local/bin/node', FINAL_NATIVE_IMAGE, '--input-type=module', '-e', writer, 'write'], JSON.stringify(tree.entries));
+    const writerArgs = ['--rm', ...(owned ? ['--name', owned.slot.writer, ...labelArgs] : []), '-i', '--pull=never', '--network', 'none', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '768m', '--cpus', '0.5', '--mount', `type=volume,source=${volume},target=/task,volume-nocopy`, '--entrypoint', '/usr/local/bin/node', FINAL_NATIVE_IMAGE, '--input-type=module', '-e', writer, 'write'];
+    if (owned) await control.run(['run', ...writerArgs], JSON.stringify(tree.entries));
+    else await control.utility(writerArgs, JSON.stringify(tree.entries));
     phase = 'container';
-    container = await control.run(['create', '-i', '--pull=never', '--label', 'cq.boundary.judge=' + identity, '--network', 'none', '--user', '1000:1000', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '256m', '--memory-swap', '256m', '--cpus', '0.5', '--ipc', 'private', '--cgroupns', 'private', '--workdir', '/task', '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,size=8m', '--mount', `type=volume,source=${volume},target=/task,readonly`, '--env', 'HOME=/tmp/empty-home', '--env', 'PATH=/usr/local/bin:/usr/bin:/bin', '--entrypoint', '/usr/local/bin/node', FINAL_NATIVE_IMAGE, '-e', JUDGE_CHILD_BOOTSTRAP]);
+    container = await control.run(['create', ...(owned ? ['--name', owned.slot.candidate] : []), '-i', '--pull=never', ...labelArgs, '--network', 'none', '--user', '1000:1000', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '256m', '--memory-swap', '256m', '--cpus', '0.5', '--ipc', 'private', '--cgroupns', 'private', '--workdir', '/task', '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,uid=1000,gid=1000,size=8m', '--mount', `type=volume,source=${volume},target=/task,readonly`, '--env', 'HOME=/tmp/empty-home', '--env', 'PATH=/usr/local/bin:/usr/bin:/bin', '--entrypoint', '/usr/local/bin/node', FINAL_NATIVE_IMAGE, '-e', JUDGE_CHILD_BOOTSTRAP]);
     phase = 'execution';
     let timedOut = false;
     // Kill namespace/init, not just Docker client. Trusted teardown occurs even on stdout overflow/error.
@@ -47,7 +59,7 @@ export async function executeProtectedJudgeChild(request: JudgeChildRequest): Pr
   } catch { throw new Error('protected judge unavailable at ' + phase); } finally {
     try {
       if (container) await teardownContainer(control, container);
-      if (created) { const v = JSON.parse(await control.run(['volume', 'inspect', volume]))[0]; if (v.Labels?.['cq.boundary.judge'] !== identity || await control.run(['ps', '-aq', '--filter', 'volume=' + volume])) throw new Error('judge recovery ownership changed'); await control.run(['volume', 'rm', volume]); }
+      if (created && !owned) { const v = JSON.parse(await control.run(['volume', 'inspect', volume]))[0]; if (v.Labels?.['cq.boundary.judge'] !== identity || await control.run(['ps', '-aq', '--filter', 'volume=' + volume])) throw new Error('judge recovery ownership changed'); await control.run(['volume', 'rm', volume]); }
     } finally { control.close(); }
   }
 }

@@ -14,7 +14,8 @@ import { unavailableObservation, type InvocationIdentity } from '../runner/nativ
 import { RUNNER_SESSION_DIRECTORY } from '../runner/native/session.ts';
 import { ObservedNativeDriver, createWorkerResult } from '../runner/native/observed-driver.ts';
 import { runVisibleG1, visibleG1TestInventory } from '../runner/native/run-visible-g1.ts';
-import { runBoundedFinalProfileSetup } from '../runner/native/run-final-profile-g1.ts';
+import { createFinalProfileQuotaSource, resolveFinalProfileQuotaSource, runBoundedFinalProfileSetup } from '../runner/native/run-final-profile-g1.ts';
+import type { CodexAppServerSession } from '../runner/campaign/codex-app-server.ts';
 import { normalizeG2NativeReceipt, runG2Harness, type G2ProbeFixture, type NativeExecutionReceipt } from '../runner/native/g2-harness.ts';
 import type { LaunchProfile } from '../runner/native/launch-inventory.ts';
 import { SAFE_GIT_CONFIG, snapshotTask } from '../runner/boundary/task-tree.ts';
@@ -260,6 +261,61 @@ describe('native transport event and identity handling', () => {
     });
     expect(() => assertOutsideGlmBlackout(new Date('2026-09-29T07:00:00Z'))).toThrow(/blackout/u);
     expect(() => assertOutsideGlmBlackout(new Date('2026-09-29T02:00:00Z'))).not.toThrow();
+  });
+});
+
+describe('final-profile G1 quota source selection', () => {
+  it('uses the authenticated aggregate by default, including native Codex and CodexBar reads', async () => {
+    const now = Date.parse('2026-09-29T01:00:00.000Z');
+    const methods: string[] = [];
+    const codexBarProviders: string[] = [];
+    let closed = false;
+    const session: CodexAppServerSession = {
+      async request(method) {
+        methods.push(method);
+        return { rateLimits: {
+          limitId: 'codex', primary: { usedPercent: 67, windowDurationMins: 10_080, resetsAt: (now + 86_400_000) / 1_000 },
+        }, rateLimitsByLimitId: {}, rateLimitResetCredits: { availableCount: 3, credits: [] } };
+      },
+      notify() {}, async close() { closed = true; },
+    };
+    const source = resolveFinalProfileQuotaSource(undefined, () => createFinalProfileQuotaSource({
+      now: () => now,
+      appServerSessionFactory: async () => session,
+      codexBarReader: { async read(provider) {
+        codexBarProviders.push(provider);
+        return { usage: { updatedAt: new Date(now).toISOString(), primary: {
+          usedPercent: 25, windowMinutes: 300, resetsAt: new Date(now + 3_600_000).toISOString(),
+        } } };
+      } },
+    }));
+    const snapshot = await source.refresh();
+    if (!snapshot) throw new Error('authenticated aggregate returned no quota snapshot');
+    expect(methods).toEqual(['account/rateLimits/read']);
+    expect(closed).toBe(true);
+    expect(codexBarProviders).toEqual(['zai', 'opencodego']);
+    expect(snapshot.providers).toHaveLength(3);
+    expect(snapshot.providers.find((provider) => provider.provider === 'codex')).toMatchObject({
+      provider: 'codex', source: 'codex-app-server:account/rateLimits/read', telemetryAvailable: true,
+      resetCreditsAvailableCount: 3,
+    });
+    expect(snapshot.providers.find((provider) => provider.provider === 'codex')?.windows[0])
+      .toMatchObject({ remainingFraction: 0.33, remainingUnits: null, binding: true });
+    expect(snapshot.providers.find((provider) => provider.provider === 'zai')?.windows[0])
+      .toMatchObject({ remainingFraction: 0.75, source: 'codexbar:usage' });
+  });
+
+  it('rejects an explicit null override with a direct message instead of falling through to no scheduler decision', () => {
+    expect(() => resolveFinalProfileQuotaSource(null)).toThrow(
+      'final-profile quotaSource cannot be null; omit it to use authenticated quota sources',
+    );
+  });
+
+  it('invokes the authenticated default factory when the override is omitted', () => {
+    let created = false;
+    const source = { async refresh() { return { fetchedAt: new Date().toISOString(), providers: [] }; } };
+    expect(resolveFinalProfileQuotaSource(undefined, () => { created = true; return source; })).toBe(source);
+    expect(created).toBe(true);
   });
 });
 

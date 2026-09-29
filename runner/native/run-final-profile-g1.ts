@@ -8,8 +8,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Driver, OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import { createReviewLoopRepairTask } from '../../campaigns/cq-settings/corpus/review-loop-task.ts';
-import { AggregateQuotaSource, CodexBarQuotaSource } from '../campaign/codexbar.ts';
-import { CodexAppServerQuotaAdapter } from '../campaign/codex-app-server.ts';
+import { AggregateQuotaSource, CodexBarQuotaSource, type CodexBarReader } from '../campaign/codexbar.ts';
+import { CodexAppServerQuotaAdapter, type CodexAppServerSessionFactory } from '../campaign/codex-app-server.ts';
 import type { QuotaSnapshot } from '../campaign/quota.ts';
 import { FileCampaignQueueStore } from '../campaign/persistence.ts';
 import { CampaignScheduler, type QuotaSource } from '../campaign/scheduler.ts';
@@ -90,10 +90,34 @@ export interface FinalProfileG1Options {
   prepareInvocation: (input: NativeSpawnContext) => Promise<FinalProfileInvocationSetup>;
   /** Must stop all invocation-owned provisioning and namespaces before disposing or quarantining volumes. */
   cleanupInvocation: (input: FinalProfileSetupCleanupRequest) => Promise<FinalProfileSetupCleanupProof>;
-  quotaSource?: QuotaSource;
+  quotaSource?: QuotaSource | null;
   launchInventory?: NativeLaunchInventory;
   executable?: string;
   now?: () => number;
+}
+
+/** Fresh authenticated, read-only sources used by the native schedulers. */
+export function createFinalProfileQuotaSource(options: {
+  now?: () => number;
+  appServerSessionFactory?: CodexAppServerSessionFactory;
+  codexBarReader?: CodexBarReader;
+} = {}): QuotaSource {
+  const now = options.now ?? Date.now;
+  return new AggregateQuotaSource([
+    new CodexAppServerQuotaAdapter(options.appServerSessionFactory, now),
+    new CodexBarQuotaSource(options.codexBarReader, now),
+  ], now);
+}
+
+/** Null is almost always an accidental boundary override; omission selects the real aggregate. */
+export function resolveFinalProfileQuotaSource(
+  override: QuotaSource | null | undefined,
+  createDefault: () => QuotaSource = () => createFinalProfileQuotaSource(),
+): QuotaSource {
+  if (override === null) {
+    throw new Error('final-profile quotaSource cannot be null; omit it to use authenticated quota sources');
+  }
+  return override ?? createDefault();
 }
 
 export class FinalProfileSetupFailure extends Error {
@@ -264,6 +288,7 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   const started = now();
   const deadlineEpochMs = started + TOTAL_ASSIGNMENT_MS;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$/u.test(options.runId)) throw new Error('parent runId must be a stable safe identity');
+  const source = resolveFinalProfileQuotaSource(options.quotaSource, () => createFinalProfileQuotaSource({ now }));
   const abort = new AbortController();
   let rejectDeadline!: (error: Error) => void;
   const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
@@ -290,9 +315,6 @@ export async function runFinalProfileG1(options: FinalProfileG1Options): Promise
   const bundle = await withinAssignment(bundlePromise).catch((error: unknown) => {
     void bundlePromise.then((lateBundle) => lateBundle.cleanup()).catch(() => undefined); throw error;
   });
-  const source = options.quotaSource ?? new AggregateQuotaSource([
-    new CodexAppServerQuotaAdapter(), new CodexBarQuotaSource(undefined, now),
-  ], now);
   const quotaReads: Array<{ fetchedAt: string | null; providers: readonly unknown[] }> = [];
   const quotaSource: QuotaSource = { async refresh() {
     let snapshot: QuotaSnapshot | null = null;

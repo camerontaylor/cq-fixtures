@@ -45,8 +45,8 @@
 // PK00-owned campaign source manifest, and does not read a clock — the as-of
 // instant is always an explicit input.
 
-import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { aggregateCorrected, type ResultRow } from '../aggregate.ts';
 import { buildCorrectionAwareBoard, renderBoardMarkdown, type CorrectionAwareBoard } from './board.ts';
@@ -83,17 +83,82 @@ export class ProducerError extends Error {
  * Join a manifest-relative path onto a root, refusing anything that escapes it.
  *
  * A pinned path is data, not a location the producer may follow anywhere: an
- * absolute path or a `..` escape is a malformed pin, not a reason to read
- * outside the roots the caller named.
+ * absolute path, a `..` escape, or a SYMLINK is a malformed pin, not a reason
+ * to read outside the roots the caller named.
+ *
+ * Containment is enforced in three layers, because a purely lexical check is
+ * not containment at all: `readFileSync` follows symlinks, so a lexical join
+ * happily hands back a path whose bytes live somewhere else entirely.
+ *
+ *   1. The ROOT is canonicalised once per call with `realpath`, and that
+ *      canonical directory is the boundary. The operator named the root, so a
+ *      symlinked root path is the caller's own choice and its target is the
+ *      boundary — what is refused is a link the PINNED PATH introduces.
+ *   2. Every path component between the boundary and the target is `lstat`ed
+ *      and rejected if it is a symbolic link. Checking only the final
+ *      component is not enough: a symlinked directory in the middle of a
+ *      pinned path redirects the read just as effectively.
+ *   3. The fully resolved target is `realpath`ed and re-checked against the
+ *      boundary, so a link swapped in between the walk and the read still
+ *      fails closed.
+ *
+ * A path that does not exist, or that cannot be canonicalised, is `null` —
+ * unresolvable, never an empty read and never a silent success.
  */
 function resolveWithin(root: string, relativePath: string): string | null {
   if (relativePath.length === 0) return null;
   if (isAbsolute(relativePath)) return null;
-  const base = resolve(root);
-  const target = resolve(base, relativePath);
-  const rel = relative(base, target);
+
+  // Layer 1: the canonical boundary.
+  const base = realpathOrNull(root);
+  if (base === null) return null;
+
+  // Cheap lexical rejection of `..` escapes and absolute paths.
+  const lexical = resolve(base, relativePath);
+  const rel = relative(base, lexical);
   if (rel.length === 0 || rel.startsWith('..') || isAbsolute(rel)) return null;
-  return target;
+
+  // Layer 2: no symlink anywhere along the pinned path.
+  if (hasSymlinkComponent(base, rel)) return null;
+
+  // Layer 3: the resolved target is still inside the boundary.
+  const real = realpathOrNull(lexical);
+  if (real === null) return null;
+  const realRel = relative(base, real);
+  if (realRel.length === 0 || realRel.startsWith('..') || isAbsolute(realRel)) return null;
+
+  return lexical;
+}
+
+/** The canonical path of an existing file or directory, or null. */
+function realpathOrNull(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch {
+    // Absent, or not resolvable. Unresolvable is not absence and not agreement.
+    return null;
+  }
+}
+
+/**
+ * True when ANY component of `rel` (relative to the canonical `base`) is a
+ * symbolic link. Components are walked one at a time with `lstat`, which does
+ * not itself follow links, so a link is observed rather than traversed.
+ */
+function hasSymlinkComponent(base: string, rel: string): boolean {
+  let current = base;
+  for (const segment of rel.split(sep)) {
+    current = join(current, segment);
+    try {
+      if (lstatSync(current).isSymbolicLink()) return true;
+    } catch {
+      // A component that cannot be stat'd cannot be read either, and the
+      // caller's realpath check reports that as unresolvable. It is not an
+      // escape, so it is not reported as one.
+      return false;
+    }
+  }
+  return false;
 }
 
 /**
@@ -104,6 +169,13 @@ function resolveWithin(root: string, relativePath: string): string | null {
  * `corpusRoot`. A corpus root that was not supplied resolves to `null`, which
  * the manifest layer records as `unresolvable` — "we were not given it", kept
  * distinct from "it is not there" and from "it matches".
+ *
+ * Containment is real, not lexical: `resolveWithin` canonicalises the root and
+ * rejects any symlinked path component, so a link planted inside a named root
+ * cannot redirect this resolver to bytes outside it. A redirected read would
+ * otherwise still have to pass the pin's SHA256, but the named-root contract is
+ * about WHERE bytes may be read from, and that is enforced here rather than
+ * left to a later hash to catch by accident.
  */
 export function createManifestResolver(roots: { repoRoot: string; corpusRoot: string | null }): ManifestResolver {
   return (entry: ManifestEntry): Buffer | null => {
@@ -132,6 +204,11 @@ export function createManifestResolver(roots: { repoRoot: string; corpusRoot: st
  * artifact resolves to `null`. That is the correct state for run19's six
  * private native artifacts, and it withholds their claims rather than
  * asserting anything about them.
+ *
+ * As with the manifest resolver, containment is real rather than lexical: a
+ * symlink planted inside a named evidence root is rejected, so an artifact
+ * cannot be smuggled in from outside the roots the caller named. The operator
+ * who supplies a private artifact directory needs those bytes to BE there.
  */
 export function createEvidenceResolver(evidenceRoots: readonly string[] = []): (binding: ArtifactBinding) => Buffer | null {
   if (evidenceRoots.length === 0) return () => null;

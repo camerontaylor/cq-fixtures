@@ -10,7 +10,7 @@
 // asserts the shape of the wiring rather than the old absence of it.
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -43,7 +43,7 @@ import {
   type CorrectableRow,
 } from '../runner/reporting/consumer.ts';
 import { PINNED_OPERATIONAL_STATUSES, PINNED_TERMINAL_CAUSES } from '../runner/reporting/vocabulary.ts';
-import { produceCorrectionAwareReport } from '../runner/reporting/producer.ts';
+import { createEvidenceResolver, createManifestResolver, produceCorrectionAwareReport } from '../runner/reporting/producer.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -1708,5 +1708,218 @@ describe('D22: the producer RUNTIME entry point', () => {
     // publishable claim. It does not pass as a zero.
     expect(gate.status).toBe(1);
     expect(gate.stderr).toContain('--require-publishable');
+  });
+});
+
+// ===========================================================================
+// D22: PATH CONTAINMENT for the producer's resolvers.
+//
+// The independent acceptance of 92f9b872 at integrated head a7059c5 blocked
+// acceptance on a source-correction defect: `resolveWithin` enforced
+// containment LEXICALLY only, and `readFileSync` follows symlinks. A link
+// planted inside a named root therefore redirected BOTH resolvers to bytes
+// outside it. The pin's SHA256 still applied, so the escape was caught by
+// nothing: the defect is that the named-root contract is about WHERE bytes may
+// be read from, and that was not enforced.
+//
+// These are negative regressions for that defect. They are DEVELOPMENT
+// regressions: not actual-route evidence, not factory evidence, and they
+// satisfy no campaign acceptance criterion.
+// ===========================================================================
+
+/** A named root plus a sibling "outside" directory holding decoy bytes. */
+function containmentWorkspace(): { root: string; outside: string } {
+  const base = mkdtempSync(join(tmpdir(), 'cq-pk14-containment-'));
+  const root = join(base, 'root');
+  const outside = join(base, 'outside');
+  mkdirSync(root, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  // A genuine in-root file, so "reads nothing" is distinguishable from
+  // "reads the right things and refuses the wrong ones".
+  mkdirSync(join(root, 'real'), { recursive: true });
+  writeFileSync(join(root, 'real', 'record.json'), 'in-root-record\n');
+  writeFileSync(join(outside, 'secret'), OUTSIDE_SECRET);
+  return { root, outside };
+}
+
+const OUTSIDE_SECRET = 'SECRET-OUTSIDE-ROOT-BYTES\n';
+
+/** A manifest entry for `path` inside the `repo` root. */
+function repoEntry(path: string): ManifestEntry {
+  return {
+    id: 'probe', kind: 'append-only-lifecycle-correction', root: 'repo', path,
+    sha256: '0'.repeat(64), canonicalId: '1'.repeat(64), authorityId: AUTHORITY, recordedAt: null,
+  };
+}
+
+describe('D22: producer resolvers refuse to read outside a named root', () => {
+  it('refuses a symlink component that redirects to outside bytes (both resolvers)', () => {
+    // The acceptance's exact negative probe: a link inside the root pointing
+    // at a sibling directory whose bytes live outside it.
+    const { root, outside } = containmentWorkspace();
+    symlinkSync(outside, join(root, 'link'), 'dir');
+    const resolveManifest = createManifestResolver({ repoRoot: root, corpusRoot: root });
+    const resolveEvidence = createEvidenceResolver([root]);
+
+    expect(resolveManifest(repoEntry('link/secret'))).toBeNull();
+    expect(resolveEvidence({ path: 'link/secret', sha256: '0'.repeat(64) })).toBeNull();
+    // Positive control: a genuine in-root file still reads through BOTH.
+    expect(resolveManifest(repoEntry('real/record.json'))?.toString()).toBe('in-root-record\n');
+    expect(resolveEvidence({ path: 'real/record.json', sha256: '0'.repeat(64) })?.toString()).toBe('in-root-record\n');
+  });
+
+  it('refuses a symlink at the FINAL component, not just in a parent directory', () => {
+    // The final component is the easiest case to get wrong: `..` and
+    // mid-path traversal both look clean, and only an lstat of the leaf catches
+    // a link that points straight out of the root.
+    const { root, outside } = containmentWorkspace();
+    symlinkSync(join(outside, 'secret'), join(root, 'link-to-secret'), 'file');
+    const resolveManifest = createManifestResolver({ repoRoot: root, corpusRoot: root });
+    const resolveEvidence = createEvidenceResolver([root]);
+
+    expect(resolveManifest(repoEntry('link-to-secret'))).toBeNull();
+    expect(resolveEvidence({ path: 'link-to-secret', sha256: '0'.repeat(64) })).toBeNull();
+  });
+
+  it('refuses a link that points at a directory only ONE level up', () => {
+    // `link -> ..` is the textbook escape: it leaves the root while every
+    // lexical component still reads as a plain relative name.
+    const base = mkdtempSync(join(tmpdir(), 'cq-pk14-updown-'));
+    const root = join(base, 'root');
+    mkdirSync(join(root, 'nested'), { recursive: true });
+    writeFileSync(join(base, 'secret'), OUTSIDE_SECRET);
+    symlinkSync('..', join(root, 'nested', 'up'), 'dir');
+
+    const resolveManifest = createManifestResolver({ repoRoot: root, corpusRoot: root });
+    const resolveEvidence = createEvidenceResolver([root]);
+    expect(resolveManifest(repoEntry('nested/up/secret'))).toBeNull();
+    expect(resolveEvidence({ path: 'nested/up/secret', sha256: '0'.repeat(64) })).toBeNull();
+  });
+
+  it('refuses a DANGLING symlink whose target does not exist', () => {
+    // A link to nowhere is still a link. It must be refused as a link, not
+    // quietly reported as an ordinary missing file, so the refusal cannot be
+    // confused with a legitimate unresolvable record.
+    const { root } = containmentWorkspace();
+    symlinkSync(join(root, 'does-not-exist'), join(root, 'dangling'), 'file');
+    const resolveManifest = createManifestResolver({ repoRoot: root, corpusRoot: root });
+    const resolveEvidence = createEvidenceResolver([root]);
+
+    expect(resolveManifest(repoEntry('dangling'))).toBeNull();
+    expect(resolveEvidence({ path: 'dangling', sha256: '0'.repeat(64) })).toBeNull();
+  });
+
+  it('accepts a symlinked ROOT itself, because the operator named it', () => {
+    // Containment is about the PINNED PATH, not about the caller's own choice
+    // of where to point the root. A symlinked root resolves to its target and
+    // that canonical directory becomes the boundary; an in-root file under it
+    // must still read, or a legitimate deployment layout would break.
+    const { root } = containmentWorkspace();
+    const linkedRoot = join(root, '..', 'linked-root');
+    symlinkSync(root, linkedRoot, 'dir');
+    const resolveManifest = createManifestResolver({ repoRoot: linkedRoot, corpusRoot: linkedRoot });
+    const resolveEvidence = createEvidenceResolver([linkedRoot]);
+
+    expect(resolveManifest(repoEntry('real/record.json'))?.toString()).toBe('in-root-record\n');
+    expect(resolveEvidence({ path: 'real/record.json', sha256: '0'.repeat(64) })?.toString()).toBe('in-root-record\n');
+    // And containment still holds relative to the canonical boundary.
+    symlinkSync(join(root, '..', 'outside'), join(root, 'escape'), 'dir');
+    expect(resolveManifest(repoEntry('escape/secret'))).toBeNull();
+  });
+
+  it('still refuses absolute paths and `..` traversal, and reports absent files as null', () => {
+    const { root } = containmentWorkspace();
+    const resolveManifest = createManifestResolver({ repoRoot: root, corpusRoot: root });
+    const resolveEvidence = createEvidenceResolver([root]);
+    expect(resolveManifest(repoEntry('/etc/passwd'))).toBeNull();
+    expect(resolveManifest(repoEntry('../outside/secret'))).toBeNull();
+    expect(resolveManifest(repoEntry(''))).toBeNull();
+    expect(resolveEvidence({ path: '../outside/secret', sha256: '0'.repeat(64) })).toBeNull();
+    // A genuinely absent in-root file is unresolvable, not an escape and not
+    // an empty read.
+    expect(resolveManifest(repoEntry('real/absent.json'))).toBeNull();
+  });
+
+  it('reports a symlinked record as UNVERIFIABLE, never as matching bytes', () => {
+    // End to end through the producer: a pin whose path is a symlink to
+    // outside bytes cannot verify, so the record is not believed and no claim
+    // is published from it. The outside bytes are never returned.
+    const { root, outside } = containmentWorkspace();
+    const record = producerRecord();
+    const recordBytes = JSON.stringify(record, null, 2);
+    writeFileSync(join(outside, 'run19-lifecycle-correction.json'), recordBytes);
+    symlinkSync(join(outside, 'run19-lifecycle-correction.json'), join(root, 'linked-record.json'), 'file');
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify({
+      schemaVersion: 1,
+      approvedAuthorities: [AUTHORITY],
+      entries: [{
+        id: 'linked', kind: 'append-only-lifecycle-correction', root: 'repo' as const, path: 'linked-record.json',
+        sha256: sha256(recordBytes), canonicalId: canonicalRecordHash(record), authorityId: AUTHORITY, recordedAt: null,
+      }],
+    }, null, 2));
+
+    const report = produceCorrectionAwareReport({
+      manifestPath: join(root, 'manifest.json'),
+      repoRoot: root,
+      corpusRoot: null,
+      runs: [{ runId: RUN19 }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+    });
+    expect(report.manifest.unverified.find((entry) => entry.id === 'linked')?.status).toBe('unresolvable');
+    expect(report.pinnedOk).toBe(false);
+    expect(report.runs[0]!.publishable).toBe(false);
+    expect(report.runs[0]!.rateClaim.value).toBeNull();
+  });
+
+  it('preserves hash verification and exclusive writes after the fix', () => {
+    // The correction must not have disturbed the behaviour that was already
+    // accepted: a verified pin still qualifies, and a second producing run
+    // still writes nothing over existing bytes.
+    const dir = producerWorkspace();
+    const { corpus, evidence, out, rowsPath, projectionPath, rowsBytes, projectionBytes } = seededProducer(dir);
+    const options = {
+      manifestPath: join(corpus, 'manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: corpus,
+      evidenceRoots: [evidence],
+      runs: [{ runId: RUN19, rowsPath, originalPath: projectionPath }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+      adapter: { terminalCause: 'unknown', operationalStatus: 'interrupted', completionRows: [{ operationalStatus: 'complete' }] },
+    };
+
+    const first = produceCorrectionAwareReport({ ...options, outDir: out });
+    // Hash verification intact: 7 pins of real bytes still qualify, and the
+    // corrected rate is still recomputed rather than the historic literal.
+    expect(first.pinnedOk, JSON.stringify(first.manifest.unverified)).toBe(true);
+    expect(first.runs[0]!.publishable).toBe(true);
+    expect(first.runs[0]!.reaggregation.correctedCompletionRate).toBe(0);
+    expect(first.outputs).toHaveLength(3);
+
+    // Exclusive write intact: a second run writes nothing and changes nothing.
+    const second = produceCorrectionAwareReport({ ...options, outDir: out });
+    expect(second.outputs).toEqual([]);
+    expect(readFileSync(rowsPath, 'utf8')).toBe(rowsBytes);
+    expect(readFileSync(projectionPath, 'utf8')).toBe(projectionBytes);
+  });
+
+  it('still reads the REAL repository and corpus pins through the fixed resolver', () => {
+    // The fix must not have broken the production path: the real repo-rooted
+    // run18 audit lives at runner/boundary/evidence/fallback/... and is
+    // several directories deep, which is exactly what a naive containment
+    // check gets wrong.
+    const report = produceCorrectionAwareReport({
+      manifestPath: join(REPO_ROOT, 'runner/reporting/corrections.manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: null,
+      runs: [{ runId: RUN18 }, { runId: RUN19 }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+    });
+    expect(report.manifest.verified).toContain('run18-retention-audit');
+    // The corpus was not supplied, so those records are unresolved — which is
+    // the fail-closed result, not a containment failure.
+    for (const entry of report.manifest.unverified) expect(entry.status).toBe('unresolvable');
   });
 });

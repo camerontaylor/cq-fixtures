@@ -1,12 +1,13 @@
 /** Trusted visible-only launcher for the configured ZCode GLM ACP route. */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { resolveNativeLaunchInventory } from './inventory.ts';
-import { readExecutableVersion } from './launch-inventory.ts';
+import { readExecutableVersion, resolveLaunchExecutable } from './launch-inventory.ts';
 import { launchEvidenceStatus, type NativeLaunchEvidence } from './process.ts';
-import { assertOutsideGlmBlackout, ZcodeAcpDriver, type ZcodeAcpOptions } from './zcode.ts';
+import { AcpSpawnCommandRejected, assertOutsideGlmBlackout, ZcodeAcpDriver, type ZcodeAcpOptions } from './zcode.ts';
 import type { VisibleG1Route } from './run-visible-g1.ts';
 
 const ENVIRONMENT_NAMES = ['HOME', 'PATH', 'TMPDIR', 'XDG_CONFIG_HOME'];
@@ -31,7 +32,8 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
     throw new Error('configured ZCode GLM-5.3-Flash high/yolo profile was not found in the safe Paseo inventory');
   }
 
-  const executable = 'zcode-acp';
+  const resolvedExecutable = readResolvedZcodeExecutable();
+  const executable = resolvedExecutable;
   // Ask the configured launcher itself. The Paseo path may resolve to a mise
   // shim whose own version is unrelated to the ZCode ACP application.
   const version = readExecutableVersion(executable);
@@ -45,19 +47,7 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
     isolation: 'disabled',
     heldOut: false,
   };
-  const spawnAcp: NonNullable<ZcodeAcpOptions['spawn']> = ({ command, args, cwd, env }) => {
-    if (command !== executable || args.length !== 1 || args[0] !== 'server') {
-      throw new Error('ZCode ACP attempted an unconfigured command or argument vector');
-    }
-    const allowedEnv = Object.fromEntries(ENVIRONMENT_NAMES.flatMap((name) => {
-      const value = env[name] ?? process.env[name];
-      return value === undefined ? [] : [[name, value]];
-    }));
-    return spawn(command, [...args], {
-      cwd, env: allowedEnv, stdio: ['pipe', 'pipe', 'pipe'],
-      detached: process.platform !== 'win32', windowsHide: true,
-    });
-  };
+  const spawnAcp = createVisibleG1AcpSpawnAdapter(executable);
   const driver = new ZcodeAcpDriver({
     executable,
     profile: profile.label,
@@ -80,4 +70,36 @@ export async function createVisibleG1Driver(input: { route: VisibleG1Route; outp
     },
     launchInventory: inventory,
   };
+}
+
+/** Resolve the configured launcher once and require a canonical executable path. */
+export function readResolvedZcodeExecutable(): string {
+  const resolved = readExecutablePath('zcode-acp');
+  if (!isAbsolute(resolved)) throw new Error('configured ZCode ACP executable did not resolve to an absolute installed path');
+  return realpathSync(resolved);
+}
+
+/** Exact command/argv guard used by the real pinned AcpDriver spawn callback. */
+export function createVisibleG1AcpSpawnAdapter(expectedExecutable: string): NonNullable<ZcodeAcpOptions['spawn']> {
+  if (!isAbsolute(expectedExecutable)) throw new Error('visible GLM ACP executable must be an absolute path');
+  const canonicalExecutable = realpathSync(expectedExecutable);
+  return ({ command, args, cwd, env }) => {
+    if (command !== canonicalExecutable || args.length !== 1 || args[0] !== 'server') {
+      throw new AcpSpawnCommandRejected();
+    }
+    const allowedEnv = Object.fromEntries(ENVIRONMENT_NAMES.flatMap((name) => {
+      const value = env[name] ?? process.env[name];
+      return value === undefined ? [] : [[name, value]];
+    }));
+    return spawn(canonicalExecutable, ['server'], {
+      cwd, env: allowedEnv, stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32', windowsHide: true,
+    });
+  };
+}
+
+// Keep executable resolution isolated so the adapter never hands a PATH token
+// to the pinned ACP driver after resolving the effective profile.
+function readExecutablePath(command: string): string {
+  return resolveLaunchExecutable(command);
 }

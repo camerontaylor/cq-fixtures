@@ -24,6 +24,22 @@ export interface ZcodeAcpOptions {
   launchEvidence?: NativeLaunchEvidence;
 }
 
+/** Launch evidence returned through the additive S1 ObservedDriver seam. */
+export interface ZcodeLaunchEvidenceRecord {
+  identity: InvocationIdentity;
+  status: 'spawn-observed' | 'no-spawn-observed' | 'unknown';
+  source: string;
+  observedAt: string;
+}
+
+/** Thrown only by a trusted adapter's exact pre-spawn executable/argv guard. */
+export class AcpSpawnCommandRejected extends Error {
+  constructor() {
+    super('ZCode ACP command did not match the resolved executable and fixed server argument');
+    this.name = 'AcpSpawnCommandRejected';
+  }
+}
+
 /** ZCode's configured native ACP server, supervised by the toolkit process ladder. */
 export class ZcodeAcpDriver extends ObservedNativeDriver {
   private readonly acp: Pick<Driver, 'run'>;
@@ -35,6 +51,8 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
   private readonly admittedSpawnConfigured: boolean;
   private readonly launchEvidence: NativeLaunchEvidence | undefined;
   private activeChild: ChildProcess | undefined;
+  private activeLaunchIdentity: InvocationIdentity | undefined;
+  private readonly launchEvidenceByInvocation = new Map<string, ZcodeLaunchEvidenceRecord>();
 
   constructor(options: ZcodeAcpOptions = {}) {
     const executable = options.executable ?? 'zcode-acp';
@@ -51,9 +69,29 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
       command: [executable, 'server'], termGraceMs: 300, killGraceMs: options.killGraceMs ?? 1_000,
       sessionsDir: sessionsDirectory,
       ...(options.spawn ? { spawn: (input) => {
-        const child = options.spawn!(input);
-        this.activeChild = child;
-        return child;
+        const spawnIdentity = this.activeLaunchIdentity;
+        try {
+          const child = options.spawn!(input);
+          this.activeChild = child;
+          let spawnObserved = false;
+          child.once('spawn', () => {
+            spawnObserved = true;
+            this.recordLaunchEvidence('spawn-observed', 'node:child_process.ChildProcess:spawn-event-after-command-validation', spawnIdentity);
+          });
+          child.once('error', () => {
+            if (!spawnObserved) {
+              this.recordLaunchEvidence('no-spawn-observed', 'node:child_process.ChildProcess:error-before-spawn-event', spawnIdentity);
+            }
+          });
+          return child;
+        } catch (error) {
+          if (error instanceof AcpSpawnCommandRejected) {
+            this.recordLaunchEvidence('no-spawn-observed', 'visible-g1-glm-driver:spawn-command-guard-before-child_process.spawn', spawnIdentity);
+          } else {
+            this.recordLaunchEvidence('unknown', 'zcode-acp-driver:spawn-adapter-threw-before-child-return', spawnIdentity);
+          }
+          throw error;
+        }
       } } : {}),
     });
     this.admittedSpawnConfigured = Boolean(options.driver || (options.spawn && options.launchEvidence?.admissionId.trim()));
@@ -65,9 +103,20 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
     this.killGraceMs = options.killGraceMs ?? 1_000;
   }
 
+  /** Additive S1 evidence seam; a worker result is not launch evidence. */
+  getLaunchEvidence(invocationId: string): ZcodeLaunchEvidenceRecord | undefined {
+    const evidence = this.launchEvidenceByInvocation.get(invocationId);
+    return evidence ? { ...evidence, identity: { ...evidence.identity } } : undefined;
+  }
+
   protected async runObserved(invocation: OpInvocation, identity: InvocationIdentity): Promise<WorkerResult> {
     const startedAt = new Date().toISOString();
     const observation = this.newObservation(identity, invocation, startedAt);
+    this.activeLaunchIdentity = { ...identity };
+    this.launchEvidenceByInvocation.set(identity.invocationId, {
+      identity: { ...identity }, status: 'unknown',
+      source: 'zcode-acp-driver:no-authoritative-child-process-event-yet', observedAt: startedAt,
+    });
     observation.model.configuredTarget = 'zcode/GLM-5.3-Flash';
     observation.model.settings.launchedTarget = { value: 'zcode/GLM-5.3-Flash', source: 'ZcodeAcpDriver configuration', status: 'configured' };
     observation.model.settings.effort = { value: 'high', source: 'Paseo ZCode GLM-5.3-Flash profile', status: 'requested-unobservable' };
@@ -79,7 +128,7 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
         throw new Error('ZCode ACP requires a parent-admitted boundary spawn adapter');
       }
       if (this.launchEvidence) {
-        observation.model.settings.launch = { value: this.launchEvidence, source: 'parent-admitted ACP spawn', status: launchEvidenceStatus(this.launchEvidence) };
+        observation.model.settings.launchAdmission = { value: this.launchEvidence, source: 'parent-admitted ACP spawn', status: launchEvidenceStatus(this.launchEvidence) };
       }
       assertOutsideGlmBlackout();
       const session = await resolveNativeSession(
@@ -114,23 +163,35 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
       } finally {
         const child = this.activeChild;
         this.activeChild = undefined;
-        const stopped = child ? await stopAndWait(child, this.killGraceMs) : true;
-        this.reportProcessTree(identity, stopped);
-        observation.model.settings.processTree = {
-          value: stopped, source: 'native ACP process-group stop proof',
-          status: stopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden',
-        };
-        if (!stopped) throw new Error('ZCode ACP process tree stop could not be proven; candidate capture is forbidden');
-      }
-        if (ladder.outcome === 'threw') throw ladder.error;
-        if (ladder.outcome === 'killed') {
-          observation.terminal.cause = 'hard-timeout-killed';
-          observation.terminal.cancelled = true;
-          observation.timing.stages.killLadderMs = ladder.elapsedMs;
-          throw new Error(`ZCode ACP exceeded hard wall bound (${ladder.elapsedMs}ms)`);
+        if (child) {
+          observation.model.settings.launch = {
+            value: this.launchEvidence ?? null,
+            source: 'native ACP ChildProcess returned by the validated spawn adapter',
+            status: 'spawn-returned',
+          };
+          const stopped = await stopAndWait(child, this.killGraceMs);
+          this.reportProcessTree(identity, stopped);
+          observation.model.settings.processTree = {
+            value: stopped, source: 'native ACP process-group stop proof',
+            status: stopped ? 'stopped-and-settled' : 'stop-unproven-capture-forbidden',
+          };
+          if (!stopped) throw new Error('ZCode ACP process tree stop could not be proven; candidate capture is forbidden');
+        } else {
+          this.reportProcessTree(identity, false);
+          observation.model.settings.processTree = {
+            value: null, source: 'native ACP process-group stop proof', status: 'no-child-process-receipt',
+          };
         }
-        const worker: WorkerResult = ladder.value;
-        observation.timing.stages.transportMs = ladder.elapsedMs;
+      }
+      if (ladder.outcome === 'threw') throw ladder.error;
+      if (ladder.outcome === 'killed') {
+        observation.terminal.cause = 'hard-timeout-killed';
+        observation.terminal.cancelled = true;
+        observation.timing.stages.killLadderMs = ladder.elapsedMs;
+        throw new Error(`ZCode ACP exceeded hard wall bound (${ladder.elapsedMs}ms)`);
+      }
+      const worker: WorkerResult = ladder.value;
+      observation.timing.stages.transportMs = ladder.elapsedMs;
       observation.model.observed = worker.model
         ? { value: worker.model, source: 'ACP config_option_update', status: 'observed' }
         : { value: null, source: null, status: 'not-reported' };
@@ -145,7 +206,22 @@ export class ZcodeAcpDriver extends ObservedNativeDriver {
     } catch (error) {
       if (!observation.timing.endedAt) this.failObservation(observation, error);
       throw error;
+    } finally {
+      this.activeLaunchIdentity = undefined;
+      const evidence = this.launchEvidenceByInvocation.get(identity.invocationId);
+      if (evidence?.status === 'unknown') {
+        evidence.source = 'zcode-acp-driver:invocation-settled-without-authoritative-child-process-event';
+        evidence.observedAt = new Date().toISOString();
+      }
     }
+  }
+
+  private recordLaunchEvidence(status: ZcodeLaunchEvidenceRecord['status'], source: string, boundIdentity = this.activeLaunchIdentity): void {
+    const identity = boundIdentity;
+    if (!identity) return;
+    this.launchEvidenceByInvocation.set(identity.invocationId, {
+      identity: { ...identity }, status, source, observedAt: new Date().toISOString(),
+    });
   }
 }
 

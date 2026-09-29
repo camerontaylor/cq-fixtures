@@ -143,7 +143,7 @@ function recoveryFactoryFixture() {
   return {plan,privateRoot,authRoot,taskRoot,callsPath,dataPath};
 }
 it('real recovery factory retains non-Git auth and requires Git candidate inventory',async()=>{
-  const f=recoveryFactoryFixture();const runtime=await import('../runner/boundary/final-g1-runtime.mjs');
+  const f=recoveryFactoryFixture();const runtime=await import(new URL('../runner/boundary/final-g1-runtime.mjs',import.meta.url).href);
   const owner=await runtime.createPreparedFinalG1Runtime(f.plan,{verify:false});await owner.cleanup();
   const receipt=JSON.parse(readFileSync(join(f.privateRoot,'recovery-receipt.json'),'utf8'));
   expect(receipt.complete).toBe(true);expect(receipt.resources).toContainEqual({kind:'private-tree',path:f.authRoot,inventoryHash:snapshotTask(f.authRoot,false,false).inventoryHash});
@@ -153,7 +153,7 @@ it('real recovery factory retains non-Git auth and requires Git candidate invent
 },30000);
 it('real prepared entrypoint awaits cleanup on native module load failure and preserves that cause',async()=>{
   const f=recoveryFactoryFixture();const privateInputPath=join(f.privateRoot,'input.json');writeFileSync(privateInputPath,JSON.stringify({plan:f.plan}),{mode:0o600});
-  const runtime=await import('../runner/boundary/final-g1-runtime.mjs');const assignmentId='final-profile-g1-'+f.plan.runId;
+  const runtime=await import(new URL('../runner/boundary/final-g1-runtime.mjs',import.meta.url).href);const assignmentId='final-profile-g1-'+f.plan.runId;
   await expect(runtime.executePreparedFinalG1Assignment({privateInputPath,identity:{...identity,assignmentId,attemptId:assignmentId+'-attempt-1'},preregister:async()=>{}})).rejects.toThrow(/run-final-profile-g1/);
   const receipt=JSON.parse(readFileSync(join(f.privateRoot,'recovery-receipt.json'),'utf8'));expect(receipt.complete).toBe(true);
   expect(readFileSync(f.callsPath,'utf8').split('\n').filter(x=>x==='["close"]').length).toBeGreaterThanOrEqual(2);

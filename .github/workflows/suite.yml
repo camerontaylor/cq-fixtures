@@ -195,10 +195,8 @@ jobs:
         # headless `claude` CLI (installed below); the acp lane spawns the
         # zcode-acp-server harness (installed below, version-pinned).
         #
-        # Budget by TOKENS, not USD: the served GLM id is priced in the
-        # interim toolkit pin and deepseek pricing is not assumed; a token cap
-        # binds alone on every cell, keeping the matrix dispatch-safe. The cap
-        # is PER CASE (--max-tokens-per-case, WB-1.6): the retired flat
+        # The per-case token cap (--max-tokens-per-case, WB-1.6) and D9 USD
+        # ceiling below bind every cell. The retired flat token cap of
         # 200000 was per suite INVOCATION and silently gated the back half of
         # a 40-case suite into "no row" absences.
         #
@@ -708,17 +706,18 @@ jobs:
             # (while-read); a stdin-reading driver transport (the subprocess
             # or acp lane reading a prompt from stdin, say) would otherwise
             # eat the remaining suite paths mid-run.
-            # WB-1.6 per-case token budget. The runner multiplies this by the
-            # suite's loaded case count (--max-tokens-per-case), so the cap
-            # scales with suite size instead of gating a 40-case suite's tail
-            # after ~5k tokens/case. 60000 = 5x the worst observed 2026-09-18
-            # per-case total (10441 tokens: deepseek ai-sdk fixer, 52203/5,
-            # all four governor-counted fields), rounded up; those runs were
-            # ERRORED partial tool loops, so the observed figure is a LOWER
-            # bound and the headroom covers a completed 8-step loop. Control:
-            # the healthy glm classifier cell spent 776 tokens/case (7756/10)
-            # — ~77x under this budget. Micro: fixer 5x60000=300000,
-            # classifier 10x60000=600000, both above the retired flat 200000.
+            # WB-1.6 / issue #30: the runner counts cacheRead in its token
+            # governor. The WB-1 claude-agent and subprocess fixer cases
+            # consumed ~300k-470k cacheRead each, so 60k/case gated their
+            # suite tails. Give only those CLI fixer lanes 600k/case (above
+            # the observed cacheRead plus input/output); retain 60k/case for
+            # all other role/driver cells. The D9 USD cap below still binds
+            # every invocation and prevents a higher token cap from raising
+            # the accepted third-party spend envelope.
+            token_cap_per_case=60000
+            if [ "${role}" = "fixer-worker" ] && { [ "${MATRIX_DRIVER}" = "claude-agent" ] || [ "${MATRIX_DRIVER}" = "subprocess" ]; }; then
+              token_cap_per_case=600000
+            fi
             # W6.4 USD ceiling: the cell's explicit D9 per-case cap rides
             # EVERY invocation — the runner binds it at the invocation grain
             # and as the cumulative run cap (W6.2), so an overspend is a
@@ -730,7 +729,7 @@ jobs:
               --driver-name "${MATRIX_DRIVER}" \
               --model "${MATRIX_MODEL}" \
               --provider "${MATRIX_PROVIDER}" \
-              --max-tokens-per-case 60000 \
+              --max-tokens-per-case "${token_cap_per_case}" \
               --max-usd-per-case "${MATRIX_USD_PER_CASE}" \
               --journal "${out_dir}/journal" \
               "${probe_extra[@]}" \

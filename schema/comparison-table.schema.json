@@ -63,7 +63,7 @@
           },
           "minimumDetectableEffect": { "type": "number", "minimum": 0 },
           "noiseBand": { "type": "number", "minimum": 0 },
-          "interpretation": { "enum": ["noise", "signal", "descriptive"] },
+          "interpretation": { "enum": ["within-noise", "not-distinguishable", "signal", "descriptive"] },
           "coverageParity": { "type": "boolean" }
         }
       }
@@ -235,6 +235,17 @@
               "lower": { "type": "number", "minimum": 0, "maximum": 1 },
               "upper": { "type": "number", "minimum": 0, "maximum": 1 },
               "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          },
+          "caseScoreCI": {
+            "type": "object", "additionalProperties": false,
+            "required": ["lower", "upper", "confidence", "cases"],
+            "description": "W6.5 case-clustered Student-t interval over complete repeated case means; absent for historical rows and incomplete repeats.",
+            "properties": {
+              "lower": { "type": "number", "minimum": 0, "maximum": 1 },
+              "upper": { "type": "number", "minimum": 0, "maximum": 1 },
+              "confidence": { "const": 0.95 },
+              "cases": { "type": "integer", "minimum": 2 }
             }
           },
           "expectedCases": {

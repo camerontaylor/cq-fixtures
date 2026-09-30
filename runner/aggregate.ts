@@ -23,6 +23,8 @@ export interface ResultRow {
   case?: string;
   /** W6.5: one-based repeat ordinal within a k-repeat matrix. */
   repeat?: number;
+  /** W6.5: requested repeat count, needed to detect an entirely missing repeat. */
+  repeatCount?: number;
   model: string;
   driver: string;
   outcome: { score: number; passed: number; total: number };
@@ -135,6 +137,8 @@ export interface ComparisonTableCell {
    * Absent on old tables and on small-n cells.
    */
   scoreCI?: { lower: number; upper: number; confidence: number };
+  /** W6.5: case-clustered t interval over complete k-repeat case means. */
+  caseScoreCI?: { lower: number; upper: number; confidence: 0.95; cases: number };
   costUSD: number | null;
   costBasis?: 'billed' | 'modeled';
   wallTimeMs: number;
@@ -165,7 +169,7 @@ export interface PairedComparison {
   minimumDetectableEffect: number;
   /** Deltas within this absolute band are labelled noise. */
   noiseBand: number;
-  interpretation: 'noise' | 'signal' | 'descriptive';
+  interpretation: 'within-noise' | 'not-distinguishable' | 'signal' | 'descriptive';
   coverageParity: boolean;
 }
 
@@ -209,6 +213,52 @@ function round6(n: number): number {
 export const WILSON_MIN_N = 30;
 /** 95% two-sided normal quantile for the Wilson score interval. */
 export const WILSON_Z_95 = 1.959963984540054;
+
+// Student-t quantiles are computed numerically so the case count, rather than
+// the much larger probe count, sets the degrees of freedom. The fixed Simpson
+// grid is ample at the small n of fixture suites (checked against t tables).
+function logGamma(z: number): number {
+  const p = [0.9999999999998099, 676.5203681218851, -1259.1392167224028,
+    771.3234287776531, -176.6150291621406, 12.507343278686905,
+    -0.13857109526572012, 9.984369578019572e-6, 1.5056327351493116e-7];
+  if (z < 0.5) return Math.log(Math.PI) - Math.log(Math.sin(Math.PI * z)) - logGamma(1 - z);
+  z -= 1;
+  let x = p[0]!;
+  for (let i = 1; i < p.length; i++) x += p[i]! / (z + i);
+  const t = z + 7.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
+
+export function studentTQuantile(probability: number, degrees: number): number {
+  if (!(probability > 0.5 && probability < 1) || degrees < 1) throw new Error('invalid Student-t quantile');
+  const norm = Math.exp(logGamma((degrees + 1) / 2) - logGamma(degrees / 2)) /
+    Math.sqrt(degrees * Math.PI);
+  const pdf = (x: number) => norm * (1 + x * x / degrees) ** (-(degrees + 1) / 2);
+  const cdf = (x: number) => {
+    const intervals = 512;
+    const h = x / intervals;
+    let sum = pdf(0) + pdf(x);
+    for (let i = 1; i < intervals; i++) sum += (i % 2 ? 4 : 2) * pdf(i * h);
+    return 0.5 + sum * h / 3;
+  };
+  let low = 0;
+  let high = 1;
+  while (cdf(high) < probability) high *= 2;
+  for (let i = 0; i < 40; i++) {
+    const middle = (low + high) / 2;
+    if (cdf(middle) < probability) low = middle;
+    else high = middle;
+  }
+  return (low + high) / 2;
+}
+
+function estimand(row: ResultRow): number | undefined {
+  if (row.role === 'review-classifier') return row.outcome.score;
+  // The legacy two-probe outcome mixes fixing and schema fidelity. W6.5
+  // fixes are measured by the check rerun only; older rows lack that probe.
+  return row.probes?.find((probe) => probe.kind === 'check-rerun')?.passed ? 1 :
+    row.probes?.some((probe) => probe.kind === 'check-rerun') ? 0 : undefined;
+}
 
 /**
  * F6 (WB-5.2c): Wilson score interval for passed/total at the given z,
@@ -468,7 +518,7 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         : {}),
       ...(acc.budgetStops > 0 ? { budgetStops: acc.budgetStops } : {}),
       ...(acc.fpTotal > 0 ? { fpRate: acc.fpWrong / acc.fpTotal, fpN: acc.fpTotal } : {}),
-      ...(acc.total >= WILSON_MIN_N
+      ...(acc.total >= WILSON_MIN_N && !rows.some((r) => r.repeatCount !== undefined)
         ? { scoreCI: { ...wilsonInterval(acc.passed, acc.total), confidence: 0.95 } }
         : {}),
       wallTimeMs: acc.wallTimeMs,
@@ -481,62 +531,123 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       },
     });
   }
+  for (const cell of out) {
+    const cellRows = rows.filter((r) => r.model === cell.model && r.driver === cell.driver &&
+      (r.variant ?? 'default') === (cell.variant ?? 'default'));
+    const means = completeCaseMeans(cellRows);
+    if (means && means.size >= 2 && means.size === cell.expectedCases) {
+      const values = [...means.values()];
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1);
+      const half = studentTQuantile(0.975, values.length - 1) * Math.sqrt(variance / values.length);
+      cell.caseScoreCI = { lower: Math.max(0, mean - half), upper: Math.min(1, mean + half),
+        confidence: 0.95, cases: values.length };
+    }
+  }
   const comparisons = pairedComparisons(rows, out);
   return { role, suite, generatedAt: new Date().toISOString(), cells: out,
     ...(comparisons.length ? { comparisons } : {}) };
+}
+
+function completeCaseMeans(rows: readonly ResultRow[]): Map<string, number> | undefined {
+  const k = rows[0]?.repeatCount;
+  if (k === undefined || k < 2 || rows.some((r) => r.repeatCount !== k)) return undefined;
+  const cases = new Map<string, ResultRow[]>();
+  for (const row of rows) {
+    if (row.case === undefined || row.stopCause !== undefined || row.invalid !== undefined) continue;
+    const bucket = cases.get(row.case) ?? [];
+    bucket.push(row);
+    cases.set(row.case, bucket);
+  }
+  const means = new Map<string, number>();
+  for (const [id, bucket] of cases) {
+    if (bucket.length !== k || bucket.some((r) => estimand(r) === undefined)) continue;
+    const actual = bucket.map((r) => r.repeat).sort((a, b) => (a ?? 0) - (b ?? 0));
+    if (!actual.every((repeat, i) => repeat === i + 1)) continue;
+    means.set(id, bucket.reduce((sum, r) => sum + estimand(r)!, 0) / k);
+  }
+  return means;
+}
+
+function observedCaseMeans(rows: readonly ResultRow[]): Map<string, number> {
+  const grouped = new Map<string, ResultRow[]>();
+  for (const row of rows) if (row.case !== undefined && row.stopCause === undefined &&
+    row.invalid === undefined && estimand(row) !== undefined) {
+    const bucket = grouped.get(row.case) ?? [];
+    bucket.push(row);
+    grouped.set(row.case, bucket);
+  }
+  const means = new Map<string, number>();
+  for (const [id, bucket] of grouped) if (bucket.length >= 2) {
+    means.set(id, bucket.reduce((sum, row) => sum + estimand(row)!, 0) / bucket.length);
+  }
+  return means;
 }
 
 /** Pair case means, then estimate uncertainty across cases rather than rows. */
 export function pairedComparisons(rows: readonly ResultRow[], cells: readonly ComparisonTableCell[]): PairedComparison[] {
   const key = (r: Pick<ResultRow, 'model' | 'driver' | 'variant'>) =>
     `${r.model}\n${r.driver}\n${r.variant ?? 'default'}`;
-  const byCell = new Map<string, Map<string, ResultRow[]>>();
+  const byCell = new Map<string, ResultRow[]>();
   for (const row of rows) {
-    if (row.case === undefined || row.stopCause !== undefined || row.invalid !== undefined) continue;
-    const cases = byCell.get(key(row)) ?? new Map<string, ResultRow[]>();
-    const repeats = cases.get(row.case) ?? [];
-    repeats.push(row);
-    cases.set(row.case, repeats);
-    byCell.set(key(row), cases);
+    const bucket = byCell.get(key(row)) ?? [];
+    bucket.push(row);
+    byCell.set(key(row), bucket);
   }
   const result: PairedComparison[] = [];
   for (let i = 0; i < cells.length; i++) for (let j = i + 1; j < cells.length; j++) {
     const a = cells[i]!;
     const b = cells[j]!;
-    const ac = byCell.get(key(a));
-    const bc = byCell.get(key(b));
-    if (!ac || !bc) continue;
+    const ar = byCell.get(key(a));
+    const br = byCell.get(key(b));
+    if (!ar || !br || ar[0]?.repeatCount !== br[0]?.repeatCount) continue;
+    const completeA = completeCaseMeans(ar);
+    const completeB = completeCaseMeans(br);
+    const ac = completeA && completeA.size >= 2 ? completeA : observedCaseMeans(ar);
+    const bc = completeB && completeB.size >= 2 ? completeB : observedCaseMeans(br);
     const shared = [...ac.keys()].filter((id) => bc.has(id)).sort();
-    const repeatsPerCase = Math.min(...shared.flatMap((id) => [ac.get(id)!.length, bc.get(id)!.length]));
-    if (shared.length < 2 || repeatsPerCase < 2) continue;
-    const differences = shared.map((id) => {
-      const mean = (rs: ResultRow[]) => rs.reduce((sum, r) => sum + r.outcome.score, 0) / rs.length;
-      return mean(bc.get(id)!) - mean(ac.get(id)!);
-    });
+    const repeatsPerCase = Math.min(...shared.flatMap((id) => [
+      ar.filter((r) => r.case === id && r.stopCause === undefined).length,
+      br.filter((r) => r.case === id && r.stopCause === undefined).length,
+    ]));
+    if (shared.length < 2) continue;
+    const differences = shared.map((id) => bc.get(id)! - ac.get(id)!);
     const delta = differences.reduce((sum, d) => sum + d, 0) / differences.length;
     const variance = differences.reduce((sum, d) => sum + (d - delta) ** 2, 0) / (differences.length - 1);
     const standardError = Math.sqrt(variance / differences.length);
-    const noiseBand = WILSON_Z_95 * standardError;
-    // A case with only one of k repeats is incomplete evidence, even if an
-    // earlier repeat made the W6.2 distinct-case coverage counter reach 1.
-    const completeRepeats = shared.every((id) => {
-      const left = ac.get(id)!;
-      const right = bc.get(id)!;
-      return left.length === repeatsPerCase && right.length === repeatsPerCase &&
-        left.every((r) => r.repeat !== undefined) && right.every((r) => r.repeat !== undefined) &&
-        new Set(left.map((r) => r.repeat)).size === repeatsPerCase &&
-        left.map((r) => r.repeat).sort().join(',') === right.map((r) => r.repeat).sort().join(',');
-    });
-    const coverageParity = isAtCoverageParity(a, b) && completeRepeats &&
+    const t95 = studentTQuantile(0.975, shared.length - 1);
+    const t80 = studentTQuantile(0.8, shared.length - 1);
+    const confidenceHalf = t95 * standardError;
+    const withinVariance = (cellRows: ResultRow[]) => {
+      const grouped = new Map<string, number[]>();
+      for (const r of cellRows) if (r.case !== undefined && shared.includes(r.case) &&
+        r.stopCause === undefined && estimand(r) !== undefined) {
+        const values = grouped.get(r.case) ?? [];
+        values.push(estimand(r)!);
+        grouped.set(r.case, values);
+      }
+      let sum = 0;
+      for (const values of grouped.values()) {
+        const mean = values.reduce((x, y) => x + y, 0) / values.length;
+        sum += values.reduce((x, y) => x + (y - mean) ** 2, 0) / (values.length - 1);
+      }
+      return sum / grouped.size;
+    };
+    const noiseBand = 2 * Math.sqrt((withinVariance(ar) + withinVariance(br)) / (repeatsPerCase * shared.length));
+    const coverageParity = isAtCoverageParity(a, b) &&
+      completeA?.size === a.expectedCases && completeB?.size === b.expectedCases &&
       shared.length === a.expectedCases && shared.length === b.expectedCases;
     result.push({
       baseline: { model: a.model, driver: a.driver, ...(a.variant ? { variant: a.variant } : {}) },
       candidate: { model: b.model, driver: b.driver, ...(b.variant ? { variant: b.variant } : {}) },
       cases: shared.length, repeatsPerCase, delta, standardError,
-      confidenceInterval: { lower: delta - noiseBand, upper: delta + noiseBand, confidence: 0.95 },
-      minimumDetectableEffect: (WILSON_Z_95 + 0.8416212335729143) * standardError,
+      confidenceInterval: { lower: delta - confidenceHalf, upper: delta + confidenceHalf, confidence: 0.95 },
+      minimumDetectableEffect: (t95 + t80) * standardError,
       noiseBand, coverageParity,
-      interpretation: !coverageParity ? 'descriptive' : Math.abs(delta) <= noiseBand ? 'noise' : 'signal',
+      interpretation: !coverageParity ? 'descriptive' :
+        Math.abs(delta) <= noiseBand ? 'within-noise' :
+          Math.abs(delta) < (t95 + t80) * standardError || Math.abs(delta) <= confidenceHalf
+            ? 'not-distinguishable' : 'signal',
     });
   }
   return result;

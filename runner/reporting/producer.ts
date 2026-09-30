@@ -45,7 +45,7 @@
 // PK00-owned campaign source manifest, and does not read a clock — the as-of
 // instant is always an explicit input.
 
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { aggregateCorrected, type ResultRow } from '../aggregate.ts';
@@ -105,6 +105,19 @@ export class ProducerError extends Error {
  * A path that does not exist, or that cannot be canonicalised, is `null` —
  * unresolvable, never an empty read and never a silent success.
  */
+/**
+ * The CANONICAL path of a pinned record, or null.
+ *
+ * This returns the fully resolved (`realpath`) path, never the lexical join.
+ * A lexical path is a NAME, and a name is re-interpreted by whoever reads it
+ * next; a canonical path names the exact object the checks below observed.
+ *
+ * What this function does NOT do is make the subsequent read safe. Checking a
+ * path and then reading that path by name is two steps, and anything that can
+ * change the filesystem between them can redirect the read. Use
+ * `readContainedWithin`, which validates and reads through a single verified
+ * descriptor, for anything that actually consumes bytes.
+ */
 function resolveWithin(root: string, relativePath: string): string | null {
   if (relativePath.length === 0) return null;
   if (isAbsolute(relativePath)) return null;
@@ -127,7 +140,95 @@ function resolveWithin(root: string, relativePath: string): string | null {
   const realRel = relative(base, real);
   if (realRel.length === 0 || realRel.startsWith('..') || isAbsolute(realRel)) return null;
 
-  return lexical;
+  // The CANONICAL path, so a caller that must report provenance names the
+  // object that was actually validated rather than the alias it arrived by.
+  return real;
+}
+
+/**
+ * Read a pinned record from inside a named root, fail-closed.
+ *
+ * This is the byte-consuming path, and it does NOT validate a path and then
+ * re-open that path by name. An earlier revision did exactly that, and it was
+ * exploitable: a deterministic probe that swapped an in-root directory for a
+ * symlink to an outside directory between the containment check and the
+ * `readFileSync` made the resolver return the outside bytes. `realpath` had
+ * already said the path was inside; the read simply did not go where
+ * `realpath` had looked. No SHA256 caught it either, because a hash check
+ * only says the BYTES match a pin - it does not say the bytes came from
+ * inside the root the caller named.
+ *
+ * The sequence is therefore:
+ *
+ *   1. canonicalise the root, and reject absolute paths, `..` escapes and any
+ *      symlinked path component (a symlinked ROOT is still accepted: the
+ *      operator named it, so its target is the boundary);
+ *   2. record the identity (device + inode) of the exact leaf, via `lstat`,
+ *      which does not follow the link it is inspecting;
+ *   3. open the leaf with `O_NOFOLLOW`, so the kernel refuses a leaf that is a
+ *      symlink AT THE MOMENT OF THE OPEN rather than at the moment of a check;
+ *   4. `fstat` the descriptor and require it to be a regular file whose
+ *      device and inode are the ones step 2 recorded. This is what covers a
+ *      MID-PATH directory swapped for a symlink: the redirect lands on a
+ *      different inode, and a different inode is refused. On a platform
+ *      without `O_NOFOLLOW` this identity check alone still catches a
+ *      symlinked leaf, because `lstat` reports the LINK's own inode while
+ *      `fstat` reports the TARGET's;
+ *   5. read from the descriptor. The bytes come from the inode that was
+ *      verified, so nothing that happens to the path afterwards can change
+ *      them.
+ *
+ * RESIDUAL LIMITS, stated honestly rather than claimed away:
+ *
+ *   * Node exposes no `openat`-style directory-relative traversal, so
+ *     mid-path components cannot each be opened with `O_NOFOLLOW`. They are
+ *     covered by the device+inode identity check, not by per-component
+ *     no-follow semantics.
+ *   * This defends the root boundary. It cannot defend a caller who supplies a
+ *     root, or evidence directories, that an attacker already controls: such a
+ *     caller can simply place the bytes where they were going to be read.
+ *   * A hardlink to the same inode is the same object and the same bytes, so
+ *     it is not an escape; a hardlink to a different file has a different
+ *     inode and is refused.
+ *   * Content written to the verified inode AFTER it is opened is still
+ *     content of that inode, and is exactly what the caller's pin hash is then
+ *     applied to. The pin, not this function, is what makes the bytes
+ *     trustworthy.
+ */
+function readContainedWithin(root: string, relativePath: string): Buffer | null {
+  const canonical = resolveWithin(root, relativePath);
+  if (canonical === null) return null;
+
+  // The identity of the leaf we are about to authorise, taken with lstat so a
+  // symlink reports its OWN inode and cannot masquerade as its target.
+  let expected: { dev: string; ino: string };
+  try {
+    const st = lstatSync(canonical);
+    if (!st.isFile()) return null;
+    expected = { dev: String(st.dev), ino: String(st.ino) };
+  } catch {
+    return null;
+  }
+
+  // O_NOFOLLOW is applied when the platform provides it; the identity check
+  // below is what makes correctness independent of that.
+  const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+  let fd: number;
+  try {
+    fd = openSync(canonical, constants.O_RDONLY | noFollow);
+  } catch {
+    return null;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return null;
+    if (String(st.dev) !== expected.dev || String(st.ino) !== expected.ino) return null;
+    return readFileSync(fd);
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** The canonical path of an existing file or directory, or null. */
@@ -181,13 +282,9 @@ export function createManifestResolver(roots: { repoRoot: string; corpusRoot: st
   return (entry: ManifestEntry): Buffer | null => {
     const root = entry.root === 'repo' ? roots.repoRoot : roots.corpusRoot;
     if (root === null || root === undefined) return null;
-    const target = resolveWithin(root, entry.path);
-    if (target === null) return null;
-    try {
-      return readFileSync(target);
-    } catch {
-      return null;
-    }
+    // Validate and read through one verified descriptor, never "check this
+    // path, then open this path again by name".
+    return readContainedWithin(root, entry.path);
   };
 }
 
@@ -214,13 +311,11 @@ export function createEvidenceResolver(evidenceRoots: readonly string[] = []): (
   if (evidenceRoots.length === 0) return () => null;
   return (binding: ArtifactBinding): Buffer | null => {
     for (const root of evidenceRoots) {
-      const target = resolveWithin(root, binding.path);
-      if (target === null) continue;
-      try {
-        return readFileSync(target);
-      } catch {
-        // Try the next named root; a miss is a miss, never a mismatch.
-      }
+      // Same single-descriptor discipline as the manifest resolver: a miss in
+      // this root is a miss, and a redirect out of it is a refusal, never a
+      // read of whatever the path points at now.
+      const bytes = readContainedWithin(root, binding.path);
+      if (bytes !== null) return bytes;
     }
     return null;
   };

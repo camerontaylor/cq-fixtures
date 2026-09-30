@@ -243,7 +243,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(preflight).toContain('GITHUB_STEP_SUMMARY');
     expect(preflight, 'the skip flag drives the eval gate').toContain('echo "skip=true" >> "${GITHUB_OUTPUT}"');
     expect(stepChunk('Eval cell —')).toContain(
-      "if: (matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true') && (github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver)",
+      "(matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true')",
     );
     // Cycle-2 review, exit-status discipline: ONLY the confirmed
     // no-agent-output class (3, with the timeout's 124 mapped in) skips —
@@ -566,6 +566,21 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(text).toContain("SNAPSHOT_PROFILE: ${{ github.event.inputs.profile || 'full' }}");
     expect(text).toContain('"${SNAPSHOT_PROFILE}" != "cli-fixer-proof"');
     expect(evalCell, 'unknown profiles fail loud').toContain('unknown profile');
+  });
+
+  it('W6.5 pilot bounds its two model cells and publishes paired evidence', () => {
+    const profile = text.slice(text.indexOf('\n      profile:\n'), text.indexOf('\npermissions:'));
+    expect(profile).toContain('- w65-pilot');
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell).toContain("matrix.cell.axis == 'model'");
+    expect(evalCell).toContain('w65-pilot) roots="suites/fixer-worker/micro"');
+    expect(evalCell).toContain('repeat_extra=(--repeats 3)');
+    expect(evalCell).toContain('--max-usd-per-case "${MATRIX_USD_PER_CASE}"');
+    expect(stepChunk('ACP headless auth preflight')).toContain("github.event.inputs.profile != 'w65-pilot'");
+    expect(stepChunk('Analyze paired matrix cells')).toContain('scripts/analyze-snapshot.mjs');
+    expect(stepChunk('Commit report snapshots')).toContain("-name '*.comparisons.json'");
+    // 2 ai-sdk cells × 5 fixture cases × 3 repeats × D9 $0.05/case.
+    expect(2 * 5 * 3 * d9PerCaseUsd('ai-sdk', 'glm-5.3-flash')!).toBe(1.5);
   });
 
   it('zero suite discovery hard-fails the matrix cell (F3)', () => {

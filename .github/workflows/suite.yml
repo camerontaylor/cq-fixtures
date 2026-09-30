@@ -15,12 +15,13 @@ on:
   workflow_dispatch:
     inputs:
       profile:
-        description: 'Eval profile: full, verified, or one CLI fixer proof lane'
+        description: 'Eval profile: full, verified, one CLI fixer proof lane, or W6.5 pilot'
         type: choice
         options:
           - full
           - verified
           - cli-fixer-proof
+          - w65-pilot
         default: full
       proof_driver:
         description: 'Driver for cli-fixer-proof (ignored by other profiles)'
@@ -402,7 +403,7 @@ jobs:
           }
       - name: ACP headless auth preflight
         id: acp_preflight
-        if: matrix.cell.driver == 'acp' && github.event.inputs.profile != 'cli-fixer-proof'
+        if: matrix.cell.driver == 'acp' && github.event.inputs.profile != 'cli-fixer-proof' && github.event.inputs.profile != 'w65-pilot'
         # CREDENTIAL ASYMMETRY: the OTHER four cells' keys are repo secrets —
         # their absence is a misconfiguration and hard-fails pre-dispatch in
         # the runner (exit 2). The acp lane's credentials are AGENT-SIDE (the
@@ -591,11 +592,10 @@ jobs:
       # credential split already keeps repo write access out of this job
       # (persist-credentials: false).
       - name: Eval cell — ${{ matrix.cell.model }} @ ${{ matrix.cell.provider }} on ${{ matrix.cell.driver }}
-        # The acp cell runs only after its auth preflight. The manual
-        # cli-fixer-proof profile runs only the selected CLI driver; other
-        # profiles keep every matrix cell. Missing credentials in a selected
-        # cell hard-fail in the runner.
-        if: (matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true') && (github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver)
+        # The acp cell runs only after its auth preflight. The CLI proof
+        # selects one requested driver; W6.5 selects the two model cells.
+        # Missing credentials in a selected cell hard-fail in the runner.
+        if: (matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true') && (github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver) && (github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model')
         env:
           # The cell names BOTH sides of the credential seam: env_key is the
           # toolkit requireKey name for the cell's provider (ZAI_API_KEY /
@@ -655,9 +655,16 @@ jobs:
           case "${MATRIX_PROFILE}" in
             verified) roots="suites/fixer-worker/breadth-verified suites/review-classifier/breadth-verified" ;;
             cli-fixer-proof) roots="suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail" ;;
+            # D9: 2 model cells x 5 fixer micro cases x 3 repeats x
+            # $0.05/case = $1.50 maximum admitted by the per-case ceilings.
+            # This is the RS-9 k=3 fixer pilot; five cases keep its inference
+            # descriptive unless the measured MDE supports a claim.
+            w65-pilot) roots="suites/fixer-worker/micro" ;;
             full) roots="suites/fixer-worker/micro suites/review-classifier/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail suites/review-classifier/breadth-verified suites/review-classifier/breadth-tail" ;;
-            *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full|cli-fixer-proof)"; exit 2 ;;
+            *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full|cli-fixer-proof|w65-pilot)"; exit 2 ;;
           esac
+          repeat_extra=()
+          if [ "${MATRIX_PROFILE}" = "w65-pilot" ]; then repeat_extra=(--repeats 3); fi
           # Review-debt #14: the acp preflight probe spent real inference
           # before this step — its record rides into the runner so the probe
           # is admitted through the same governor and journaled with the run
@@ -740,6 +747,7 @@ jobs:
               --provider "${MATRIX_PROVIDER}" \
               --max-tokens-per-case "${token_cap_per_case}" \
               --max-usd-per-case "${MATRIX_USD_PER_CASE}" \
+              "${repeat_extra[@]}" \
               --journal "${out_dir}/journal" \
               "${probe_extra[@]}" \
               --out "${out_dir}" < /dev/null || rc=$?
@@ -842,6 +850,7 @@ jobs:
           expected_count=6
           if [ "${MATRIX_PROFILE}" = "verified" ]; then expected_count=2; fi
           if [ "${MATRIX_PROFILE}" = "cli-fixer-proof" ]; then expected_count=3; fi
+          if [ "${MATRIX_PROFILE}" = "w65-pilot" ]; then expected_count=1; fi
           if [ "${suite_count}" -eq 0 ]; then
             hard_fail=1
             echo "::error::matrix discovery found no suites for profile ${MATRIX_PROFILE} — an accidental removal or a broken root; failing the cell so the snapshot cannot publish an empty day"
@@ -963,6 +972,10 @@ jobs:
           # Persist the checkout token: this job's only write is the snapshot
           # commit/push, and no model code runs here.
           persist-credentials: true
+      - name: Set up Node for paired snapshot analysis
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
       - name: Download eval reports
         # No continue-on-error: every cell that REACHED its eval step touches
         # reports/eval/EMPTY on every path, so an eval-reports-<model>-<driver>
@@ -985,6 +998,17 @@ jobs:
           pattern: eval-reports-*
           merge-multiple: true
           path: reports/
+      - name: Analyze paired matrix cells
+        run: |
+          set -euo pipefail
+          # A degraded dispatch can leave one usable cell. Keep its raw
+          # evidence, but a paired comparison needs at least two cell roots.
+          cell_count="$(find reports/eval -name run.json ! -path '*/repeat-*/*' -print 2>/dev/null | wc -l | tr -d ' ')"
+          if [ "${cell_count}" -ge 2 ]; then
+            node --experimental-strip-types scripts/analyze-snapshot.mjs --from reports/eval --out reports/eval/comparisons
+          else
+            echo "::warning::${cell_count} matrix cell(s) available; no paired comparison generated"
+          fi
       - name: Commit report snapshots
         # Plan §9: report snapshots are committed as reviewable data.
         # `[skip ci]` keeps the push from re-triggering the gate workflows
@@ -1109,7 +1133,7 @@ jobs:
             rel="${f#reports/eval/}"
             mkdir -p "${snap_dir}/$(dirname "${rel}")"
             cp "${f}" "${snap_dir}/${rel}"
-          done < <(find reports/eval -type f \( -name '*.table.json' -o -name 'rows.jsonl' -o -name 'run.json' -o -path '*/journal/*' -o -path '*/patches/*' -o -path '*/outputs/*' \) 2>/dev/null | sort)
+          done < <(find reports/eval -type f \( -name '*.table.json' -o -name '*.comparisons.json' -o -name 'rows.jsonl' -o -name 'run.json' -o -path '*/journal/*' -o -path '*/patches/*' -o -path '*/outputs/*' \) 2>/dev/null | sort)
           # Add runs BEFORE any early exit, so removals publish too: on a
           # fully successful matrix the rm -rf above cleared the worktree, and
           # `git add` stages the removal of previously tracked tables as

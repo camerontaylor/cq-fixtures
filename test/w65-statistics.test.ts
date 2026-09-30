@@ -89,10 +89,15 @@ describe('W6.5 paired case-clustered comparisons', () => {
 
   it('counts only eligible rows when estimating repeats per case', () => {
     const rows: ResultRow[] = [];
-    for (const id of ['a', 'b', 'c']) for (const repeat of [1, 2, 3]) {
-      const base = row('baseline', id, repeat, id === 'a' && repeat === 3 ? 1 : 0);
-      rows.push(id === 'a' && repeat === 3 ? { ...base, invalid: 'workspace-unbound' } : base);
-      rows.push(row('candidate', id, repeat, 1));
+    for (const id of ['a', 'b']) for (const repeat of [1, 2, 3]) {
+      const invalid = id === 'a' && repeat === 3;
+      const base = row('baseline', id, repeat, invalid ? 1 : 0);
+      rows.push({ ...base, role: 'fixer-worker', probes: [
+        { kind: 'check-rerun', expected: 'pass', observed: invalid ? 'pass' : 'fail', passed: invalid },
+      ], ...(invalid ? { invalid: 'workspace-unbound' as const } : {}) });
+      rows.push({ ...row('candidate', id, repeat, 1), role: 'fixer-worker', probes: [
+        { kind: 'check-rerun', expected: 'pass', observed: 'pass', passed: true },
+      ] });
     }
     const comparison = aggregate(rows)[0]!.comparisons![0]!;
     expect(comparison.repeatsPerCase).toBe(2);

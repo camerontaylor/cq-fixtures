@@ -783,7 +783,7 @@ jobs:
                 const doc = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
                 // Valid-JSON-but-wrong-shape fails closed: a `runs` that is not
                 // an array would otherwise read as absence-free and hide a real
-                // absence record (the eval step is our own writer's consumer,
+                // absence record (the eval step consumes our own writer output,
                 // so a wrong shape is a bug worth failing on).
                 if (!Array.isArray(doc.runs)) {
                   throw new Error("run.json runs is not an array");

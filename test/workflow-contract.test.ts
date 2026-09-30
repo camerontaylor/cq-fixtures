@@ -25,6 +25,13 @@ import { d9PerCaseUsd } from '../runner/budget.ts';
 const SUITE_YML = fileURLToPath(new URL('../.github/workflows/suite.yml', import.meta.url));
 const text = readFileSync(SUITE_YML, 'utf8');
 
+it('the matrix absence scanner keeps its inline JavaScript inside the shell quote', () => {
+  const evalCell = stepChunk('Eval cell —');
+  const match = evalCell.match(/if ! absent_lines="\$\(node -e '([\s\S]*?)' "\$\{out_dir\}\/run\.json"\)"/);
+  expect(match, 'the run.json scanner is an inline node -e script').not.toBeNull();
+  expect(match![1], 'an apostrophe would close the surrounding shell single quote').not.toContain("'");
+});
+
 /**
  * The 0-based line of a step's `name:` line in the workflow text. Throws
  * when the step is missing, so a restructuring of suite.yml fails the

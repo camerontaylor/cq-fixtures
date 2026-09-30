@@ -16,7 +16,8 @@
       "then": {
         "properties": {
           "cells": {
-            "items": { "not": { "required": ["invalid"] } }
+            "type": "array",
+            "items": { "not": { "type": "object", "required": ["invalid"] } }
           }
         }
       }

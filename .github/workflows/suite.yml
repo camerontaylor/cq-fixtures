@@ -1066,7 +1066,9 @@ jobs:
           # otherwise clear an earlier complete run's tables and republish
           # nothing. No tables => merge-only, never clear.
           landed_tables="$(find reports/eval -name '*.table.json' -print -quit 2>/dev/null)"
-          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${SNAPSHOT_PROFILE}" != "cli-fixer-proof" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
+          # The bounded W6.5 pilot contains only the model-axis fixer micro
+          # cells; preserve other same-day suite/lane evidence on snapshots.
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${SNAPSHOT_PROFILE}" != "cli-fixer-proof" ] && [ "${SNAPSHOT_PROFILE}" != "w65-pilot" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
             rm -rf "${snap_dir}"
           else
             echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}, landed tables: ${landed_tables:-none}) — merging into ${snap_dir} without clearing"

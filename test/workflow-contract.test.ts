@@ -417,7 +417,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // reports landed — a download that yielded no table merges instead of
     // deleting an earlier complete run's tables and republishing nothing.
     expect(snapshotStep).toContain("landed_tables=\"$(find reports/eval -name '*.table.json' -print -quit");
-    expect(snapshotStep, 'the clear guard requires a landed table').toMatch(/if \[ "\$\{\{ needs\.matrix\.result \}\}" = "success" \].*\[ -n "\$\{landed_tables\}" \]; then/s);
+    expect(snapshotStep, 'the clear guard requires a landed table').toMatch(/if .*\[ "\$\{\{ needs\.matrix\.result \}\}" = "success" \].*\[ -n "\$\{landed_tables\}" \]; then/s);
   });
 
   it('W6.3/RS-9 A.6: the run out-dir lives OUTSIDE the checkout and is copied in only after the eval cell', () => {
@@ -579,6 +579,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(stepChunk('ACP headless auth preflight')).toContain("github.event.inputs.profile != 'w65-pilot'");
     expect(stepChunk('Analyze paired matrix cells')).toContain('scripts/analyze-snapshot.mjs');
     expect(stepChunk('Commit report snapshots')).toContain("-name '*.comparisons.json'");
+    expect(stepChunk('Commit report snapshots')).toContain('"${SNAPSHOT_PROFILE}" != "w65-pilot"');
     // 2 ai-sdk cells × 5 fixture cases × 3 repeats × D9 $0.05/case.
     expect(2 * 5 * 3 * d9PerCaseUsd('ai-sdk', 'glm-5.3-flash')!).toBe(1.5);
   });

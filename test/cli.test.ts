@@ -168,6 +168,27 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--max-usd', '1'])).resolves.toBe(2);
   });
 
+  it('W6.5 retains both roles in every repeat of a multi-suite run', async () => {
+    const classifier = writeSuite('repeat-classifier', {
+      name: 'repeat-classifier', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const fixer = writeSuite('repeat-fixer', {
+      name: 'repeat-fixer', role: 'fixer-worker', cases: [fixerCase('fix-1')],
+    });
+    const out = join(root, 'multi-repeat-out');
+    await expect(cliMain([...cliArgs(classifier), '--suite', fixer, '--repeats', '2', '--out', out])).resolves.toBe(1);
+    for (let repeat = 1; repeat <= 2; repeat++) {
+      const runDir = join(out, `repeat-${repeat}`);
+      const manifest = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as { runs: Array<{ role: string }> };
+      expect(manifest.runs.map((run) => run.role)).toEqual(['review-classifier', 'fixer-worker']);
+      expect(readFileSync(join(runDir, 'rows.jsonl'), 'utf8').trim().split('\n')).toHaveLength(2);
+      expect(existsSync(join(runDir, 'review-classifier.table.json'))).toBe(true);
+      expect(existsSync(join(runDir, 'fixer-worker.table.json'))).toBe(true);
+      expect(existsSync(join(runDir, 'outputs', 'rev-1.json'))).toBe(true);
+      expect(existsSync(join(runDir, 'outputs', 'fix-1.json'))).toBe(true);
+    }
+  }, 30_000);
+
   it('a clean run exits 0', async () => {
     const dir = writeSuite('ok-suite', { name: 'ok-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await expect(cliMain(cliArgs(dir))).resolves.toBe(0);

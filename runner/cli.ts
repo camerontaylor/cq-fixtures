@@ -399,6 +399,11 @@ async function main(argv: readonly string[]): Promise<number> {
   // F6: the prediction artifacts + the run manifest published with the tables.
   const artifactList: CaseArtifact[] = [];
   const manifestEntries: RunManifestEntry[] = [];
+  const repeatResults = Array.from({ length: opts.repeats }, () => ({
+    rows: [] as ResultRow[],
+    artifacts: [] as CaseArtifact[],
+    manifests: [] as RunManifestEntry[],
+  }));
   // W6.3: sentinel hits across every suite run of this invocation.
   const contaminations: string[] = [];
   // F6: the suite checkout's git SHA rides into the manifest (the snapshot's
@@ -462,6 +467,8 @@ async function main(argv: readonly string[]): Promise<number> {
       }
       const repeatRows = opts.repeats > 1 ? result.rows.map((row) => ({ ...row, repeat, repeatCount: opts.repeats })) : result.rows;
       rows.push(...repeatRows);
+      repeatResults[repeat - 1]!.rows.push(...repeatRows);
+      repeatResults[repeat - 1]!.artifacts.push(...result.artifacts);
       if (opts.repeats === 1) tables.push(...result.tables);
       // F6 (WB-5.2a/5.1): carry the predictions and the run identity forward
       // for the emit phase, where they are bounded, denylist-scanned, and
@@ -501,17 +508,7 @@ async function main(argv: readonly string[]): Promise<number> {
           : {}),
       };
       manifestEntries.push(manifestEntry);
-      if (opts.repeats > 1 && opts.out !== undefined) {
-        const repeatOut = join(opts.out, `repeat-${repeat}`);
-        mkdirSync(repeatOut, { recursive: true });
-        for (const table of result.tables) {
-          writeFileSync(join(repeatOut, `${table.role}.table.json`), JSON.stringify(table, null, 2) + '\n');
-        }
-        writeFileSync(join(repeatOut, 'rows.jsonl'), repeatRows.map((row) => JSON.stringify(row)).join('\n') + (repeatRows.length > 0 ? '\n' : ''));
-        const published = publishArtifacts(repeatOut, result.artifacts, repoRoot);
-        for (const diagnostic of published.diagnostics) console.error(`  repeat ${repeat}: ${diagnostic}`);
-        writeRunManifest(repeatOut, [manifestEntry]);
-      }
+      repeatResults[repeat - 1]!.manifests.push(manifestEntry);
       // X2 inputs arrive STRUCTURED from the runner (round 3): the runner
       // classifies its own infrastructure refusals, so the CLI prints them
       // without re-matching diagnostics prose.
@@ -574,6 +571,25 @@ async function main(argv: readonly string[]): Promise<number> {
         }
       }
       mkdirSync(opts.out, { recursive: true });
+      if (opts.repeats > 1) {
+        for (const [index, repeatResult] of repeatResults.entries()) {
+          const repeatOut = join(opts.out, `repeat-${index + 1}`);
+          mkdirSync(repeatOut, { recursive: true });
+          const repeatTables = aggregate(repeatResult.rows);
+          for (const suite of suites) {
+            if (!repeatTables.some((table) => table.role === suite.role)) {
+              repeatTables.push({ role: suite.role, suite: suite.name, generatedAt: new Date().toISOString(), cells: [] });
+            }
+          }
+          for (const table of repeatTables) {
+            writeFileSync(join(repeatOut, `${table.role}.table.json`), JSON.stringify(table, null, 2) + '\n');
+          }
+          writeFileSync(join(repeatOut, 'rows.jsonl'), repeatResult.rows.map((row) => JSON.stringify(row)).join('\n') + (repeatResult.rows.length > 0 ? '\n' : ''));
+          const published = publishArtifacts(repeatOut, repeatResult.artifacts, repoRoot);
+          for (const diagnostic of published.diagnostics) console.error(`  repeat ${index + 1}: ${diagnostic}`);
+          writeRunManifest(repeatOut, repeatResult.manifests);
+        }
+      }
       // Same-role collisions were refused before any dispatch (see above).
       for (const t of tables) {
         writeFileSync(join(opts.out, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');

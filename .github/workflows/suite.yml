@@ -1004,7 +1004,7 @@ jobs:
           set -euo pipefail
           # A degraded dispatch can leave one usable cell. Keep its raw
           # evidence, but a paired comparison needs at least two cell roots.
-          cell_count="$(find reports/eval -name run.json ! -path '*/repeat-*/*' -print 2>/dev/null | wc -l | tr -d ' ')"
+          cell_count="$(find reports/eval -name rows.jsonl ! -path '*/repeat-*/*' -size +0c -print 2>/dev/null | wc -l | tr -d ' ')"
           if [ "${cell_count}" -ge 2 ]; then
             node --experimental-strip-types scripts/analyze-snapshot.mjs --from reports/eval --out reports/eval/comparisons
           else

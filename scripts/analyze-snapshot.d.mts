@@ -5,6 +5,7 @@ export interface SnapshotAnalysis {
   tables: Array<{
     role: string;
     suite: string;
+    cells: Array<{ model: string; driver: string }>;
     comparisons?: Array<{
       cases: number;
       repeatsPerCase: number;

@@ -46,6 +46,15 @@ describe('snapshot comparison analysis', () => {
     expect(() => analyzeSnapshot(dir)).toThrow(/mixed toolkit provenance/);
   });
 
+  it('preserves usable cells when another cell has no scored rows', () => {
+    const dir = fixture();
+    writeFileSync(join(dir, 'candidate', 'ai-sdk', 'rows.jsonl'), '');
+    const result = analyzeSnapshot(dir);
+    expect(result.tables).toHaveLength(1);
+    expect(result.tables[0].cells).toHaveLength(1);
+    expect(result.tables[0].comparisons).toBeUndefined();
+  });
+
   it('uses published version and registry integrity after toolkit.lock is removed', () => {
     const dir = fixture();
     for (const model of ['baseline', 'candidate']) {

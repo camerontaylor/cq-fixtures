@@ -65,7 +65,10 @@ export function analyzeSnapshot(from) {
     if (seen.has(cellIdentity)) throw new Error(`${label}: duplicate served model/driver/variant cell ${cellIdentity.replaceAll('\n', '/')}`);
     seen.add(cellIdentity);
     const lines = readFileSync(join(dir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean);
-    if (lines.length === 0) throw new Error(`${label}: empty cell has no paired evidence`);
+    if (lines.length === 0) {
+      console.warn(`${label}: empty cell has no paired evidence; preserving its raw manifest without comparison`);
+      continue;
+    }
     for (const [i, line] of lines.entries()) {
       const row = JSON.parse(line);
       if (typeof row !== 'object' || row === null || !Number.isInteger(row.repeat) || !Number.isInteger(row.repeatCount) ||

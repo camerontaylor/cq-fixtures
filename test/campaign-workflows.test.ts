@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -1610,4 +1610,587 @@ describe('PK11 successor evidence: scope, identity, adapter and oracle discrimin
       }
     }
   });
+});
+
+/**
+ * PK11 successor visible-corpus evidence at the reviewed pin epoch.
+ *
+ * Each of the six expansion tasks is exercised through its real local executor
+ * (injected deterministic Driver, exported toolkit operation, local-only Git)
+ * and judged through the task-owned semantic oracle. For every task this block
+ * records: seeded-baseline red, reference green, materially different
+ * alternative green, and scope/ancestry negative controls, keeping those facts
+ * separately attributable.
+ *
+ * Scope limits kept in force: no model or evaluation target, no daemon
+ * provisioning, no shared namespace, no credits, no auth, no publication or
+ * merge, no private held-out task, and no oracle widening. The fleet allowlist
+ * question (subset-with-nonzero vs the brief's exact wording) is deliberately
+ * left unresolved; only behaviours that hold under the current implementation
+ * are asserted.
+ */
+describe('six visible expansion tasks: executor-level red, reference, alternative and negatives', () => {
+  const ROUTE = { model: 'offline-corpus-only', provider: 'fake' } as const;
+
+  const gitIn = (cwd: string, args: string[]): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+
+  const commitAll = (cwd: string, message: string): string => {
+    gitIn(cwd, ['add', '-A']);
+    gitIn(cwd, ['-c', 'user.name=CQ Corpus', '-c', 'user.email=corpus@example.invalid', 'commit', '-q', '-m', message]);
+    return gitIn(cwd, ['rev-parse', 'HEAD']);
+  };
+
+  /** Detach HEAD from the recorded baseline so ancestry must be judged by name. */
+  const orphanHistory = (cwd: string, message: string): void => {
+    gitIn(cwd, ['checkout', '-q', '--orphan', 'rewritten-history']);
+    gitIn(cwd, ['rm', '-rq', '--cached', '.']);
+    commitAll(cwd, message);
+  };
+
+  const worker = (structuredOutput: unknown) => ({
+    ...completedWorker(structuredOutput),
+  });
+
+  /**
+   * A Driver that writes the supplied task files, commits, then reports honestly.
+   * The review operation requires the exact fix contract: keys changed/summary/commits,
+   * with commits non-empty exactly when changed is true.
+   */
+  const editingDriver = (
+    root: string,
+    files: Record<string, string>,
+    options: { changed?: boolean; throwAfterCommit?: boolean } = {},
+  ): Driver => ({
+    async run(invocation) {
+      for (const [path, contents] of Object.entries(files)) {
+        writeFileSync(join(root, path), contents);
+      }
+      let commits: string[] = [];
+      if (options.throwAfterCommit) commits = [commitAll(root, 'Committed then transport failed')];
+      else if (options.changed !== false) commits = [commitAll(root, 'Candidate repair commit')];
+      if (options.throwAfterCommit) throw new Error('local driver transport ended after commit');
+      const changed = commits.length > 0;
+      return {
+        ...worker({
+          changed,
+          summary: 'Applied the task repair.',
+          commits,
+        }),
+        model: invocation.modelSpec.model,
+      };
+    },
+  });
+
+  const ROLE_SCOPE_REFERENCE = `export function canEditCampaign(actorId, ownerId, role, grants = []) {
+  if (typeof actorId !== 'string' || actorId.length === 0) return false;
+  if (actorId === ownerId) return true;
+  return role === 'admin' && grants.includes('campaign:edit');
+}
+`;
+  const ROLE_SCOPE_ALTERNATIVE = `const EDIT_GRANT = 'campaign:edit';
+export function canEditCampaign(actorId, ownerId, role, grants = []) {
+  if (typeof actorId !== 'string' || actorId.length === 0) return false;
+  const granted = new Set(Array.isArray(grants) ? grants : []);
+  if (actorId === ownerId) return true;
+  return role === 'admin' && granted.has(EDIT_GRANT);
+}
+`;
+  const LABEL_NFC_REFERENCE = `export function sameCampaignLabel(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const canonicalLeft = left.trim().normalize('NFC');
+  const canonicalRight = right.trim().normalize('NFC');
+  if (canonicalLeft.length === 0) return false;
+  return canonicalLeft === canonicalRight;
+}
+`;
+  const LABEL_NFC_ALTERNATIVE = `const canonical = (value) => (typeof value === 'string' ? value.trim().normalize('NFC') : null);
+export function sameCampaignLabel(left, right) {
+  const a = canonical(left);
+  const b = canonical(right);
+  if (a === null || b === null || a === '') return false;
+  return a === b;
+}
+`;
+
+  it.each([
+    {
+      variant: 'roleScope' as const,
+      title: 'review-role-scope-01',
+      sourcePath: REVIEW_TASK_CONTRACTS.roleScope.module,
+      reference: ROLE_SCOPE_REFERENCE,
+      alternative: ROLE_SCOPE_ALTERNATIVE,
+      extraOutOfScopePath: 'test/public-settings.test.mjs',
+      extraContents: '// candidate rewrote the public regression test\n',
+    },
+    {
+      variant: 'labelNfc' as const,
+      title: 'review-label-nfc-01',
+      sourcePath: REVIEW_TASK_CONTRACTS.labelNfc.module,
+      reference: LABEL_NFC_REFERENCE,
+      alternative: LABEL_NFC_ALTERNATIVE,
+      extraOutOfScopePath: REVIEW_TASK_CONTRACTS.labelNfc.displayModule,
+      extraContents: `export function displayCampaignLabel(label) { return String(label).normalize('NFC'); }\n`,
+    },
+  ])(
+    '$title: executor baseline red, reference green, alternative green, scope and ancestry negatives',
+    async ({ variant, title, sourcePath, reference, alternative, extraOutOfScopePath, extraContents }) => {
+      const create = variant === 'roleScope' ? createReviewRoleScopeTask : createReviewLabelNfcTask;
+      const identity = (task: { worktreePath: string; baselineCommit: string }) =>
+        judgeReviewTaskCandidateIdentity(variant, { candidateRoot: task.worktreePath, baselineCommit: task.baselineCommit });
+
+      // (1) Seeded baseline is red before any candidate exists.
+      const baseline = await create(ROUTE);
+      try {
+        expect(baseline.id).toBe(title);
+        expect(baseline.baselineCommit).toMatch(/^[a-f0-9]{40}$/);
+        expect(baseline.oraclePin).toMatch(/^[a-f0-9]{64}$/);
+        const baselineIdentity = identity(baseline);
+        expect(baselineIdentity.passed).toBe(false);
+        expect(baselineIdentity.failures).toContain('candidate HEAD is still the pristine baseline');
+        const baselineReport = await judgeReviewTaskSubmission(variant, {
+          candidateRoot: baseline.worktreePath,
+          baselineCommit: baseline.baselineCommit,
+        });
+        expect(baselineReport.passed).toBe(false);
+        expect(baselineReport.behavior.passed).toBe(false);
+        expect(baselineReport.behavior.failures.length).toBeGreaterThan(0);
+      } finally {
+        await baseline.cleanup();
+      }
+
+      // (2) Reference repair through the real executor is green.
+      const referenceTask = await create(ROUTE);
+      try {
+        expectOk(await executeReviewLoopRepairTask(referenceTask, editingDriver(referenceTask.worktreePath, { [sourcePath]: reference })));
+        const report = await judgeReviewTaskSubmission(variant, {
+          candidateRoot: referenceTask.worktreePath,
+          baselineCommit: referenceTask.baselineCommit,
+        });
+        expect(report.identity.failures).toEqual([]);
+        expect(report.behavior.passed).toBe(true);
+        expect(report.passed).toBe(true);
+        expect(report.candidatePatchSha256).toMatch(/^[a-f0-9]{64}$/);
+      } finally {
+        await referenceTask.cleanup();
+      }
+
+      // (3) A materially different but correct repair is also green, with different bytes.
+      const altTask = await create(ROUTE);
+      try {
+        expectOk(await executeReviewLoopRepairTask(altTask, editingDriver(altTask.worktreePath, { [sourcePath]: alternative })));
+        const report = await judgeReviewTaskSubmission(variant, {
+          candidateRoot: altTask.worktreePath,
+          baselineCommit: altTask.baselineCommit,
+        });
+        expect(report.behavior.passed).toBe(true);
+        expect(report.passed).toBe(true);
+        const referenceDigest = await (async () => {
+          const probe = await create(ROUTE);
+          try {
+            writeFileSync(join(probe.worktreePath, sourcePath), reference);
+            commitAll(probe.worktreePath, 'reference bytes');
+            return judgeReviewTaskCandidateIdentity(variant, {
+              candidateRoot: probe.worktreePath,
+              baselineCommit: probe.baselineCommit,
+            }).candidatePatchSha256;
+          } finally {
+            await probe.cleanup();
+          }
+        })();
+        expect(report.candidatePatchSha256).not.toBe(referenceDigest);
+      } finally {
+        await altTask.cleanup();
+      }
+
+      // (4) Correct behaviour with an out-of-scope edit stays red on scope alone.
+      const scopedTask = await create(ROUTE);
+      try {
+        expectOk(await executeReviewLoopRepairTask(scopedTask, editingDriver(scopedTask.worktreePath, {
+          [sourcePath]: reference,
+          [extraOutOfScopePath]: extraContents,
+        })));
+        const report = await judgeReviewTaskSubmission(variant, {
+          candidateRoot: scopedTask.worktreePath,
+          baselineCommit: scopedTask.baselineCommit,
+        });
+        expect(report.identity.passed).toBe(false);
+        expect(report.identity.failures).toContain('candidate changed paths did not exactly match its task allowlist');
+        expect(report.behavior.passed).toBe(true);
+        expect(report.passed).toBe(false);
+      } finally {
+        await scopedTask.cleanup();
+      }
+
+      // (5) A correct repair whose history no longer contains the baseline is red on ancestry.
+      const rewrittenTask = await create(ROUTE);
+      try {
+        expectOk(await executeReviewLoopRepairTask(rewrittenTask, editingDriver(rewrittenTask.worktreePath, { [sourcePath]: reference })));
+        expect((await judgeReviewTaskSubmission(variant, { candidateRoot: rewrittenTask.worktreePath, baselineCommit: rewrittenTask.baselineCommit })).passed).toBe(true);
+        orphanHistory(rewrittenTask.worktreePath, 'Rewritten candidate history');
+        const afterRewrite = await judgeReviewTaskSubmission(variant, {
+          candidateRoot: rewrittenTask.worktreePath,
+          baselineCommit: rewrittenTask.baselineCommit,
+        });
+        expect(afterRewrite.identity.passed).toBe(false);
+        expect(afterRewrite.identity.failures).toContain('recorded baseline commit is not an ancestor of the candidate');
+        expect(afterRewrite.passed).toBe(false);
+      } finally {
+        await rewrittenTask.cleanup();
+      }
+
+      // (6) A driver that claims success without editing is red, not silently green.
+      const noopTask = await create(ROUTE);
+      try {
+        expectOk(await executeReviewLoopRepairTask(noopTask, editingDriver(noopTask.worktreePath, {}, { changed: false })));
+        const report = await judgeReviewTaskSubmission(variant, {
+          candidateRoot: noopTask.worktreePath,
+          baselineCommit: noopTask.baselineCommit,
+        });
+        expect(report.identity.passed).toBe(false);
+        expect(report.identity.failures).toContain('candidate HEAD is still the pristine baseline');
+        expect(report.behavior.passed).toBe(false);
+        expect(report.passed).toBe(false);
+      } finally {
+        await noopTask.cleanup();
+      }
+    },
+    1_200_000,
+  );
+
+  it('labelNfc seeds the display module its own oracle and public test probe', async () => {
+    // Regression for a real defect found by executor-level evidence: the labelNfc oracle
+    // probes settings/display.mjs and its seeded public test imports ../settings/display.mjs,
+    // but the factory used to materialize settings/display.js instead. The display module
+    // was therefore absent for the labelNfc task, so a correct reference repair could never
+    // be green and the seeded public test could not run.
+    const task = await createReviewLabelNfcTask(ROUTE);
+    try {
+      const displayPath = join(task.worktreePath, REVIEW_TASK_CONTRACTS.labelNfc.displayModule);
+      expect(existsSync(displayPath)).toBe(true);
+      const displaySource = readFileSync(displayPath, 'utf8');
+      expect(displaySource).toContain('displayCampaignLabel');
+      expect(displaySource).toContain('return label;');
+      // The seeded public test must be able to resolve the module it imports.
+      const publicTest = readFileSync(join(task.worktreePath, 'test/public-settings.test.mjs'), 'utf8');
+      expect(publicTest).toContain(`'../${REVIEW_TASK_CONTRACTS.labelNfc.displayModule}'`);
+      // The v2 family keeps its own pinned display path and must not be disturbed.
+      const v2 = await createReviewLoopRepairTask(ROUTE);
+      try {
+        expect(existsSync(join(v2.worktreePath, 'settings/display.js'))).toBe(true);
+        expect(existsSync(join(v2.worktreePath, REVIEW_TASK_CONTRACTS.labelNfc.displayModule))).toBe(false);
+      } finally {
+        await v2.cleanup();
+      }
+    } finally {
+      await task.cleanup();
+    }
+  }, 120_000);
+
+  it.each(['safeIntegerSetting', 'originPolicy'] as const)(
+    'analysis-$variant: executor defect cluster, reference green and semantic negatives',
+    async (variant) => {
+      const contract = ANALYSIS_TASK_CONTRACTS[variant];
+      const proposalFor = (overrides: Record<string, unknown> = {}) => ({
+        setting: contract.setting,
+        constraints: [...contract.requiredConstraints],
+        rejectsInvalidValues: true,
+        preservesInputRepresentation: true,
+        ...overrides,
+      });
+
+      const task = await createAnalysisRemediationTask(variant, ROUTE);
+      try {
+        expect(task.id).toBe(contract.id);
+        expect(task.baselineCommit).toMatch(/^[a-f0-9]{40}$/);
+        expect(task.oraclePin).toMatch(/^[a-f0-9]{64}$/);
+
+        // (1) The seeded substrate really does carry the defect: the executor clusters it.
+        const defectExecution = await executeAnalysisRemediationTask(task, {
+          async run(invocation) {
+            return { ...worker(proposalFor()), model: invocation.modelSpec.model };
+          },
+        });
+        expect(defectExecution.clusterCount).toBeGreaterThan(0);
+        expect(defectExecution.clusterSize).toBeGreaterThan(0);
+
+        // (2) The reference proposal is green through the real executor.
+        expect(defectExecution.oracle.passed).toBe(true);
+        expect(defectExecution.oracle.failures).toEqual([]);
+        expect(defectExecution.oracle).toMatchObject({
+          sourceId: task.sourceId,
+          baselineId: task.baselineId,
+          oracleId: task.oracleId,
+        });
+
+        // (3) Semantic negatives: each required behaviour is load-bearing.
+        const negatives: readonly (readonly [string, Record<string, unknown>])[] = [
+          ['proposal targets a different setting', { setting: 'someOtherSetting' }],
+          ['proposal does not reject invalid configuration values', { rejectsInvalidValues: false }],
+          ['proposal does not preserve the original input representation', { preservesInputRepresentation: false }],
+        ];
+        for (const [expectedFailure, overrides] of negatives) {
+          const execution = await executeAnalysisRemediationTask(task, {
+            async run(invocation) {
+              return { ...worker(proposalFor(overrides)), model: invocation.modelSpec.model };
+            },
+          });
+          expect(execution.oracle.passed).toBe(false);
+          expect(execution.oracle.failures).toContain(expectedFailure);
+        }
+        // Omitting a required constraint is red too.
+        const missing = await executeAnalysisRemediationTask(task, {
+          async run(invocation) {
+            return {
+              ...worker(proposalFor({ constraints: [...contract.requiredConstraints].slice(0, 1) })),
+              model: invocation.modelSpec.model,
+            };
+          },
+        });
+        expect(missing.oracle.passed).toBe(false);
+        expect(missing.oracle.failures.some((failure) => failure.startsWith('proposal omits required behavior'))).toBe(true);
+
+        // (4) Operation failure is red, not a pass.
+        const threw = await executeAnalysisRemediationTask(task, {
+          async run() { throw new Error('local driver transport ended before any proposal'); },
+        });
+        expect(threw.oracle.passed).toBe(false);
+        expect(threw.oracle.failures.some((failure) => failure.startsWith('operation returned'))).toBe(true);
+
+        // (5) The seeded boundary vectors stay discriminative and are not widened here.
+        const expected = [...contract.expected];
+        expect(evaluateAnalysisTaskVectors(variant, expected)).toBe(true);
+        expect(evaluateAnalysisTaskVectors(variant, expected.map((value) => !value))).toBe(false);
+        expect(contract.vectors).toHaveLength(expected.length);
+
+        // (6) KNOWN GAP, deliberately not closed here: a materially alternative proposal whose
+        // constraint wording differs from the host tokens is still rejected. Accepting it is
+        // conductor decision LR4; widening this oracle without a pin assignment would weaken
+        // the meaning check, so this block pins the current semantics instead.
+        const alternative = await executeAnalysisRemediationTask(task, {
+          async run(invocation) {
+            return {
+              ...worker(proposalFor({ constraints: ['the current validator must be corrected', 'boundary values are accepted incorrectly'] })),
+              model: invocation.modelSpec.model,
+            };
+          },
+        });
+        expect(alternative.oracle.passed).toBe(false);
+        expect(alternative.oracle.failures.some((failure) => failure.startsWith('proposal omits required behavior'))).toBe(true);
+      } finally {
+        await task.cleanup();
+      }
+    },
+    600_000,
+  );
+
+  it('merge-origin-precedence-01: executor baseline red, reference green, alternative green, scope, ancestry and intention negatives', async () => {
+    const settingsPath = 'settings/origin-precedence.mjs';
+    const REFERENCE = `export function resolveCampaignSetting(environmentValue, fileValue, builtInValue) {\n  return environmentValue ?? fileValue ?? builtInValue;\n}\n`;
+    const ALTERNATIVE = `export function resolveCampaignSetting(environmentValue, fileValue, builtInValue) {\n  for (const candidate of [environmentValue, fileValue, builtInValue]) {\n    if (candidate !== null && candidate !== undefined) return candidate;\n  }\n  return undefined;\n}\n`;
+
+    // (1) Seeded baseline is red.
+    const baseline = await createIntegrationMergeTask('originPrecedence', ROUTE);
+    try {
+      expect(baseline.id).toBe(MERGE_ORIGIN_CONTRACT.id);
+      expect(baseline.baselineCommit).toMatch(/^[a-f0-9]{40}$/);
+      const red = await judgeMergeOriginConflictTask(baseline);
+      expect(red.passed).toBe(false);
+      expect(red.failures).toContain('precedence vector 0 returned the wrong source value');
+      expect(red.failures).toContain('candidate changed paths did not exactly match its task allowlist');
+    } finally {
+      await baseline.cleanup();
+    }
+
+    // (2) Reference resolution through the real executor is green.
+    const reference = await createIntegrationMergeTask('originPrecedence', ROUTE);
+    try {
+      const operation = expectOk(await executeMergeConflictTask(reference, {
+        async run(invocation) {
+          writeFileSync(reference.settingsPath, REFERENCE);
+          gitIn(reference.repoRoot, ['add', settingsPath]);
+          commitAll(reference.repoRoot, 'Resolve origin precedence');
+          return { ...worker({ decision: 'acted', summary: 'Environment override wins.' }), model: invocation.modelSpec.model };
+        },
+      }));
+      expect(operation.decision).toBe('acted');
+      const green = await judgeMergeOriginConflictTask(reference);
+      expect(green.failures).toEqual([]);
+      expect(green.passed).toBe(true);
+    } finally {
+      await reference.cleanup();
+    }
+
+    // (3) A materially different resolution is also green.
+    const alternative = await createIntegrationMergeTask('originPrecedence', ROUTE);
+    try {
+      expectOk(await executeMergeConflictTask(alternative, {
+        async run(invocation) {
+          writeFileSync(alternative.settingsPath, ALTERNATIVE);
+          gitIn(alternative.repoRoot, ['add', settingsPath]);
+          commitAll(alternative.repoRoot, 'Resolve origin precedence differently');
+          return { ...worker({ decision: 'acted', summary: 'First defined source wins.' }), model: invocation.modelSpec.model };
+        },
+      }));
+      const green = await judgeMergeOriginConflictTask(alternative);
+      expect(green.failures).toEqual([]);
+      expect(green.passed).toBe(true);
+    } finally {
+      await alternative.cleanup();
+    }
+
+    // (4) Correct resolution plus an out-of-scope edit is red on scope alone.
+    const scoped = await createIntegrationMergeTask('originPrecedence', ROUTE);
+    try {
+      expectOk(await executeMergeConflictTask(scoped, {
+        async run(invocation) {
+          writeFileSync(scoped.settingsPath, REFERENCE);
+          writeFileSync(join(scoped.repoRoot, 'settings/extra.mjs'), 'export const bypass = true;\n');
+          commitAll(scoped.repoRoot, 'Resolution plus extra file');
+          return { ...worker({ decision: 'acted', summary: 'acted' }), model: invocation.modelSpec.model };
+        },
+      }));
+      const report = await judgeMergeOriginConflictTask(scoped);
+      expect(report.passed).toBe(false);
+      expect(report.failures).toContain('candidate changed paths did not exactly match its task allowlist');
+      expect(report.failures).not.toContain('precedence vector 0 returned the wrong source value');
+    } finally {
+      await scoped.cleanup();
+    }
+
+    // (5) Destroying a branch intention file is red and named.
+    const intentions = await createIntegrationMergeTask('originPrecedence', ROUTE);
+    try {
+      expectOk(await executeMergeConflictTask(intentions, {
+        async run(invocation) {
+          writeFileSync(intentions.settingsPath, REFERENCE);
+          writeFileSync(join(intentions.repoRoot, 'branch-intentions/main.md'), 'Main branch: silently rewritten by the candidate.\n');
+          commitAll(intentions.repoRoot, 'Resolution that drops an intention');
+          return { ...worker({ decision: 'acted', summary: 'acted' }), model: invocation.modelSpec.model };
+        },
+      }));
+      const report = await judgeMergeOriginConflictTask(intentions);
+      expect(report.passed).toBe(false);
+      expect(report.failures).toContain('candidate did not preserve both branch intention files');
+    } finally {
+      await intentions.cleanup();
+    }
+
+    // (6) A green resolution whose history no longer contains the baseline is red on ancestry.
+    const rewritten = await createIntegrationMergeTask('originPrecedence', ROUTE);
+    try {
+      expectOk(await executeMergeConflictTask(rewritten, {
+        async run(invocation) {
+          writeFileSync(rewritten.settingsPath, REFERENCE);
+          commitAll(rewritten.repoRoot, 'Resolve origin precedence');
+          return { ...worker({ decision: 'acted', summary: 'acted' }), model: invocation.modelSpec.model };
+        },
+      }));
+      expect((await judgeMergeOriginConflictTask(rewritten)).passed).toBe(true);
+      orphanHistory(rewritten.repoRoot, 'Rebased resolution');
+      const afterRewrite = await judgeMergeOriginConflictTask(rewritten);
+      expect(afterRewrite.passed).toBe(false);
+      expect(afterRewrite.failures).toContain('recorded baseline commit is not an ancestor of the candidate');
+    } finally {
+      await rewritten.cleanup();
+    }
+  }, 1_200_000);
+
+  it('fleet-test-unit-repair-01: executor baseline red, reference green, alternative green and scope negative', async () => {
+    const modulePath = FLEET_TEST_UNIT_CONTRACT.module;
+    const REFERENCE = `export function normalizeWorkItem(value) {
+  if (value === undefined || value === null) return { status: 'empty', value: '' };
+  if (typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string' || typeof value.title !== 'string') return { status: 'invalid' };
+  return { status: 'ready', value: { id: value.id, title: value.title } };
+}
+`;
+    const ALTERNATIVE = `export function normalizeWorkItem(value) {
+  const record = value ?? null;
+  if (record === null) return { value: '', status: 'empty' };
+  const isWorkItem = typeof record === 'object'
+    && !Array.isArray(record)
+    && 'id' in record && 'title' in record
+    && typeof record.id === 'string' && typeof record.title === 'string';
+  return isWorkItem
+    ? { value: { title: record.title, id: record.id }, status: 'ready' }
+    : { status: 'invalid' };
+}
+`;
+
+    const runSweep = (task: Awaited<ReturnType<typeof createFleetTestUnitRepairTask>>, files: Record<string, string>) =>
+      executeFleetTestUnitRepairTask(task, {
+        async run(invocation) {
+          const worktree = invocation.prompt.match(/worktree: (.+)$/m)?.[1];
+          if (worktree === undefined) throw new Error('sweep prompt omitted the worktree path');
+          for (const [path, contents] of Object.entries(files)) writeFileSync(join(worktree, path), contents);
+          return { ...worker({ changed: true, summary: 'Repair the missing and null input contract.' }), model: invocation.modelSpec.model };
+        },
+      });
+
+    // (1) Seeded baseline is red at the oracle level.
+    const baseline = await createFleetTestUnitRepairTask();
+    try {
+      expect(baseline.id).toBe(FLEET_TEST_UNIT_CONTRACT.id);
+      expect(baseline.baselineCommit).toMatch(/^[a-f0-9]{40}$/);
+      const red = await judgeFleetTestUnitRepairTask(baseline, baseline.repoRoot);
+      expect(red.passed).toBe(false);
+      expect(red.failures.length).toBeGreaterThan(0);
+    } finally {
+      await baseline.cleanup();
+    }
+
+    // (2) Reference repair through the real sweep executor is green.
+    const reference = await createFleetTestUnitRepairTask();
+    try {
+      const operation = expectOk(await runSweep(reference, { [modulePath]: REFERENCE }));
+      expect(operation.committed).toBe(true);
+      const green = await judgeFleetTestUnitRepairTask(reference, operation.worktree.path);
+      expect(green.failures).toEqual([]);
+      expect(green.passed).toBe(true);
+    } finally {
+      await reference.cleanup();
+    }
+
+    // (3) A materially different repair is also green.
+    const alternative = await createFleetTestUnitRepairTask();
+    try {
+      const operation = expectOk(await runSweep(alternative, { [modulePath]: ALTERNATIVE }));
+      const green = await judgeFleetTestUnitRepairTask(alternative, operation.worktree.path);
+      expect(green.failures).toEqual([]);
+      expect(green.passed).toBe(true);
+    } finally {
+      await alternative.cleanup();
+    }
+
+    // (4) Correct repair plus an edit outside the task allowlist is red on scope.
+    // The extra file is deliberately not a test path: the sweep operation itself refuses
+    // worker changes to test/setup/config files, so a test file would be blocked by the
+    // operation before the oracle ever saw it. This holds under the current
+    // subset-with-nonzero scope implementation; whether that should instead be the brief's
+    // exact two-path allowlist is conductor decision LR4 and is left unresolved here.
+    const scoped = await createFleetTestUnitRepairTask();
+    try {
+      const operation = expectOk(await runSweep(scoped, {
+        [modulePath]: REFERENCE,
+        'packages/settings/extra-helper.mjs': 'export const bypass = true;\n',
+      }));
+      const report = await judgeFleetTestUnitRepairTask(scoped, operation.worktree.path);
+      expect(report.passed).toBe(false);
+      expect(report.failures).toContain('candidate changed paths outside its task allowlist or made no change');
+    } finally {
+      await scoped.cleanup();
+    }
+
+    // (5) An uncommitted edit never reaches green, even with correct bytes.
+    const dirty = await createFleetTestUnitRepairTask();
+    try {
+      expectOk(await runSweep(dirty, { [modulePath]: REFERENCE }));
+      writeFileSync(join(dirty.repoRoot, modulePath), `${REFERENCE}// trailing uncommitted change\n`);
+      const report = await judgeFleetTestUnitRepairTask(dirty, dirty.repoRoot);
+      expect(report.passed).toBe(false);
+      expect(report.failures).toContain('candidate worktree is not clean after its commit');
+    } finally {
+      await dirty.cleanup();
+    }
+  }, 1_200_000);
 });

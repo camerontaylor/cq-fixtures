@@ -48,9 +48,18 @@ export interface ExpandedReviewLoopRepairTask extends Omit<ReviewLoopRepairTask,
 function pinnedReviewTaskOracle(oracleId: string): string {
   const manifestUrl = new URL('./operation-oracle-pins.json', import.meta.url);
   const bytes = readFileSync(manifestUrl);
-  const manifest = validateOraclePinManifest(JSON.parse(bytes.toString('utf8')) as unknown, {
-    kind: 'operation', ids: OPERATION_ORACLE_IDS, paths: OPERATION_ORACLE_PATHS,
-  });
+  // Fail closed on purpose: a malformed or contract-violating manifest, and any dependency
+  // whose bytes moved, must throw before a task workspace exists. The throw is re-raised
+  // verbatim (original attached as `cause`) so the rejection stays deliberate and the
+  // message PK00's regression asserts is preserved; swallowing it would weaken the guard.
+  let manifest: ReturnType<typeof validateOraclePinManifest>;
+  try {
+    manifest = validateOraclePinManifest(JSON.parse(bytes.toString('utf8')) as unknown, {
+      kind: 'operation', ids: OPERATION_ORACLE_IDS, paths: OPERATION_ORACLE_PATHS,
+    });
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error), { cause: error });
+  }
   if (!OPERATION_ORACLE_IDS.some((id) => id === oracleId)) throw new Error(`review task oracle ${oracleId} is absent from the pin manifest`);
   const root = new URL('../../../', import.meta.url);
   for (const dependency of manifest.dependencies) {
@@ -152,8 +161,20 @@ async function createReviewTaskVariant(
     type: 'module',
     scripts: { test: 'node test/public-settings.test.mjs' },
   }, null, 2) + '\n');
-  if (variant === 'labelLimit' || variant === 'labelNfc') {
+  // The v2 labelLimit family keeps its pinned display module at settings/display.js,
+  // which review-loop-judge compares byte-for-byte. The labelNfc family is judged by
+  // REVIEW_TASK_CONTRACTS.labelNfc.displayModule, which is settings/display.mjs, and
+  // its seeded public test imports that same path. Writing display.js here would leave
+  // the display module the oracle probes absent, so a correct reference repair could
+  // never be green; the seeded displaySource is what that task's display check expects.
+  if (variant === 'labelLimit') {
     await writeFile(join(worktreePath, 'settings/display.js'), DISPLAY_SOURCE);
+  }
+  if (variant === 'labelNfc') {
+    await writeFile(
+      join(worktreePath, REVIEW_TASK_CONTRACTS.labelNfc.displayModule),
+      REVIEW_TASK_SEEDS.labelNfc.displaySource,
+    );
   }
   await writeFile(join(worktreePath, definition.sourcePath), definition.source);
   await writeFile(join(worktreePath, 'test/public-settings.test.mjs'), definition.tests);

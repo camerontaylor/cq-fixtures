@@ -21,6 +21,8 @@ export interface ResultRow {
   role: SuiteRole;
   suite: string;
   case?: string;
+  /** W6.5: one-based repeat ordinal within a k-repeat matrix. */
+  repeat?: number;
   model: string;
   driver: string;
   outcome: { score: number; passed: number; total: number };
@@ -145,6 +147,26 @@ export interface ComparisonTable {
   suite: string;
   generatedAt: string;
   cells: ComparisonTableCell[];
+  /** W6.5: paired case-level comparisons, present only for repeated runs. */
+  comparisons?: PairedComparison[];
+}
+
+export interface PairedComparison {
+  baseline: { model: string; driver: string; variant?: string };
+  candidate: { model: string; driver: string; variant?: string };
+  cases: number;
+  repeatsPerCase: number;
+  /** Mean of paired case score differences, candidate minus baseline. */
+  delta: number;
+  /** Case-clustered standard error; repeats never inflate the case count. */
+  standardError: number;
+  confidenceInterval: { lower: number; upper: number; confidence: 0.95 };
+  /** Two-sided 95% confidence, 80% power normal-approximation MDE. */
+  minimumDetectableEffect: number;
+  /** Deltas within this absolute band are labelled noise. */
+  noiseBand: number;
+  interpretation: 'noise' | 'signal' | 'descriptive';
+  coverageParity: boolean;
 }
 
 interface CellAccumulator {
@@ -459,5 +481,63 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       },
     });
   }
-  return { role, suite, generatedAt: new Date().toISOString(), cells: out };
+  const comparisons = pairedComparisons(rows, out);
+  return { role, suite, generatedAt: new Date().toISOString(), cells: out,
+    ...(comparisons.length ? { comparisons } : {}) };
+}
+
+/** Pair case means, then estimate uncertainty across cases rather than rows. */
+export function pairedComparisons(rows: readonly ResultRow[], cells: readonly ComparisonTableCell[]): PairedComparison[] {
+  const key = (r: Pick<ResultRow, 'model' | 'driver' | 'variant'>) =>
+    `${r.model}\n${r.driver}\n${r.variant ?? 'default'}`;
+  const byCell = new Map<string, Map<string, ResultRow[]>>();
+  for (const row of rows) {
+    if (row.case === undefined || row.stopCause !== undefined || row.invalid !== undefined) continue;
+    const cases = byCell.get(key(row)) ?? new Map<string, ResultRow[]>();
+    const repeats = cases.get(row.case) ?? [];
+    repeats.push(row);
+    cases.set(row.case, repeats);
+    byCell.set(key(row), cases);
+  }
+  const result: PairedComparison[] = [];
+  for (let i = 0; i < cells.length; i++) for (let j = i + 1; j < cells.length; j++) {
+    const a = cells[i]!;
+    const b = cells[j]!;
+    const ac = byCell.get(key(a));
+    const bc = byCell.get(key(b));
+    if (!ac || !bc) continue;
+    const shared = [...ac.keys()].filter((id) => bc.has(id)).sort();
+    const repeatsPerCase = Math.min(...shared.flatMap((id) => [ac.get(id)!.length, bc.get(id)!.length]));
+    if (shared.length < 2 || repeatsPerCase < 2) continue;
+    const differences = shared.map((id) => {
+      const mean = (rs: ResultRow[]) => rs.reduce((sum, r) => sum + r.outcome.score, 0) / rs.length;
+      return mean(bc.get(id)!) - mean(ac.get(id)!);
+    });
+    const delta = differences.reduce((sum, d) => sum + d, 0) / differences.length;
+    const variance = differences.reduce((sum, d) => sum + (d - delta) ** 2, 0) / (differences.length - 1);
+    const standardError = Math.sqrt(variance / differences.length);
+    const noiseBand = WILSON_Z_95 * standardError;
+    // A case with only one of k repeats is incomplete evidence, even if an
+    // earlier repeat made the W6.2 distinct-case coverage counter reach 1.
+    const completeRepeats = shared.every((id) => {
+      const left = ac.get(id)!;
+      const right = bc.get(id)!;
+      return left.length === repeatsPerCase && right.length === repeatsPerCase &&
+        left.every((r) => r.repeat !== undefined) && right.every((r) => r.repeat !== undefined) &&
+        new Set(left.map((r) => r.repeat)).size === repeatsPerCase &&
+        left.map((r) => r.repeat).sort().join(',') === right.map((r) => r.repeat).sort().join(',');
+    });
+    const coverageParity = isAtCoverageParity(a, b) && completeRepeats &&
+      shared.length === a.expectedCases && shared.length === b.expectedCases;
+    result.push({
+      baseline: { model: a.model, driver: a.driver, ...(a.variant ? { variant: a.variant } : {}) },
+      candidate: { model: b.model, driver: b.driver, ...(b.variant ? { variant: b.variant } : {}) },
+      cases: shared.length, repeatsPerCase, delta, standardError,
+      confidenceInterval: { lower: delta - noiseBand, upper: delta + noiseBand, confidence: 0.95 },
+      minimumDetectableEffect: (WILSON_Z_95 + 0.8416212335729143) * standardError,
+      noiseBand, coverageParity,
+      interpretation: !coverageParity ? 'descriptive' : Math.abs(delta) <= noiseBand ? 'noise' : 'signal',
+    });
+  }
+  return result;
 }

@@ -236,7 +236,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(preflight).toContain('GITHUB_STEP_SUMMARY');
     expect(preflight, 'the skip flag drives the eval gate').toContain('echo "skip=true" >> "${GITHUB_OUTPUT}"');
     expect(stepChunk('Eval cell —')).toContain(
-      "if: matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true'",
+      "if: (matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true') && (github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver)",
     );
     // Cycle-2 review, exit-status discipline: ONLY the confirmed
     // no-agent-output class (3, with the timeout's 124 mapped in) skips —
@@ -544,11 +544,19 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(profileBlock, 'profile is a choice input').toContain('type: choice');
     expect(profileBlock, 'profile options include full').toContain('- full');
     expect(profileBlock, 'profile options include verified').toContain('- verified');
+    expect(profileBlock, 'profile options include the bounded proof').toContain('- cli-fixer-proof');
+    expect(profileBlock, 'proof restricts the driver choices').toContain('- claude-agent');
+    expect(profileBlock, 'proof restricts the driver choices').toContain('- subprocess');
     expect(profileBlock, 'profile defaults to full').toContain('default: full');
     const evalCell = stepChunk('Eval cell —');
     expect(evalCell, 'eval step reads the profile').toContain("MATRIX_PROFILE: ${{ github.event.inputs.profile || 'full' }}");
     expect(evalCell, 'verified root').toContain('suites/fixer-worker/breadth-verified');
     expect(evalCell, 'tail root').toContain('suites/fixer-worker/breadth-tail');
+    expect(evalCell).toContain('cli-fixer-proof) roots="suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail"');
+    expect(evalCell).toContain('if [ "${MATRIX_PROFILE}" = "cli-fixer-proof" ]; then expected_count=3; fi');
+    expect(text).toContain("github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver");
+    expect(text).toContain("matrix.cell.driver == 'acp' && github.event.inputs.profile != 'cli-fixer-proof'");
+    expect(text).toContain('"${{ github.event.inputs.profile }}" != "cli-fixer-proof"');
     expect(evalCell, 'unknown profiles fail loud').toContain('unknown profile');
   });
 

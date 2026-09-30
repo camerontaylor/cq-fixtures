@@ -15,12 +15,20 @@ on:
   workflow_dispatch:
     inputs:
       profile:
-        description: 'Eval profile: full runs every suite; verified runs only the breadth-verified suites'
+        description: 'Eval profile: full, verified, or one CLI fixer proof lane'
         type: choice
         options:
           - full
           - verified
+          - cli-fixer-proof
         default: full
+      proof_driver:
+        description: 'Driver for cli-fixer-proof (ignored by other profiles)'
+        type: choice
+        options:
+          - claude-agent
+          - subprocess
+        default: claude-agent
 
 permissions:
   contents: read
@@ -394,7 +402,7 @@ jobs:
           }
       - name: ACP headless auth preflight
         id: acp_preflight
-        if: matrix.cell.driver == 'acp'
+        if: matrix.cell.driver == 'acp' && github.event.inputs.profile != 'cli-fixer-proof'
         # CREDENTIAL ASYMMETRY: the OTHER four cells' keys are repo secrets —
         # their absence is a misconfiguration and hard-fails pre-dispatch in
         # the runner (exit 2). The acp lane's credentials are AGENT-SIDE (the
@@ -583,11 +591,11 @@ jobs:
       # credential split already keeps repo write access out of this job
       # (persist-credentials: false).
       - name: Eval cell — ${{ matrix.cell.model }} @ ${{ matrix.cell.provider }} on ${{ matrix.cell.driver }}
-        # The acp cell runs ONLY if the preflight above proved headless agent
-        # auth (skip != 'true'); every OTHER cell runs unconditionally — their
-        # credentials are repo secrets, and a missing one is a
-        # misconfiguration the runner hard-fails on, never a skip.
-        if: matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true'
+        # The acp cell runs only after its auth preflight. The manual
+        # cli-fixer-proof profile runs only the selected CLI driver; other
+        # profiles keep every matrix cell. Missing credentials in a selected
+        # cell hard-fail in the runner.
+        if: (matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true') && (github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver)
         env:
           # The cell names BOTH sides of the credential seam: env_key is the
           # toolkit requireKey name for the cell's provider (ZAI_API_KEY /
@@ -613,9 +621,9 @@ jobs:
           # Designed discovery (J4/F3/F4): a SHALLOW find over FIXED suite dirs
           # (-maxdepth 1: only a suite.json placed DIRECTLY in a named dir
           # runs). The dispatch input `profile` selects the roots (F3,
-          # WB-2.5): `verified` runs only the breadth-verified suites; `full`
-          # (the default) runs every suite. The matrix is paused per D10 and
-          # will be re-enabled by W6.4/W6.7.
+          # WB-2.5): `verified` runs breadth-verified, `full` runs every suite,
+          # and `cli-fixer-proof` runs the three fixer suites on one selected
+          # driver. The matrix is paused per D10 outside manual dispatch.
           # F4 adds the classifier breadth suites: breadth-verified rides
           # both profiles, breadth-tail is full-only (dispatch/matrix).
           # Declaring the roots explicitly keeps widening a deliberate edit.
@@ -646,8 +654,9 @@ jobs:
           suite_count=0
           case "${MATRIX_PROFILE}" in
             verified) roots="suites/fixer-worker/breadth-verified suites/review-classifier/breadth-verified" ;;
+            cli-fixer-proof) roots="suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail" ;;
             full) roots="suites/fixer-worker/micro suites/review-classifier/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail suites/review-classifier/breadth-verified suites/review-classifier/breadth-tail" ;;
-            *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full)"; exit 2 ;;
+            *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full|cli-fixer-proof)"; exit 2 ;;
           esac
           # Review-debt #14: the acp preflight probe spent real inference
           # before this step — its record rides into the runner so the probe
@@ -832,6 +841,7 @@ jobs:
           # surviving tables).
           expected_count=6
           if [ "${MATRIX_PROFILE}" = "verified" ]; then expected_count=2; fi
+          if [ "${MATRIX_PROFILE}" = "cli-fixer-proof" ]; then expected_count=3; fi
           if [ "${suite_count}" -eq 0 ]; then
             hard_fail=1
             echo "::error::matrix discovery found no suites for profile ${MATRIX_PROFILE} — an accidental removal or a broken root; failing the cell so the snapshot cannot publish an empty day"
@@ -1030,7 +1040,7 @@ jobs:
           # otherwise clear an earlier complete run's tables and republish
           # nothing. No tables => merge-only, never clear.
           landed_tables="$(find reports/eval -name '*.table.json' -print -quit 2>/dev/null)"
-          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${{ github.event.inputs.profile }}" != "cli-fixer-proof" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
             rm -rf "${snap_dir}"
           else
             echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}, landed tables: ${landed_tables:-none}) — merging into ${snap_dir} without clearing"

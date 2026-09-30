@@ -17,7 +17,7 @@
     },
     {
       "path": "campaigns/cq-settings/corpus/operation-tasks.ts",
-      "sha256": "d014d402fdddb1ddfc23f6f3ecf88888bd10b39ac3eb8bc6363a162506cd659d"
+      "sha256": "e4a4e45b8406a1719f6b92ece06507eace7013a77a04eafd8bd44507cb904689"
     },
     {
       "path": "campaigns/cq-settings/corpus/protected-candidate-snapshot.ts",
@@ -25,7 +25,7 @@
     },
     {
       "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
-      "sha256": "89f3349bf45e26d72cddf618061b4172a54baaf226ec5ff7d0a6357859a3558f"
+      "sha256": "8fc0238f1d4856de8f53482c1853f27974c1e1dcbfd467fe102adf9fc9b7431b"
     },
     {
       "path": "campaigns/cq-settings/corpus/review-task-oracles.ts",
@@ -113,7 +113,7 @@
     },
     {
       "path": "campaigns/cq-settings/corpus/oracle-pin-contract.ts",
-      "sha256": "3a0ce9f0b647d43b69cac7ec421b0ad34d646bfef0b4a76b439b94a37a95fe63"
+      "sha256": "f6a075bbb5e4648db5ac00a651c5a4fe989ce9b5e524b7bf79b2d1361dc4370e"
     }
   ]
 }

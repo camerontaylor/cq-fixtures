@@ -8,11 +8,15 @@
     },
     {
       "path": "runner/workflow-corpus/review-loop-pin.ts",
-      "sha256": "542605a9d1dc38f314b83aad7fcd5696e1a1edead3ee2e672a1776dc73c26c92"
+      "sha256": "ff924d1f5545f80a5bc8c750fefe30c8f707b888c636e82dee69927af692bf57"
     },
     {
       "path": "campaigns/cq-settings/corpus/review-loop-task.ts",
-      "sha256": "89f3349bf45e26d72cddf618061b4172a54baaf226ec5ff7d0a6357859a3558f"
+      "sha256": "8fc0238f1d4856de8f53482c1853f27974c1e1dcbfd467fe102adf9fc9b7431b"
+    },
+    {
+      "path": "campaigns/cq-settings/corpus/oracle-pin-contract.ts",
+      "sha256": "f6a075bbb5e4648db5ac00a651c5a4fe989ce9b5e524b7bf79b2d1361dc4370e"
     },
     {
       "path": "campaigns/cq-settings/corpus/review-task-oracles.ts",
@@ -28,7 +32,7 @@
     },
     {
       "path": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "sha256": "d87c01dd498d954f1ac5a037bc1dce9bb502d9de12cd8e2d3951e87deb45dfda"
+      "sha256": "847973c6c67e7f1c286efc5f2c05c79ec11bbc8d35f92a60f0ddfe5b4e55046d"
     },
     {
       "path": "runner/boundary/evidence/fallback/judge-ownership-source-closure.public.json",
@@ -103,5 +107,5 @@
       "sha256": "324ff955dfc89c774232f16d763376b225a4ba866477c5e6adfe4a7a3abe88bd"
     }
   ],
-  "sha256": "7f8e2ff0a96ea6c35f29897dd411e4e56fef6f43f49620fdd737bbec33220251"
+  "sha256": "c70558e416a79100399cf5c8bf36ae790de4ded93601105577c42454208c4dc1"
 }

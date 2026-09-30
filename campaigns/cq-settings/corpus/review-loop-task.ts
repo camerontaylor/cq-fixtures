@@ -13,6 +13,7 @@ import {
   type OpResult,
 } from '@camerontaylor/cq-toolkit';
 import { REVIEW_TASK_CONTRACTS, type ReviewTaskVariant } from './review-task-oracles.ts';
+import { OPERATION_ORACLE_IDS, OPERATION_ORACLE_PATHS, validateOraclePinManifest } from './oracle-pin-contract.ts';
 
 export const REVIEW_LOOP_TASK_ID = 'review-loop-label-limit-02' as const;
 export const REVIEW_LOOP_SOURCE_ID = 'cq-settings.settings-module-seed.v2' as const;
@@ -44,16 +45,13 @@ export interface ExpandedReviewLoopRepairTask extends Omit<ReviewLoopRepairTask,
   readonly sourcePath: string;
 }
 
-interface ReviewTaskPinManifest {
-  readonly taskOracleIds: readonly string[];
-  readonly dependencies: readonly { readonly path: string; readonly sha256: string }[];
-}
-
 function pinnedReviewTaskOracle(oracleId: string): string {
   const manifestUrl = new URL('./operation-oracle-pins.json', import.meta.url);
   const bytes = readFileSync(manifestUrl);
-  const manifest = JSON.parse(bytes.toString('utf8')) as ReviewTaskPinManifest;
-  if (!manifest.taskOracleIds.includes(oracleId)) throw new Error(`review task oracle ${oracleId} is absent from the pin manifest`);
+  const manifest = validateOraclePinManifest(JSON.parse(bytes.toString('utf8')) as unknown, {
+    kind: 'operation', ids: OPERATION_ORACLE_IDS, paths: OPERATION_ORACLE_PATHS,
+  });
+  if (!OPERATION_ORACLE_IDS.some((id) => id === oracleId)) throw new Error(`review task oracle ${oracleId} is absent from the pin manifest`);
   const root = new URL('../../../', import.meta.url);
   for (const dependency of manifest.dependencies) {
     const actual = createHash('sha256').update(readFileSync(new URL(dependency.path, root))).digest('hex');

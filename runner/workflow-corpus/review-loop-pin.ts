@@ -23,6 +23,7 @@ export const REVIEW_LOOP_ORACLE_DEPENDENCIES = [
   'runner/workflow-corpus/review-loop-judge.ts',
   'runner/workflow-corpus/review-loop-pin.ts',
   'campaigns/cq-settings/corpus/review-loop-task.ts',
+  'campaigns/cq-settings/corpus/oracle-pin-contract.ts',
   'campaigns/cq-settings/corpus/review-task-oracles.ts',
   'campaigns/cq-settings/corpus/integration-task-oracles.ts',
   'campaigns/cq-settings/corpus/protected-candidate-snapshot.ts',

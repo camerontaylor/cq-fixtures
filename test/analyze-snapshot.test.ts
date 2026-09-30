@@ -43,6 +43,20 @@ describe('snapshot comparison analysis', () => {
     const { runs } = JSON.parse(readFileSync(path, 'utf8'));
     for (const run of runs) run.toolkitLock = 'other';
     writeFileSync(path, JSON.stringify({ runs }));
-    expect(() => analyzeSnapshot(dir)).toThrow(/mixed toolkitLock/);
+    expect(() => analyzeSnapshot(dir)).toThrow(/mixed toolkit provenance/);
+  });
+
+  it('uses published version and registry integrity after toolkit.lock is removed', () => {
+    const dir = fixture();
+    for (const model of ['baseline', 'candidate']) {
+      const path = join(dir, model, 'ai-sdk', 'run.json');
+      const { runs } = JSON.parse(readFileSync(path, 'utf8'));
+      for (const run of runs) {
+        run.toolkitLock = null;
+        run.toolkitPackage = { version: '1.1.0', integrity: 'sha512-example' };
+      }
+      writeFileSync(path, JSON.stringify({ runs }));
+    }
+    expect(analyzeSnapshot(dir).toolkitVersion).toBe('npm:1.1.0@sha512-example');
   });
 });

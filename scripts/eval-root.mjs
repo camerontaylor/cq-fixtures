@@ -64,7 +64,8 @@ const MARKER_DOC = { kind: 'cq-eval-root', version: 1 };
 /** Runner and judge support files, copied byte-for-byte (none carries an answer). */
 export const CODE_FILES = [
   'package.json',
-  'toolkit.lock',
+  'package-lock.json',
+  ...(existsSync(join(REPO_ROOT, 'toolkit.lock')) ? ['toolkit.lock'] : []),
   'policy/denylist/patterns.yml',
   'schema/suite.schema.json',
   'schema/result-row.schema.json',

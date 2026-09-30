@@ -1,5 +1,5 @@
 export interface SnapshotAnalysis {
-  toolkitLock: string;
+  toolkitVersion: string;
   suiteSha: string;
   cellCount: number;
   tables: Array<{

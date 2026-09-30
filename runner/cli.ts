@@ -23,6 +23,7 @@ import { loadSuite, suiteVariant, type Suite } from './suite.ts';
 import { EVAL_ROOT_MARKER, loadAnswerKey, sentinelNeedles, type AnswerKey } from './answerKey.ts';
 import { publishArtifacts, writeRunManifest, type CaseArtifact, type RunManifestEntry } from './persist.ts';
 import { regrade } from './regrade.ts';
+import { readToolkitProvenance } from './provenance.ts';
 import { DEFAULT_CHECK_TIMEOUT_MS } from './score/fixerWorker.ts';
 import { FakeDriver } from './fake-driver.ts';
 // DD-4: the fixer-worker's structured-output shape — the classifier's
@@ -119,15 +120,6 @@ function nextValue(argv: readonly string[], i: number, flag: string): string {
   const v = argv[i + 1];
   if (v === undefined) throw new UsageError(`flag ${flag} requires a value\n${USAGE}`);
   return v;
-}
-
-/** F6: the pinned toolkit.lock value, recorded in the run manifest (null when absent). */
-function readToolkitLock(repoRoot: string): string | null {
-  try {
-    return readFileSync(join(repoRoot, 'toolkit.lock'), 'utf8').trim();
-  } catch {
-    return null;
-  }
 }
 
 interface CliOptions {
@@ -325,6 +317,13 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   // repoRoot mirrors runner/index.ts's default (this file lives in runner/).
   const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  let toolkitProvenance: ReturnType<typeof readToolkitProvenance>;
+  try {
+    toolkitProvenance = readToolkitProvenance(repoRoot);
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : e);
+    return 2;
+  }
   // W6.3: resolve the answer key before any suite loads — a stripped
   // eval-root suite cannot even validate without it. Every defect is exit 2.
   let answerKey: AnswerKey | undefined;
@@ -478,7 +477,7 @@ async function main(argv: readonly string[]): Promise<number> {
         model: opts.model,
         driver: opts.driverName,
         variant: suiteVariant(suite),
-        toolkitLock: readToolkitLock(repoRoot),
+        ...toolkitProvenance,
         suiteSha,
         // F1b: the run identity the runner generated — used verbatim, so a
         // suite whose every case was a dispatch-only absence (zero rows)

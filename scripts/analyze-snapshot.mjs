@@ -22,11 +22,21 @@ function requiredString(value, label) {
   return value;
 }
 
+function toolkitIdentity(run, label) {
+  if (run.toolkitLock !== null && run.toolkitLock !== undefined) {
+    return `lock:${requiredString(run.toolkitLock, `${label}: toolkitLock`)}`;
+  }
+  const version = requiredString(run.toolkitPackage?.version, `${label}: toolkitPackage.version`);
+  const integrity = requiredString(run.toolkitPackage?.integrity, `${label}: toolkitPackage.integrity`);
+  if (!integrity.startsWith('sha512-')) throw new Error(`${label}: toolkitPackage.integrity must be sha512`);
+  return `npm:${version}@${integrity}`;
+}
+
 export function analyzeSnapshot(from) {
   const dirs = cellsBelow(from);
   if (dirs.length < 2) throw new Error(`${from}: need at least two matrix cells`);
   const rows = [];
-  let toolkitLock;
+  let toolkitVersion;
   let suiteSha;
   const seen = new Set();
   for (const dir of dirs) {
@@ -37,23 +47,23 @@ export function analyzeSnapshot(from) {
     for (const entry of manifest.runs) {
       if (entry.role !== run.role || entry.suite !== run.suite || entry.model !== run.model ||
           entry.driver !== run.driver || entry.variant !== run.variant ||
-          entry.toolkitLock !== run.toolkitLock || entry.suiteSha !== run.suiteSha) {
+          toolkitIdentity(entry, label) !== toolkitIdentity(run, label) || entry.suiteSha !== run.suiteSha) {
         throw new Error(`${label}: mixed run identity or provenance within cell`);
       }
     }
-    const lock = requiredString(run.toolkitLock, `${label}: toolkitLock`);
+    const identity = toolkitIdentity(run, label);
     const sha = requiredString(run.suiteSha, `${label}: suiteSha`);
-    if (toolkitLock !== undefined && toolkitLock !== lock) throw new Error(`${label}: mixed toolkitLock`);
+    if (toolkitVersion !== undefined && toolkitVersion !== identity) throw new Error(`${label}: mixed toolkit provenance`);
     if (suiteSha !== undefined && suiteSha !== sha) throw new Error(`${label}: mixed suiteSha`);
-    toolkitLock = lock;
+    toolkitVersion = identity;
     suiteSha = sha;
     const model = requiredString(run.model, `${label}: model`);
     const driver = requiredString(run.driver, `${label}: driver`);
     const role = requiredString(run.role, `${label}: role`);
     const suite = requiredString(run.suite, `${label}: suite`);
-    const identity = [role, suite, model, driver, run.variant ?? 'default'].join('\n');
-    if (seen.has(identity)) throw new Error(`${label}: duplicate served model/driver/variant cell ${identity.replaceAll('\n', '/')}`);
-    seen.add(identity);
+    const cellIdentity = [role, suite, model, driver, run.variant ?? 'default'].join('\n');
+    if (seen.has(cellIdentity)) throw new Error(`${label}: duplicate served model/driver/variant cell ${cellIdentity.replaceAll('\n', '/')}`);
+    seen.add(cellIdentity);
     const lines = readFileSync(join(dir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean);
     if (lines.length === 0) throw new Error(`${label}: empty cell has no paired evidence`);
     for (const [i, line] of lines.entries()) {
@@ -80,7 +90,7 @@ export function analyzeSnapshot(from) {
     groups.get(key).push(row);
   }
   const tables = [...groups.values()].flatMap((suiteRows) => aggregate(suiteRows));
-  return { toolkitLock, suiteSha, cellCount: dirs.length, tables };
+  return { toolkitVersion, suiteSha, cellCount: dirs.length, tables };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
@@ -95,7 +105,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
       for (const table of result.tables) {
         writeFileSync(join(args[3], `${table.role}-${table.suite}.comparisons.json`), JSON.stringify(table, null, 2) + '\n');
       }
-      console.log(`analyzed ${result.cellCount} cells at toolkit.lock ${result.toolkitLock}, suite SHA ${result.suiteSha}`);
+      console.log(`analyzed ${result.cellCount} cells at toolkit ${result.toolkitVersion}, suite SHA ${result.suiteSha}`);
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 2;

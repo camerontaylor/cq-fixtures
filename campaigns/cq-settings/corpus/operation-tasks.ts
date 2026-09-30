@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { validateOraclePinManifest } from './oracle-pin-contract.ts';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -60,17 +61,49 @@ export const ANALYSIS_TASKS = {
   },
 } as const;
 
-interface OperationOraclePinManifest {
-  readonly manifestVersion: 1;
-  readonly dependencies: readonly { readonly path: string; readonly sha256: string }[];
-  readonly taskOracleIds: readonly string[];
-}
-
+const OPERATION_ORACLE_IDS = [
+  "cq-settings.analysis-remediation.oracle.v1",
+  "cq-settings.analysis-unicode-remediation.oracle.v1",
+  "cq-settings.analysis-safe-integer-setting.oracle.v1",
+  "cq-settings.analysis-origin-policy.oracle.v1",
+  "cq-settings.ratchet-monotonicity.oracle.v1",
+  "cq-settings.ratchet-coverage-monotonicity.oracle.v1",
+  "cq-settings.review-role-scope.oracle.v1",
+  "cq-settings.review-label-nfc.oracle.v1",
+] as const;
+const OPERATION_ORACLE_PATHS = [
+  "campaigns/cq-settings/corpus/operation-task-oracles.ts",
+  "campaigns/cq-settings/corpus/operation-tasks.ts",
+  "campaigns/cq-settings/corpus/protected-candidate-snapshot.ts",
+  "campaigns/cq-settings/corpus/review-loop-task.ts",
+  "campaigns/cq-settings/corpus/review-task-oracles.ts",
+  "runner/boundary/broker-toolchain.ts",
+  "runner/boundary/codex-final-profile.ts",
+  "runner/boundary/container-prepare.ts",
+  "runner/boundary/container.ts",
+  "runner/boundary/docker-control.ts",
+  "runner/boundary/egress-broker.ts",
+  "runner/boundary/evidence/fallback/judge-ownership-source-closure.public.json",
+  "runner/boundary/judge-child.ts",
+  "runner/boundary/judge-ownership.ts",
+  "runner/boundary/lifecycle-evidence.ts",
+  "runner/boundary/namespace-acl.sh",
+  "runner/boundary/subscription-auth.ts",
+  "runner/boundary/task-session.ts",
+  "runner/boundary/task-staging.ts",
+  "runner/boundary/task-tree.ts",
+  "runner/boundary/volume-io.mjs",
+  "runner/workflow-corpus/operation-workflow-judges.ts",
+  "runner/boundary/assignment-supervisor-owner.ts",
+  "runner/boundary/g2-daemon-contract.ts",
+  "campaigns/cq-settings/corpus/integration-task-oracles.ts",
+  "campaigns/cq-settings/corpus/oracle-pin-contract.ts",
+] as const;
 function pinnedOperationOracle(oracleId: string): string {
   const manifestUrl = new URL('./operation-oracle-pins.json', import.meta.url);
   const bytes = readFileSync(manifestUrl);
-  const manifest = JSON.parse(bytes.toString('utf8')) as OperationOraclePinManifest;
-  if (!manifest.taskOracleIds.includes(oracleId)) throw new Error(`oracle ${oracleId} is absent from the committed pin manifest`);
+  const manifest = validateOraclePinManifest(JSON.parse(bytes.toString('utf8')) as unknown, { kind: 'operation', ids: OPERATION_ORACLE_IDS, paths: OPERATION_ORACLE_PATHS });
+  if (!OPERATION_ORACLE_IDS.some((id) => id === oracleId)) throw new Error(`oracle ${oracleId} is absent from the committed pin manifest`);
   const root = new URL('../../../', import.meta.url);
   for (const dependency of manifest.dependencies) {
     const digest = createHash('sha256').update(readFileSync(new URL(dependency.path, root))).digest('hex');

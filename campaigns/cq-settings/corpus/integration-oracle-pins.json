@@ -11,11 +11,11 @@
   "dependencies": [
     {
       "path": "campaigns/cq-settings/corpus/integration-task-oracles.ts",
-      "sha256": "955a3b1475f192a3e191857b83f6e2822fb2940af8488885dde3672cdce334cc"
+      "sha256": "ecd172e8043737e9d78557dc387b9f1bb3215d574421405450f1cef0c589f696"
     },
     {
       "path": "campaigns/cq-settings/corpus/integration-tasks.ts",
-      "sha256": "a23dcb78c08df4b950edec092cd430eaec96882583ae3ecf4d4e8aed2adf6a8f"
+      "sha256": "e1753396b44ac2aa661bf5dc9646756f2811e45f5166a52e41d1dc6b28fe5841"
     },
     {
       "path": "campaigns/cq-settings/corpus/protected-candidate-snapshot.ts",
@@ -27,19 +27,19 @@
     },
     {
       "path": "runner/boundary/codex-final-profile.ts",
-      "sha256": "a32dd49982589d3dca43bca5f3ef4374ffae0bfc65d860d9bd8af32d51d981b8"
+      "sha256": "dfaaf88876a63955ac54258a5f779af7aafda855088ccbf16e07f5ed65c902a4"
     },
     {
       "path": "runner/boundary/container-prepare.ts",
-      "sha256": "93489d63cb817ddaa08b275a9fb974a88a265479241603ba16615c5338e2f7f4"
+      "sha256": "48ee826d39b9d2ba3a02f4a48235a5098896f6410ed6446802853a1e980971e0"
     },
     {
       "path": "runner/boundary/container.ts",
-      "sha256": "4970c1d40bb7a5f96272def60d956cfb860202aeee139518ed6602badad951c3"
+      "sha256": "7402316fc4b5cb953fbb1f98ba63db2cb0b3641e782d9de57f71fd251768fb66"
     },
     {
       "path": "runner/boundary/docker-control.ts",
-      "sha256": "75a766553da425ab6d56e27cb1e121995d29952922a3abe6f0be3a38c40eab6a"
+      "sha256": "d4731757caf0d1a9b69abe14848900a4df9d4cec7be210ac34900c0e22d79a76"
     },
     {
       "path": "runner/boundary/egress-broker.ts",
@@ -51,15 +51,15 @@
     },
     {
       "path": "runner/boundary/judge-child.ts",
-      "sha256": "37a21867c5b14d444884359b1819d0ab40797e919eee2dec92aadda71340270b"
+      "sha256": "e45e512c57a70e2bea95ba788ed52cd630c04cba1ab833106fa94652bf80085a"
     },
     {
       "path": "runner/boundary/judge-ownership.ts",
-      "sha256": "450ff691a4762b2fb5dab76aedda67c48067eb11794559653d477d35acdf3068"
+      "sha256": "b92ae802624acc076428350224a45fa83ed77947e309ce8fd34c36991097d8a3"
     },
     {
       "path": "runner/boundary/lifecycle-evidence.ts",
-      "sha256": "db5dd3d40da8dea6aa49a0cb37629f6d922d4b15f0dc4f6ba129f6c4fd223ce3"
+      "sha256": "e005e987f573bbf4cfd55624530c87632541fe9820a1038237fc3378529f3720"
     },
     {
       "path": "runner/boundary/namespace-acl.sh",
@@ -75,7 +75,7 @@
     },
     {
       "path": "runner/boundary/task-staging.ts",
-      "sha256": "8508a20b0a16c5cf48b685da419db997aa9214cef23270e4d0cb130062942685"
+      "sha256": "a618f9e6f4ed21f968c4d3c055eec053df47798bc32b506361b7d5a7e76d40d2"
     },
     {
       "path": "runner/boundary/task-tree.ts",
@@ -87,7 +87,19 @@
     },
     {
       "path": "runner/workflow-corpus/operation-workflow-judges.ts",
-      "sha256": "b6f6383cfac0d810fffa5c81735da7697e2b27dbff58ba3188079cd70ba6a9b6"
+      "sha256": "5657036bda846f6d682d15db0fd77b222d1185c5cb37bf87af541a6c8ca16f45"
+    },
+    {
+      "path": "runner/boundary/assignment-supervisor-owner.ts",
+      "sha256": "e3d1067ae0a11e4bfc2d51df89bf02eb912844ba1038fec9f018d87a2f536bfc"
+    },
+    {
+      "path": "runner/boundary/g2-daemon-contract.ts",
+      "sha256": "3ef438f2c0cd31d295a1bee38774540ce51260c63f6ffd61d02aff50024f6cfa"
+    },
+    {
+      "path": "campaigns/cq-settings/corpus/oracle-pin-contract.ts",
+      "sha256": "3a0ce9f0b647d43b69cac7ec421b0ad34d646bfef0b4a76b439b94a37a95fe63"
     }
   ]
 }

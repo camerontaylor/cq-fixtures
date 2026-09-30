@@ -1062,13 +1062,12 @@ describe('six-task corpus expansion', () => {
  *
  * Every receipt in this block is host-side: no protected judge child, no
  * Docker daemon and no evaluation route is required, so each fact below is
- * exercised even while the pinned expansion-task factories remain blocked by
- * the conductor-owned oracle-pin transaction. Nothing here widens an oracle:
+ * exercised independently of the expansion-task factories. The reviewed pin
+ * transaction enables materialization but does not prove executor triplets.
+ * Nothing here widens an oracle:
  * the added facts are scope, identity and named-failure discrimination only.
  */
 describe('PK11 successor evidence: scope, identity, adapter and oracle discrimination', () => {
-  const LOCAL_ROUTE = { model: 'offline-corpus-only', provider: 'fake' } as const;
-
   const gitIn = (cwd: string, args: string[]): string =>
     execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
@@ -1593,28 +1592,22 @@ describe('PK11 successor evidence: scope, identity, adapter and oracle discrimin
     }).passed).toBe(false);
   });
 
-  it('D67: six pinned expansion tasks still cannot materialize; the stale-pin failure is retained', async () => {
-    // Retained deliberately: this is the conductor-owned pin transaction's failing-before
-    // receipt, not something PK11 may work around or re-point.
-    const drift = [
-      'runner/boundary/codex-final-profile.ts',
-      'runner/boundary/container-prepare.ts',
-      'runner/boundary/container.ts',
-      'runner/boundary/docker-control.ts',
-      'runner/boundary/judge-child.ts',
-      'runner/boundary/judge-ownership.ts',
-      'runner/boundary/lifecycle-evidence.ts',
-      'runner/boundary/task-staging.ts',
-    ];
-    const driftedNow = drift.filter((path) => {
-      const manifest = JSON.parse(readFileSync(new URL('../campaigns/cq-settings/corpus/operation-oracle-pins.json', import.meta.url), 'utf8')) as { dependencies: { path: string; sha256: string }[] };
-      const entry = manifest.dependencies.find((dependency) => dependency.path === path);
-      return entry !== undefined && entry.sha256 !== createHash('sha256').update(readFileSync(new URL(`../${path}`, import.meta.url))).digest('hex');
-    });
-    expect(driftedNow.length).toBeGreaterThan(0);
-
-    await expect(createReviewRoleScopeTask(LOCAL_ROUTE)).rejects.toThrow(/pinned review task oracle dependency changed/);
-    await expect(createReviewLabelNfcTask(LOCAL_ROUTE)).rejects.toThrow(/pinned review task oracle dependency changed/);
-    await expect(createAnalysisRemediationTask('safeIntegerSetting', LOCAL_ROUTE)).rejects.toThrow(/oracle dependency changed/);
-  }, 120_000);
+  it('D67: reviewed successor pins match the exact source bytes', () => {
+    // The failing-before receipt for stale pins remains in the prior matrix log.
+    // A matching pin enables materialization; executor red/green adequacy is separate.
+    for (const name of [
+      'operation-oracle-pins.json',
+      'integration-oracle-pins.json',
+      'review-loop-oracle-pin.json',
+    ]) {
+      const manifest = JSON.parse(readFileSync(new URL(`../campaigns/cq-settings/corpus/${name}`, import.meta.url), 'utf8')) as {
+        dependencies: { path: string; sha256: string }[];
+      };
+      expect(manifest.dependencies.length).toBeGreaterThan(0);
+      for (const entry of manifest.dependencies) {
+        const actual = createHash('sha256').update(readFileSync(new URL(`../${entry.path}`, import.meta.url))).digest('hex');
+        expect(entry.sha256, `${name}: ${entry.path}`).toBe(actual);
+      }
+    }
+  });
 });

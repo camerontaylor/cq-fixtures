@@ -399,17 +399,17 @@
   "activeOraclePinFiles": {
     "reviewLoop": {
       "path": "campaigns/cq-settings/corpus/review-loop-oracle-pin.json",
-      "fileSha256": "a9389211615966d6b2b983b82a65afa9a0bf679f6d13efa83a51d85e49cc5a3e",
-      "runtimePinSha256": "690b63a05f9ba8e6adc17dc16d00adcec6047cb4a1d2c48c2846fb68bb2de2a5",
-      "count": 22
+      "fileSha256": "178c32ed940727da60f50fe494bcc4fcbc39b4ea776fb89b7d0a75b93513f630",
+      "runtimePinSha256": "c70558e416a79100399cf5c8bf36ae790de4ded93601105577c42454208c4dc1",
+      "count": 26
     },
     "operation": {
       "path": "campaigns/cq-settings/corpus/operation-oracle-pins.json",
-      "fileSha256": "825bb045e34cf2f49e8792f5a08c9047fb2504caf46f70ab088dc48d13727d5f"
+      "fileSha256": "847973c6c67e7f1c286efc5f2c05c79ec11bbc8d35f92a60f0ddfe5b4e55046d"
     },
     "integration": {
       "path": "campaigns/cq-settings/corpus/integration-oracle-pins.json",
-      "fileSha256": "8c37b92c760ea58ea410ee7482a31547c90a893ff20d0970b8d395dc5845c49a"
+      "fileSha256": "d2d6ee45a4e7bef63703daadd05e40ce7994d71c5bf61076ba9bf983b260e6c0"
     }
   }
 }

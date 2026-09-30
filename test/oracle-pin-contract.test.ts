@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { validateOraclePinManifest } from '../campaigns/cq-settings/corpus/oracle-pin-contract.ts';
 
 const pathA = 'runner/boundary/judge-child.ts';
@@ -10,6 +11,47 @@ const valid = () => ({ manifestVersion: 1, taskOracleIds: [...expected.ids], dep
 ] });
 
 describe('committed oracle pin inventory', () => {
+  it('expanded review factories reject unsupported versions and missing dependencies', () => {
+    const probe = `
+      import { createRequire, syncBuiltinESMExports } from 'node:module';
+      const fs = createRequire(import.meta.url)('node:fs');
+      const original = fs.readFileSync;
+      let mutation = 'version';
+      let intercepted = 0;
+      fs.readFileSync = function(path, ...args) {
+        const bytes = original.call(this, path, ...args);
+        const name = path instanceof URL ? path.pathname : String(path);
+        if (!name.endsWith('/campaigns/cq-settings/corpus/operation-oracle-pins.json')) return bytes;
+        intercepted++;
+        const manifest = JSON.parse(bytes.toString('utf8'));
+        if (mutation === 'version') manifest.manifestVersion = 2;
+        else manifest.dependencies = manifest.dependencies.slice(1);
+        return Buffer.from(JSON.stringify(manifest));
+      };
+      syncBuiltinESMExports();
+      const { createReviewRoleScopeTask, createReviewLabelNfcTask } = await import('./campaigns/cq-settings/corpus/review-loop-task.ts');
+      const results = [];
+      for (const [kind, factory] of [['version', createReviewRoleScopeTask], ['dependency', createReviewLabelNfcTask]]) {
+        mutation = kind;
+        let task;
+        try { task = await factory({ model: 'offline', provider: 'fake' }); results.push({ kind, rejected: false }); }
+        catch (error) { results.push({ kind, rejected: /manifest contract changed/.test(String(error)) }); }
+        finally { if (task) await task.cleanup(); }
+      }
+      fs.readFileSync = original;
+      syncBuiltinESMExports();
+      console.log(JSON.stringify({ intercepted, results }));
+    `;
+    const child = spawnSync(process.execPath, ['--experimental-transform-types', '--input-type=module', '-e', probe], {
+      cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 30_000,
+    });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout.trim())).toEqual({
+      intercepted: 2,
+      results: [{ kind: 'version', rejected: true }, { kind: 'dependency', rejected: true }],
+    });
+  }, 40_000);
+
   it('accepts exactly the declared version, IDs, path order and hash form', () => {
     expect(validateOraclePinManifest(valid(), expected).dependencies).toHaveLength(2);
   });

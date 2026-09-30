@@ -312,9 +312,9 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // DD-9 "token cap binds alone" era ended when the D9 envelope was
     // accepted (owner, v11 board), and the W6.4 ceiling is the envelope's
     // enforcement on the real matrix.
-    expect(evalCell).toContain('token_cap_per_case=60000');
+    expect(evalCell).toMatch(/^\s*token_cap_per_case=60000$/m);
     expect(evalCell).toContain('if [ "${role}" = "fixer-worker" ] && { [ "${MATRIX_DRIVER}" = "claude-agent" ] || [ "${MATRIX_DRIVER}" = "subprocess" ]; }; then');
-    expect(evalCell).toContain('token_cap_per_case=600000');
+    expect(evalCell).toMatch(/^\s*token_cap_per_case=600000$/m);
     expect(evalCell).toContain('--max-tokens-per-case "${token_cap_per_case}"');
     expect(evalCell, 'the flat per-invocation cap is gone').not.toContain('--max-tokens 200000');
     // The worklist rides stdin; the driver must never eat it.

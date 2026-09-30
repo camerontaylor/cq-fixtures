@@ -54,6 +54,7 @@ const USAGE =
   "caps: --max-tokens caps ONE suite run (each runSuite owns its governor); --max-tokens-per-case is multiplied by that suite's case count (WB-1.6) — pass one, never both\n" +
   'usd (W6.2): every run carries a PER-CASE USD budget — the accepted D9 envelope cap for the cell by default, --max-usd-per-case to override; a cell the D9 table does not map fails closed (exit 2) instead of running uncapped; --max-usd (a legacy run-level cap) and --max-usd-per-case are mutually exclusive\n' +
   '      an UNATTENDED real-lane run (GITHUB_ACTIONS) without a per-case ceiling — a bare --max-usd — is refused (W6.4)\n' +
+  'correction report (opt-in): --correction-report requires --correction-manifest, --correction-corpus-root <dir|none>, --correction-as-of <rfc3339>, and at least one --correction-scope <entryId>=<route>=<actual|shared-condition|development>; optional repeatable --correction-evidence-root <dir>\n' +
   'exits: 0 clean; 1 a case scored zero / run budget-gated / post-load error; 2 usage, suite load, or missing-credential failure\n' +
   'subcommand: regrade --from <out> [--rejudge] [--check-timeout-ms <n>] re-aggregates a finished run (no re-dispatch)';
 
@@ -155,6 +156,13 @@ interface CliOptions {
   /** W6.3: the eval root's runner-only answer key (expected verdicts + sentinel). */
   answerKey?: string;
   experiment?: ExperimentContext;
+  correctionReport?: {
+    manifestPath: string;
+    corpusRoot: string | null;
+    evidenceRoots: string[];
+    asOf: string;
+    scopes: Array<{ entryId: string; route: string; lane: 'actual' | 'shared-condition' | 'development' }>;
+  };
 }
 
 const EXPERIMENT_CONTEXT_SCHEMA = z.object({
@@ -199,6 +207,12 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let suiteSha: string | undefined;
   let answerKey: string | undefined;
   let experiment: ExperimentContext | undefined;
+  let correctionReport = false;
+  let correctionManifest: string | undefined;
+  let correctionCorpusRoot: string | null | undefined;
+  let correctionAsOf: string | undefined;
+  const correctionEvidenceRoots: string[] = [];
+  const correctionScopes: NonNullable<CliOptions['correctionReport']>['scopes'] = [];
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]!;
     switch (flag) {
@@ -218,6 +232,28 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--probe-record': probeRecord = nextValue(argv, i, flag); i++; break;
       case '--suite-sha': suiteSha = nextValue(argv, i, flag); i++; break;
       case '--answer-key': answerKey = nextValue(argv, i, flag); i++; break;
+      case '--correction-report': correctionReport = true; break;
+      case '--correction-manifest': correctionManifest = nextValue(argv, i, flag); i++; break;
+      case '--correction-corpus-root': {
+        const root = nextValue(argv, i, flag);
+        correctionCorpusRoot = root === 'none' ? null : root;
+        i++; break;
+      }
+      case '--correction-evidence-root': correctionEvidenceRoots.push(nextValue(argv, i, flag)); i++; break;
+      case '--correction-as-of': correctionAsOf = nextValue(argv, i, flag); i++; break;
+      case '--correction-scope': {
+        const text = nextValue(argv, i, flag);
+        const parts = text.split('=');
+        if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+          throw new UsageError('--correction-scope expects <entryId>=<route>=<actual|shared-condition|development>');
+        }
+        const [entryId, route, lane] = parts as [string, string, string];
+        if (!['actual', 'shared-condition', 'development'].includes(lane)) {
+          throw new UsageError('--correction-scope lane must be actual, shared-condition, or development');
+        }
+        correctionScopes.push({ entryId, route, lane: lane as 'actual' | 'shared-condition' | 'development' });
+        i++; break;
+      }
       case '--experiment': {
         const path = nextValue(argv, i, flag);
         try { experiment = EXPERIMENT_CONTEXT_SCHEMA.parse(JSON.parse(readFileSync(path, 'utf8'))); }
@@ -250,6 +286,17 @@ function parseArgs(argv: readonly string[]): CliOptions {
   }
   if (suites.length === 0 || model === '' || provider === '') {
     throw new UsageError(`--suite, --model and --provider are required\n${USAGE}`);
+  }
+  if (correctionReport) {
+    if (out === undefined) throw new UsageError('--correction-report requires --out so derived artifacts have a separate output directory');
+    if (correctionManifest === undefined || correctionCorpusRoot === undefined || correctionAsOf === undefined || correctionScopes.length === 0) {
+      throw new UsageError('--correction-report requires --correction-manifest, --correction-corpus-root (use none when unavailable), --correction-as-of, and at least one --correction-scope');
+    }
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(correctionAsOf) || !Number.isFinite(Date.parse(correctionAsOf))) {
+      throw new UsageError('--correction-as-of must be an explicit RFC3339 instant');
+    }
+  } else if (correctionManifest !== undefined || correctionCorpusRoot !== undefined || correctionAsOf !== undefined || correctionEvidenceRoots.length > 0 || correctionScopes.length > 0) {
+    throw new UsageError('correction report options require --correction-report');
   }
   driverName = driverName === '' ? driver : driverName;
   if (!LANES.has(driverName)) {
@@ -337,7 +384,16 @@ function parseArgs(argv: readonly string[]): CliOptions {
     // the dynamic check — this only removes the free pointer.
     answerKey = process.env.CQ_ANSWER_KEY;
   }
-  return { suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey, experiment };
+  return {
+    suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase,
+    checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey, experiment,
+    ...(correctionReport ? {
+      correctionReport: {
+        manifestPath: correctionManifest!, corpusRoot: correctionCorpusRoot!, evidenceRoots: correctionEvidenceRoots,
+        asOf: correctionAsOf!, scopes: correctionScopes,
+      },
+    } : {}),
+  };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -581,15 +637,15 @@ async function main(argv: readonly string[]): Promise<number> {
       const immutableReports: Array<{ path: string; sha256: string }> = [];
       for (const t of tables) {
         const content = JSON.stringify(t, null, 2) + '\n';
-        if (opts.experiment !== undefined) {
+        if (opts.experiment !== undefined || opts.correctionReport !== undefined) {
           writeImmutableFile(join(opts.out, `${t.role}.table.json`), content);
-          immutableReports.push(writeCohortReport(opts.out, opts.experiment, 'v1', `${t.role}.table.json`, content));
+          if (opts.experiment !== undefined) immutableReports.push(writeCohortReport(opts.out, opts.experiment, 'v1', `${t.role}.table.json`, content));
         } else writeFileSync(join(opts.out, `${t.role}.table.json`), content);
       }
       const rowsContent = rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length > 0 ? '\n' : '');
-      if (opts.experiment !== undefined) {
+      if (opts.experiment !== undefined || opts.correctionReport !== undefined) {
         writeImmutableFile(join(opts.out, 'rows.jsonl'), rowsContent);
-        immutableReports.push(writeCohortReport(opts.out, opts.experiment, 'v1', 'rows.jsonl', rowsContent));
+        if (opts.experiment !== undefined) immutableReports.push(writeCohortReport(opts.out, opts.experiment, 'v1', 'rows.jsonl', rowsContent));
       } else writeFileSync(join(opts.out, 'rows.jsonl'), rowsContent);
       // F6 (WB-5.2a): persist the prediction + the run manifest. Each artifact
       // is size-bounded and denylist-scanned before it is written; a withheld
@@ -600,6 +656,9 @@ async function main(argv: readonly string[]): Promise<number> {
       if (opts.experiment !== undefined) {
         const manifestContent = `${JSON.stringify({ schemaVersion: 1, experiment: opts.experiment, reports: immutableReports, runs: manifestEntries }, null, 2)}\n`;
         writeCohortReport(opts.out, opts.experiment, 'v1', 'manifest.json', manifestContent);
+      }
+      if (opts.correctionReport !== undefined) {
+        await emitCorrectionReport(opts, rows, tables, manifestEntries, repoRoot);
       }
       console.log(`wrote ${opts.out}/rows.jsonl, ${tables.length} table(s), ${published.published.length} prediction artifact(s) and run.json`);
     }
@@ -621,6 +680,83 @@ async function main(argv: readonly string[]): Promise<number> {
 /** True when `child` is `parent` or lies beneath it (both absolute, realpath'd). */
 function isInside(child: string, parent: string): boolean {
   return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
+/**
+ * Opt-in PK14 SEAM-3. The producer receives only the just-emitted run binding;
+ * originals remain immutable, while its correction report/board and this
+ * explicitly gated rate selector are separate exclusive artifacts.
+ */
+export async function emitCorrectionReport(
+  opts: CliOptions,
+  rows: ResultRow[],
+  tables: ComparisonTable[],
+  runs: RunManifestEntry[],
+  repoRoot: string,
+): Promise<void> {
+  const config = opts.correctionReport;
+  if (config === undefined || opts.out === undefined) return;
+
+  // Keep the reporting producer out of ordinary runner startup. Its larger
+  // graph is loaded only for an explicitly requested derived report.
+  const { produceCorrectionAwareReport } = await import('./reporting/producer.ts');
+  const oneRunHasRows = runs.length === 1 && rows.length > 0 && rows.every((row) => row.runId === runs[0]!.runId);
+  const reportRuns = runs.map((run) => {
+    const table = tables.find((candidate) => candidate.role === run.role);
+    const rates = table?.cells
+      .map((cell) => cell.operationalCompletionRate)
+      .filter((rate): rate is number => typeof rate === 'number') ?? [];
+    const historicRate = rates.length > 0 && rates.every((rate) => rate === rates[0]) ? rates[0] : null;
+    const projection = historicRate === null ? {} : { 'table.operationalCompletionRate': historicRate };
+    const projectionPath = join(opts.out!, 'correction-input', `${run.runId}.original-projection.json`);
+    writeImmutableFile(projectionPath, `${JSON.stringify(projection, null, 2)}\n`);
+    return {
+      runId: run.runId,
+      ...(oneRunHasRows ? { rowsPath: join(opts.out!, 'rows.jsonl') } : {}),
+      originalPath: projectionPath,
+    };
+  });
+
+  const report = produceCorrectionAwareReport({
+    manifestPath: resolve(config.manifestPath),
+    repoRoot: resolve(repoRoot),
+    corpusRoot: config.corpusRoot === null ? null : resolve(config.corpusRoot),
+    evidenceRoots: config.evidenceRoots.map((root) => resolve(root)),
+    runs: reportRuns,
+    asOf: config.asOf,
+    scopes: config.scopes,
+    outDir: opts.out,
+  });
+
+  // `rateClaim.published` alone is insufficient: require a verified complete
+  // pin set, an explicitly publishable run, a numeric value and successful
+  // re-aggregation over supplied rows. Any missing condition emits null plus
+  // blockers; it never substitutes the historical literal or zero.
+  const selected = report.runs.map((run) => {
+    const blockers: Array<{ status: string; reason: string; detail?: string }> = [...run.blockers];
+    if (!report.pinnedOk) blockers.push({ status: 'unresolved', reason: 'correction-pins-unverified', detail: 'the pinned correction set is incomplete; no numeric rate may be published' });
+    if (!run.publishable) blockers.push({ status: 'unresolved', reason: 'correction-not-publishable', detail: 'the producer did not qualify a corrected claim for this run' });
+    if (run.rateClaim.value === null || !Number.isFinite(run.rateClaim.value)) blockers.push({ status: 'unresolved', reason: 'corrected-rate-null', detail: 'the producer supplied no qualified numeric corrected rate' });
+    if (run.reaggregation.status !== 'reaggregated') blockers.push({ status: 'unresolved', reason: 'corrected-rows-not-reaggregated', detail: run.reaggregation.reason ?? 'corrected rows were not re-aggregated' });
+    const publish = report.pinnedOk && run.publishable && run.rateClaim.published &&
+      run.rateClaim.value !== null && Number.isFinite(run.rateClaim.value) &&
+      run.reaggregation.status === 'reaggregated';
+    return {
+      runId: run.runId,
+      correctedCompletionRate: publish ? run.rateClaim.value : null,
+      status: publish ? 'published' : 'withheld',
+      reason: publish ? run.rateClaim.reason : `withheld: ${blockers.map((blocker) => blocker.reason).join(', ') || run.rateClaim.reason}`,
+      blockers,
+      sourceReport: 'correction-report.json',
+    };
+  });
+  writeImmutableFile(
+    join(opts.out, 'correction-rate-selection.json'),
+    `${JSON.stringify({ schemaVersion: 1, asOf: config.asOf, pinnedOk: report.pinnedOk, runs: selected }, null, 2)}\n`,
+  );
+  for (const run of selected) {
+    console.log(`${run.runId}: derived corrected rate ${run.status === 'published' ? run.correctedCompletionRate : 'WITHHELD (null, not 0)'}`);
+  }
 }
 
 /**

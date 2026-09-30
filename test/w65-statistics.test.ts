@@ -41,7 +41,12 @@ describe('W6.5 paired case-clustered comparisons', () => {
 
   it('leaves historical single-run tables without comparisons', () => {
     expect(aggregate([row('baseline', 'a', 1, 1), row('candidate', 'a', 1, 1)]
-      .map(({ repeatCount, ...r }) => r))[0])
+      .map((r) => {
+        const historical = { ...r };
+        delete historical.repeat;
+        delete historical.repeatCount;
+        return historical;
+      }))[0])
       .not.toHaveProperty('comparisons');
   });
 

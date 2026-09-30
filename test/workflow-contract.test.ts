@@ -577,6 +577,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell).toContain('repeat_extra=(--repeats 3)');
     expect(evalCell).toContain('--max-usd-per-case "${MATRIX_USD_PER_CASE}"');
     expect(stepChunk('ACP headless auth preflight')).toContain("github.event.inputs.profile != 'w65-pilot'");
+    expect(stepChunk('Analyze paired matrix cells')).toContain("if: github.event.inputs.profile == 'w65-pilot'");
     expect(stepChunk('Analyze paired matrix cells')).toContain('scripts/analyze-snapshot.mjs');
     expect(stepChunk('Commit report snapshots')).toContain("-name '*.comparisons.json'");
     expect(stepChunk('Commit report snapshots')).toContain('"${SNAPSHOT_PROFILE}" != "w65-pilot"');

@@ -999,6 +999,7 @@ jobs:
           merge-multiple: true
           path: reports/
       - name: Analyze paired matrix cells
+        if: github.event.inputs.profile == 'w65-pilot'
         run: |
           set -euo pipefail
           # A degraded dispatch can leave one usable cell. Keep its raw

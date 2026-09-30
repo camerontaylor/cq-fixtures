@@ -556,7 +556,8 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(evalCell).toContain('if [ "${MATRIX_PROFILE}" = "cli-fixer-proof" ]; then expected_count=3; fi');
     expect(text).toContain("github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver");
     expect(text).toContain("matrix.cell.driver == 'acp' && github.event.inputs.profile != 'cli-fixer-proof'");
-    expect(text).toContain('"${{ github.event.inputs.profile }}" != "cli-fixer-proof"');
+    expect(text).toContain("SNAPSHOT_PROFILE: ${{ github.event.inputs.profile || 'full' }}");
+    expect(text).toContain('"${SNAPSHOT_PROFILE}" != "cli-fixer-proof"');
     expect(evalCell, 'unknown profiles fail loud').toContain('unknown profile');
   });
 

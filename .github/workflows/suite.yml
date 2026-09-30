@@ -989,6 +989,8 @@ jobs:
         # Plan §9: report snapshots are committed as reviewable data.
         # `[skip ci]` keeps the push from re-triggering the gate workflows
         # (no looping on our own commits).
+        env:
+          SNAPSHOT_PROFILE: ${{ github.event.inputs.profile || 'full' }}
         run: |
           set -euo pipefail
           # WHY the snapshots branch: main is hook-protected (required checks
@@ -1040,7 +1042,7 @@ jobs:
           # otherwise clear an earlier complete run's tables and republish
           # nothing. No tables => merge-only, never clear.
           landed_tables="$(find reports/eval -name '*.table.json' -print -quit 2>/dev/null)"
-          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${{ github.event.inputs.profile }}" != "cli-fixer-proof" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${SNAPSHOT_PROFILE}" != "cli-fixer-proof" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
             rm -rf "${snap_dir}"
           else
             echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}, landed tables: ${landed_tables:-none}) — merging into ${snap_dir} without clearing"

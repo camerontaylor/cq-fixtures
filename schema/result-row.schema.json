@@ -33,6 +33,11 @@
       "minLength": 1,
       "description": "id of the cases[] entry this row scored (links to suite.schema.json case.id). suites/README.md promises one row per case, so rows carry the case id for traceability; optional at schema grain, always emitted by the J2 runner."
     },
+    "repeat": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "W6.5: one-based repeat ordinal within a k-repeat matrix; absent on historical rows."
+    },
     "model": {
       "type": "string",
       "minLength": 1,

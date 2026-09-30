@@ -38,6 +38,36 @@
       "format": "date-time",
       "description": "When the table was generated (RFC 3339 date-time)."
     },
+    "comparisons": {
+      "type": "array",
+      "description": "W6.5: paired case-clustered comparisons over repeated rows. Absent on single-run historical tables.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["baseline", "candidate", "cases", "repeatsPerCase", "delta", "standardError", "confidenceInterval", "minimumDetectableEffect", "noiseBand", "interpretation", "coverageParity"],
+        "properties": {
+          "baseline": { "$ref": "#/$defs/cellIdentity" },
+          "candidate": { "$ref": "#/$defs/cellIdentity" },
+          "cases": { "type": "integer", "minimum": 2 },
+          "repeatsPerCase": { "type": "integer", "minimum": 2 },
+          "delta": { "type": "number", "minimum": -1, "maximum": 1 },
+          "standardError": { "type": "number", "minimum": 0 },
+          "confidenceInterval": {
+            "type": "object", "additionalProperties": false,
+            "required": ["lower", "upper", "confidence"],
+            "properties": {
+              "lower": { "type": "number" },
+              "upper": { "type": "number" },
+              "confidence": { "const": 0.95 }
+            }
+          },
+          "minimumDetectableEffect": { "type": "number", "minimum": 0 },
+          "noiseBand": { "type": "number", "minimum": 0 },
+          "interpretation": { "enum": ["noise", "signal", "descriptive"] },
+          "coverageParity": { "type": "boolean" }
+        }
+      }
+    },
     "cells": {
       "type": "array",
       "minItems": 0,
@@ -258,6 +288,17 @@
             }
           }
         ]
+      }
+    }
+  },
+  "$defs": {
+    "cellIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model", "driver"],
+      "properties": {
+        "model": { "type": "string", "minLength": 1 },
+        "driver": { "enum": ["ai-sdk", "claude-agent", "subprocess", "acp"] },
+        "variant": { "type": "string", "minLength": 1 }
       }
     }
   }

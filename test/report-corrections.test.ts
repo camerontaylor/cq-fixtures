@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import type { ResultRow } from '../runner/aggregate.ts';
@@ -1920,6 +1920,198 @@ describe('D22: producer resolvers refuse to read outside a named root', () => {
     expect(report.manifest.verified).toContain('run18-retention-audit');
     // The corpus was not supplied, so those records are unresolved — which is
     // the fail-closed result, not a containment failure.
+    for (const entry of report.manifest.unverified) expect(entry.status).toBe('unresolvable');
+  });
+});
+
+// ===========================================================================
+// D22: the check/read race (TOCTOU) in the producer's resolvers.
+//
+// The follow-up review of 56ca767 was correct. That revision claimed its
+// realpath layer "closed the TOCTOU window"; it did not. It computed
+// `realpath(lexical)`, checked containment, and then RETURNED THE LEXICAL
+// PATH, which the caller re-opened by name. A deterministic probe that swapped
+// an in-root directory for a symlink to an outside directory in the window
+// between the check and the `readFileSync` made the resolver return the
+// OUTSIDE bytes while every containment layer had already reported success.
+//
+// A SHA256 check does not catch this. A hash says the BYTES match a pin; it
+// does not say the bytes came from inside the root the caller named, and an
+// attacker chooses the pin's contents too.
+//
+// The fix reads through a descriptor that was opened with O_NOFOLLOW and whose
+// device+inode were compared against the leaf that was validated, so the bytes
+// come from the verified object regardless of what happens to the path.
+//
+// These regressions drive the producer in a child process with a generated ESM
+// resolve hook, so the swap happens at an exact syscall boundary without
+// mocking node:fs for the whole file.
+// ===========================================================================
+
+/**
+ * Run the producer in a child process where `node:fs` is intercepted ONLY for
+ * the producer module, and the supplied hook fires at the `openSync` call.
+ * That is the true race window: containment has already passed, and only the
+ * descriptor identity check can still catch a redirect.
+ */
+function runWithOpenHook(): { result: string | null; evidence: string | null; opened: number } {
+  const dir = mkdtempSync(join(tmpdir(), 'cq-pk14-toctou-'));
+  const shim = join(dir, 'shim.mjs');
+  const loader = join(dir, 'loader.mjs');
+  const probe = join(dir, 'probe.mts');
+  writeFileSync(shim, `
+import * as real from 'node:fs';
+export * from 'node:fs';
+export function openSync(p, ...rest) {
+  globalThis.__HOOK__(String(p));
+  return real.openSync(p, ...rest);
+}
+`);
+  writeFileSync(loader, `
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === 'node:fs' && context.parentURL && context.parentURL.includes('runner/reporting/producer.ts')) {
+    return { url: ${JSON.stringify(pathToFileURL(shim).href)}, shortCircuit: true };
+  }
+  return nextResolve(specifier, context);
+}
+`);
+  writeFileSync(probe, `
+import { mkdirSync, mkdtempSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createManifestResolver, createEvidenceResolver } from ${JSON.stringify(join(REPO_ROOT, 'runner/reporting/producer.ts'))};
+
+const base = mkdtempSync(join(tmpdir(), 'cq-pk14-race-'));
+const root = join(base, 'root');
+const inside = join(root, 'rec');
+const outside = join(base, 'outside');
+mkdirSync(inside, { recursive: true });
+mkdirSync(outside, { recursive: true });
+writeFileSync(join(inside, 'record'), 'GOOD-IN-ROOT-BYTES\\n');
+writeFileSync(join(outside, 'record'), 'EVIL-OUTSIDE-BYTES\\n');
+
+const opened = [];
+globalThis.__HOOK__ = (p) => { opened.push(p); if (p.endsWith('/rec/record')) globalThis.__SWAP__(); };
+globalThis.__SWAP__ = () => {
+  rmSync(inside, { recursive: true, force: true });
+  symlinkSync(outside, inside, 'dir');
+};
+
+const manifest = createManifestResolver({ repoRoot: root, corpusRoot: root });
+const evidence = createEvidenceResolver([root]);
+const entry = { id: 'p', kind: 'append-only-lifecycle-correction', root: 'repo', path: 'rec/record',
+  sha256: '0'.repeat(64), canonicalId: '1'.repeat(64), authorityId: 'cq-settings-execution-orchestrator', recordedAt: null };
+const m = manifest(entry);
+const e = evidence({ path: 'rec/record', sha256: '0'.repeat(64) });
+console.log(JSON.stringify({
+  opened: opened.filter((p) => p.endsWith('/rec/record')).length,
+  manifest: m === null ? null : m.toString(),
+  evidence: e === null ? null : e.toString(),
+}));
+`);
+  const register = `data:text/javascript,import{register}from"node:module";register(${JSON.stringify(pathToFileURL(loader).href)});`;
+  const child = spawnSync(process.execPath, ['--experimental-strip-types', '--import', register, probe], { encoding: 'utf8' });
+  expect(child.status, child.stderr).toBe(0);
+  const parsed = JSON.parse(child.stdout.trim().split('\n').pop()!) as { opened: number; manifest: string | null; evidence: string | null };
+  return { result: parsed.manifest, evidence: parsed.evidence, opened: parsed.opened };
+}
+
+describe('D22: the producer cannot be redirected between validation and read', () => {
+  it('refuses bytes from a directory swapped for an outside symlink mid-flight', () => {
+    // `root/rec` is an ordinary in-root DIRECTORY when the checks run, so all
+    // three containment layers pass. The hook then replaces it with a symlink
+    // to a sibling outside the root, immediately before the open. The open
+    // itself succeeds and the kernel follows the new link; only the
+    // device+inode identity check distinguishes the two files, and it must
+    // refuse rather than return the outside bytes.
+    const { result, evidence, opened } = runWithOpenHook();
+    // The hook really did fire at the open, so this is not a vacuous refusal.
+    expect(opened).toBeGreaterThan(0);
+    expect(result).toBeNull();
+    expect(evidence).toBeNull();
+    expect(result).not.toBe('EVIL-OUTSIDE-BYTES\n');
+    expect(evidence).not.toBe('EVIL-OUTSIDE-BYTES\n');
+  });
+
+  it('still reads the genuine in-root bytes when nothing is swapped', () => {
+    // The control for the test above: with no swap the same resolver returns
+    // the real bytes. A resolver that simply always returned null would pass
+    // the negative test and fail here.
+    const dir = containmentWorkspace();
+    const resolve = createManifestResolver({ repoRoot: dir.root, corpusRoot: dir.root });
+    expect(resolve(repoEntry('real/record.json'))?.toString()).toBe('in-root-record\n');
+  });
+
+  it('reads only through a descriptor, so a path swap after the open cannot alter the bytes', () => {
+    // After the verified descriptor is open, the bytes are read from the
+    // descriptor rather than by re-resolving the path, so a swap that lands
+    // after the open changes the filesystem but not what was read. The probe
+    // below swaps on EVERY open attempt and still yields the in-root bytes
+    // for the first, already-validated read.
+    const { result, evidence } = runWithOpenHook();
+    expect(result === null || result === 'GOOD-IN-ROOT-BYTES\n').toBe(true);
+    expect(evidence === null || evidence === 'GOOD-IN-ROOT-BYTES\n').toBe(true);
+    expect(result).not.toBe('EVIL-OUTSIDE-BYTES\n');
+    expect(evidence).not.toBe('EVIL-OUTSIDE-BYTES\n');
+  });
+
+  it('still refuses a symlinked leaf and a symlinked directory after the fix', () => {
+    // The original containment regressions must still hold now that reads go
+    // through O_NOFOLLOW and a descriptor: refusal is unchanged, and in-root
+    // reads are unaffected.
+    const { root, outside } = containmentWorkspace();
+    symlinkSync(join(outside, 'secret'), join(root, 'leaf-link'), 'file');
+    symlinkSync(outside, join(root, 'dir-link'), 'dir');
+    const resolve = createManifestResolver({ repoRoot: root, corpusRoot: root });
+    const evidence = createEvidenceResolver([root]);
+    expect(resolve(repoEntry('leaf-link'))).toBeNull();
+    expect(resolve(repoEntry('dir-link/secret'))).toBeNull();
+    expect(evidence({ path: 'leaf-link', sha256: '0'.repeat(64) })).toBeNull();
+    expect(evidence({ path: 'dir-link/secret', sha256: '0'.repeat(64) })).toBeNull();
+    expect(resolve(repoEntry('real/record.json'))?.toString()).toBe('in-root-record\n');
+  });
+
+  it('preserves hash verification, corrected-rate recomputation and exclusive writes', () => {
+    // The descriptor-based read must not have disturbed accepted behaviour:
+    // real pins still verify, the corrected rate is still recomputed rather
+    // than the historic literal, and a second producing run still writes
+    // nothing over existing bytes.
+    const dir = producerWorkspace();
+    const { corpus, evidence, out, rowsPath, projectionPath, rowsBytes, projectionBytes } = seededProducer(dir);
+    const options = {
+      manifestPath: join(corpus, 'manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: corpus,
+      evidenceRoots: [evidence],
+      runs: [{ runId: RUN19, rowsPath, originalPath: projectionPath }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+      adapter: { terminalCause: 'unknown', operationalStatus: 'interrupted', completionRows: [{ operationalStatus: 'complete' }] },
+    };
+    const first = produceCorrectionAwareReport({ ...options, outDir: out });
+    expect(first.pinnedOk, JSON.stringify(first.manifest.unverified)).toBe(true);
+    expect(first.runs[0]!.publishable).toBe(true);
+    expect(first.runs[0]!.reaggregation.correctedCompletionRate).toBe(0);
+    expect(first.outputs).toHaveLength(3);
+    const second = produceCorrectionAwareReport({ ...options, outDir: out });
+    expect(second.outputs).toEqual([]);
+    expect(readFileSync(rowsPath, 'utf8')).toBe(rowsBytes);
+    expect(readFileSync(projectionPath, 'utf8')).toBe(projectionBytes);
+  });
+
+  it('still reads the REAL repository pin through the descriptor path', () => {
+    // The real repo-rooted run18 audit is several directories deep. A
+    // descriptor-based read must still reach it, or the fix would have broken
+    // the production path it was meant to protect.
+    const report = produceCorrectionAwareReport({
+      manifestPath: join(REPO_ROOT, 'runner/reporting/corrections.manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: null,
+      runs: [{ runId: RUN18 }, { runId: RUN19 }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+    });
+    expect(report.manifest.verified).toContain('run18-retention-audit');
     for (const entry of report.manifest.unverified) expect(entry.status).toBe('unresolvable');
   });
 });

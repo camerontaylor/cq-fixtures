@@ -15,12 +15,20 @@ on:
   workflow_dispatch:
     inputs:
       profile:
-        description: 'Eval profile: full runs every suite; verified runs only the breadth-verified suites'
+        description: 'Eval profile: full, verified, or one CLI fixer proof lane'
         type: choice
         options:
           - full
           - verified
+          - cli-fixer-proof
         default: full
+      proof_driver:
+        description: 'Driver for cli-fixer-proof (ignored by other profiles)'
+        type: choice
+        options:
+          - claude-agent
+          - subprocess
+        default: claude-agent
 
 permissions:
   contents: read
@@ -195,10 +203,8 @@ jobs:
         # headless `claude` CLI (installed below); the acp lane spawns the
         # zcode-acp-server harness (installed below, version-pinned).
         #
-        # Budget by TOKENS, not USD: the served GLM id is priced in the
-        # interim toolkit pin and deepseek pricing is not assumed; a token cap
-        # binds alone on every cell, keeping the matrix dispatch-safe. The cap
-        # is PER CASE (--max-tokens-per-case, WB-1.6): the retired flat
+        # The per-case token cap (--max-tokens-per-case, WB-1.6) and D9 USD
+        # ceiling below bind every cell. The retired flat token cap of
         # 200000 was per suite INVOCATION and silently gated the back half of
         # a 40-case suite into "no row" absences.
         #
@@ -396,7 +402,7 @@ jobs:
           }
       - name: ACP headless auth preflight
         id: acp_preflight
-        if: matrix.cell.driver == 'acp'
+        if: matrix.cell.driver == 'acp' && github.event.inputs.profile != 'cli-fixer-proof'
         # CREDENTIAL ASYMMETRY: the OTHER four cells' keys are repo secrets —
         # their absence is a misconfiguration and hard-fails pre-dispatch in
         # the runner (exit 2). The acp lane's credentials are AGENT-SIDE (the
@@ -585,11 +591,11 @@ jobs:
       # credential split already keeps repo write access out of this job
       # (persist-credentials: false).
       - name: Eval cell — ${{ matrix.cell.model }} @ ${{ matrix.cell.provider }} on ${{ matrix.cell.driver }}
-        # The acp cell runs ONLY if the preflight above proved headless agent
-        # auth (skip != 'true'); every OTHER cell runs unconditionally — their
-        # credentials are repo secrets, and a missing one is a
-        # misconfiguration the runner hard-fails on, never a skip.
-        if: matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true'
+        # The acp cell runs only after its auth preflight. The manual
+        # cli-fixer-proof profile runs only the selected CLI driver; other
+        # profiles keep every matrix cell. Missing credentials in a selected
+        # cell hard-fail in the runner.
+        if: (matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true') && (github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver)
         env:
           # The cell names BOTH sides of the credential seam: env_key is the
           # toolkit requireKey name for the cell's provider (ZAI_API_KEY /
@@ -615,9 +621,9 @@ jobs:
           # Designed discovery (J4/F3/F4): a SHALLOW find over FIXED suite dirs
           # (-maxdepth 1: only a suite.json placed DIRECTLY in a named dir
           # runs). The dispatch input `profile` selects the roots (F3,
-          # WB-2.5): `verified` runs only the breadth-verified suites; `full`
-          # (the default) runs every suite. The matrix is paused per D10 and
-          # will be re-enabled by W6.4/W6.7.
+          # WB-2.5): `verified` runs breadth-verified, `full` runs every suite,
+          # and `cli-fixer-proof` runs the three fixer suites on one selected
+          # driver. The matrix is paused per D10 outside manual dispatch.
           # F4 adds the classifier breadth suites: breadth-verified rides
           # both profiles, breadth-tail is full-only (dispatch/matrix).
           # Declaring the roots explicitly keeps widening a deliberate edit.
@@ -648,8 +654,9 @@ jobs:
           suite_count=0
           case "${MATRIX_PROFILE}" in
             verified) roots="suites/fixer-worker/breadth-verified suites/review-classifier/breadth-verified" ;;
+            cli-fixer-proof) roots="suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail" ;;
             full) roots="suites/fixer-worker/micro suites/review-classifier/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail suites/review-classifier/breadth-verified suites/review-classifier/breadth-tail" ;;
-            *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full)"; exit 2 ;;
+            *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full|cli-fixer-proof)"; exit 2 ;;
           esac
           # Review-debt #14: the acp preflight probe spent real inference
           # before this step — its record rides into the runner so the probe
@@ -708,17 +715,18 @@ jobs:
             # (while-read); a stdin-reading driver transport (the subprocess
             # or acp lane reading a prompt from stdin, say) would otherwise
             # eat the remaining suite paths mid-run.
-            # WB-1.6 per-case token budget. The runner multiplies this by the
-            # suite's loaded case count (--max-tokens-per-case), so the cap
-            # scales with suite size instead of gating a 40-case suite's tail
-            # after ~5k tokens/case. 60000 = 5x the worst observed 2026-09-18
-            # per-case total (10441 tokens: deepseek ai-sdk fixer, 52203/5,
-            # all four governor-counted fields), rounded up; those runs were
-            # ERRORED partial tool loops, so the observed figure is a LOWER
-            # bound and the headroom covers a completed 8-step loop. Control:
-            # the healthy glm classifier cell spent 776 tokens/case (7756/10)
-            # — ~77x under this budget. Micro: fixer 5x60000=300000,
-            # classifier 10x60000=600000, both above the retired flat 200000.
+            # WB-1.6 / issue #30: the runner counts cacheRead in its token
+            # governor. The WB-1 claude-agent and subprocess fixer cases
+            # consumed ~300k-470k cacheRead each, so 60k/case gated their
+            # suite tails. Give only those CLI fixer lanes 600k/case (above
+            # the observed cacheRead plus input/output); retain 60k/case for
+            # all other role/driver cells. The D9 USD cap below still binds
+            # every invocation and prevents a higher token cap from raising
+            # the accepted third-party spend envelope.
+            token_cap_per_case=60000
+            if [ "${role}" = "fixer-worker" ] && { [ "${MATRIX_DRIVER}" = "claude-agent" ] || [ "${MATRIX_DRIVER}" = "subprocess" ]; }; then
+              token_cap_per_case=600000
+            fi
             # W6.4 USD ceiling: the cell's explicit D9 per-case cap rides
             # EVERY invocation — the runner binds it at the invocation grain
             # and as the cumulative run cap (W6.2), so an overspend is a
@@ -730,7 +738,7 @@ jobs:
               --driver-name "${MATRIX_DRIVER}" \
               --model "${MATRIX_MODEL}" \
               --provider "${MATRIX_PROVIDER}" \
-              --max-tokens-per-case 60000 \
+              --max-tokens-per-case "${token_cap_per_case}" \
               --max-usd-per-case "${MATRIX_USD_PER_CASE}" \
               --journal "${out_dir}/journal" \
               "${probe_extra[@]}" \
@@ -833,6 +841,7 @@ jobs:
           # surviving tables).
           expected_count=6
           if [ "${MATRIX_PROFILE}" = "verified" ]; then expected_count=2; fi
+          if [ "${MATRIX_PROFILE}" = "cli-fixer-proof" ]; then expected_count=3; fi
           if [ "${suite_count}" -eq 0 ]; then
             hard_fail=1
             echo "::error::matrix discovery found no suites for profile ${MATRIX_PROFILE} — an accidental removal or a broken root; failing the cell so the snapshot cannot publish an empty day"
@@ -980,6 +989,8 @@ jobs:
         # Plan §9: report snapshots are committed as reviewable data.
         # `[skip ci]` keeps the push from re-triggering the gate workflows
         # (no looping on our own commits).
+        env:
+          SNAPSHOT_PROFILE: ${{ github.event.inputs.profile || 'full' }}
         run: |
           set -euo pipefail
           # WHY the snapshots branch: main is hook-protected (required checks
@@ -1031,7 +1042,7 @@ jobs:
           # otherwise clear an earlier complete run's tables and republish
           # nothing. No tables => merge-only, never clear.
           landed_tables="$(find reports/eval -name '*.table.json' -print -quit 2>/dev/null)"
-          if [ "${{ needs.matrix.result }}" = "success" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${SNAPSHOT_PROFILE}" != "cli-fixer-proof" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
             rm -rf "${snap_dir}"
           else
             echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}, landed tables: ${landed_tables:-none}) — merging into ${snap_dir} without clearing"

@@ -8,17 +8,18 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CodexCollectedEventFrame } from '../runner/native/codex-g2-events.ts';
 import { createBoundedJsonlCollector } from '../runner/native/codex-g2-events.ts';
-import type { ActualG2ExpectedAdmission, G2ChannelCapability } from '../runner/native/run-actual-g2.ts';
+import type { ActualG2ExpectedAdmission } from '../runner/native/run-actual-g2.ts';
 import {
   assembleCodexG2Receipt, createConsumedAdmissionVerifier, decodeCollectedCodexG2Stream,
   declaredChannelCoverage, runActualG2, unsupportedProfileReceipt, validateActualG2DispatchPreconditions,
 } from '../runner/native/run-actual-g2.ts';
 import type { G2DenialEvidenceReceipt } from '../runner/native/g2-tool-events.ts';
 import {
-  applyTrustedDenialEvidence, createTrustedG2ControlVerifier, explicitG2ChannelUnavailable,
-  sealDenialEvidenceReceipt, verifyDenialEvidenceReceipt,
+  admittedChannelsForTransport, admitG2Producers, applyTrustedDenialEvidence, createAuthenticatedTransportInventory,
+  createTrustedG2ControlVerifier, explicitG2ChannelUnavailable, producerProvenanceVerified,
+  sealDenialEvidenceReceipt, verifyDenialEvidenceReceipt, verifyTransportInventoryIntegrity,
 } from '../runner/native/g2-tool-events.ts';
-import type { G2ProbeFixture, NativeExecutionReceipt } from '../runner/native/g2-harness.ts';
+import type { G2ProbeFixture, G2ToolKind, NativeExecutionReceipt } from '../runner/native/g2-harness.ts';
 import { normalizeG2NativeReceipt, runG2Harness, toBoundaryCanonicalNativeReceipt } from '../runner/native/g2-harness.ts';
 import type { FrozenFinalProfileApproval } from '../runner/campaign/final-profile-admission.ts';
 import { freezeFinalProfileAdmission } from '../runner/campaign/final-profile-admission.ts';
@@ -288,38 +289,149 @@ describe('strict actual-route assembly (D45)', () => {
     ledgerRoot: '/tmp/pk08-unused-ledger', sourcePin: hex('a'), assignmentId: identity.assignmentId,
     attemptId: identity.attemptId, boundaryIdentity: hex('b'), invocationIdentity: hex('c'),
   };
-  const codexCapabilities = (): G2ChannelCapability[] => declaredChannelCoverage({ name: 'codex-exec' });
+  // Host-owned authenticated transport inventory and an explicitly admitted
+  // producer registry. The channel set is module-fixed: codex-exec admits only
+  // shell, and no authentic non-shell producer exists.
+  const inventory = createAuthenticatedTransportInventory({
+    transport: 'codex-exec', resolvedExecutable: process.execPath,
+    executableVersion: 'codex-cli 0.155.1', observedAt: '2026-09-30T00:00:00.000Z',
+  });
+  const registry = admitG2Producers([
+    { producerId: 'native-tool-instrumentation', transport: 'codex-exec', channels: ['shell'] },
+  ]);
+  const producerAuthority = { registry, inventory };
+  const devReceipts = (): G2DenialEvidenceReceipt[] => [
+    sealedShellDenialReceipt({ frame: '', collectorSequence: 0, collectedAt: '2026-09-30T00:00:00.000Z' })];
 
-  it('refuses dispatch, without touching the execution seam, while required channels lack producers', async () => {
+  it('refuses dispatch, without touching the execution seam, while required channels lack admitted producers', async () => {
     let executed = false;
     const result = await runActualG2({
       fixture: shellFixture('success'), context, signal: new AbortController().signal, timeoutMs: 10_000,
       finalG1EvidenceAccepted: true, expectedAdmission, guardianProvisioned: true,
-      capabilities: codexCapabilities(), trustedDenialReceipts: [sealedShellDenialReceipt({ frame: '', collectorSequence: 0, collectedAt: '2026-09-30T00:00:00.000Z' })],
+      inventory, trustedDenialReceipts: devReceipts(), producerAuthority,
       execute: async () => { executed = true; return {}; },
       stop: async () => ({ invocationId: identity.invocationId, processTree: 'stopped-and-reaped', boundary: 'terminated', export: { inventoryHash: hex('a'), head: hex('b').slice(0, 40) } }),
       decodeReceipt: () => null,
     });
-    expect(result).toMatchObject({ refused: true, reason: 'required-channel-unavailable' });
+    expect(result.refused).toBe(true);
     if (!result.refused) return;
+    expect(result.reason).toBe('required-channel-unavailable');
     expect(result.detail).toContain('read');
     expect(result.detail).toContain('config');
+    expect(result.qualification).toBe('refused');
+    expect(result.qualificationAuthority).toBe('conductor-boundary-runG2Harness-with-expectedAdmission-required');
     expect(executed).toBe(false);
   });
 
-  it('reports each missing strict prerequisite explicitly before any dispatch', () => {
-    // The hypothetical fully-observed capability set exists only to exercise each
-    // precondition independently; no transport currently declares non-shell channels.
-    const receipts = [sealedShellDenialReceipt({ frame: '', collectorSequence: 0, collectedAt: '2026-09-30T00:00:00.000Z' })];
-    const full = { finalG1EvidenceAccepted: true, expectedAdmission, guardianProvisioned: true,
-      capabilities: codexCapabilities().map((capability) => ({ ...capability, qualification: 'observed' as const })), trustedDenialReceipts: receipts };
-    expect(validateActualG2DispatchPreconditions(full)).toEqual({ ready: true });
-    expect(validateActualG2DispatchPreconditions({ ...full, finalG1EvidenceAccepted: false })).toMatchObject({ ready: false, reason: 'final-g1-evidence-unaccepted' });
-    expect(validateActualG2DispatchPreconditions({ ...full, expectedAdmission: undefined })).toMatchObject({ ready: false, reason: 'expected-admission-missing' });
-    expect(validateActualG2DispatchPreconditions({ ...full, expectedAdmission: { ...expectedAdmission, sourcePin: 'short' } })).toMatchObject({ ready: false, reason: 'expected-admission-malformed' });
-    expect(validateActualG2DispatchPreconditions({ ...full, expectedAdmission: { ...expectedAdmission, ledgerRoot: 'relative/ledger' } })).toMatchObject({ ready: false, reason: 'expected-admission-malformed' });
-    expect(validateActualG2DispatchPreconditions({ ...full, guardianProvisioned: false })).toMatchObject({ ready: false, reason: 'guardian-unprovisioned' });
-    expect(validateActualG2DispatchPreconditions({ ...full, trustedDenialReceipts: [] })).toMatchObject({ ready: false, reason: 'trusted-denial-receipts-absent' });
+  it('refuses every missing strict prerequisite and can never report ready for the known transport', () => {
+    // The standing truth for the known codex transport: required non-shell
+    // channels have no admitted producers, so production preconditions are
+    // unreachable-ready by construction. The former fake-ready expectation
+    // (caller-mapped all-observed capabilities => ready) was the F01 finding.
+    const base = { finalG1EvidenceAccepted: true, expectedAdmission, guardianProvisioned: true,
+      inventory, trustedDenialReceipts: devReceipts(), producerAuthority };
+    expect(validateActualG2DispatchPreconditions(base)).toMatchObject({ ready: false, reason: 'required-channel-unavailable' });
+    expect(validateActualG2DispatchPreconditions({ ...base, finalG1EvidenceAccepted: false })).toMatchObject({ ready: false, reason: 'final-g1-evidence-unaccepted' });
+    expect(validateActualG2DispatchPreconditions({ ...base, expectedAdmission: undefined })).toMatchObject({ ready: false, reason: 'expected-admission-missing' });
+    expect(validateActualG2DispatchPreconditions({ ...base, expectedAdmission: { ...expectedAdmission, sourcePin: 'short' } })).toMatchObject({ ready: false, reason: 'expected-admission-malformed' });
+    expect(validateActualG2DispatchPreconditions({ ...base, expectedAdmission: { ...expectedAdmission, ledgerRoot: 'relative/ledger' } })).toMatchObject({ ready: false, reason: 'expected-admission-malformed' });
+    expect(validateActualG2DispatchPreconditions({ ...base, guardianProvisioned: false })).toMatchObject({ ready: false, reason: 'guardian-unprovisioned' });
+    // With receipts present and authenticated, the standing channel gap refuses;
+    // an empty receipt set also hits the channel gate first. The
+    // trusted-denial-receipts-absent gate guards future fully-admitted transports.
+    expect(validateActualG2DispatchPreconditions({ ...base, trustedDenialReceipts: [] })).toMatchObject({ ready: false, reason: 'required-channel-unavailable' });
+  });
+
+  it('F01: caller-forged all-observed capability claims cannot reach the production gate', () => {
+    // The forged mapping a caller could pass at the old head; production
+    // preconditions no longer accept capability input at all.
+    const forgedAllObserved = declaredChannelCoverage({ name: 'codex-exec' })
+      .map((capability) => ({ ...capability, qualification: 'observed' as const }));
+    expect(forgedAllObserved.every((capability) => capability.qualification === 'observed')).toBe(true);
+    void forgedAllObserved;
+    // The channel set comes only from the module-fixed ceiling of the
+    // authenticated inventory, so even a hostile inventory admits only shell.
+    expect(admittedChannelsForTransport('codex-exec')).toEqual(['shell']);
+    expect(admittedChannelsForTransport('unknown-transport')).toEqual([]);
+    expect(inventory.admittedChannels).toEqual(['shell']);
+    const verdict = validateActualG2DispatchPreconditions({
+      finalG1EvidenceAccepted: true, expectedAdmission, guardianProvisioned: true,
+      inventory, trustedDenialReceipts: devReceipts(), producerAuthority,
+    });
+    expect(verdict).toMatchObject({ ready: false, reason: 'required-channel-unavailable' });
+    if (!verdict.ready) expect(verdict.detail).toContain('no authenticated producer protocol is admitted');
+  });
+
+  it('F01: self-sealed receipts stay structurally valid but authenticate only through admitted provenance', () => {
+    const { collected } = collectShellPair(13, 'failed', 'EACCES-shaped');
+    const decoded = decodeCodexShellEventFramesForTest(collected.frames);
+    const rawResult = decoded.toolTrace[1]!;
+    const forged = sealDenialEvidenceReceipt({
+      producerProtocol: 'cq-g2-producer-v1', producerId: 'attacker-forged-producer', invocationId: identity.invocationId,
+      probe: { correlationId: 'item-pk08-1', kind: 'shell', targetOrCommand: shellCommand },
+      denialKind: 'filesystem-denied', observed: { toolStatus: 'failed', toolExitCode: 13, toolErrorCode: 'EACCES' },
+      collectorSequence: rawResult.collectorSequence, collectedAt: rawResult.at,
+    });
+    const forgedEvent = { ...rawResult,
+      outcome: { disposition: 'denied' as const, denialKind: 'filesystem-denied' as const, exitCode: 13, toolErrorCode: 'EACCES' as const } };
+    // Structural integrity holds — self-sealing proves integrity only.
+    expect(verifyDenialEvidenceReceipt(forged, { probe: forged.probe, event: forgedEvent })).toBe(true);
+    // Provenance refuses the unadmitted producer identity.
+    expect(producerProvenanceVerified(forged, { registry, inventory })).toBe(false);
+    expect(createTrustedG2ControlVerifier([forged], { registry, inventory }).verifyDenialEvidence({ probe: forged.probe, event: forgedEvent })).toBe(false);
+    // Production preconditions refuse the forged proof before any dispatch.
+    const verdict = validateActualG2DispatchPreconditions({
+      finalG1EvidenceAccepted: true, expectedAdmission, guardianProvisioned: true,
+      inventory, trustedDenialReceipts: [forged], producerAuthority,
+    });
+    expect(verdict).toMatchObject({ ready: false, reason: 'trusted-denial-receipts-unauthenticated' });
+    if (!verdict.ready) expect(verdict.detail).toContain('not authentication');
+    // The upgrade path also refuses without provenance, and upgrades only in the
+    // explicit development form without an authority.
+    const gated = applyTrustedDenialEvidence(decoded.toolTrace, [forged], { registry, inventory });
+    expect(gated.appliedCorrelationIds).toEqual([]);
+    expect(gated.toolTrace[1]?.outcome).toEqual({ disposition: 'unknown', exitCode: 13 });
+    const devOnly = applyTrustedDenialEvidence(decoded.toolTrace, [forged]);
+    expect(devOnly.appliedCorrelationIds).toEqual(['item-pk08-1']);
+    // The admitted producer still authenticates under the same authority.
+    const { resultFrame } = collectShellPair(13, 'failed');
+    const admitted = sealedShellDenialReceipt(resultFrame);
+    expect(producerProvenanceVerified(admitted, { registry, inventory })).toBe(true);
+  });
+
+  it('F01: producer admission can never exceed the fixed transport channel ceiling', () => {
+    expect(() => admitG2Producers([{ producerId: 'p', transport: 'codex-exec', channels: ['read'] }])).toThrow(/channel ceiling/u);
+    expect(() => admitG2Producers([{ producerId: 'p', transport: 'codex-exec', channels: [] }])).toThrow(/channel ceiling/u);
+    expect(() => admitG2Producers([{ producerId: 'p', transport: 'unknown-transport' as 'codex-exec', channels: ['shell'] }])).toThrow(/one known transport/u);
+    expect(() => admitG2Producers([
+      { producerId: 'dup', transport: 'codex-exec', channels: ['shell'] },
+      { producerId: 'dup', transport: 'codex-exec', channels: ['shell'] },
+    ])).toThrow(/more than once/u);
+    const shellRegistry = admitG2Producers([{ producerId: 'p', transport: 'codex-exec', channels: ['shell'] }]);
+    expect(shellRegistry.admits('p', 'shell')).toBe(true);
+    expect(shellRegistry.admits('p', 'read')).toBe(false);
+    expect(shellRegistry.admits('other', 'shell')).toBe(false);
+  });
+
+  it('F01: tampered, retagged or host-stale transport inventories fail authentication', () => {
+    expect(verifyTransportInventoryIntegrity(inventory)).toBe(true);
+    const widened = { ...inventory, admittedChannels: ['shell', 'read'] as G2ToolKind[] };
+    expect(verifyTransportInventoryIntegrity(widened)).toBe(false);
+    const retagged = { ...inventory, inventoryId: 'f'.repeat(64) };
+    expect(verifyTransportInventoryIntegrity(retagged)).toBe(false);
+    const relative = { ...inventory, resolvedExecutable: 'relative/node' };
+    expect(verifyTransportInventoryIntegrity(relative)).toBe(false);
+    expect(() => createAuthenticatedTransportInventory({
+      transport: 'codex-exec', resolvedExecutable: '/nonexistent/cq-missing-binary', observedAt: '2026-09-30T00:00:00.000Z',
+    })).toThrow(/does not exist/u);
+    expect(() => createAuthenticatedTransportInventory({
+      transport: 'codex-exec', resolvedExecutable: 'relative/node', observedAt: '2026-09-30T00:00:00.000Z',
+    })).toThrow(/absolute/u);
+    const verdict = validateActualG2DispatchPreconditions({
+      finalG1EvidenceAccepted: true, expectedAdmission, guardianProvisioned: true,
+      inventory: widened as typeof inventory, trustedDenialReceipts: devReceipts(), producerAuthority,
+    });
+    expect(verdict).toMatchObject({ ready: false, reason: 'transport-inventory-unauthenticated' });
   });
 
   it('verifies consumed admission against the real private ledger and refuses replay or wrong joins', async () => {

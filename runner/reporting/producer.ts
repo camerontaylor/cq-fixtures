@@ -118,7 +118,7 @@ export class ProducerError extends Error {
  * `readContainedWithin`, which validates and reads through a single verified
  * descriptor, for anything that actually consumes bytes.
  */
-function resolveWithin(root: string, relativePath: string): string | null {
+function resolveWithin(root: string, relativePath: string): ContainedPath | null {
   if (relativePath.length === 0) return null;
   if (isAbsolute(relativePath)) return null;
 
@@ -136,13 +136,36 @@ function resolveWithin(root: string, relativePath: string): string | null {
 
   // Layer 3: the resolved target is still inside the boundary.
   const real = realpathOrNull(lexical);
-  if (real === null) return null;
-  const realRel = relative(base, real);
-  if (realRel.length === 0 || realRel.startsWith('..') || isAbsolute(realRel)) return null;
+  if (real === null || !isContained(base, real)) return null;
 
   // The CANONICAL path, so a caller that must report provenance names the
   // object that was actually validated rather than the alias it arrived by.
-  return real;
+  return { base, canonical: real };
+}
+
+/** A validated canonical path together with the boundary it was checked against. */
+interface ContainedPath {
+  /** The canonicalised root: the containment boundary for this call. */
+  base: string;
+  /** The canonical path of the target, known to be inside `base`. */
+  canonical: string;
+}
+
+/** Is `path` strictly inside `base`? Equal-to-base does not count. */
+function isContained(base: string, path: string): boolean {
+  const rel = relative(base, path);
+  return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+/** The device+inode of a path, taken with lstat so a link is not followed. */
+function identityOrNull(path: string): { dev: string; ino: string } | null {
+  try {
+    const st = lstatSync(path);
+    if (!st.isFile()) return null;
+    return { dev: String(st.dev), ino: String(st.ino) };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -168,22 +191,34 @@ function resolveWithin(root: string, relativePath: string): string | null {
  *   3. open the leaf with `O_NOFOLLOW`, so the kernel refuses a leaf that is a
  *      symlink AT THE MOMENT OF THE OPEN rather than at the moment of a check;
  *   4. `fstat` the descriptor and require it to be a regular file whose
- *      device and inode are the ones step 2 recorded. This is what covers a
- *      MID-PATH directory swapped for a symlink: the redirect lands on a
- *      different inode, and a different inode is refused. On a platform
- *      without `O_NOFOLLOW` this identity check alone still catches a
- *      symlinked leaf, because `lstat` reports the LINK's own inode while
- *      `fstat` reports the TARGET's;
- *   5. read from the descriptor. The bytes come from the inode that was
+ *      device and inode are the ones step 2 recorded;
+ *   5. re-resolve the path AFTER the open and require it still to be inside
+ *      the boundary, and require the path to still designate the descriptor's
+ *      inode. These post-open checks are the ones that actually decide, and
+ *      they are what a mid-path swap cannot satisfy;
+ *   6. read from the descriptor. The bytes come from the inode that was
  *      verified, so nothing that happens to the path afterwards can change
  *      them.
  *
  * RESIDUAL LIMITS, stated honestly rather than claimed away:
  *
- *   * Node exposes no `openat`-style directory-relative traversal, so
- *     mid-path components cannot each be opened with `O_NOFOLLOW`. They are
- *     covered by the device+inode identity check, not by per-component
- *     no-follow semantics.
+ *   * THIS IS NOT ATOMIC. There is no single syscall that opens a path and
+ *     simultaneously proves the descriptor lies inside a boundary, and Node
+ *     exposes neither `openat`/dirfd-relative traversal nor a portable way to
+ *     read an opened descriptor's true path: on this platform
+ *     `/proc/self/fd/<fd>` is ENOENT and `/dev/fd/<fd>` is EINVAL. So the
+ *     checks below are performed before AND after the open, and the residual
+ *     window is a swap-in followed by a swap-back timed to straddle the open.
+ *   * A single mid-path swap is caught by the post-open realpath: the path
+ *     still resolves outside the boundary, so the read is refused. A swap-back
+ *     is caught by the post-open identity agreement: the path no longer
+ *     designates the inode the descriptor holds, so the read is refused.
+ *   * An attacker able to interleave both swaps inside the post-open window,
+ *     with both operations landing between the open and the re-check, is not
+ *     defeated by this code. Defeating that needs an `openat`-relative open
+ *     or a verifiable descriptor path, neither of which Node offers here.
+ *   * If any post-open verification cannot be performed, the read FAILS CLOSED
+ *     rather than proceeding on the strength of the earlier checks.
  *   * This defends the root boundary. It cannot defend a caller who supplies a
  *     root, or evidence directories, that an attacker already controls: such a
  *     caller can simply place the bytes where they were going to be read.
@@ -196,22 +231,19 @@ function resolveWithin(root: string, relativePath: string): string | null {
  *     trustworthy.
  */
 function readContainedWithin(root: string, relativePath: string): Buffer | null {
-  const canonical = resolveWithin(root, relativePath);
-  if (canonical === null) return null;
+  const resolved = resolveWithin(root, relativePath);
+  if (resolved === null) return null;
+  const { base, canonical } = resolved;
 
-  // The identity of the leaf we are about to authorise, taken with lstat so a
-  // symlink reports its OWN inode and cannot masquerade as its target.
-  let expected: { dev: string; ino: string };
-  try {
-    const st = lstatSync(canonical);
-    if (!st.isFile()) return null;
-    expected = { dev: String(st.dev), ino: String(st.ino) };
-  } catch {
-    return null;
-  }
+  // Pre-open identity. Recorded for the O_NOFOLLOW agreement check; it is NOT
+  // treated as authoritative, because an attacker who can reach the filesystem
+  // can also control what this call observes. The post-open checks below are
+  // what actually decide.
+  const expected = identityOrNull(canonical);
+  if (expected === null) return null;
 
-  // O_NOFOLLOW is applied when the platform provides it; the identity check
-  // below is what makes correctness independent of that.
+  // O_NOFOLLOW makes the kernel refuse a symlinked LEAF at the open itself.
+  // It says nothing about the directories leading to it.
   const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
   let fd: number;
   try {
@@ -220,9 +252,27 @@ function readContainedWithin(root: string, relativePath: string): Buffer | null 
     return null;
   }
   try {
-    const st = fstatSync(fd);
-    if (!st.isFile()) return null;
-    if (String(st.dev) !== expected.dev || String(st.ino) !== expected.ino) return null;
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) return null;
+    const openedIdentity = { dev: String(opened.dev), ino: String(opened.ino) };
+    if (openedIdentity.dev !== expected.dev || openedIdentity.ino !== expected.ino) return null;
+
+    // POST-OPEN CONTAINMENT. The path the descriptor was opened through must
+    // still resolve INSIDE the canonical boundary. A mid-path directory that
+    // was swapped for a symlink before the open makes this re-resolution land
+    // outside the boundary, and the read is refused. Without this, the pre-open
+    // and post-swap `lstat` and `open` all agree on the SAME outside inode and
+    // every identity check passes while the bytes are the attacker's.
+    const afterOpen = realpathOrNull(canonical);
+    if (afterOpen === null || !isContained(base, afterOpen)) return null;
+
+    // POST-OPEN IDENTITY AGREEMENT. The path must still designate the exact
+    // inode the descriptor holds. This is what catches a swap-back: the path
+    // looks legitimate again while the descriptor still points outside.
+    const afterStat = identityOrNull(canonical);
+    if (afterStat === null) return null;
+    if (afterStat.dev !== openedIdentity.dev || afterStat.ino !== openedIdentity.ino) return null;
+
     return readFileSync(fd);
   } catch {
     return null;

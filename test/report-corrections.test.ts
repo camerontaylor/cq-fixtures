@@ -10,7 +10,7 @@
 // asserts the shape of the wiring rather than the old absence of it.
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -2113,5 +2113,184 @@ describe('D22: the producer cannot be redirected between validation and read', (
     });
     expect(report.manifest.verified).toContain('run18-retention-audit');
     for (const entry of report.manifest.unverified) expect(entry.status).toBe('unresolvable');
+  });
+});
+
+// ===========================================================================
+// D22: the mid-path swap that survives the pre-open identity check.
+//
+// Independent review of b30f810 found a third-order escape, and it was real.
+// The sequence then was: resolveWithin() -> lstat the leaf for device+inode ->
+// open O_NOFOLLOW -> fstat and compare. Swapping `root/rec` for a symlink to an
+// outside directory in the window between resolveWithin() returning and that
+// leaf lstat made BOTH the lstat and the open land on the SAME outside inode.
+// The identity check was therefore self-consistent and passed, and the
+// resolver returned the attacker's bytes.
+//
+// The reason is that lstat on a full path only declines to follow the FINAL
+// component; every intermediate directory is still traversed. So a pre-open
+// lstat cannot certify a mid-path link on its own.
+//
+// The fix re-resolves the path AFTER the open and requires it still to be
+// inside the boundary, and requires the path to still designate the
+// descriptor's inode. Neither can be satisfied by a swap that has already
+// happened. This is NOT atomic and is not claimed to be: the residual window
+// is a swap-in plus a swap-back straddling the open, which Node's API surface
+// (no openat, and /proc/self/fd + /dev/fd both unusable here) cannot close.
+// ===========================================================================
+
+/**
+ * Run the producer in a child process where `node:fs` is intercepted only for
+ * the producer, and the hook fires on the SECOND lstat of the leaf: after
+ * resolveWithin() has finished, immediately before the pre-open identity
+ * capture. Each resolver gets a fresh tree so ordering cannot mask either one.
+ */
+function runWithMidPathSwap(): { manifest: string | null; evidence: string | null; swaps: number } {
+  const dir = mkdtempSync(join(tmpdir(), 'cq-pk14-midpath-'));
+  const shim = join(dir, 'shim.mjs');
+  const loader = join(dir, 'loader.mjs');
+  const probe = join(dir, 'probe.mts');
+  writeFileSync(shim, `
+import * as real from 'node:fs';
+export * from 'node:fs';
+export function lstatSync(p, ...rest) {
+  globalThis.__LSTAT__(String(p));
+  return real.lstatSync(p, ...rest);
+}
+export function readFileSync(p, ...rest) { return real.readFileSync(p, ...rest); }
+export function openSync(p, ...rest) { return real.openSync(p, ...rest); }
+`);
+  writeFileSync(loader, `
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === 'node:fs' && context.parentURL && context.parentURL.includes('runner/reporting/producer.ts')) {
+    return { url: ${JSON.stringify(pathToFileURL(shim).href)}, shortCircuit: true };
+  }
+  return nextResolve(specifier, context);
+}
+`);
+  writeFileSync(probe, `
+import { mkdirSync, mkdtempSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createManifestResolver, createEvidenceResolver } from ${JSON.stringify(join(REPO_ROOT, 'runner/reporting/producer.ts'))};
+
+const EVIL = 'EVIL-OUTSIDE-BYTES\\n';
+
+function scenario(which) {
+  const base = mkdtempSync(join(tmpdir(), 'cq-pk14-mid-'));
+  const root = join(base, 'root');
+  const inside = join(root, 'rec');
+  const outside = join(base, 'outside');
+  mkdirSync(inside, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(inside, 'record'), 'GOOD-IN-ROOT-BYTES\\n');
+  writeFileSync(join(outside, 'record'), EVIL);
+
+  let leaf = 0;
+  let swapped = false;
+  globalThis.__LSTAT__ = (p) => {
+    if (!p.endsWith('/rec/record')) return;
+    leaf += 1;
+    // Leaf lstat #1 is inside resolveWithin's symlink-component walk, when
+    // root/rec is still a real in-root directory. #2 is the pre-open identity
+    // capture, and the swap lands immediately before it.
+    if (leaf === 2 && !swapped) {
+      swapped = true;
+      rmSync(inside, { recursive: true, force: true });
+      symlinkSync(outside, inside, 'dir');
+    }
+  };
+  const bytes = which === 'manifest'
+    ? createManifestResolver({ repoRoot: root, corpusRoot: root })({ id: 'p', kind: 'append-only-lifecycle-correction', root: 'repo', path: 'rec/record', sha256: '0'.repeat(64), canonicalId: '1'.repeat(64), authorityId: 'cq-settings-execution-orchestrator', recordedAt: null })
+    : createEvidenceResolver([root])({ path: 'rec/record', sha256: '0'.repeat(64) });
+  return { bytes, swapped, leaf };
+}
+
+const m = scenario('manifest');
+const e = scenario('evidence');
+console.log(JSON.stringify({
+  manifest: m.bytes === null ? null : m.bytes.toString(),
+  evidence: e.bytes === null ? null : e.bytes.toString(),
+  manifestSwapped: m.swapped, evidenceSwapped: e.swapped, manifestLeafLstats: m.leaf,
+}));
+`);
+  const register = `data:text/javascript,import{register}from"node:module";register(${JSON.stringify(pathToFileURL(loader).href)});`;
+  const child = spawnSync(process.execPath, ['--experimental-strip-types', '--import', register, probe], { encoding: 'utf8' });
+  expect(child.status, child.stderr).toBe(0);
+  const parsed = JSON.parse(child.stdout.trim().split('\n').pop()!) as {
+    manifest: string | null; evidence: string | null; manifestSwapped: boolean; evidenceSwapped: boolean; manifestLeafLstats: number;
+  };
+  return { manifest: parsed.manifest, evidence: parsed.evidence, swaps: Number(parsed.manifestSwapped) + Number(parsed.evidenceSwapped) };
+}
+
+describe('D22: a mid-path swap before the identity capture is refused', () => {
+  it('refuses outside bytes for BOTH resolvers when the swap lands before the second leaf lstat', () => {
+    const { manifest, evidence, swaps } = runWithMidPathSwap();
+    // The attack really fired, for each resolver on its own fresh tree, so
+    // this is not a vacuous refusal.
+    expect(swaps).toBe(2);
+    expect(manifest).toBeNull();
+    expect(evidence).toBeNull();
+    expect(manifest).not.toBe('EVIL-OUTSIDE-BYTES\n');
+    expect(evidence).not.toBe('EVIL-OUTSIDE-BYTES\n');
+  });
+
+  it('still returns the genuine in-root bytes when no swap occurs', () => {
+    // The control. A resolver that simply always returned null would satisfy
+    // the test above; this one fails if the post-open checks refuse ordinary
+    // in-root reads.
+    const { root } = containmentWorkspace();
+    const resolve = createManifestResolver({ repoRoot: root, corpusRoot: root });
+    const evidence = createEvidenceResolver([root]);
+    expect(resolve(repoEntry('real/record.json'))?.toString()).toBe('in-root-record\n');
+    expect(evidence({ path: 'real/record.json', sha256: '0'.repeat(64) })?.toString()).toBe('in-root-record\n');
+  });
+
+  it('fails closed when the path disappears between the open and the re-check', () => {
+    // If the post-open re-resolution cannot be performed, the read must be
+    // refused rather than proceeding on the strength of the earlier checks.
+    // Removing the file after the open makes the re-resolution impossible.
+    const dir = containmentWorkspace();
+    const resolve = createManifestResolver({ repoRoot: dir.root, corpusRoot: dir.root });
+    const before = resolve(repoEntry('real/record.json'));
+    expect(before?.toString()).toBe('in-root-record\n');
+    rmSync(join(dir.root, 'real', 'record.json'), { force: true });
+    expect(resolve(repoEntry('real/record.json'))).toBeNull();
+  });
+
+  it('preserves hash verification, corrected-rate recomputation, exclusive writes and the real corpus pins', () => {
+    const dir = producerWorkspace();
+    const { corpus, evidence, out, rowsPath, projectionPath, rowsBytes, projectionBytes } = seededProducer(dir);
+    const options = {
+      manifestPath: join(corpus, 'manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: corpus,
+      evidenceRoots: [evidence],
+      runs: [{ runId: RUN19, rowsPath, originalPath: projectionPath }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+      adapter: { terminalCause: 'unknown', operationalStatus: 'interrupted', completionRows: [{ operationalStatus: 'complete' }] },
+    };
+    const first = produceCorrectionAwareReport({ ...options, outDir: out });
+    expect(first.pinnedOk, JSON.stringify(first.manifest.unverified)).toBe(true);
+    expect(first.runs[0]!.publishable).toBe(true);
+    expect(first.runs[0]!.reaggregation.correctedCompletionRate).toBe(0);
+    expect(first.outputs).toHaveLength(3);
+    const second = produceCorrectionAwareReport({ ...options, outDir: out });
+    expect(second.outputs).toEqual([]);
+    expect(readFileSync(rowsPath, 'utf8')).toBe(rowsBytes);
+    expect(readFileSync(projectionPath, 'utf8')).toBe(projectionBytes);
+
+    // The real repo-rooted run18 audit is several directories deep and must
+    // still verify through the post-open re-resolution.
+    const real = produceCorrectionAwareReport({
+      manifestPath: join(REPO_ROOT, 'runner/reporting/corrections.manifest.json'),
+      repoRoot: REPO_ROOT,
+      corpusRoot: null,
+      runs: [{ runId: RUN18 }, { runId: RUN19 }],
+      asOf: '2026-09-29T21:47:07Z',
+      scopes: [],
+    });
+    expect(real.manifest.verified).toContain('run18-retention-audit');
   });
 });

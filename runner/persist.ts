@@ -134,6 +134,10 @@ export interface RunManifestEntry {
   /** the suite checkout's git SHA (null when unknown). */
   suiteSha: string | null;
   runId: string;
+  /** W6.5: 1-based repeat number when a suite is run more than once. */
+  repeat?: number;
+  /** W6.5: declared number of repeats, used to detect missing whole rounds. */
+  repeatCount?: number;
   generatedAt: string;
   /**
    * W6.2: the suite's declared case count — the coverage denominator,

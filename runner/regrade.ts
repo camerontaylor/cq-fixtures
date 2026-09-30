@@ -198,11 +198,16 @@ export function regrade(opts: RegradeOptions): RegradeResult {
   let changed = 0;
 
   if (opts.rejudge === true) {
+    const manifestEntries = readManifest(from);
+    if (manifestEntries.some((entry) => entry.repeat !== undefined) &&
+      new Set(manifestEntries.map((entry) => entry.repeat)).size > 1) {
+      throw new Error('regrade: combined repeat root has no prediction artifacts; rejudge each repeat-N directory, then rebuild the combined table from their rows');
+    }
     // One loaded suite per (role, suite) — loadSuite is the same schema +
     // semantic validation the live run used, so re-judging cannot drift from
     // what was dispatched.
     const suites = new Map<string, Suite>();
-    for (const entry of readManifest(from)) {
+    for (const entry of manifestEntries) {
       const key = `${entry.role}\n${entry.suite}`;
       // A manifest suiteDir is normally repo-root-relative (run mode records
       // it that way), but tolerate an absolute one from a hand-written

@@ -18,7 +18,7 @@ import {
 import { z } from 'zod';
 import { PREFLIGHT_PROBE_RESERVE_TOKENS, runSuite, type PreflightProbe } from './index.ts';
 import { d9PerCaseUsd, D9_PER_CASE_USD, perSuiteTokenCap } from './budget.ts';
-import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
+import { aggregate, type ComparisonTable, type ResultRow, type SuiteRole } from './aggregate.ts';
 import { loadSuite, suiteVariant, type Suite } from './suite.ts';
 import { EVAL_ROOT_MARKER, loadAnswerKey, sentinelNeedles, type AnswerKey } from './answerKey.ts';
 import { publishArtifacts, writeRunManifest, type CaseArtifact, type RunManifestEntry } from './persist.ts';
@@ -47,7 +47,7 @@ const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
   '--driver fake|ai-sdk|claude-agent|subprocess|acp --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
   '(--driver-name is required with --driver fake — a fake run must name the lane it stands in for) ' +
-  '[--max-usd <n>] [--max-usd-per-case <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>] [--answer-key <path>]\n' +
+  '[--max-usd <n>] [--max-usd-per-case <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--repeats <1..3>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>] [--answer-key <path>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
   'eval root (W6.3): a runner inside a built eval root requires an answer key outside the root — --answer-key <path> or CQ_ANSWER_KEY (the env form keeps the key path out of the process argv a host-reach lane can read); a sentinel hit exits 2\n' +
   "caps: --max-tokens caps ONE suite run (each runSuite owns its governor); --max-tokens-per-case is multiplied by that suite's case count (WB-1.6) — pass one, never both\n" +
@@ -144,6 +144,7 @@ interface CliOptions {
   maxUsdPerCaseBasis?: 'd9-default' | 'explicit';
   maxTokens?: number;
   maxTokensPerCase?: number;
+  repeats: number;
   checkTimeoutMs: number;
   journal?: string;
   out?: string;
@@ -169,6 +170,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let maxUsdPerCase: number | undefined;
   let maxTokens: number | undefined;
   let maxTokensPerCase: number | undefined;
+  let repeats = 1;
   let checkTimeoutMs = 60_000;
   let journal: string | undefined;
   let out: string | undefined;
@@ -194,7 +196,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--probe-record': probeRecord = nextValue(argv, i, flag); i++; break;
       case '--suite-sha': suiteSha = nextValue(argv, i, flag); i++; break;
       case '--answer-key': answerKey = nextValue(argv, i, flag); i++; break;
-      case '--max-usd': case '--max-usd-per-case': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': {
+      case '--max-usd': case '--max-usd-per-case': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': case '--repeats': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
         // Token/time budgets are whole units: a fractional value would
@@ -209,7 +211,8 @@ function parseArgs(argv: readonly string[]): CliOptions {
         else if (flag === '--max-usd-per-case') maxUsdPerCase = n;
         else if (flag === '--max-tokens') maxTokens = n;
         else if (flag === '--max-tokens-per-case') maxTokensPerCase = n;
-        else checkTimeoutMs = n;
+        else if (flag === '--check-timeout-ms') checkTimeoutMs = n;
+        else repeats = n;
         i++; break;
       }
       default: throw new UsageError(`unknown flag '${flag}'\n${USAGE}`);
@@ -221,6 +224,8 @@ function parseArgs(argv: readonly string[]): CliOptions {
   if (suites.length === 0 || model === '' || provider === '') {
     throw new UsageError(`--suite, --model and --provider are required\n${USAGE}`);
   }
+  if (repeats > 3) throw new UsageError('--repeats is capped at 3 by the D9 eval envelope');
+  if (repeats > 1 && maxUsd !== undefined) throw new UsageError('--repeats requires a per-case USD ceiling, not legacy --max-usd');
   driverName = driverName === '' ? driver : driverName;
   if (!LANES.has(driverName)) {
     throw new UsageError(`--driver-name '${driverName}' is not a toolkit lane (${[...LANES].join('|')}) — pass one so rows validate`);
@@ -307,7 +312,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     // the dynamic check — this only removes the free pointer.
     answerKey = process.env.CQ_ANSWER_KEY;
   }
-  return { suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey };
+  return { suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase, repeats, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -405,6 +410,7 @@ async function main(argv: readonly string[]): Promise<number> {
   // thrown here — is exit 1 (a benign eval outcome the workflow warns on).
   try {
     for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
+      for (let repeat = 1; repeat <= opts.repeats; repeat++) {
       const outputSchema = suite.role === 'review-classifier' ? VERDICT_OUTPUT_SCHEMA : FIXER_OUTPUT_SCHEMA;
       const driver: Driver =
         opts.driver === 'ai-sdk' ? new AiSdkDriver({ outputSchema })
@@ -443,20 +449,22 @@ async function main(argv: readonly string[]): Promise<number> {
               )
             : opts.maxTokens,
         checkTimeoutMs: opts.checkTimeoutMs,
-        journalPath: opts.journal, driverName: opts.driverName,
+        journalPath: opts.repeats > 1 && opts.journal !== undefined ? join(opts.journal, `repeat-${repeat}`) : opts.journal,
+        driverName: opts.driverName,
         preflightProbe,
         ...(answerKey !== undefined ? { answerKey, sentinelNeedles: needles } : {}),
       });
       for (const hit of result.contaminations) {
         contaminations.push(`${suite.role}/${suite.name} case ${hit.case}: ${hit.where}`);
       }
-      rows.push(...result.rows);
-      tables.push(...result.tables);
+      const repeatRows = opts.repeats > 1 ? result.rows.map((row) => ({ ...row, repeat, repeatCount: opts.repeats })) : result.rows;
+      rows.push(...repeatRows);
+      if (opts.repeats === 1) tables.push(...result.tables);
       // F6 (WB-5.2a/5.1): carry the predictions and the run identity forward
       // for the emit phase, where they are bounded, denylist-scanned, and
       // written beside the tables.
-      artifactList.push(...result.artifacts);
-      manifestEntries.push({
+      if (opts.repeats === 1) artifactList.push(...result.artifacts);
+      const manifestEntry: RunManifestEntry = {
         role: suite.role,
         suite: suite.name,
         // F6: the manifest records a repo-root-relative suiteDir so regrade
@@ -477,6 +485,7 @@ async function main(argv: readonly string[]): Promise<number> {
         // suite, which publishes no rows to carry it) and the per-case USD
         // budget + its basis, so a snapshot states the cap that bound it.
         expectedCases: suite.cases.length,
+        ...(opts.repeats > 1 ? { repeat, repeatCount: opts.repeats } : {}),
         ...(opts.maxUsdPerCase !== undefined
           ? { maxUsdPerCase: opts.maxUsdPerCase, maxUsdPerCaseBasis: opts.maxUsdPerCaseBasis }
           : {}),
@@ -487,7 +496,19 @@ async function main(argv: readonly string[]): Promise<number> {
         ...(result.absences.length > 0
           ? { absences: result.absences.map((a) => ({ case: a.case, cause: a.cause })) }
           : {}),
-      });
+      };
+      manifestEntries.push(manifestEntry);
+      if (opts.repeats > 1 && opts.out !== undefined) {
+        const repeatOut = join(opts.out, `repeat-${repeat}`);
+        mkdirSync(repeatOut, { recursive: true });
+        for (const table of result.tables) {
+          writeFileSync(join(repeatOut, `${table.role}.table.json`), JSON.stringify(table, null, 2) + '\n');
+        }
+        writeFileSync(join(repeatOut, 'rows.jsonl'), repeatRows.map((row) => JSON.stringify(row)).join('\n') + (repeatRows.length > 0 ? '\n' : ''));
+        const published = publishArtifacts(repeatOut, result.artifacts, repoRoot);
+        for (const diagnostic of published.diagnostics) console.error(`  repeat ${repeat}: ${diagnostic}`);
+        writeRunManifest(repeatOut, [manifestEntry]);
+      }
       // X2 inputs arrive STRUCTURED from the runner (round 3): the runner
       // classifies its own infrastructure refusals, so the CLI prints them
       // without re-matching diagnostics prose.
@@ -510,7 +531,8 @@ async function main(argv: readonly string[]): Promise<number> {
       // an all-absence suite has no rows but still has a run to name.
       const runSuffix = `, run ${result.runId}`;
       const suiteName = result.rows[0]?.suite ?? suiteDir;
-      console.log(`suite ${suiteName}: ${passed}/${total} probes passed across ${result.rows.length} case(s)${runSuffix}`);
+      console.log(`suite ${suiteName}${opts.repeats > 1 ? ` repeat ${repeat}/${opts.repeats}` : ''}: ${passed}/${total} probes passed across ${result.rows.length} case(s)${runSuffix}`);
+      }
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -540,6 +562,14 @@ async function main(argv: readonly string[]): Promise<number> {
   // exit 2, never a benign scored-zero warning.
   try {
     if (opts.out !== undefined) {
+      if (opts.repeats > 1) {
+        tables.push(...aggregate(rows));
+        for (const suite of suites) {
+          if (!tables.some((table) => table.role === suite.role)) {
+            tables.push({ role: suite.role, suite: suite.name, generatedAt: new Date().toISOString(), cells: [] });
+          }
+        }
+      }
       mkdirSync(opts.out, { recursive: true });
       // Same-role collisions were refused before any dispatch (see above).
       for (const t of tables) {
@@ -549,10 +579,10 @@ async function main(argv: readonly string[]): Promise<number> {
       // F6 (WB-5.2a): persist the prediction + the run manifest. Each artifact
       // is size-bounded and denylist-scanned before it is written; a withheld
       // artifact is diagnosed, never silently dropped.
-      const published = publishArtifacts(opts.out, artifactList, repoRoot);
+      const published = opts.repeats === 1 ? publishArtifacts(opts.out, artifactList, repoRoot) : { published: [], diagnostics: [] };
       for (const d of published.diagnostics) console.error(`  ${d}`);
       writeRunManifest(opts.out, manifestEntries);
-      console.log(`wrote ${opts.out}/rows.jsonl, ${tables.length} table(s), ${published.published.length} prediction artifact(s) and run.json`);
+      console.log(`wrote ${opts.out}/rows.jsonl, ${tables.length} table(s), ${published.published.length} root prediction artifact(s) and run.json${opts.repeats > 1 ? `, plus ${opts.repeats} complete repeat directories` : ''}`);
     }
   } catch (e) {
     console.error(`report/emit failure: ${e instanceof Error ? e.message : String(e)}`);

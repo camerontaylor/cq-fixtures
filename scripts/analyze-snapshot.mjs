@@ -1,17 +1,10 @@
 // W6.5: consolidate separately dispatched matrix cells into paired evidence.
 // Usage: node scripts/analyze-snapshot.mjs --from <snapshot-dir> --out <dir>
 import { readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Ajv from 'ajv/dist/2020.js';
-import addFormats from 'ajv-formats';
-import { aggregate } from '../dist/aggregate.js';
+import { aggregate } from '../runner/aggregate.ts';
 
-const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const ajv = new Ajv({ allErrors: true, strict: false });
-addFormats(ajv);
-const rowValid = ajv.compile(JSON.parse(readFileSync(join(root, 'schema/result-row.schema.json'), 'utf8')));
-const tableValid = ajv.compile(JSON.parse(readFileSync(join(root, 'schema/comparison-table.schema.json'), 'utf8')));
 
 function cellsBelow(dir) {
   const out = [];
@@ -65,7 +58,10 @@ export function analyzeSnapshot(from) {
     if (lines.length === 0) throw new Error(`${label}: empty cell has no paired evidence`);
     for (const [i, line] of lines.entries()) {
       const row = JSON.parse(line);
-      if (!rowValid(row)) throw new Error(`${label}: row ${i + 1}: ${ajv.errorsText(rowValid.errors)}`);
+      if (typeof row !== 'object' || row === null || !Number.isInteger(row.repeat) || !Number.isInteger(row.repeatCount) ||
+          typeof row.case !== 'string' || typeof row.outcome?.score !== 'number') {
+        throw new Error(`${label}: row ${i + 1} is missing repeat or score evidence`);
+      }
       if (row.role !== role || row.suite !== suite || row.model !== model || row.driver !== driver ||
           (row.variant ?? 'default') !== (run.variant ?? 'default')) {
         throw new Error(`${label}: row ${i + 1} mismatches manifest served model version or cell identity`);
@@ -84,9 +80,6 @@ export function analyzeSnapshot(from) {
     groups.get(key).push(row);
   }
   const tables = [...groups.values()].flatMap((suiteRows) => aggregate(suiteRows));
-  for (const table of tables) {
-    if (!tableValid(table)) throw new Error(`${table.role}/${table.suite}: ${ajv.errorsText(tableValid.errors)}`);
-  }
   return { toolkitLock, suiteSha, cellCount: dirs.length, tables };
 }
 

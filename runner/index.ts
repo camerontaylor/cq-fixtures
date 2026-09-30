@@ -884,6 +884,10 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // what the probe grades. The probe ceiling is checkTimeoutMs, an
         // independent knob from the run's budget caps.
         const check = scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.checkTimeoutMs);
+        // W6.5: the fixing estimand is this check alone. Persist it
+        // separately from the schema-compliance probe so repeated runs can
+        // compare actual repairs without counting JSON fidelity as a fix.
+        rowProbes = [{ kind: 'check-rerun', expected: 'pass', observed: check.passed === 1 ? 'pass' : 'fail', passed: check.passed === 1 }];
         // Probe 2 — schema compliance (runner/dimensions/schemaCompliance.ts):
         // grades ONLY the structuredOutput's shape discipline, never the
         // fix's content, so the check's sweep-agnostic contract is intact.
@@ -917,6 +921,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
           `$${opts.maxUsdPerCase} per-case ceiling — evidence recorded, coverage excluded (W6.4)`;
         diagnostics = diagnostics === undefined ? cause : `${diagnostics}\n${cause}`;
         absences.push({ case: c.id, role: suite.role, cause });
+      }
+      if (emitRow && isFixerCase(c) && rowProbes === undefined) {
+        rowProbes = [{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }];
       }
       if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);
       await append({

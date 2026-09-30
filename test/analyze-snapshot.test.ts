@@ -15,11 +15,11 @@ function fixture() {
     mkdirSync(cell, { recursive: true });
     const runs = [1, 2, 3].map((repeat) => ({
       role: 'review-classifier', suite: 'micro', model, driver: 'ai-sdk', variant: 'default',
-      toolkitLock: '1.1.0', suiteSha: 'abcdef0', runId: `${model}-${repeat}`, repeat,
+      toolkitLock: '1.1.0', suiteSha: 'abcdef0', runId: `${model}-${repeat}`, repeat, repeatCount: 3,
     }));
     writeFileSync(join(cell, 'run.json'), JSON.stringify({ runs }));
     const rows = runs.flatMap(({ repeat, runId }) => ['a', 'b', 'c'].map((caseId) => ({
-      role: 'review-classifier', suite: 'micro', case: caseId, model, driver: 'ai-sdk', repeat,
+      role: 'review-classifier', suite: 'micro', case: caseId, model, driver: 'ai-sdk', repeat, repeatCount: 3,
       outcome: { score: model === 'candidate' ? 1 : 0, passed: model === 'candidate' ? 1 : 0, total: 1 },
       expectedCases: 3, costUSD: 0, wallTimeMs: 1, tokens: { input: 0, output: 0 },
       runId, timestamp: '2026-09-30T00:00:00Z',

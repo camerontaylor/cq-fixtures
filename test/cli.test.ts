@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cliMain } from '../runner/cli.ts';
+import { regrade } from '../runner/regrade.ts';
 
 // CLI-path tests: exit codes (F4) and per-lane driver construction (F3).
 // The toolkit barrel is mocked with the REAL module spread back in — only
@@ -136,6 +137,36 @@ function cliArgs(suiteDir: string): string[] {
 }
 
 describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite load failure)', () => {
+  it('W6.5 preserves each repeat and aggregates rows without overwriting prediction outputs', async () => {
+    const dir = writeSuite('repeated-suite', {
+      name: 'repeated-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'repeated-out');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out])).resolves.toBe(0);
+    const combined = readFileSync(join(out, 'rows.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { repeat: number; runId: string });
+    expect(combined.map((row) => row.repeat)).toEqual([1, 2, 3]);
+    expect(new Set(combined.map((row) => row.runId)).size).toBe(3);
+    for (let repeat = 1; repeat <= 3; repeat++) {
+      const runDir = join(out, `repeat-${repeat}`);
+      expect(existsSync(join(runDir, 'outputs', 'rev-1.json'))).toBe(true);
+      expect(JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')).runs[0].repeat).toBe(repeat);
+      expect(readFileSync(join(runDir, 'rows.jsonl'), 'utf8')).toContain(`"repeat":${repeat}`);
+    }
+    const table = JSON.parse(readFileSync(join(out, 'review-classifier.table.json'), 'utf8')) as { cells: Array<{ runs: number }> };
+    expect(table.cells[0]?.runs).toBe(3);
+    expect(() => regrade({ from: out, rejudge: true })).toThrow(/combined repeat root has no prediction artifacts/);
+  }, 30_000);
+
+  it('W6.5 refuses repeat counts above D9 and a legacy run USD cap before dispatch', async () => {
+    const dir = writeSuite('repeat-cap-suite', {
+      name: 'repeat-cap-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    await expect(cliMain([...cliArgs(dir), '--repeats', '4'])).resolves.toBe(2);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--max-usd', '1'])).resolves.toBe(2);
+  });
+
   it('a clean run exits 0', async () => {
     const dir = writeSuite('ok-suite', { name: 'ok-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await expect(cliMain(cliArgs(dir))).resolves.toBe(0);

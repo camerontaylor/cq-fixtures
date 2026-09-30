@@ -1,5 +1,6 @@
 /** Native side of the actual-route G2 sentinel receipt. Missing tool channels fail closed. */
 import type { SupervisedInvocationIdentity } from './process.ts';
+import { denialKindCorroborated } from './g2-tool-events.ts';
 
 export type G2ToolKind = 'read' | 'search' | 'shell' | 'http' | 'config';
 export type G2ToolOutcome = 'denied' | 'success' | 'unavailable' | 'unknown';
@@ -45,6 +46,10 @@ export interface NativeExecutionReceipt {
   decoderFailures: readonly string[];
   toolTrace: readonly NativeToolTraceEvent[];
   teardown: {
+    /** Exact invocation this stop proof names. Strict actual-route assembly always
+     * binds it; absent bindings keep development semantics and stay unproven in
+     * the boundary's invocation-bound teardown check. */
+    invocationId?: string;
     processTree: 'stopped-and-reaped' | 'unproven';
     boundary: 'terminated' | 'unproven';
     export: { inventoryHash: string; head: string } | null;
@@ -65,6 +70,7 @@ export interface BoundaryCanonicalNativeReceipt {
     outcome?: NonNullable<NativeToolTraceEvent['outcome']>;
   }>;
   teardown?: {
+    invocationId?: string;
     processTree: 'stopped-and-reaped'; boundary: 'terminated';
     export?: { inventoryHash: string; head: string };
   };
@@ -77,6 +83,9 @@ export function toBoundaryCanonicalNativeReceipt(
   controlVerifier?: G2ControlVerifier,
 ): BoundaryCanonicalNativeReceipt {
   const validationFailures = validateNativeToolPhase(receipt);
+  if (receipt.teardown?.invocationId !== undefined && receipt.teardown.invocationId !== receipt.identity.invocationId) {
+    validationFailures.push('teardown-invocation-unbound');
+  }
   for (const event of receipt.toolTrace) {
     if (event.phase !== 'result' || event.outcome?.disposition !== 'denied') continue;
     const probe = fixture?.expected.find((item) => item.correlationId === event.correlationId);
@@ -84,8 +93,10 @@ export function toBoundaryCanonicalNativeReceipt(
         controlVerifier?.verifyDenialEvidence({ probe, event }) !== true) validationFailures.push('denial-control-unverified');
   }
   if (validationFailures.length > 0) throw new Error(`native tool receipt is not canonically decodable: ${validationFailures.join(',')}`);
+  const invocationBound = receipt.teardown.invocationId === receipt.identity.invocationId;
   const teardown = receipt.teardown.processTree === 'stopped-and-reaped' && receipt.teardown.boundary === 'terminated'
-    ? { processTree: 'stopped-and-reaped' as const, boundary: 'terminated' as const,
+    ? { ...(invocationBound ? { invocationId: receipt.identity.invocationId } : {}),
+      processTree: 'stopped-and-reaped' as const, boundary: 'terminated' as const,
       ...(receipt.teardown.export ? { export: { ...receipt.teardown.export } } : {}) }
     : undefined;
   return {
@@ -183,6 +194,9 @@ export function normalizeG2NativeReceipt(
   if (!receipt?.toolTrace?.length) failures.push('native-tool-channel-unavailable');
   if ((receipt?.toolTrace?.length ?? 0) > 12_000 || (receipt?.toolTrace ?? []).reduce((sum, event) =>
     sum + (event?.stdout?.byteLength ?? 0) + (event?.stderr?.byteLength ?? 0), 0) > 8 * 1024 * 1024) failures.push('native-tool-channel-over-limit');
+  if (receipt?.teardown?.invocationId !== undefined && receipt?.teardown?.invocationId !== trustedContext.identity.invocationId) {
+    failures.push('receipt-teardown-invocation-unbound');
+  }
   if (receipt?.teardown?.processTree !== 'stopped-and-reaped' || receipt?.teardown?.boundary !== 'terminated' ||
       !validExport(receipt?.teardown?.export)) failures.push('receipt-teardown-unproven');
   if (!teardown || teardown.invocationId !== trustedContext.identity.invocationId ||
@@ -226,8 +240,7 @@ export function normalizeG2NativeReceipt(
     if (event.phase === 'result' && (!event.outcome || !['denied', 'success', 'unavailable', 'unknown'].includes(event.outcome.disposition))) failures.push('result-outcome-unavailable');
     if (event.kind === 'shell' && event.phase === 'result' && event.outcome?.disposition === 'success' &&
         (event.toolStatus !== 'completed' || event.toolExitCode !== 0 || event.outcome.exitCode !== 0)) failures.push('shell-success-status-unverified');
-    if (event.phase === 'result' && event.outcome?.disposition === 'denied' &&
-        (event.kind !== 'shell' || event.toolStatus !== 'failed' || !Number.isInteger(event.toolExitCode) || event.toolExitCode! <= 0 || event.outcome.exitCode !== event.toolExitCode)) failures.push('denial-status-unverified');
+    if (event.phase === 'result' && event.outcome?.disposition === 'denied' && !denialStatusCorroborated(event)) failures.push('denial-status-unverified');
     if (event.phase === 'result' && event.outcome?.disposition === 'denied') {
       const probe = fixture.expected.find((item) => item.correlationId === event.correlationId);
       if (!probe || probe.kind !== event.kind || probe.targetOrCommand !== event.targetOrCommand ||
@@ -319,6 +332,22 @@ function sameIdentity(a: SupervisedInvocationIdentity, b: SupervisedInvocationId
 }
 function validExport(value: { inventoryHash: string; head: string } | null | undefined): boolean {
   return Boolean(value && /^[a-f0-9]{64}$/iu.test(value.inventoryHash) && /^[a-f0-9]{40,64}$/iu.test(value.head));
+}
+
+/** Shell denials keep the shell status/exit rule; every other kind must carry the
+ * typed evidence field the boundary corroboration independently checks. Typed
+ * evidence alone is never sufficient: the trusted control verifier is still
+ * required separately for each denied result. */
+function denialStatusCorroborated(event: NativeToolTraceEvent): boolean {
+  const outcome = event.outcome;
+  if (!outcome) return false;
+  if (event.kind === 'shell') {
+    return event.toolStatus === 'failed' && Number.isInteger(event.toolExitCode) && event.toolExitCode! > 0 &&
+      outcome.exitCode === event.toolExitCode;
+  }
+  if (event.toolExitCode !== undefined && event.toolExitCode !== null &&
+      (!Number.isInteger(event.toolExitCode) || event.toolExitCode < 0 || event.toolExitCode !== outcome.exitCode)) return false;
+  return outcome.denialKind !== undefined && denialKindCorroborated(outcome.denialKind, outcome);
 }
 
 function validateNativeToolPhase(receipt: NativeExecutionReceipt): string[] {

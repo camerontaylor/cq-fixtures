@@ -154,3 +154,78 @@ function parseEvent(value: unknown): Record<string, unknown> | null {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+export interface BoundedJsonlCollectorOptions {
+  maxLineBytes?: number;
+  maxTotalBytes?: number;
+  maxFrames?: number;
+  now?: () => string;
+}
+
+export type CollectorFailureReason =
+  | 'collector-line-limit-exceeded'
+  | 'collector-total-limit-exceeded'
+  | 'collector-frame-limit-exceeded'
+  | 'collector-stream-truncated';
+
+export interface CollectorFailure { reason: CollectorFailureReason; atSequence: number }
+
+export interface CollectedJsonlStream {
+  frames: CodexCollectedEventFrame[];
+  failures: readonly CollectorFailure[];
+  /** True when a nonempty partial line never saw a terminating newline. */
+  truncated: boolean;
+}
+
+/**
+ * Trusted native stdout collector for Codex exec JSONL. Chunks may split lines
+ * anywhere; complete lines only are framed, each assigned a dense monotonic
+ * collectorSequence and a collection timestamp taken when the line completed.
+ * Any bound violation or a truncated tail fails the whole collection closed —
+ * partial lines are never emitted. Chunks arrive as already-decoded strings from
+ * the supervised transport, so a multibyte character split across a chunk
+ * boundary is corrupted before this seam; such a line fails JSON parsing
+ * downstream and the receipt stays unavailable instead of being reordered.
+ */
+export function createBoundedJsonlCollector(options: BoundedJsonlCollectorOptions = {}) {
+  const maxLineBytes = options.maxLineBytes ?? 1024 * 1024;
+  const maxTotalBytes = options.maxTotalBytes ?? 32 * 1024 * 1024;
+  const maxFrames = options.maxFrames ?? 12_000;
+  const now = options.now ?? (() => new Date().toISOString());
+  const frames: CodexCollectedEventFrame[] = [];
+  const failures: CollectorFailure[] = [];
+  let buffer = '';
+  let totalBytes = 0;
+  let nextSequence = 0;
+  let fatalError: CollectorFailure | undefined;
+  const fail = (reason: CollectorFailureReason, atSequence: number) => {
+    fatalError ??= { reason, atSequence };
+    if (!failures.some((failure) => failure.reason === reason)) failures.push({ reason, atSequence });
+  };
+  return {
+    push(chunk: string): void {
+      if (fatalError) return;
+      buffer += chunk;
+      for (let newlineIndex = buffer.indexOf('\n'); newlineIndex !== -1; newlineIndex = buffer.indexOf('\n')) {
+        const line = buffer.slice(0, newlineIndex).replace(/\r$/, '');
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line) continue;
+        const lineBytes = Buffer.byteLength(line, 'utf8');
+        if (lineBytes > maxLineBytes) return fail('collector-line-limit-exceeded', nextSequence);
+        if (totalBytes + lineBytes > maxTotalBytes) return fail('collector-total-limit-exceeded', nextSequence);
+        if (frames.length >= maxFrames) return fail('collector-frame-limit-exceeded', nextSequence);
+        totalBytes += lineBytes;
+        frames.push({ frame: line, collectorSequence: nextSequence++, collectedAt: now() });
+      }
+    },
+    /** Close the stream: a nonempty remainder is recorded as truncation, never framed. */
+    end(): void {
+      if (fatalError) { buffer = ''; return; }
+      if (buffer.trim()) fail('collector-stream-truncated', nextSequence);
+      buffer = '';
+    },
+    result(): CollectedJsonlStream {
+      return { frames: [...frames], failures: [...failures], truncated: failures.some((failure) => failure.reason === 'collector-stream-truncated') };
+    },
+  };
+}

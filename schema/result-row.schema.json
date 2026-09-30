@@ -130,7 +130,7 @@
     },
     "probes": {
       "type": "array",
-      "description": "VERSIONED ADDITIVE change F4 (2026-09-21): per-probe observed outcomes, so a confusion matrix is computable from rows.jsonl. The runner captures one expected-verdict entry per review-classifier row (expected: the suite's expected verdict, observed: the classifier's verdict or null when missing/unparseable, passed: whether they matched); absent on old rows by design — every committed snapshot still validates. kind/expected are vocabulary-constrained (CodeRabbit bot thread T3) so a typo cannot silently drop a probe from the metrics; observed stays open because out-of-vocabulary observations are intentionally preserved.",
+      "description": "Per-probe outcomes. F4 review-classifier rows carry an expected-verdict entry for confusion metrics; W6.5 fixer rows carry a check-rerun pass/fail entry for repeated repair comparisons. Historical rows omit probes, so committed snapshots retain their prior shape. kind/expected are vocabulary-constrained (CodeRabbit bot thread T3) so a typo cannot silently drop a probe from metrics; observed stays open because out-of-vocabulary observations are intentionally preserved.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -138,12 +138,12 @@
         "properties": {
           "kind": {
             "enum": ["expected-verdict", "check-rerun"],
-            "description": "Which scoring probe this entry records — the review-classifier probe. Constrained to the literal (CodeRabbit bot thread T3): a typo'd kind would otherwise vanish from every classifier metric."
+            "description": "Which scoring probe this entry records. Constrained to the literal (CodeRabbit bot thread T3): a typo'd kind would otherwise vanish from its classifier metric or fixer estimand."
           },
           "expected": {
             "type": "string",
             "enum": ["actionable", "responded", "resolved", "blocked", "skip", "pass"],
-            "description": "The suite's expected verdict, in the classifyThreads vocabulary mirrored by schema/suite.schema.json. Constrained to the enum (CodeRabbit bot thread T3): a typo'd expected would otherwise be silently skipped by the confusion builder."
+            "description": "The expected classifier verdict or fixer check outcome. Constrained to the vocabulary (CodeRabbit bot thread T3): a typo'd expected value would otherwise be silently skipped by the metric builder."
           },
           "observed": {
             "type": ["string", "null"],

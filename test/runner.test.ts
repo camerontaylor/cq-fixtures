@@ -259,7 +259,9 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     // under test here) while the fake's verdict-shaped structuredOutput
     // fails the schema-compliance probe.
     expect(uncapped.rows[0]).toMatchObject({ case: 'fix-slow', outcome: { score: 0.5 } });
-  }, 15_000);
+    // This exercises two full runSuite workspace materializations and child
+    // checks; allow time for that path beyond the check's own 300/800ms.
+  }, 30_000);
 
   it('a driver missing-credential throw aborts the run instead of scoring zeros', async () => {
     // The toolkit's requireKey throws pre-dispatch on a missing provider
@@ -1361,7 +1363,7 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     expect(cell.macroF1).toBe(0);
   });
 
-  it('fixer rows and cells carry none of the F4 fields (pre-F4 shape preserved)', async () => {
+  it('fixer rows carry the W6.5 check estimand without classifier metrics', async () => {
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
     const dir = writeSuite('fixer-shape', {
@@ -1372,7 +1374,9 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     });
     const result = await runSuite(opts(dir));
     expect(result.rows).toHaveLength(1);
-    expect('probes' in result.rows[0]!).toBe(false);
+    expect(result.rows[0]!.probes).toEqual([
+      { kind: 'check-rerun', expected: 'pass', observed: 'pass', passed: true },
+    ]);
     expect('suspiciousBenign' in result.rows[0]!).toBe(false);
     const cell = result.tables[0]!.cells[0]!;
     for (const k of ['byVerdict', 'macroF1', 'fpRate', 'fpN', 'variant', 'scoreCI']) expect(cell).not.toHaveProperty(k);

@@ -29,10 +29,9 @@ export interface ResultRow {
   driver: string;
   outcome: { score: number; passed: number; total: number };
   /**
-   * F4: per-probe observed outcomes — review-classifier rows carry one
-   * entry per scoring probe ({kind: 'expected-verdict', expected, observed,
-   * passed}) so the confusion matrix is computable from rows.jsonl. Fixer
-   * rows and all pre-F4 rows omit it.
+   * Per-probe outcomes: review-classifier rows carry an expected-verdict
+   * entry for confusion metrics (F4); W6.5 fixer rows carry the check-rerun
+   * pass/fail estimand for repeated repair comparisons. Historical rows omit it.
    */
   probes?: Array<{ kind: string; expected: string; observed: string | null; passed: boolean }>;
   /**

@@ -38,6 +38,10 @@
       "minimum": 1,
       "description": "W6.5: one-based repeat ordinal within a k-repeat matrix; absent on historical rows."
     },
+    "repeatCount": {
+      "type": "integer", "minimum": 2,
+      "description": "W6.5: requested matrix repeat count, retained on every repeated row so missing full repeats are detectable."
+    },
     "model": {
       "type": "string",
       "minLength": 1,
@@ -133,12 +137,12 @@
         "required": ["kind", "expected", "observed", "passed"],
         "properties": {
           "kind": {
-            "const": "expected-verdict",
+            "enum": ["expected-verdict", "check-rerun"],
             "description": "Which scoring probe this entry records — the review-classifier probe. Constrained to the literal (CodeRabbit bot thread T3): a typo'd kind would otherwise vanish from every classifier metric."
           },
           "expected": {
             "type": "string",
-            "enum": ["actionable", "responded", "resolved", "blocked", "skip"],
+            "enum": ["actionable", "responded", "resolved", "blocked", "skip", "pass"],
             "description": "The suite's expected verdict, in the classifyThreads vocabulary mirrored by schema/suite.schema.json. Constrained to the enum (CodeRabbit bot thread T3): a typo'd expected would otherwise be silently skipped by the confusion builder."
           },
           "observed": {
@@ -149,7 +153,13 @@
             "type": "boolean",
             "description": "Whether observed matched expected for this probe."
           }
-        }
+        },
+        "allOf": [
+          { "if": { "properties": { "kind": { "const": "check-rerun" } } },
+            "then": { "properties": { "expected": { "const": "pass" }, "observed": { "enum": ["pass", "fail"] } } } },
+          { "if": { "properties": { "kind": { "const": "expected-verdict" } } },
+            "then": { "properties": { "expected": { "enum": ["actionable", "responded", "resolved", "blocked", "skip"] } } } }
+        ]
       }
     },
     "suspiciousBenign": {

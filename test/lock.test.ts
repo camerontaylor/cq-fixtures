@@ -97,7 +97,9 @@ describe('pack-toolkit.sh pin resolution (tag | commit SHA)', () => {
         env: { ...process.env, TOOLKIT_LOCK: writeLock('main\n'), TOOLKIT_REPO_URL: `file://${repo}` },
       }),
     ).toThrow();
-  });
+  // This assertion builds two local Git repositories and runs the pack script
+  // through its file:// fetch path; allow subprocess and filesystem overhead.
+  }, 15_000);
 
   it('packs a pinned commit SHA hermetically (file:// remote, copied script root)', () => {
     // A minimal local toolkit: package.json + lockfile so `npm ci` and

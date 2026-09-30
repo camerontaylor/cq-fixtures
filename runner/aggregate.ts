@@ -609,13 +609,13 @@ export function pairedComparisons(rows: readonly ResultRow[], cells: readonly Co
     const ac = completeA && completeA.size >= 2 ? completeA : observedCaseMeans(ar);
     const bc = completeB && completeB.size >= 2 ? completeB : observedCaseMeans(br);
     const shared = [...ac.keys()].filter((id) => bc.has(id)).sort();
+    if (shared.length < 2) continue;
     const eligibleRepeatCount = (cellRows: readonly ResultRow[], id: string) => cellRows.filter((r) =>
       r.case === id && r.stopCause === undefined && r.invalid === undefined && estimand(r) !== undefined).length;
     const repeatsPerCase = Math.min(...shared.flatMap((id) => [
       eligibleRepeatCount(ar, id),
       eligibleRepeatCount(br, id),
     ]));
-    if (shared.length < 2) continue;
     const differences = shared.map((id) => bc.get(id)! - ac.get(id)!);
     const delta = differences.reduce((sum, d) => sum + d, 0) / differences.length;
     const variance = differences.reduce((sum, d) => sum + (d - delta) ** 2, 0) / (differences.length - 1);

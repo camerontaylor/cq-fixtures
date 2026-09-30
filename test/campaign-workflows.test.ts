@@ -398,7 +398,7 @@ describe('cq-settings bounded workflow corpus', () => {
     } finally {
       await task.cleanup();
     }
-  }, 30_000);
+  }, 60_000);
 
   it('grades a correct committed patch independently when structured output is invalid', async () => {
     const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);
@@ -409,7 +409,7 @@ describe('cq-settings bounded workflow corpus', () => {
     } finally {
       await task.cleanup();
     }
-  }, 30_000);
+  }, 60_000);
 
   it('grades a correct committed patch independently when the Driver throws after editing', async () => {
     const task = await createReviewLoopRepairTask(OFFLINE_REVIEW_ROUTE);

@@ -1,0 +1,19 @@
+{
+  "runs": [
+    {
+      "role": "fixer-worker",
+      "suite": "breadth-tail",
+      "suiteDir": "suites/fixer-worker/breadth-tail",
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "variant": "default",
+      "toolkitLock": "5e5270724df9bf72d7834c4461074f9ab0b62413",
+      "suiteSha": "be6e39bc91f6ad54a71a1dcb6b3c9098b5e956ae",
+      "runId": "3d2feb43-9c95-4834-8779-ebb3c36e496d",
+      "generatedAt": "2026-09-30T15:47:46.159Z",
+      "expectedCases": 28,
+      "maxUsdPerCase": 0.1,
+      "maxUsdPerCaseBasis": "explicit"
+    }
+  ]
+}

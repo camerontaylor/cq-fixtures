@@ -1,0 +1,9 @@
+diff --git a/src/slots.ts b/src/slots.ts
+index a7d082e..f935a55 100644
+--- a/src/slots.ts
++++ b/src/slots.ts
+@@ -1,3 +1,3 @@
+ export function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+-  return aStart < bEnd || bStart < aEnd;
++  return aStart < bEnd && bStart < aEnd;
+ }

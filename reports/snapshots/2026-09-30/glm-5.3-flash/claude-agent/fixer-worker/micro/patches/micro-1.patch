@@ -1,0 +1,13 @@
+diff --git a/src/rangeSum.ts b/src/rangeSum.ts
+index 821abed..2355bfa 100644
+--- a/src/rangeSum.ts
++++ b/src/rangeSum.ts
+@@ -1,7 +1,7 @@
+ // Sum utilities for integer ranges.
+ export function sumRange(a: number, b: number): number {
+   let total = 0;
+-  for (let i = a; i < b; i++) {
++  for (let i = a; i <= b; i++) {
+     total += i;
+   }
+   return total;

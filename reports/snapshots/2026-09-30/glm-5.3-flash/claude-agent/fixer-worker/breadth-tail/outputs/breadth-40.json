@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed two source bugs against test/queue.test.ts: (1) src/queue.ts enqueue now appends the value ([...items, value]) instead of prepending it, so enqueue([1,2],3) === [1,2,3]; (2) src/retry.ts shouldRetry now uses attempt < max instead of attempt <= max, so it no longer retries once past the attempt limit (shouldRetry(3,3) === false). dequeue, nextState, and successRate already passed. No test files were modified; the vitest run could not be executed directly because the shell allowlist blocked it, but all five test assertions verify against the fixed sources."
+}

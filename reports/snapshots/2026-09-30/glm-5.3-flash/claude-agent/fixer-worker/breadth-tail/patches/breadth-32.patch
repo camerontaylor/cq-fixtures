@@ -1,0 +1,11 @@
+diff --git a/src/required.ts b/src/required.ts
+index dadf4d5..8def4d5 100644
+--- a/src/required.ts
++++ b/src/required.ts
+@@ -3,5 +3,5 @@ export function isEmail(text: string): boolean {
+ }
+ 
+ export function requireFields(obj: Record<string, unknown>, fields: string[]): string[] {
+-  return fields.filter((field) => obj[field] !== undefined);
++  return fields.filter((field) => obj[field] === undefined);
+ }

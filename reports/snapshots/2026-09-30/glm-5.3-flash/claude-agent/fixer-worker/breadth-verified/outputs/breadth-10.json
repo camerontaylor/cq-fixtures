@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed two source bugs against the vitest suite in test/ (tests untouched; shell was fully allowlist-blocked, so verification was done by reading the tests and tracing the logic). (1) src/parse.ts: parseInt(text) hex-auto-detected the 0x prefix, so parseAmount('0x10') returned 16; now uses parseInt(text, 10) for decimal-only parsing → returns 0 as the test expects, and '42' still returns 42. (2) src/format.ts: rangeLabel(3, 7) printed 'range 7-3' because it called formatRange(to, from); now calls formatRange(from, to) → 'range 3-7'. formatRange behavior unchanged ('3-7'). src/amounts.ts isPositive already passed all its tests and was left as-is."
+}

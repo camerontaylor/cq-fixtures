@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed `overlaps` in src/slots.ts. The implementation used `aStart < bEnd || bStart < aEnd` (a disjunction), which returns true for virtually any two ranges — including back-to-back slots like (10,11,11,12), where `10 < 12` is immediately true. Replaced it with the correct half-open interval overlap test: `aStart < bEnd && bStart < aEnd`, which requires genuine intersection and treats touching endpoints (aEnd === bStart or bEnd === aStart) as non-overlapping. Verified by hand against back-to-back (both orders), overlapping, identical, contained, disjoint, and zero-length inputs; all produce correct results. No test files were modified (the shell allowlist blocked discovery commands, so the file was located by path probing; tests were not read or touched)."
+}

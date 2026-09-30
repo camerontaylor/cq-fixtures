@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed two source bugs (tests untouched): (1) src/required.ts — requireFields filtered `obj[field] !== undefined`, listing present fields; changed to `=== undefined` so it lists missing fields (requireFields({a:1},['a','b']) → ['b']). (2) src/number.ts — parseAmount used parseInt(text) with no radix, so parseInt auto-detected the '0x' prefix and parsed hex ('0x10' → 16); changed to parseInt(text, 10) so hex-looking strings parse as base ten ('0x10' → 0). isEmail and clamp already passed and were left as-is. Note: the run/shell tool was fully blocked by the harness allowlist in this environment, so the suite could not be executed locally; fixes verified by reading the sources/tests and reasoning through each assertion, all of which now hold."
+}

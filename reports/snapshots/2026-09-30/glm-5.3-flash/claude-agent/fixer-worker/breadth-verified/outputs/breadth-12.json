@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed src/case.ts: toKebabCase called .toUpperCase() instead of .toLowerCase(), producing an uppercase slug (e.g. 'HELLO-BIG-WORLD' instead of 'hello-big-world'). Changed to .toLowerCase(); trim/split/join logic unchanged. Verified the other suite targets (wordCount, averageWordLength, truncate in src/count.ts and src/truncate.ts) already match their test expectations. Tests were not modified. Note: the harness shell allowlist blocked all run commands, so verification was done by reading the sources and test expectations rather than executing vitest directly."
+}

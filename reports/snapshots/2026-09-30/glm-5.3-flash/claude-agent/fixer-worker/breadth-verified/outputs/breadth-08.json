@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed src/lookup.ts: cityOf used a non-null assertion (`profile!.address?.city ?? 'unknown'`), so calling it with an undefined profile threw a TypeError before the nullish-coalescing fallback could apply. Replaced the assertion with optional chaining (`profile?.address?.city ?? 'unknown'`). Verified against all three cases in test/lookup.test.ts: undefined profile -> 'unknown', missing address -> 'unknown', present address -> city value. No test files were modified."
+}

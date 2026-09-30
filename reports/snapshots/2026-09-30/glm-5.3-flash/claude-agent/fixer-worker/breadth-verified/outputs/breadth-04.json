@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fix: changed BACKOFF_FACTOR from 3 to 2 in src/backoff.ts. The test file (test/backoff.test.ts) is authoritative and requires BACKOFF_FACTOR === 2, backoffDelay(100, 3) === 800, backoffDelay(100, 0) === 100, and retryPlan(100, 3)[0] === 100 — all now satisfied (100 * 2^attempt). Note: the task's trailing claim that backoffDelay(100, 3) returns 2700 described the pre-fix buggy behavior and contradicts the unmodifiable tests, so the tests were followed instead. Tests were not modified; no other source/test files exist (package.json has no scripts; tests import ./src/backoff.ts and ./src/retry.ts via ESM/TS, matching vitest defaults). The harness allowlist blocked running the suite directly, but all four assertions verify arithmetically."
+}

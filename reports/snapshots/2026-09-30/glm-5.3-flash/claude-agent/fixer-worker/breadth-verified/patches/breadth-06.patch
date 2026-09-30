@@ -1,0 +1,12 @@
+diff --git a/src/memoize.ts b/src/memoize.ts
+index 6f10368..628ed77 100644
+--- a/src/memoize.ts
++++ b/src/memoize.ts
+@@ -7,6 +7,7 @@ export function memoizedSquare(cache: Cache<number>, computeCount: { value: numb
+   const cached = cache.get(key);
+   if (cached !== undefined) return cached;
+   const value = slowSquare(n);
++  cache.set(key, value);
+   computeCount.value += 1;
+   return value;
+ }

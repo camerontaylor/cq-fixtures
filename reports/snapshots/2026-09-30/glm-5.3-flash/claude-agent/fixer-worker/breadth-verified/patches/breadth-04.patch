@@ -1,0 +1,11 @@
+diff --git a/src/backoff.ts b/src/backoff.ts
+index 1385f9f..b97f692 100644
+--- a/src/backoff.ts
++++ b/src/backoff.ts
+@@ -1,5 +1,5 @@
+ // Exponential backoff for the retry helper.
+-export const BACKOFF_FACTOR = 3;
++export const BACKOFF_FACTOR = 2;
+ 
+ export function backoffDelay(baseMs: number, attempt: number): number {
+   return baseMs * BACKOFF_FACTOR ** attempt;

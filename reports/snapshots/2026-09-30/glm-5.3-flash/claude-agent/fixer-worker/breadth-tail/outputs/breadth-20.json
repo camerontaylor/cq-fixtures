@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed the two reported bugs in the TypeScript sources. src/money.ts: addCents was returning a - b; changed to a + b so it adds cents. src/balance.ts: isOverdrawn used `balance <= 0`, which reported a zero balance as overdrawn; changed to `balance < 0` so only negative balances are overdrawn. Tests were not modified. Note: the shell `run` tool was blocked by the harness allowlist (even for ls/cat/node), so the suite could not be executed locally; fixes were verified by reading the edited files, and the scoring harness will run vitest."
+}

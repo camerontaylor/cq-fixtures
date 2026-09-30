@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "The vitest suite in test/slugify.test.ts requires slugify to return entirely lowercase output, but src/slugify.ts only trimmed, split on whitespace, and joined with hyphens — so slugify('Hello World') returned 'Hello-World' instead of 'hello-world'. Fixed by adding .toLowerCase() (after .trim(), before splitting) in the pipeline, preserving the existing whitespace-collapse behavior. All three tests now pass: 'Hello World' -> 'hello-world', '  Stand Up  Meetings ' -> 'stand-up-meetings', 'Zebra' -> 'zebra'. No test files were modified."
+}

@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed src/range.ts: clamp used Math.max(Math.max(value, low), high), which raised every value to at least `high` (e.g. clamp(5,0,10) returned 10). Replaced with Math.min(Math.max(value, low), high) so values below `low` are raised to `low`, values above `high` are lowered to `high`, and in-range values pass through (clamp(5,0,10) → 5). Verified the other suite targets by inspection: isEmail's regex requires a dotted domain ('a@b' → false), parseAmount uses parseInt(text, 10) so '0x10' → 0, and requireFields filters on undefined ({a:1}, ['a','b'] → ['b']). The run tool was allowlist-restricted in this environment, so the suite could not be executed locally; tests were left unmodified."
+}

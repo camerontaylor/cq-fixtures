@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Shell commands were blocked by the harness allowlist, so I located files via the git index and read/edit tools. The failing test was `expect(parseAmount('0x10')).toBe(0)` in test/validate.test.ts. src/number.ts used `parseInt(text)` with no radix, so the '0x' prefix made JS auto-detect base sixteen and return 16 instead of stopping at 'x' and returning 0. Fixed by passing an explicit base-ten radix: `parseInt(text, 10)`. The other source files (src/required.ts, src/range.ts) already satisfy their tests (isEmail('a@b') → false, requireFields lists missing keys, clamp keeps value in range), and no test files were modified."
+}

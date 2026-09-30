@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed src/discount.ts: withTax computed amount * (1 - rate), subtracting tax instead of adding it. Changed to amount * (1 + rate) so withTax(100, 0.2) returns 120 as the test expects. All other suite expectations (addCents, formatCents, applyPercent, isOverdrawn) verified correct; tests untouched."
+}

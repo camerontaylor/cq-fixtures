@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Bug was in src/queue.ts: enqueue returned [value, ...items], prepending the new value, while the test expects enqueue([1, 2], 3) to equal [1, 2, 3] (append to the back). Changed the return to [...items, value]. Verified the remaining sources against the suite without changing tests: dequeue([1,2,3]) -> 1, nextState('queued') -> 'running', shouldRetry(3, 3) -> false, successRate([true, false, true]) -> 2/3; all consistent, so the full vitest suite should now pass. Note: the harness allowlist blocked all shell commands (ls, npx vitest run, etc.), so the suite could not be executed directly; the fix was validated by reading every imported module and matching each assertion by hand."
+}

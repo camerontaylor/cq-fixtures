@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed two source bugs. 1) src/case.ts toKebabCase: replaced .toUpperCase() with .toLowerCase() so it emits lowercase kebab-case (e.g. \"Foo Bar\" -> \"foo-bar\") instead of returning uppercase letters. 2) src/truncate.ts: changed boundary check from text.length < max to text.length <= max so text that already fits the limit (including exactly max characters) is returned unchanged instead of being altered with a trailing ellipsis. Tests were not modified (they were not discoverable via the read tool, and the harness run allowlist blocked all shell commands this session; no node_modules present, so verification was by direct file inspection). The scoring harness will run the vitest suite."
+}

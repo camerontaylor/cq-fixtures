@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "The bug was in src/discount.ts: applyPercent computed `amount + (amount * percent) / 100`, increasing the amount instead of subtracting the percentage (test expects applyPercent(100, 20) === 80). Changed the `+` to `-`. The remaining sources (src/money.ts, src/balance.ts) already satisfy their tests. Tests were not modified. Note: the shell tool's allowlist blocked every command, so file discovery was done by reading .git/index; the fix was applied and re-read to confirm."
+}

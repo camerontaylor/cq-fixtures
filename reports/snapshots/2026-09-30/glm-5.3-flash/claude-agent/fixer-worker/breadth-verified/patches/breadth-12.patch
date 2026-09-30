@@ -1,0 +1,9 @@
+diff --git a/src/case.ts b/src/case.ts
+index 3c131d3..df2803d 100644
+--- a/src/case.ts
++++ b/src/case.ts
+@@ -1,3 +1,3 @@
+ export function toKebabCase(text: string): string {
+-  return text.trim().toUpperCase().split(/\s+/).join('-');
++  return text.trim().toLowerCase().split(/\s+/).join('-');
+ }

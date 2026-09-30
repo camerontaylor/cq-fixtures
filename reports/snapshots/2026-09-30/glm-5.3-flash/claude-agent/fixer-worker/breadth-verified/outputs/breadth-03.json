@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "The suite's failing expectations were in test/discount.test.ts: discountRate(true) must be 0.1 and discountRate(false) must be 0, but src/discount.ts had the ternary inverted (`isMember ? 0 : 0.1`). Fixed by flipping it to `isMember ? 0.1 : 0`. Note: the task prose (\"members pay full price\") matched the buggy source, not the tests; since tests are authoritative and unmodifiable, they were followed. test/money.test.ts already passed (applyDiscount(19.99, 0.1) → 17.99), and src/cart.ts is untested, so no other changes were needed. Tests untouched. (The run tool is blocked by the harness allowlist, so the suite could not be executed locally; verified by tracing assertions against the source.)"
+}

@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed clamp in src/range.ts: it was calling Math.min(Math.max(value, high), low), passing the bounds swapped — Math.max(value, high) pinned the result to at least high and Math.min(..., low) capped it at low, so any interior value (e.g. clamp(5, 0, 10)) was pushed out of range and returned 0. Swapped the arguments to Math.min(Math.max(value, low), high). The other suite targets (isEmail, parseAmount with radix 10, requireFields) already satisfy their tests; no test files were modified. Note: the shell-run tool was fully locked down by the harness allowlist, so file discovery was done via the git index and verification is by inspection (clamp(5,0,10) → max(5,0)=5 → min(5,10)=5)."
+}

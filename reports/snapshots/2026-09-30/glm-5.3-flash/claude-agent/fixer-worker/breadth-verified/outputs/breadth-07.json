@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Root cause: src/defaults.ts built the Config with `retries: retries as number`, so when the caller omitted the retries argument the value undefined was written into the result (and the cast hid the type error). Fix: `retries: retries ?? 3` so an omitted argument falls back to the default of 3 (matching test/config.test.ts), while an explicit argument — or a retries key inside the `partial` spread, which is applied last — still wins. Tests were not modified. Verified src/defaults.ts now reads: `return { verbose: false, retries: retries ?? 3, ...partial };` which satisfies both tests ({} → retries 3; explicit 5 → retries 5)."
+}

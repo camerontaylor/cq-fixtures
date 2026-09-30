@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed reachable() in src/bfs.ts: the BFS loop returned true when the dequeued node was NOT the target (`if (node !== target) return true;`), so any traversal immediately reported unreachable targets as reachable. Inverted it to `if (node === target) return true;`, so true is only returned when the target is reached and false when the queue drains. Verified against the failing test reachable({a:['b']}, 'a', 'z') → false; start===target and normal reach paths still return true. Tests unmodified. Note: the harness's run command was fully allowlist-blocked, so files were located via .git/index and edits verified by re-reading; the suite itself is run by the scoring harness."
+}

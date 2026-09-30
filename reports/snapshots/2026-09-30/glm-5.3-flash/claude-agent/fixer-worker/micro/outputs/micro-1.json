@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Bug found in src/rangeSum.ts: the loop used `i < b`, excluding the upper bound, so sumRange(1, 5) returned 10 (1+2+3+4) and sumRange(3, 3) returned 0. The test suite (test/rangeSum.test.ts) specifies an inclusive range expecting 15 and 3. Changed the loop condition to `i <= b`. Verified by reasoning: sumRange(1,5)=15, sumRange(3,3)=3, sumRange(-2,2)=0 — all three tests now pass. No test files were modified. Note: the harness run-command allowlist denied all shell invocations, so file discovery was done via the git index and verification was analytical rather than by executing vitest."
+}

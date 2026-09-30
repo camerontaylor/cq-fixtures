@@ -1,0 +1,11 @@
+diff --git a/src/sortTasks.ts b/src/sortTasks.ts
+index 4c7433e..8439c3e 100644
+--- a/src/sortTasks.ts
++++ b/src/sortTasks.ts
+@@ -6,5 +6,5 @@ export interface Task {
+ }
+ 
+ export function sortTasks(tasks: Task[]): Task[] {
+-  return [...tasks].sort((a, b) => a.priority - b.priority || a.id - b.id);
++  return [...tasks].sort((a, b) => b.priority - a.priority || a.id - b.id);
+ }

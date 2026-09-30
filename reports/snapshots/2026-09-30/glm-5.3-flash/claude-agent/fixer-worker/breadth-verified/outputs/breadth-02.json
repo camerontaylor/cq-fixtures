@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Off-by-one in src/paging.ts: isLastPage used `page > totalPages - 1`, so for a 3-page (0-indexed) document the last page index 2 evaluated to 2 > 2 = false. Changed the comparison to `page >= totalPages - 1`, making isLastPage(2, 3) true while isLastPage(0, 3) stays false. No test files were modified. (Note: the run tool's allowlist blocked every shell command, so file discovery was done via the git index and the fix verified by reading the edited source; the harness runs the vitest suite itself.)"
+}

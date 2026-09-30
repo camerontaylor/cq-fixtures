@@ -1,0 +1,10 @@
+diff --git a/src/discount.ts b/src/discount.ts
+index c455d2d..9cc5bf8 100644
+--- a/src/discount.ts
++++ b/src/discount.ts
+@@ -1,4 +1,4 @@
+ // The membership discount rate.
+ export function discountRate(isMember: boolean): number {
+-  return isMember ? 0 : 0.1;
++  return isMember ? 0.1 : 0;
+ }

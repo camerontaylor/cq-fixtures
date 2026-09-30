@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Bug: src/totals.ts — allInStock() used Array.prototype.some(item => item.inStock), which returns true whenever ANY item is stocked, so a catalog containing the out-of-stock 'washer' wrongly reported true. Fix: changed it to Array.prototype.every(item => item.inStock) so it only returns true when all items are in stock. This satisfies both vitest cases: allInStock(catalog()) is now false (washer out of stock) and allInStock of a fully stocked list is still true. No test files were modified; totalPrice was left untouched."
+}

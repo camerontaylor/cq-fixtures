@@ -1,0 +1,12 @@
+diff --git a/src/area.ts b/src/area.ts
+index 8f94c21..995bfeb 100644
+--- a/src/area.ts
++++ b/src/area.ts
+@@ -4,6 +4,6 @@ import { toMetres, type Unit } from './units.ts';
+ export function rectangleArea(width: number, height: number, unit: Unit): number {
+   const w = toMetres(width, unit);
+   const h = toMetres(height, unit);
+-  const area = w + h;
++  const area = w * h;
+   return area;
+ }

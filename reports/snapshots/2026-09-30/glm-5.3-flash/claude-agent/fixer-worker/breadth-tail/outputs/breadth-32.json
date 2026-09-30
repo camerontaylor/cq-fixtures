@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed src/required.ts: requireFields used `obj[field] !== undefined` (listing present fields); flipped the predicate to `=== undefined` so it lists missing fields, matching test/validate.test.ts's expectation requireFields({ a: 1 }, ['a', 'b']) → ['b']. Verified the other tested functions are already correct: isEmail('a@b') is false, parseInt(text, 10) in src/number.ts parses '0x10' as 0, and clamp(5,0,10) in src/range.ts returns 5. No test files were modified. Note: the harness run-tool allowlist blocked all shell commands, so the suite could not be executed locally; the fix was verified by reading the sources and tests (discovered via .git/index after direct path probes failed)."
+}

@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Bug was in src/balance.ts: isOverdrawn used `balance <= 0`, which incorrectly reported a zero balance as overdrawn, failing the test \"treats a zero balance as not overdrawn\" (expects isOverdrawn(0) === false). Changed the guard to `balance < 0`. Verified all other sources (src/money.ts, src/discount.ts) already satisfy the tests; tests were left untouched. Note: the harness run-tool allowlist blocked all shell commands (including `npx vitest run`), so I could not execute the suite locally; the fix was validated by reading source and tests directly (files discovered via the git index after directory listings were denied)."
+}

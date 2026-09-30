@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed two bugs. (1) src/time.ts minutesBetween computed start - end, producing a negative duration; changed to end - start. (2) src/slots.ts overlaps used inclusive comparisons (aStart <= bEnd && bStart <= aEnd), so back-to-back half-open slots (e.g. [10,11) and [11,12)) were reported as overlapping; changed to strict inequalities (aStart < bEnd && bStart < aEnd), which is symmetric and preserves correct results for overlapping ranges. Tests untouched. Could not run the vitest suite locally because the run tool's allowlist rejected all shell commands (ls, cat, git, npm, node); fixes were verified by re-reading the edited files and match the failure modes described in the task."
+}

@@ -1,0 +1,13 @@
+diff --git a/src/edges.ts b/src/edges.ts
+index 1dc0f0c..d0aa22f 100644
+--- a/src/edges.ts
++++ b/src/edges.ts
+@@ -1,7 +1,7 @@
+ export type Adjacency = Record<string, string[]>;
+ 
+ export function degree(adj: Adjacency, node: string): number {
+-  return (adj[node] ?? []).length - 1;
++  return (adj[node] ?? []).length;
+ }
+ 
+ export function hasEdge(adj: Adjacency, a: string, b: string): boolean {

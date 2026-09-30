@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Bug: `averageWordLength` in src/count.ts returned `total * words.length` instead of `total / words.length`, multiplying the summed character count by the word count (e.g. 'a bb ccc' returned 18 instead of 2). Changed the return to `total / words.length` so it divides the total character count by the number of words. Verified the suite's other cases by inspection: wordCount('  a b c  ') = 3, toKebabCase('Hello Big World') = 'hello-big-world', truncate('hello', 5) = 'hello', and averageWordLength('a bb ccc') = (1+2+3)/3 = 2 — all now pass. Tests were not modified. Note: the harness allowlist blocked all shell commands (ls, git, npx), so the suite could not be executed locally; file discovery was done via the .git index and verification was by manual trace."
+}

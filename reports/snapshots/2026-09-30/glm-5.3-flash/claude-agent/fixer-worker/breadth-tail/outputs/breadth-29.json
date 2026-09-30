@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed hasSelfLoop in src/paths.ts: it used Object.entries(adj).every(...), so it only reported true when every node had a self-loop. Changed .every to .some so it returns true if any node has a self-loop. One-line change; no tests modified. Shell commands were blocked by the harness allowlist, so file discovery was done via the git index and verification was by manual inspection of the suite (all 5 test groups match source behavior), not by executing vitest."
+}

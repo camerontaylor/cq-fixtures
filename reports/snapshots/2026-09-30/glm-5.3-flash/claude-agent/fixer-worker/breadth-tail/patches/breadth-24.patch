@@ -1,0 +1,11 @@
+diff --git a/src/order.ts b/src/order.ts
+index 05ae066..0fa0b83 100644
+--- a/src/order.ts
++++ b/src/order.ts
+@@ -3,5 +3,5 @@ export function isWeekend(day: number): boolean {
+ }
+ 
+ export function sortByStart(slots: number[]): number[] {
+-  return [...slots].sort((a, b) => b - a);
++  return [...slots].sort((a, b) => a - b);
+ }

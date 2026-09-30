@@ -1,0 +1,18 @@
+diff --git a/src/parseConfig.ts b/src/parseConfig.ts
+index b00dbf5..40cabbd 100644
+--- a/src/parseConfig.ts
++++ b/src/parseConfig.ts
+@@ -1,8 +1,11 @@
+ // Config parsing for the loader pipeline.
++// Malformed input is a loud, named failure: the caller gets an Error whose
++// message mentions "invalid config", never a silently emptied config object.
+ export function parseConfig(text: string): Record<string, unknown> {
+   try {
+     return JSON.parse(text) as Record<string, unknown>;
+-  } catch {
+-    return {};
++  } catch (cause) {
++    const reason = cause instanceof Error ? cause.message : String(cause);
++    throw new Error(`invalid config: ${reason}`);
+   }
+ }

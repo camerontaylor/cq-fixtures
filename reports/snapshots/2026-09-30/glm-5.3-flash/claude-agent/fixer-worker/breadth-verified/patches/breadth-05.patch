@@ -1,0 +1,13 @@
+diff --git a/src/totals.ts b/src/totals.ts
+index 0268b63..774f9e3 100644
+--- a/src/totals.ts
++++ b/src/totals.ts
+@@ -1,7 +1,7 @@
+ import type { Item } from './types.ts';
+ 
+ export function allInStock(items: Item[]): boolean {
+-  return items.some((item) => item.inStock);
++  return items.every((item) => item.inStock);
+ }
+ 
+ export function totalPrice(items: Item[]): number {

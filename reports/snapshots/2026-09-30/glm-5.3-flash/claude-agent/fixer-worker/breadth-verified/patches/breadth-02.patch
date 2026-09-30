@@ -1,0 +1,11 @@
+diff --git a/src/paging.ts b/src/paging.ts
+index 5a34c79..7e14f55 100644
+--- a/src/paging.ts
++++ b/src/paging.ts
+@@ -6,5 +6,5 @@ export function pageCount(total: number): number {
+ 
+ // Last-page check for the pager controls.
+ export function isLastPage(page: number, totalPages: number): boolean {
+-  return page > totalPages - 1;
++  return page >= totalPages - 1;
+ }

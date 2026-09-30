@@ -1,0 +1,11 @@
+diff --git a/src/stats.ts b/src/stats.ts
+index 5cd4d6c..353466d 100644
+--- a/src/stats.ts
++++ b/src/stats.ts
+@@ -1,4 +1,5 @@
+ export function successRate(events: boolean[]): number {
+   if (events.length === 0) return 0;
+-  return events.length / events.length;
++  const successes = events.filter((success) => success).length;
++  return successes / events.length;
+ }

@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Bug was in src/edges.ts: hasEdge returned (adj[b] ?? []).includes(a), checking the reversed endpoint. Fixed to (adj[a] ?? []).includes(b) so a directed edge a→b is detected by scanning a's adjacency list. Tests (test/graph.test.ts) were not modified. Shell execution was blocked by the harness allowlist, so the suite could not be run locally; the fix was verified by direct inspection of each tested function against the test expectations."
+}

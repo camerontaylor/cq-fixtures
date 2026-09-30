@@ -1,0 +1,11 @@
+diff --git a/src/paths.ts b/src/paths.ts
+index 481b165..4cdf63a 100644
+--- a/src/paths.ts
++++ b/src/paths.ts
+@@ -5,5 +5,5 @@ export function neighbors(adj: Adjacency, node: string): string[] {
+ }
+ 
+ export function hasSelfLoop(adj: Adjacency): boolean {
+-  return Object.entries(adj).every(([node, next]) => next.includes(node));
++  return Object.entries(adj).some(([node, next]) => next.includes(node));
+ }

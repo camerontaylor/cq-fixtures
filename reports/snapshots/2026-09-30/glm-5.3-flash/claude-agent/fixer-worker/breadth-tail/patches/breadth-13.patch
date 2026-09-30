@@ -1,0 +1,11 @@
+diff --git a/src/count.ts b/src/count.ts
+index 1cb1ada..a3b6061 100644
+--- a/src/count.ts
++++ b/src/count.ts
+@@ -5,5 +5,5 @@ export function wordCount(text: string): number {
+ export function averageWordLength(text: string): number {
+   const words = text.trim().split(/\s+/);
+   const total = words.reduce((sum, word) => sum + word.length, 0);
+-  return total * words.length;
++  return total / words.length;
+ }

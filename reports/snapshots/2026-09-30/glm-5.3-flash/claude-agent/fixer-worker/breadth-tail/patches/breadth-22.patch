@@ -1,0 +1,11 @@
+diff --git a/src/time.ts b/src/time.ts
+index 9480353..6c55528 100644
+--- a/src/time.ts
++++ b/src/time.ts
+@@ -3,5 +3,5 @@ export function minutesBetween(start: number, end: number): number {
+ }
+ 
+ export function formatDuration(minutes: number): string {
+-  return `${Math.floor(minutes / 100)}h${minutes % 60}m`;
++  return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
+ }

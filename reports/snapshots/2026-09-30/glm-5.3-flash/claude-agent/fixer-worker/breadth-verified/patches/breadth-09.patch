@@ -1,0 +1,23 @@
+diff --git a/src/inventory.ts b/src/inventory.ts
+index 0f05795..e0d4774 100644
+--- a/src/inventory.ts
++++ b/src/inventory.ts
+@@ -6,5 +6,5 @@ const stock: Product[] = [
+ ];
+ 
+ export function snapshot(): Product[] {
+-  return stock;
++  return stock.map((product) => ({ ...product }));
+ }
+diff --git a/src/orders.ts b/src/orders.ts
+index de49431..f89f777 100644
+--- a/src/orders.ts
++++ b/src/orders.ts
+@@ -1,6 +1,6 @@
+ import type { Order } from './types.ts';
+ 
+ export function statusOf(order: Order): string {
+-  if (order.paid || order.shipped) return 'complete';
++  if (order.paid && order.shipped) return 'complete';
+   return 'open';
+ }

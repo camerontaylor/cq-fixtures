@@ -1,0 +1,12 @@
+diff --git a/src/memoize.ts b/src/memoize.ts
+index 76956f0..8c15712 100644
+--- a/src/memoize.ts
++++ b/src/memoize.ts
+@@ -6,6 +6,7 @@ export function memoize<A, B>(fn: (arg: A) => B): (arg: A) => B {
+       return cache.get(arg)!;
+     }
+     const value = fn(arg);
++    cache.set(arg, value);
+     return value;
+   };
+ }

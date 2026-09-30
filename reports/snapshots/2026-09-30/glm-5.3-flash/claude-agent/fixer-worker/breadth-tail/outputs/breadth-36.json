@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Located the bug via git index (only test: test/queue.test.ts). The failing case was shouldRetry(3, 3) → expected false, but src/retry.ts used `attempt <= max`, returning true. Changed it to `attempt < max`, so retrying stops at the attempt limit (retries only while attempt < max). Verified all five suites against the sources: enqueue ([1,2],3 → [1,2,3]), dequeue (first element), nextState ('queued' → 'running'), shouldRetry (3<3 → false), and successRate (2/3, with empty-array guard) all pass. No test files were modified; the run tool's allowlist blocked shell/test execution, so verification was done by direct source-vs-test inspection of every assertion."
+}

@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Bug was in src/order.ts: sortByStart used a descending comparator ((a, b) => b - a), so it returned [30, 20, 10] for [30, 10, 20], while test/schedule.test.ts expects ascending order [10, 20, 30]. Changed the comparator to (a, b) => a - b. Tests were not modified. All other tested functions (minutesBetween, formatDuration, overlaps, isWeekend) already matched their expectations. Note: the harness command allowlist blocked running vitest/ls directly, so file discovery was done via the git index and verification was by inspection; the suite should now pass."
+}

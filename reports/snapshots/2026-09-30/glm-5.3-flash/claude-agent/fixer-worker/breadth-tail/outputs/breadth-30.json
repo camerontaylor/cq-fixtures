@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed two bugs in the source (tests untouched):\n\n1. src/edges.ts — hasEdge(adj, a, b) looked up the wrong endpoint: it searched adj[b] for a. Changed to `(adj[a] ?? []).includes(b)` so it correctly reports whether the directed edge a→b exists.\n\n2. src/bfs.ts — reachable() had an inverted early-return inside the BFS loop: `if (node !== target) return true;` made it report true on the first dequeue (and thus for any unreachable target). Changed to `if (node === target) return true;`, which also correctly handles start === target, and returns false only after the queue drains.\n\nVerified by reading the final files and tracing test/graph.test.ts (which also exercises degree, neighbors, and hasSelfLoop from src/paths.ts — those were already correct and left unchanged). The harness shell allowlist blocked running vitest locally, but the suite is run by the scoring harness."
+}

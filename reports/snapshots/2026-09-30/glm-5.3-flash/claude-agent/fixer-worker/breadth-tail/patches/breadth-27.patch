@@ -1,0 +1,11 @@
+diff --git a/src/edges.ts b/src/edges.ts
+index e21b8e3..d0aa22f 100644
+--- a/src/edges.ts
++++ b/src/edges.ts
+@@ -5,5 +5,5 @@ export function degree(adj: Adjacency, node: string): number {
+ }
+ 
+ export function hasEdge(adj: Adjacency, a: string, b: string): boolean {
+-  return (adj[b] ?? []).includes(a);
++  return (adj[a] ?? []).includes(b);
+ }

@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed src/money.ts: formatCents divided cents by 1000 instead of 100, so formatCents(1234) returned \"1.23\" instead of the expected \"12.34\". Changed the divisor to 100. No other source changes were needed; tests were not modified. (Note: the run tool's allowlist blocked all shell commands, so the suite could not be executed locally; the fix was verified by reading the source and matching the test expectation in test/ledger.test.ts.)"
+}

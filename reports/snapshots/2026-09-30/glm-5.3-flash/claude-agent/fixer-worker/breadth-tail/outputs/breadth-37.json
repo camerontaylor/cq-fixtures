@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed nextState in src/retry.ts: it had transitions for 'pending' and 'running' but no case for 'queued', so queued tasks fell through and stayed queued. Added `if (state === 'queued') return 'running';` so nextState('queued') now returns 'running' as the test expects. All other suite assertions (enqueue, dequeue, shouldRetry(3,3)=false, successRate=2/3) already held. Tests in test/queue.test.ts were not modified. The harness run-tool allowlist blocked shell execution, so verification was done by tracing each test assertion against the patched source."
+}

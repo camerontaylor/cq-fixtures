@@ -1,0 +1,12 @@
+diff --git a/src/slugify.ts b/src/slugify.ts
+index b9732f0..579e176 100644
+--- a/src/slugify.ts
++++ b/src/slugify.ts
+@@ -2,6 +2,7 @@
+ export function slugify(text: string): string {
+   return text
+     .trim()
++    .toLowerCase()
+     .split(/\s+/)
+     .join('-');
+ }

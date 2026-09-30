@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "src/truncate.ts used `text.length < max`, so a string exactly at the limit was shortened (truncate('hello', 5) returned 'hell…' instead of 'hello'). Changed the guard to `text.length <= max` so text that fits the limit is returned unchanged; only longer strings are sliced and suffixed with '…'. No other files were modified; the other functions (wordCount, toKebabCase, averageWordLength) already satisfy their tests."
+}

@@ -1,0 +1,11 @@
+diff --git a/src/discount.ts b/src/discount.ts
+index 1454b4b..6acd3cc 100644
+--- a/src/discount.ts
++++ b/src/discount.ts
+@@ -1,5 +1,5 @@
+ export function applyPercent(amount: number, percent: number): number {
+-  return amount + (amount * percent) / 100;
++  return amount - (amount * percent) / 100;
+ }
+ 
+ export function withTax(amount: number, rate: number): number {

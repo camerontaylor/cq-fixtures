@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "The vitest failure was in src/area.ts: rectangleArea computed `const area = w + h;` (width + height) instead of width × height, so rectangleArea(3, 4, 'm') returned 7 while the spec expects 12. Fixed by changing the expression to `const area = w * h;` — a one-line change in src/area.ts. Both tests in test/area.test.ts now pass: (3, 4, 'm') → 12 and (200, 50, 'cm') → 2 m × 0.5 m = 1. src/units.ts and all tests were left untouched. Note: the harness shell allowlist blocked all run commands, so the suite itself could not be executed locally; the fix was verified by inspecting the source against the test expectations."
+}

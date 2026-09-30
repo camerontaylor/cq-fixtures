@@ -1,0 +1,22 @@
+diff --git a/src/queue.ts b/src/queue.ts
+index 256b21f..9fe4eca 100644
+--- a/src/queue.ts
++++ b/src/queue.ts
+@@ -1,5 +1,5 @@
+ export function enqueue<T>(items: T[], value: T): T[] {
+-  return [value, ...items];
++  return [...items, value];
+ }
+ 
+ export function dequeue<T>(items: T[]): T | undefined {
+diff --git a/src/retry.ts b/src/retry.ts
+index b4b1d92..3e172dd 100644
+--- a/src/retry.ts
++++ b/src/retry.ts
+@@ -1,5 +1,5 @@
+ export function shouldRetry(attempt: number, max: number): boolean {
+-  return attempt <= max;
++  return attempt < max;
+ }
+ 
+ export function nextState(state: string): string {

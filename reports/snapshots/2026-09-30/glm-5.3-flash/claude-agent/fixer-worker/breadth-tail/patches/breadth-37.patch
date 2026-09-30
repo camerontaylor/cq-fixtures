@@ -1,0 +1,12 @@
+diff --git a/src/retry.ts b/src/retry.ts
+index 7a6b2ba..4ce111b 100644
+--- a/src/retry.ts
++++ b/src/retry.ts
+@@ -4,6 +4,7 @@ export function shouldRetry(attempt: number, max: number): boolean {
+ 
+ export function nextState(state: string): string {
+   if (state === 'pending') return 'running';
++  if (state === 'queued') return 'running';
+   if (state === 'running') return 'done';
+   return state;
+ }

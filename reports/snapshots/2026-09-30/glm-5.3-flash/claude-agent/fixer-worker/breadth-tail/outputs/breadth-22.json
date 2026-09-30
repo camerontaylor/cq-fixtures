@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed src/time.ts: formatDuration divided minutes by 100 when computing hours (Math.floor(minutes / 100)), yielding the wrong hour count (e.g. 90 minutes -> \"0h30m\" instead of \"1h30m\"). Changed it to Math.floor(minutes / 60); the minutes portion (minutes % 60) was already correct. Tests were not modified."
+}

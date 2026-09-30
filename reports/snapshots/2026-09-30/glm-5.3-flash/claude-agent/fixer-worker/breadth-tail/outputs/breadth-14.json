@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Bug was in src/count.ts: wordCount used text.split(/\\s+/).length without trimming, so surrounding whitespace produced empty leading/trailing entries — '  a b c  ' yielded 5 instead of 3. Fixed by trimming first and returning 0 for empty input. No test files were modified; src/case.ts (toKebabCase) and src/truncate.ts already satisfy their specs, so the rest of the vitest suite should pass as-is."
+}

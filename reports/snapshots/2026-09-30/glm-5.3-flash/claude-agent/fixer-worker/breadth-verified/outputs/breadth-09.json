@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed two bugs. (1) src/inventory.ts: snapshot() returned the internal stock array by reference, letting callers' pushes corrupt later snapshots; it now returns stock.map((p) => ({ ...p })), a fresh array of copied rows. (2) src/orders.ts: statusOf used (paid || shipped) so a paid-but-unshipped order read as 'complete'; changed to (paid && shipped), returning 'open' otherwise. Matches test/inventory.test.ts and test/orders.test.ts expectations; tests unmodified. Note: the harness run-command allowlist blocked executing vitest locally, so fixes were validated by reading the test files directly."
+}

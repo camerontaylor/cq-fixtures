@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed src/stats.ts: successRate previously returned `events.length / events.length` (always 1). It now counts successful events (`events.filter(Boolean).length`) and divides by total events, preserving the existing empty-input behavior of returning 0. Tests were not modified. Note: the sandbox shell allowlist blocked every command I attempted (ls, find, cat, npx vitest), so I could not run the suite locally; the fix is a straightforward correction of the denominator/numerator logic and the harness will run vitest to verify."
+}

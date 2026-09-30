@@ -1,0 +1,11 @@
+diff --git a/src/money.ts b/src/money.ts
+index a478fa1..787a09b 100644
+--- a/src/money.ts
++++ b/src/money.ts
+@@ -3,5 +3,5 @@ export function addCents(a: number, b: number): number {
+ }
+ 
+ export function formatCents(cents: number): string {
+-  return (cents / 1000).toFixed(2);
++  return (cents / 100).toFixed(2);
+ }

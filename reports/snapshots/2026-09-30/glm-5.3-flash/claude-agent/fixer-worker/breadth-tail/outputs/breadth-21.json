@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Bug was in src/order.ts: isWeekend(day) returned `day === 1 || day === 6`, treating Monday (1) as a weekend day while omitting Sunday (0). Fixed to `day === 0 || day === 6`, which satisfies the test `expect(isWeekend(0)).toBe(true)`. No other sources or tests were modified; the other exported helpers (minutesBetween, formatDuration, overlaps, sortByStart) already matched the suite. Note: the shell tool's allowlist blocked all listed commands, so file discovery was done via the git index (.git/index), which revealed src/order.ts as the module exporting isWeekend."
+}

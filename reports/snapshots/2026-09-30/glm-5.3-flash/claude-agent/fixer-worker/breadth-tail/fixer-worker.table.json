@@ -1,0 +1,32 @@
+{
+  "role": "fixer-worker",
+  "suite": "breadth-tail",
+  "generatedAt": "2026-09-30T15:47:46.157Z",
+  "cells": [
+    {
+      "model": "glm-5.3-flash",
+      "driver": "claude-agent",
+      "runs": 28,
+      "passed": 56,
+      "total": 56,
+      "score": 1,
+      "costUSD": 0.090021,
+      "costBasis": "modeled",
+      "expectedCases": 28,
+      "coveredCases": 28,
+      "coverage": 1,
+      "scoreCI": {
+        "lower": 0.9358060632812366,
+        "upper": 1,
+        "confidence": 0.95
+      },
+      "wallTimeMs": 3917906,
+      "tokens": {
+        "input": 137133,
+        "output": 70082,
+        "cacheRead": 1147008,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "fixed": true,
+  "notes": "Fixed degree() in src/edges.ts: it returned (adj[node] ?? []).length - 1, undercounting neighbours by one. Now returns (adj[node] ?? []).length (missing nodes still yield 0 via the ?? [] guard). No tests were modified. Note: the run tool was blocked by the harness allowlist, so the suite could not be executed locally; the change is a minimal one-token fix verified by re-reading the file."
+}

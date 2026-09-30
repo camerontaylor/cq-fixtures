@@ -922,9 +922,6 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         diagnostics = diagnostics === undefined ? cause : `${diagnostics}\n${cause}`;
         absences.push({ case: c.id, role: suite.role, cause });
       }
-      if (emitRow && isFixerCase(c) && rowProbes === undefined) {
-        rowProbes = [{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }];
-      }
       if (diagnostics !== undefined) caseDiagnostics.push(`case ${c.id}: ${diagnostics}`);
       await append({
         type: 'job-finished', runId, at: now(), jobId: c.id, opId: suite.role,

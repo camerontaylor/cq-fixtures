@@ -454,9 +454,7 @@ async function main(argv: readonly string[]): Promise<number> {
             : opts.maxTokens,
         checkTimeoutMs: opts.checkTimeoutMs,
         journalPath: opts.repeats > 1 && opts.journal !== undefined
-          ? opts.out !== undefined
-            ? join(opts.out, `repeat-${repeat}`, 'journal')
-            : join(opts.journal, `repeat-${repeat}`)
+          ? join(opts.journal, `repeat-${repeat}`)
           : opts.journal,
         driverName: opts.driverName,
         preflightProbe,

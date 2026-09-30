@@ -86,4 +86,37 @@ describe('W6.5 paired case-clustered comparisons', () => {
     expect(comparison.coverageParity).toBe(false);
     expect(comparison.interpretation).toBe('descriptive');
   });
+
+  it('counts only eligible rows when estimating repeats per case', () => {
+    const rows: ResultRow[] = [];
+    for (const id of ['a', 'b', 'c']) for (const repeat of [1, 2, 3]) {
+      const base = row('baseline', id, repeat, id === 'a' && repeat === 3 ? 1 : 0);
+      rows.push(id === 'a' && repeat === 3 ? { ...base, invalid: 'workspace-unbound' } : base);
+      rows.push(row('candidate', id, repeat, 1));
+    }
+    const comparison = aggregate(rows)[0]!.comparisons![0]!;
+    expect(comparison.repeatsPerCase).toBe(2);
+    expect(comparison.noiseBand).toBe(0);
+  });
+
+  it('keeps Wilson intervals local to cells that are not repeated', () => {
+    const rows: ResultRow[] = [];
+    for (let i = 0; i < 30; i++) {
+      rows.push({
+        role: 'review-classifier', suite: 'mixed-repeat-cells', case: `single-${i}`,
+        model: 'single', driver: 'ai-sdk', outcome: { score: 1, passed: 1, total: 1 },
+        costUSD: 0, wallTimeMs: 1, tokens: { input: 0, output: 0 },
+        runId: `single-${i}`, timestamp: '2026-09-30T00:00:00Z',
+      });
+      rows.push({
+        role: 'review-classifier', suite: 'mixed-repeat-cells', case: `repeated-${i}`,
+        model: 'repeated', driver: 'ai-sdk', repeat: 1, repeatCount: 2,
+        outcome: { score: 1, passed: 1, total: 1 }, costUSD: 0, wallTimeMs: 1,
+        tokens: { input: 0, output: 0 }, runId: `repeated-${i}`, timestamp: '2026-09-30T00:00:00Z',
+      });
+    }
+    const cells = aggregate(rows)[0]!.cells;
+    expect(cells.find((cell) => cell.model === 'single')?.scoreCI).toBeDefined();
+    expect(cells.find((cell) => cell.model === 'repeated')?.scoreCI).toBeUndefined();
+  });
 });

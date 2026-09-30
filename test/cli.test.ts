@@ -143,14 +143,15 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
       cases: [reviewCase('rev-1', 'resolved')],
     });
     const out = join(root, 'repeated-out');
-    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--journal', join(out, 'journal'), '--out', out])).resolves.toBe(0);
+    const journalRoot = join(root, 'repeated-journals');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--journal', journalRoot, '--out', out])).resolves.toBe(0);
     const combined = readFileSync(join(out, 'rows.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { repeat: number; runId: string });
     expect(combined.map((row) => row.repeat)).toEqual([1, 2, 3]);
     expect(new Set(combined.map((row) => row.runId)).size).toBe(3);
     for (let repeat = 1; repeat <= 3; repeat++) {
       const runDir = join(out, `repeat-${repeat}`);
       expect(existsSync(join(runDir, 'outputs', 'rev-1.json'))).toBe(true);
-      expect(readdirSync(join(runDir, 'journal')).length).toBe(1);
+      expect(readdirSync(join(journalRoot, `repeat-${repeat}`)).length).toBe(1);
       expect(JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')).runs[0].repeat).toBe(repeat);
       expect(readFileSync(join(runDir, 'rows.jsonl'), 'utf8')).toContain(`"repeat":${repeat}`);
     }

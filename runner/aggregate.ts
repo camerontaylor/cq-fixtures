@@ -201,6 +201,8 @@ interface CellAccumulator {
   covered: Set<string>;
   /** W6.2: contributing rows stopped on the case budget. */
   budgetStops: number;
+  /** W6.5: at least one row in this cell belongs to a repeated run. */
+  hasRepeatedRows: boolean;
 }
 
 /** Cost sums are rounded to 6 decimals — finer precision is price-map noise. */
@@ -393,10 +395,12 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         fpWrong: 0,
         covered: new Set<string>(),
         budgetStops: 0,
+        hasRepeatedRows: false,
       };
       cells.set(key, acc);
     }
     acc.runs += 1;
+    if (row.repeatCount !== undefined) acc.hasRepeatedRows = true;
     if (row.invalid !== undefined) acc.invalid = row.invalid;
     acc.passed += row.outcome.passed;
     acc.total += row.outcome.total;
@@ -517,7 +521,7 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         : {}),
       ...(acc.budgetStops > 0 ? { budgetStops: acc.budgetStops } : {}),
       ...(acc.fpTotal > 0 ? { fpRate: acc.fpWrong / acc.fpTotal, fpN: acc.fpTotal } : {}),
-      ...(acc.total >= WILSON_MIN_N && !rows.some((r) => r.repeatCount !== undefined)
+      ...(acc.total >= WILSON_MIN_N && !acc.hasRepeatedRows
         ? { scoreCI: { ...wilsonInterval(acc.passed, acc.total), confidence: 0.95 } }
         : {}),
       wallTimeMs: acc.wallTimeMs,
@@ -605,9 +609,11 @@ export function pairedComparisons(rows: readonly ResultRow[], cells: readonly Co
     const ac = completeA && completeA.size >= 2 ? completeA : observedCaseMeans(ar);
     const bc = completeB && completeB.size >= 2 ? completeB : observedCaseMeans(br);
     const shared = [...ac.keys()].filter((id) => bc.has(id)).sort();
+    const eligibleRepeatCount = (cellRows: readonly ResultRow[], id: string) => cellRows.filter((r) =>
+      r.case === id && r.stopCause === undefined && r.invalid === undefined && estimand(r) !== undefined).length;
     const repeatsPerCase = Math.min(...shared.flatMap((id) => [
-      ar.filter((r) => r.case === id && r.stopCause === undefined).length,
-      br.filter((r) => r.case === id && r.stopCause === undefined).length,
+      eligibleRepeatCount(ar, id),
+      eligibleRepeatCount(br, id),
     ]));
     if (shared.length < 2) continue;
     const differences = shared.map((id) => bc.get(id)! - ac.get(id)!);
@@ -620,7 +626,7 @@ export function pairedComparisons(rows: readonly ResultRow[], cells: readonly Co
     const withinVariance = (cellRows: ResultRow[]) => {
       const grouped = new Map<string, number[]>();
       for (const r of cellRows) if (r.case !== undefined && shared.includes(r.case) &&
-        r.stopCause === undefined && estimand(r) !== undefined) {
+        r.stopCause === undefined && r.invalid === undefined && estimand(r) !== undefined) {
         const values = grouped.get(r.case) ?? [];
         values.push(estimand(r)!);
         grouped.set(r.case, values);
@@ -645,7 +651,7 @@ export function pairedComparisons(rows: readonly ResultRow[], cells: readonly Co
       noiseBand, coverageParity,
       interpretation: !coverageParity ? 'descriptive' :
         Math.abs(delta) <= noiseBand ? 'within-noise' :
-          Math.abs(delta) < (t95 + t80) * standardError || Math.abs(delta) <= confidenceHalf
+        Math.abs(delta) < (t95 + t80) * standardError
             ? 'not-distinguishable' : 'signal',
     });
   }

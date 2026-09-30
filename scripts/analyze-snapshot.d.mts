@@ -10,7 +10,7 @@ export interface SnapshotAnalysis {
       cases: number;
       repeatsPerCase: number;
       coverageParity: boolean;
-      interpretation: 'noise' | 'signal' | 'descriptive';
+      interpretation: 'within-noise' | 'not-distinguishable' | 'signal' | 'descriptive';
     }>;
   }>;
 }

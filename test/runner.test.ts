@@ -212,7 +212,9 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     expect(result.rows.map((r) => [r.case, r.outcome.passed])).toEqual([['fix-pass', 1], ['fix-fail', 0]]);
     expect(result.rows.every((r) => r.outcome.total === 2)).toBe(true);
     assertSchemaValid(result.rows, result.tables);
-  }, 15_000);
+    // This exercises two full runSuite workspace materializations and child
+    // checks; allow time for that path beyond the checks' own 300/800ms.
+  }, 30_000);
 
   it('a missing check script scores 0 with diagnostics and never throws', () => {
     const outcome = scoreFixerWorker(

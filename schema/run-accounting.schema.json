@@ -13,6 +13,7 @@
     "providerCredits": { "$ref": "#/$defs/amount" },
     "coverage": {
       "type": "object", "additionalProperties": false,
+      "description": "Observed row and probe counts must not exceed their expected counts; this cross-field relationship is enforced by runtime validation.",
       "required": ["observedRows", "expectedRows", "observedProbes", "expectedProbes"],
       "properties": {
         "observedRows": { "type": "integer", "minimum": 0 },

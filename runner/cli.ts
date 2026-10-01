@@ -240,9 +240,12 @@ function parseArgs(argv: readonly string[]): CliOptions {
   if (repeats > 1 && journal === undefined) journal = out;
   // A journal root can alias --out through a symlink. The emit phase must
   // never try to copy a repeat directory into its own journal child.
-  if (repeats > 1 && out !== undefined && journal !== undefined &&
-      resolve(out) !== resolve(journal) && canonicalPath(out) === canonicalPath(journal)) {
-    throw new UsageError('--journal and --out resolve to the same directory; use the same path or separate directories');
+  if (repeats > 1 && out !== undefined && journal !== undefined && resolve(out) !== resolve(journal)) {
+    const canonicalOut = canonicalPath(out);
+    const canonicalJournal = canonicalPath(journal);
+    if (isInside(canonicalOut, canonicalJournal) || isInside(canonicalJournal, canonicalOut)) {
+      throw new UsageError('--journal and --out resolve to overlapping directories; use the same path or separate directories');
+    }
   }
   if (repeats > 1) {
     for (const [flag, path] of [['--out', out], ['--journal', journal]] as const) {

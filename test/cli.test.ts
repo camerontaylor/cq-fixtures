@@ -172,6 +172,17 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     expect(existsSync(out)).toBe(false);
   });
 
+  it('refuses overlapping repeat output and journal roots before dispatch', async () => {
+    const dir = writeSuite('nested-journal-suite', {
+      name: 'nested-journal-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'nested-out');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '2', '--out', out, '--journal', join(out, 'journals')])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(0);
+    expect(existsSync(out)).toBe(false);
+  });
+
   it('defaults each repeated journal into its output directory', async () => {
     const dir = writeSuite('default-repeat-journal', {
       name: 'default-repeat-journal', role: 'review-classifier',

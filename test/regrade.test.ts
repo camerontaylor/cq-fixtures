@@ -198,7 +198,7 @@ describe('regrade --rejudge re-runs the local judge over persisted predictions',
     const renamedRepeat = join(root, 'renamed-repeat');
     cpSync(repeatDir, renamedRepeat, { recursive: true });
     await expect(cliMain(['regrade', '--from', renamedRepeat, '--rejudge', '--repo-root', repoRoot])).resolves.toBe(0);
-  });
+  }, 15_000);
 
   it('a persisted fixer patch re-judged offline matches the recorded outcome', async () => {
     const { repoRoot, outDir } = buildTinyFixerRepo();

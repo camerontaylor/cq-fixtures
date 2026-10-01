@@ -46,6 +46,7 @@ function validateAmount(amount: AccountingAmount, label: string): void {
     if (!amount.reason.trim()) throw new Error(`${label}: unknown requires a reason`);
     return;
   }
+  if (amount.status !== 'observed') throw new Error(`${label}: unsupported amount status`);
   if (!Number.isFinite(amount.value) || amount.value < 0) throw new Error(`${label}: value must be finite and non-negative`);
   if (typeof amount.source !== 'string' || !amount.source.trim()) throw new Error(`${label}: observed value requires a source`);
   if (typeof amount.window?.description !== 'string' || !amount.window.description.trim()) {

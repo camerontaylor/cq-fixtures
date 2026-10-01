@@ -38,4 +38,5 @@ assert.equal(combined.providerCredits.knownSubtotal, 120);
 
 assert.throws(() => validateAccountingRecord({ ...historical, modeledUsd: { status: 'unknown', reason: 'missing' } }), /modeledUsd must be observed/);
 assert.throws(() => validateAccountingRecord({ ...observed, billedUsd: { status: 'observed', value: 0, window } }), /requires a source/);
+assert.throws(() => validateAccountingRecord({ ...observed, billedUsd: { status: 'observe', value: 0, source: 'bad status', window } }), /unsupported amount status/);
 console.log('accounting direct checks passed');

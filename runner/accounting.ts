@@ -42,8 +42,9 @@ export interface AccountingReport {
 }
 
 function validateAmount(amount: AccountingAmount, label: string): void {
+  if (!amount || typeof amount !== 'object') throw new Error(`${label}: amount must be an object`);
   if (amount.status === 'unknown') {
-    if (!amount.reason.trim()) throw new Error(`${label}: unknown requires a reason`);
+    if (typeof amount.reason !== 'string' || !amount.reason.trim()) throw new Error(`${label}: unknown requires a reason`);
     return;
   }
   if (amount.status !== 'observed') throw new Error(`${label}: unsupported amount status`);
@@ -55,11 +56,13 @@ function validateAmount(amount: AccountingAmount, label: string): void {
 }
 
 export function validateAccountingRecord(record: RunAccountingRecord): void {
-  if (!record.runId.trim()) throw new Error('runId is required');
+  if (!record || typeof record !== 'object') throw new Error('record must be an object');
+  if (typeof record.runId !== 'string' || !record.runId.trim()) throw new Error('runId is required');
   validateAmount(record.modeledUsd, 'modeledUsd');
   if (record.modeledUsd.status !== 'observed') throw new Error('modeledUsd must be observed separately from billed USD');
   validateAmount(record.billedUsd, 'billedUsd');
   validateAmount(record.providerCredits, 'providerCredits');
+  if (!record.coverage || typeof record.coverage !== 'object') throw new Error('coverage must be an object');
   const { observedRows, expectedRows, observedProbes, expectedProbes } = record.coverage;
   if (![observedRows, expectedRows, observedProbes, expectedProbes].every(Number.isInteger)
     || observedRows < 0 || expectedRows < observedRows
@@ -98,7 +101,10 @@ export function aggregateAccounting(records: readonly RunAccountingRecord[]): Ac
 }
 
 function amountLabel(amount: AmountAggregate, unit: string): string {
-  return `${amount.knownSubtotal} ${unit} known subtotal${amount.complete ? '' : ` (${amount.unknownCount} unknown; total incomplete)`}`;
+  const subtotal = Number.isFinite(amount.knownSubtotal)
+    ? Number(amount.knownSubtotal.toPrecision(12)).toString()
+    : String(amount.knownSubtotal);
+  return `${subtotal} ${unit} known subtotal${amount.complete ? '' : ` (${amount.unknownCount} unknown; total incomplete)`}`;
 }
 
 export function formatAccountingReport(report: AccountingReport): string {

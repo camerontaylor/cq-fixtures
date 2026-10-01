@@ -35,8 +35,17 @@ assert.equal(combined.billedUsd.knownSubtotal, 0.2);
 assert.equal(combined.billedUsd.unknownCount, 1);
 assert.equal(combined.billedUsd.complete, false);
 assert.equal(combined.providerCredits.knownSubtotal, 120);
+const decimalTotals = aggregateAccounting([
+  { ...observed, runId: 'decimal-a', billedUsd: { status: 'observed', value: 0.1, source: 'test source', window } },
+  { ...observed, runId: 'decimal-b', billedUsd: { status: 'observed', value: 0.2, source: 'test source', window } },
+]);
+assert.match(formatAccountingReport(decimalTotals), /Billed USD: 0\.3 USD known subtotal/);
 
 assert.throws(() => validateAccountingRecord({ ...historical, modeledUsd: { status: 'unknown', reason: 'missing' } }), /modeledUsd must be observed/);
 assert.throws(() => validateAccountingRecord({ ...observed, billedUsd: { status: 'observed', value: 0, window } }), /requires a source/);
 assert.throws(() => validateAccountingRecord({ ...observed, billedUsd: { status: 'observe', value: 0, source: 'bad status', window } }), /unsupported amount status/);
+assert.throws(() => validateAccountingRecord({ ...historical, runId: null }), /runId is required/);
+assert.throws(() => validateAccountingRecord({ ...historical, billedUsd: null }), /amount must be an object/);
+assert.throws(() => validateAccountingRecord({ ...historical, billedUsd: { status: 'unknown', reason: 12 } }), /unknown requires a reason/);
+assert.throws(() => validateAccountingRecord({ ...historical, coverage: null }), /coverage must be an object/);
 console.log('accounting direct checks passed');

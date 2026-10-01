@@ -40,7 +40,9 @@ describe('W6.5 paired case-clustered comparisons', () => {
   });
 
   it('leaves historical single-run tables without comparisons', () => {
-    expect(aggregate([row('baseline', 'a', 1, 1), row('candidate', 'a', 1, 1)]
+    expect(aggregate(['a', 'b'].flatMap((id) => [1, 2].flatMap((repeat) => [
+      row('baseline', id, repeat, 1), row('candidate', id, repeat, 1),
+    ]))
       .map((r) => {
         const historical = { ...r };
         delete historical.repeat;

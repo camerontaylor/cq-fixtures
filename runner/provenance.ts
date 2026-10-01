@@ -28,7 +28,7 @@ export function readToolkitProvenance(repoRoot: string): {
   const version = pkg.dependencies?.[name];
   const rootVersion = npmLock.packages?.['']?.dependencies?.[name];
   const entry = npmLock.packages?.[`node_modules/${name}`];
-  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version) ||
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version) ||
       rootVersion !== version || entry?.version !== version ||
       typeof entry.integrity !== 'string' || !entry.integrity.startsWith('sha512-') ||
       typeof entry.resolved !== 'string' || !entry.resolved.startsWith('https://')) {

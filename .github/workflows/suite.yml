@@ -1085,6 +1085,9 @@ jobs:
           # a complete replacement. Clear its old subtree before copying so
           # a same-day rerun with fewer repeats cannot mix two runs' evidence.
           if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
+            # The analyzer can skip or fail on a degraded rerun. Its previous
+            # result must not be presented beside the new raw cell evidence.
+            rm -rf "${snap_dir}/comparisons"
             while IFS= read -r manifest; do
               rel_dir="${manifest#reports/eval/}"
               rel_dir="$(dirname "${rel_dir}")"

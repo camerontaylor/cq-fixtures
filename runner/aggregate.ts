@@ -603,7 +603,11 @@ export function pairedComparisons(rows: readonly ResultRow[], cells: readonly Co
     const b = cells[j]!;
     const ar = byCell.get(key(a));
     const br = byCell.get(key(b));
-    if (!ar || !br || ar[0]?.repeatCount !== br[0]?.repeatCount) continue;
+    if (!ar || !br) continue;
+    const repeatCount = ar[0]?.repeatCount;
+    if (repeatCount === undefined || repeatCount < 2 ||
+      ar.some((row) => row.repeatCount !== repeatCount) ||
+      br.some((row) => row.repeatCount !== repeatCount)) continue;
     const completeA = completeCaseMeans(ar);
     const completeB = completeCaseMeans(br);
     const ac = completeA && completeA.size >= 2 ? completeA : observedCaseMeans(ar);

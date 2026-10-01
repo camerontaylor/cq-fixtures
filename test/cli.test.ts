@@ -172,7 +172,9 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
       cases: [reviewCase('rev-1', 'resolved')],
     });
     await expect(cliMain([...cliArgs(dir), '--repeats', '4'])).resolves.toBe(2);
-    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--max-usd', '1'])).resolves.toBe(2);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3'])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(0);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--max-usd', '1', '--out', join(root, 'out')])).resolves.toBe(2);
   });
 
   it('stops the remaining cases and repeats after an observed per-case USD overrun', async () => {

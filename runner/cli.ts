@@ -217,6 +217,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     throw new UsageError(`--suite, --model and --provider are required\n${USAGE}`);
   }
   if (repeats > 3) throw new UsageError('--repeats is capped at 3 by the D9 eval envelope');
+  if (repeats > 1 && out === undefined) throw new UsageError('--repeats requires --out so each paid repeat preserves its evidence');
   if (repeats > 1 && maxUsd !== undefined) throw new UsageError('--repeats requires a per-case USD ceiling, not legacy --max-usd');
   driverName = driverName === '' ? driver : driverName;
   if (!LANES.has(driverName)) {

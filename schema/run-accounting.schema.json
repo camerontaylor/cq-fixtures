@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "run-accounting.schema.json",
+  "title": "Completed eval run accounting metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["runId", "modeledUsd", "billedUsd", "providerCredits", "coverage"],
+  "properties": {
+    "runId": { "type": "string", "minLength": 1 },
+    "runUrl": { "type": "string", "format": "uri" },
+    "modeledUsd": { "$ref": "#/$defs/observed" },
+    "billedUsd": { "$ref": "#/$defs/amount" },
+    "providerCredits": { "$ref": "#/$defs/amount" },
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observedRows", "expectedRows", "observedProbes", "expectedProbes"],
+      "properties": {
+        "observedRows": { "type": "integer", "minimum": 0 },
+        "expectedRows": { "type": "integer", "minimum": 0 },
+        "observedProbes": { "type": "integer", "minimum": 0 },
+        "expectedProbes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "window": {
+      "type": "object", "additionalProperties": false,
+      "required": ["description"],
+      "properties": { "description": { "type": "string", "minLength": 1 } }
+    },
+    "observed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "value", "source", "window"],
+      "properties": {
+        "status": { "const": "observed" },
+        "value": { "type": "number", "minimum": 0 },
+        "source": { "type": "string", "minLength": 1 },
+        "window": { "$ref": "#/$defs/window" }
+      }
+    },
+    "unknown": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "reason"],
+      "properties": {
+        "status": { "const": "unknown" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "amount": { "oneOf": [{ "$ref": "#/$defs/observed" }, { "$ref": "#/$defs/unknown" }] }
+  }
+}

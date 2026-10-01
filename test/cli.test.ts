@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
@@ -145,6 +145,20 @@ function cliArgs(suiteDir: string): string[] {
 }
 
 describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite load failure)', () => {
+  it('refuses an aliased repeat journal root before paid dispatch', async () => {
+    const dir = writeSuite('aliased-journal-suite', {
+      name: 'aliased-journal-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'aliased-out');
+    mkdirSync(out);
+    const alias = join(root, 'journal-alias');
+    symlinkSync(out, alias, 'dir');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '2', '--out', out, '--journal', alias])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(0);
+    expect(readdirSync(out)).toEqual([]);
+  });
+
   it('defaults each repeated journal into its output directory', async () => {
     const dir = writeSuite('default-repeat-journal', {
       name: 'default-repeat-journal', role: 'review-classifier',

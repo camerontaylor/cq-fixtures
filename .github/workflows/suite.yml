@@ -1081,6 +1081,16 @@ jobs:
             echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}, landed tables: ${landed_tables:-none}) — merging into ${snap_dir} without clearing"
           fi
           mkdir -p "${snap_dir}"
+          # A bounded pilot preserves other lanes, but each incoming cell is
+          # a complete replacement. Clear its old subtree before copying so
+          # a same-day rerun with fewer repeats cannot mix two runs' evidence.
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
+            while IFS= read -r manifest; do
+              rel_dir="${manifest#reports/eval/}"
+              rel_dir="$(dirname "${rel_dir}")"
+              rm -rf "${snap_dir}/${rel_dir}"
+            done < <(find reports/eval -type f -name run.json ! -path '*/repeat-*/*' 2>/dev/null | sort)
+          fi
           # Snapshot IDENTITY preserves the suite dir (the copy loop is
           # identity-agnostic — it replicates whatever sits below
           # reports/eval/): eval writes

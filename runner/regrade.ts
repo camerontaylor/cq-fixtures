@@ -10,7 +10,7 @@
 
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
@@ -200,7 +200,7 @@ export function regrade(opts: RegradeOptions): RegradeResult {
   if (opts.rejudge === true) {
     const manifestEntries = readManifest(from);
     if (manifestEntries.some((entry) => entry.repeat !== undefined) &&
-      new Set(manifestEntries.map((entry) => entry.repeat)).size > 1) {
+      !/^repeat-[1-9]\d*$/.test(basename(from))) {
       throw new Error('regrade: combined repeat root has no prediction artifacts; rejudge each repeat-N directory, then rebuild the combined table from their rows');
     }
     // One loaded suite per (role, suite) — loadSuite is the same schema +

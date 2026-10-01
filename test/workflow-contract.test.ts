@@ -588,6 +588,9 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(stepChunk('Report paired analysis failure after raw snapshot publication')).toContain('exit 1');
     expect(stepChunk('Commit report snapshots')).toContain("-name '*.comparisons.json'");
     expect(stepChunk('Commit report snapshots')).toContain('"${SNAPSHOT_PROFILE}" != "w65-pilot"');
+    expect(stepChunk('Commit report snapshots')).toContain('if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then');
+    expect(stepChunk('Commit report snapshots')).toContain("-name run.json ! -path '*/repeat-*/*'");
+    expect(stepChunk('Commit report snapshots')).toContain('rm -rf "${snap_dir}/${rel_dir}"');
     // 2 ai-sdk cells × 5 fixture cases × 3 repeats × D9 $0.05/case.
     expect(2 * 5 * 3 * d9PerCaseUsd('ai-sdk', 'glm-5.3-flash')!).toBe(1.5);
   });

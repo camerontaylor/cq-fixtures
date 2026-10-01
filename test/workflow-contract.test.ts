@@ -588,6 +588,10 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     }
     expect(evalCell).toContain('w65-pilot) roots="suites/fixer-worker/micro"');
     expect(evalCell).toContain('repeat_extra=(--repeats 3)');
+    const publishedGate = stepChunk('Require published 0.2 toolkit before W6.5 pilot dispatch');
+    expect(publishedGate).toContain("if: github.event.inputs.profile == 'w65-pilot' && matrix.cell.axis == 'model'");
+    expect(publishedGate).toContain('readToolkitProvenance(process.cwd())');
+    expect(publishedGate).toContain('provenance.toolkitPackage?.version !== "0.2.0"');
     expect(evalCell).toContain('--max-usd-per-case "${MATRIX_USD_PER_CASE}"');
     expect(stepChunk('ACP headless auth preflight')).toContain("github.event.inputs.profile != 'w65-pilot'");
     expect(stepChunk('Analyze paired matrix cells')).toContain("if: github.event.inputs.profile == 'w65-pilot'");
@@ -598,6 +602,8 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(stepChunk('Commit report snapshots')).toContain('"${SNAPSHOT_PROFILE}" != "w65-pilot"');
     expect(stepChunk('Commit report snapshots')).toContain('if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then');
     expect(stepChunk('Commit report snapshots')).toContain('rm -rf "${snap_dir}/comparisons"');
+    expect(stepChunk('Commit report snapshots')).toContain('"${snap_dir}/glm-5.3-flash/ai-sdk/fixer-worker/micro"');
+    expect(stepChunk('Commit report snapshots')).toContain('"${snap_dir}/deepseek-flash/ai-sdk/fixer-worker/micro"');
     expect(stepChunk('Commit report snapshots')).toContain("-name run.json ! -path '*/repeat-*/*'");
     expect(stepChunk('Commit report snapshots')).toContain('rm -rf "${snap_dir}/${rel_dir}"');
     // 2 ai-sdk cells × 5 fixture cases × 3 repeats × D9 $0.05/case.

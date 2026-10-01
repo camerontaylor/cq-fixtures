@@ -65,7 +65,6 @@ const MARKER_DOC = { kind: 'cq-eval-root', version: 1 };
 export const CODE_FILES = [
   'package.json',
   'package-lock.json',
-  ...(existsSync(join(REPO_ROOT, 'toolkit.lock')) ? ['toolkit.lock'] : []),
   'policy/denylist/patterns.yml',
   'schema/suite.schema.json',
   'schema/result-row.schema.json',
@@ -195,6 +194,7 @@ export function sidecarStatus(repo, fixture) {
 export function planEvalRoot(repo) {
   const files = new Map();
   for (const rel of CODE_FILES) files.set(rel, { src: join(repo, rel) });
+  if (existsSync(join(repo, 'toolkit.lock'))) files.set('toolkit.lock', { src: join(repo, 'toolkit.lock') });
   for (const rel of walk(join(repo, 'runner')).files) {
     if (rel.endsWith('.ts')) files.set(`runner/${rel}`, { src: join(repo, 'runner', rel) });
   }

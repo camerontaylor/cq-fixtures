@@ -61,11 +61,12 @@ export function analyzeSnapshot(from) {
         throw new Error(`${label}: mixed run identity or provenance within cell`);
       }
       const role = requiredString(entry.role, `${label}: role`);
+      if (role !== 'fixer-worker' && role !== 'review-classifier') throw new Error(`${label}: unsupported role ${role}`);
       const suite = requiredString(entry.suite, `${label}: suite`);
       const runId = requiredString(entry.runId, `${label}: runId`);
       if (runById.has(runId)) throw new Error(`${label}: duplicate runId ${runId}`);
       runById.set(runId, entry);
-      identities.add([role, suite, entry.model, entry.driver, entry.variant ?? 'default'].join('\n'));
+      identities.add([role, suite, entry.driver, entry.variant ?? 'default'].join('\n'));
     }
     const identity = toolkitIdentity(run, label);
     const sha = requiredString(run.suiteSha, `${label}: suiteSha`);
@@ -75,15 +76,12 @@ export function analyzeSnapshot(from) {
     suiteSha = sha;
     const model = requiredString(run.model, `${label}: model`);
     const driver = requiredString(run.driver, `${label}: driver`);
-    for (const cellIdentity of identities) {
-      if (seen.has(cellIdentity)) throw new Error(`${label}: duplicate served model/driver/variant cell ${cellIdentity.replaceAll('\n', '/')}`);
-      seen.add(cellIdentity);
-    }
     const lines = readFileSync(join(dir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean);
     if (lines.length === 0) {
       console.warn(`${label}: empty cell has no paired evidence; preserving its raw manifest without comparison`);
       continue;
     }
+    let servedModel;
     for (const [i, line] of lines.entries()) {
       const row = JSON.parse(line);
       if (typeof row !== 'object' || row === null || !Number.isInteger(row.repeat) || !Number.isInteger(row.repeatCount) ||
@@ -92,14 +90,22 @@ export function analyzeSnapshot(from) {
       }
       const matchingRun = runById.get(row.runId);
       if (matchingRun === undefined || row.role !== matchingRun.role || row.suite !== matchingRun.suite ||
-          row.model !== model || row.driver !== driver || (row.variant ?? 'default') !== (run.variant ?? 'default')) {
+          typeof row.model !== 'string' || row.model.length === 0 || row.driver !== driver || (row.variant ?? 'default') !== (run.variant ?? 'default')) {
         throw new Error(`${label}: row ${i + 1} mismatches manifest served model version or cell identity`);
       }
+      if (servedModel !== undefined && servedModel !== row.model) throw new Error(`${label}: mixed observed served models`);
+      servedModel = row.model;
       if (row.repeat === undefined) throw new Error(`${label}: row ${i + 1} lacks W6.5 repeat ordinal`);
       if (matchingRun.repeat !== row.repeat) {
         throw new Error(`${label}: row ${i + 1} has no matching runId/repeat manifest entry`);
       }
       rows.push(row);
+    }
+    for (const cellIdentity of identities) {
+      const observedIdentity = [cellIdentity.split('\n')[0], cellIdentity.split('\n')[1], servedModel ?? model,
+        cellIdentity.split('\n')[2], cellIdentity.split('\n')[3]].join('\n');
+      if (seen.has(observedIdentity)) throw new Error(`${label}: duplicate served model/driver/variant cell ${observedIdentity.replaceAll('\n', '/')}`);
+      seen.add(observedIdentity);
     }
   }
   const groups = new Map();

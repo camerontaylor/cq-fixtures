@@ -66,6 +66,18 @@ describe('snapshot comparison analysis', () => {
     expect(result.tables.every((table: { cells: unknown[] }) => table.cells.length === 2)).toBe(true);
   });
 
+  it('accepts one consistent observed served id per requested cell and rejects mixed observed ids', () => {
+    const dir = fixture();
+    const path = join(dir, 'candidate', 'ai-sdk', 'rows.jsonl');
+    const rows = readFileSync(path, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    for (const row of rows) row.model = 'candidate-served';
+    writeFileSync(path, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    expect(analyzeSnapshot(dir).tables[0].cells).toHaveLength(2);
+    rows[0].model = 'other-served';
+    writeFileSync(path, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    expect(() => analyzeSnapshot(dir)).toThrow(/mixed observed served models/);
+  });
+
   it('keeps a suite name containing path separators inside the analysis output', () => {
     const dir = fixture();
     for (const model of ['baseline', 'candidate']) {
@@ -85,6 +97,16 @@ describe('snapshot comparison analysis', () => {
     expect(files).toHaveLength(1);
     expect(files[0]).toMatch(/^review-classifier-hashed-[0-9a-f]{64}\.comparisons\.json$/);
     expect(JSON.parse(readFileSync(join(out, files[0]!), 'utf8')).suite).toBe('../escape');
+  });
+
+  it('refuses a forged role before it can become an output filename', () => {
+    const dir = fixture();
+    const cell = join(dir, 'candidate', 'ai-sdk');
+    const manifestPath = join(cell, 'run.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    for (const run of manifest.runs) run.role = '../escape';
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    expect(() => analyzeSnapshot(dir)).toThrow(/unsupported role/);
   });
 
   it('preserves usable cells when another cell has no scored rows', () => {

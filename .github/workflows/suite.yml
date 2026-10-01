@@ -309,6 +309,16 @@ jobs:
       - name: Install dependencies
         if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
         run: npm ci
+      - name: Require published 0.2 toolkit before W6.5 pilot dispatch
+        if: github.event.inputs.profile == 'w65-pilot' && matrix.cell.axis == 'model'
+        run: |
+          node --experimental-strip-types --input-type=module -e '
+            import { readToolkitProvenance } from "./runner/provenance.ts";
+            const provenance = readToolkitProvenance(process.cwd());
+            if (provenance.toolkitLock !== null || provenance.toolkitPackage?.version !== "0.2.0") {
+              throw new Error("W6.5 pilot requires published cq-toolkit 0.2.0 with registry integrity");
+            }
+          '
       - name: Build and scan the matrix eval root (W6.3)
         if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
         # W6.3 (RS-9 §4.3 D): runs dispatch from an eval root built from an
@@ -1095,6 +1105,10 @@ jobs:
             # The analyzer can skip or fail on a degraded rerun. Its previous
             # result must not be presented beside the new raw cell evidence.
             rm -rf "${snap_dir}/comparisons"
+            # Clear both bounded pilot cells even when a leg failed before
+            # producing run.json, so no prior run can pair with fresh rows.
+            rm -rf "${snap_dir}/glm-5.3-flash/ai-sdk/fixer-worker/micro" \
+                   "${snap_dir}/deepseek-flash/ai-sdk/fixer-worker/micro"
             while IFS= read -r manifest; do
               rel_dir="${manifest#reports/eval/}"
               rel_dir="$(dirname "${rel_dir}")"

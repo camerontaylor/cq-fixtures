@@ -864,6 +864,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         if (!isStructuredOutputMissCause(cause)) {
           emitRow = false;
           absences.push({ case: c.id, role: suite.role, cause });
+        } else if (isFixerCase(c)) {
+          rowProbes = [{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }];
         } else if (!isFixerCase(c)) {
           // A scored-miss classifier row is still a scored row: retain the
           // expected verdict and represent the unparseable observation as a

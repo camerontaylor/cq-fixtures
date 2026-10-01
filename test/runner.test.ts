@@ -683,7 +683,7 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(result.rows[0]).toMatchObject({ case: 'fix-miss', outcome: { score: 0, passed: 0, total: 2 } });
-    expect(result.rows[0]).not.toHaveProperty('probes');
+    expect(result.rows[0]?.probes).toEqual([{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }]);
     expect(result.tables[0]?.cells).toEqual([expect.objectContaining({ runs: 1, passed: 0, total: 2, score: 0 })]);
     expect(result.absences).toEqual([]);
     assertSchemaValid(result.rows, result.tables);

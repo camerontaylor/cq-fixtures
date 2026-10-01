@@ -423,6 +423,11 @@ async function main(argv: readonly string[]): Promise<number> {
   // README header records it for CQ-5 attribution). $GITHUB_SHA is set for
   // every CI step; --suite-sha overrides it for local runs.
   const suiteSha = opts.suiteSha ?? process.env.GITHUB_SHA ?? null;
+  if (opts.repeats > 1 && (suiteSha === null || suiteSha.trim() === '')) {
+    console.error('--repeats requires --suite-sha or GITHUB_SHA so paid evidence can be paired');
+    return 2;
+  }
+  let runPhaseExit: 1 | 2 | undefined;
   // Run + score phase: a scored-zero or budget-gated result — or a failure
   // thrown here — is exit 1 (a benign eval outcome the workflow warns on).
   try {
@@ -560,11 +565,13 @@ async function main(argv: readonly string[]): Promise<number> {
     const envVar = message.match(/requires ([A-Z0-9_]+_API_KEY) in the environment/)?.[1];
     if (envVar !== undefined) {
       console.error(`required env ${envVar} missing (add this repo's Actions secret and map it onto the toolkit's ${envVar} env): ${message}`);
-      return 2;
+      runPhaseExit = 2;
+    } else {
+      console.error(message);
+      runPhaseExit = 1;
     }
-    // Run-phase failures (row/table validation of a scored run) stay exit 1.
-    console.error(message);
-    return 1;
+    // Preserve completed paid repeats even when a later dispatch throws.
+    if (manifestEntries.length === 0) return runPhaseExit;
   }
   // X2: materialization failures are infrastructure — the driver never ran
   // for those cases — so they hard-fail (exit 2) with the count and the
@@ -573,7 +580,7 @@ async function main(argv: readonly string[]): Promise<number> {
   if (materializationFailures > 0) {
     console.error(`${materializationFailures} case(s) failed fixture materialization (the driver never ran):`);
     for (const d of materializationDiagnostics) console.error(`  ${d}`);
-    return 2;
+    runPhaseExit = 2;
   }
   // X1: report/emit phase — row/table validation of our own output, journal
   // I/O, out-dir creation, writeFileSync. Infrastructure errors here are
@@ -644,6 +651,7 @@ async function main(argv: readonly string[]): Promise<number> {
     for (const c of contaminations) console.error(`  ${c}`);
     return 2;
   }
+  if (runPhaseExit !== undefined) return runPhaseExit;
   if (stoppedAfterPerCaseOverrun) return 1;
   return anyFailed ? 1 : 0;
 }

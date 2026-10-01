@@ -21,6 +21,7 @@ const captured = vi.hoisted(() => ({
   // toolkit's requireKey missing-env shape).
   driverThrow: null as Error | null,
   aiSdkRunCalls: 0,
+  onAiSdkRun: null as (() => void) | null,
   aiSdkUsageOverride: null as { input: number; output: number; cacheRead: number; cacheWrite: number } | null,
 }));
 
@@ -32,6 +33,7 @@ vi.mock('@camerontaylor/cq-toolkit', async (importOriginal) => {
     }
     async run(invocation: OpInvocation): Promise<WorkerResult> {
       captured.aiSdkRunCalls += 1;
+      captured.onAiSdkRun?.();
       if (captured.driverThrow !== null) throw captured.driverThrow;
       return {
         model: invocation.modelSpec.model,
@@ -79,6 +81,7 @@ beforeEach(() => {
   captured.laneOptions = {};
   captured.driverThrow = null;
   captured.aiSdkRunCalls = 0;
+  captured.onAiSdkRun = null;
   captured.aiSdkUsageOverride = null;
 });
 
@@ -138,7 +141,7 @@ function fixerCase(id: string): object {
 }
 
 function cliArgs(suiteDir: string): string[] {
-  return ['--suite', suiteDir, '--driver', 'ai-sdk', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'];
+  return ['--suite', suiteDir, '--driver', 'ai-sdk', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai', '--suite-sha', 'abcdef0'];
 }
 
 describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite load failure)', () => {
@@ -178,6 +181,39 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     await expect(cliMain([...cliArgs(dir), '--repeats', '3'])).resolves.toBe(2);
     expect(captured.aiSdkRunCalls).toBe(0);
     await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--max-usd', '1', '--out', join(root, 'out')])).resolves.toBe(2);
+  });
+
+  it('requires a suite SHA before repeated paid work', async () => {
+    const dir = writeSuite('sha-required', {
+      name: 'sha-required', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const previous = process.env.GITHUB_SHA;
+    delete process.env.GITHUB_SHA;
+    try {
+      const args = cliArgs(dir);
+      args.splice(args.indexOf('--suite-sha'), 2);
+      await expect(cliMain([...args, '--repeats', '2', '--out', join(root, 'sha-required-out')])).resolves.toBe(2);
+      expect(captured.aiSdkRunCalls).toBe(0);
+    } finally {
+      if (previous !== undefined) process.env.GITHUB_SHA = previous;
+    }
+  });
+
+  it('publishes completed repeat evidence when the next repeat fails before dispatch', async () => {
+    const dir = writeSuite('repeat-throw', {
+      name: 'repeat-throw', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'throw-out');
+    const journal = join(root, 'throw-journal');
+    captured.onAiSdkRun = () => {
+      if (captured.aiSdkRunCalls === 1) writeFileSync(join(journal, 'repeat-2'), 'block the next journal directory');
+    };
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out, '--journal', journal])).resolves.toBe(1);
+    expect(captured.aiSdkRunCalls).toBe(1);
+    expect(existsSync(join(out, 'repeat-1', 'run.json'))).toBe(true);
+    expect(existsSync(join(out, 'repeat-1', 'rows.jsonl'))).toBe(true);
+    expect(existsSync(join(out, 'repeat-2'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(out, 'run.json'), 'utf8')).runs).toHaveLength(1);
   });
 
   it('stops the remaining cases and repeats after an observed per-case USD overrun', async () => {

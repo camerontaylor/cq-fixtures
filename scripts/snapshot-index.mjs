@@ -5,7 +5,7 @@
 // GENERATED, never hand-edited (`node scripts/snapshot-index.mjs`); `--check`
 // fails when the committed page is stale.
 
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,9 +51,10 @@ function snapshotDirs() {
 function tableFiles(snapshotDir) {
   const out = [];
   const walk = (dir) => {
+    const cellRoot = existsSync(join(dir, 'run.json')) && existsSync(join(dir, 'rows.jsonl'));
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
-      if (entry.isDirectory() && !/^repeat-[1-9]\d*$/.test(entry.name)) walk(full);
+      if (entry.isDirectory() && !(cellRoot && /^repeat-[1-9]\d*$/.test(entry.name))) walk(full);
       else if (entry.isFile() && entry.name.endsWith('.table.json')) out.push(full);
     }
   };

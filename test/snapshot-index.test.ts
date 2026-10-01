@@ -106,10 +106,24 @@ describe('snapshot index (F6/WB-5.1)', () => {
       cells: [{ model: 'glm-5.3-flash', driver: 'ai-sdk', score: passed / total, passed, total }],
     });
     writeFileSync(join(snapshotDir, 'fixer-worker.table.json'), table(2, 3));
+    writeFileSync(join(snapshotDir, 'run.json'), JSON.stringify({ runs: [{ repeat: 1 }] }));
+    writeFileSync(join(snapshotDir, 'rows.jsonl'), '');
     writeFileSync(join(repeatDir, 'fixer-worker.table.json'), table(0, 1));
     const indexed = snapshotCells(snapshotDir);
     expect(indexed.tables).toBe(1);
     expect([...indexed.cells.values()][0]).toMatchObject({ passed: 2, total: 3, score: 2 / 3 });
+  });
+
+  it('indexes a legitimate suite subtree named repeat-1', () => {
+    const snapshotDir = mkdtempSync(join(tmpdir(), 'cq-snapshot-index-suite-repeat-'));
+    tempDirs.push(snapshotDir);
+    const suiteDir = join(snapshotDir, 'fixer-worker', 'repeat-1', 'glm-5.3-flash', 'ai-sdk');
+    mkdirSync(suiteDir, { recursive: true });
+    writeFileSync(join(suiteDir, 'fixer-worker.table.json'), JSON.stringify({
+      role: 'fixer-worker', suite: 'repeat-1',
+      cells: [{ model: 'glm-5.3-flash', driver: 'ai-sdk', score: 1, passed: 1, total: 1 }],
+    }));
+    expect(snapshotCells(snapshotDir).tables).toBe(1);
   });
 
   it('the committed index is current and exposes historical cell validity', () => {

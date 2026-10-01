@@ -63,7 +63,7 @@ describe('snapshot comparison analysis', () => {
     }
     const result = analyzeSnapshot(dir);
     expect(result.tables.map((table: { role: string }) => table.role).sort()).toEqual(['fixer-worker', 'review-classifier']);
-    expect(result.tables.every((table: { comparisons?: unknown[] }) => table.comparisons?.length === 1)).toBe(true);
+    expect(result.tables.every((table: { cells: unknown[] }) => table.cells.length === 2)).toBe(true);
   });
 
   it('keeps a suite name containing path separators inside the analysis output', () => {
@@ -94,6 +94,19 @@ describe('snapshot comparison analysis', () => {
     expect(result.tables).toHaveLength(1);
     expect(result.tables[0].cells).toHaveLength(1);
     expect(result.tables[0].comparisons).toBeUndefined();
+  });
+
+  it('ignores preserved ordinary same-day cells when replaying a dated pilot snapshot', () => {
+    const dir = fixture();
+    const ordinary = join(dir, 'older-lane', 'subprocess');
+    mkdirSync(ordinary, { recursive: true });
+    const manifest = JSON.parse(readFileSync(join(dir, 'baseline', 'ai-sdk', 'run.json'), 'utf8'));
+    for (const run of manifest.runs) { delete run.repeat; delete run.repeatCount; }
+    writeFileSync(join(ordinary, 'run.json'), JSON.stringify(manifest));
+    const rows = readFileSync(join(dir, 'baseline', 'ai-sdk', 'rows.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    for (const row of rows) { delete row.repeat; delete row.repeatCount; }
+    writeFileSync(join(ordinary, 'rows.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    expect(analyzeSnapshot(dir).cellCount).toBe(2);
   });
 
   it('uses published version and registry integrity after toolkit.lock is removed', () => {

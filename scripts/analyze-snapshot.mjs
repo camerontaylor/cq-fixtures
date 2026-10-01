@@ -34,7 +34,15 @@ function toolkitIdentity(run, label) {
 }
 
 export function analyzeSnapshot(from) {
-  const dirs = cellsBelow(from);
+  // A dated snapshot can also retain ordinary same-day lanes. They have no
+  // repeat ordinals and are outside the paired W6.5 analysis.
+  const dirs = cellsBelow(from).filter((dir) => {
+    const manifest = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
+    if (!Array.isArray(manifest.runs) || manifest.runs.length === 0) {
+      throw new Error(`${relative(from, dir)}: expected run manifest entries`);
+    }
+    return manifest.runs.some((run) => run.repeat !== undefined);
+  });
   if (dirs.length < 2) throw new Error(`${from}: need at least two matrix cells`);
   const rows = [];
   let toolkitVersion;

@@ -199,6 +199,24 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     ]);
   });
 
+  it('does not emit tables for a later suite never dispatched after a repeat overrun', async () => {
+    const first = writeSuite('overrun-first', {
+      name: 'overrun-first', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const later = writeSuite('undispatched-later', {
+      name: 'undispatched-later', role: 'fixer-worker', cases: [fixerCase('fix-1')],
+    });
+    const out = join(root, 'overrun-multi-out');
+    captured.aiSdkUsageOverride = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
+    await expect(cliMain([...cliArgs(first), '--suite', later, '--repeats', '3', '--out', out])).resolves.toBe(1);
+    expect(captured.aiSdkRunCalls).toBe(1);
+    expect(existsSync(join(out, 'review-classifier.table.json'))).toBe(true);
+    expect(existsSync(join(out, 'fixer-worker.table.json'))).toBe(false);
+    expect(existsSync(join(out, 'repeat-1', 'fixer-worker.table.json'))).toBe(false);
+    const manifest = JSON.parse(readFileSync(join(out, 'run.json'), 'utf8')) as { runs: Array<{ role: string }> };
+    expect(manifest.runs.map((run) => run.role)).toEqual(['review-classifier']);
+  });
+
   it('W6.5 retains both roles in every repeat of a multi-suite run', async () => {
     const classifier = writeSuite('repeat-classifier', {
       name: 'repeat-classifier', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')],

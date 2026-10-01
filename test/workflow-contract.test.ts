@@ -183,7 +183,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     const excision = stepChunk('Excise the unit-test tree');
     expect(excision).toContain('rm -rf test/ .git');
     expect(excision).toContain('review-debt #11');
-    expect(excision, 'the excision runs in every cell (no if:)').not.toContain('if:');
+    expect(excision).toContain("if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'");
     // Cycle-2 review: the worktree copy alone is not enough — the shallow
     // clone's object store holds the HEAD tree's blobs, so .git must go too.
     expect(excision).toContain('.git');

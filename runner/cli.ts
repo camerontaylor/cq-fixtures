@@ -583,7 +583,8 @@ async function main(argv: readonly string[]): Promise<number> {
       if (opts.repeats > 1) {
         tables.push(...aggregate(rows));
         for (const suite of suites) {
-          if (!tables.some((table) => table.role === suite.role)) {
+          if (manifestEntries.some((entry) => entry.role === suite.role && entry.suite === suite.name) &&
+              !tables.some((table) => table.role === suite.role)) {
             tables.push({ role: suite.role, suite: suite.name, generatedAt: new Date().toISOString(), cells: [] });
           }
         }
@@ -603,7 +604,8 @@ async function main(argv: readonly string[]): Promise<number> {
           }
           const repeatTables = aggregate(repeatResult.rows);
           for (const suite of suites) {
-            if (!repeatTables.some((table) => table.role === suite.role)) {
+            if (repeatResult.manifests.some((entry) => entry.role === suite.role && entry.suite === suite.name) &&
+                !repeatTables.some((table) => table.role === suite.role)) {
               repeatTables.push({ role: suite.role, suite: suite.name, generatedAt: new Date().toISOString(), cells: [] });
             }
           }

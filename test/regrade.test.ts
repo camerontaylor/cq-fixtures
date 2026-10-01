@@ -192,6 +192,12 @@ describe('regrade --rejudge re-runs the local judge over persisted predictions',
 
     await expect(cliMain(['regrade', '--from', outDir, '--rejudge', '--repo-root', repoRoot])).resolves.toBe(2);
     await expect(cliMain(['regrade', '--from', repeatDir, '--rejudge', '--repo-root', repoRoot])).resolves.toBe(0);
+    const misleadingName = join(root, 'repeat-2');
+    cpSync(outDir, misleadingName, { recursive: true });
+    await expect(cliMain(['regrade', '--from', misleadingName, '--rejudge', '--repo-root', repoRoot])).resolves.toBe(2);
+    const renamedRepeat = join(root, 'renamed-repeat');
+    cpSync(repeatDir, renamedRepeat, { recursive: true });
+    await expect(cliMain(['regrade', '--from', renamedRepeat, '--rejudge', '--repo-root', repoRoot])).resolves.toBe(0);
   });
 
   it('a persisted fixer patch re-judged offline matches the recorded outcome', async () => {

@@ -203,7 +203,11 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
       const chunk = stepChunk(build);
       expect(chunk).toContain(`node scripts/eval-root.mjs build --out "\${RUNNER_TEMP}/cq-eval-root" --key ${KEY} --node-modules move`);
       expect(chunk).toContain(`node scripts/eval-root.mjs scan --root "\${RUNNER_TEMP}/cq-eval-root" --key ${KEY}`);
-      expect(chunk, `${build} runs unconditionally`).not.toContain('if:');
+      if (build === 'Build and scan the matrix eval root (W6.3)') {
+        expect(chunk).toContain("if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'");
+      } else {
+        expect(chunk, `${build} runs unconditionally`).not.toContain('if:');
+      }
       expect(stepLine(build)).toBeLessThan(stepLine(dispatch));
       const run = stepChunk(dispatch);
       expect(run).toContain('EVAL_ROOT="${RUNNER_TEMP}/cq-eval-root"');
@@ -578,6 +582,10 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(profile).toContain('- w65-pilot');
     const evalCell = stepChunk('Eval cell —');
     expect(evalCell).toContain("matrix.cell.axis == 'model'");
+    for (const name of ['Check out the repo', 'Set up Node', 'Prepare pinned or published cq-toolkit', 'Install dependencies', 'Build and scan the matrix eval root (W6.3)', 'Excise the unit-test tree']) {
+      const matrix = text.slice(text.indexOf('\n  matrix:\n'), text.indexOf('\n  snapshot:\n'));
+      expect(matrix.slice(matrix.indexOf(`- name: ${name}`), matrix.indexOf(`- name: ${name}`) + 220)).toContain("if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'");
+    }
     expect(evalCell).toContain('w65-pilot) roots="suites/fixer-worker/micro"');
     expect(evalCell).toContain('repeat_extra=(--repeats 3)');
     expect(evalCell).toContain('--max-usd-per-case "${MATRIX_USD_PER_CASE}"');

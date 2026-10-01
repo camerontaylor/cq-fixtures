@@ -3,6 +3,7 @@
 import { readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { aggregate } from '../runner/aggregate.ts';
 
 
@@ -44,12 +45,19 @@ export function analyzeSnapshot(from) {
     const manifest = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
     if (!Array.isArray(manifest.runs) || manifest.runs.length === 0) throw new Error(`${label}: expected run manifest entries`);
     const run = manifest.runs[0];
+    const runById = new Map();
+    const identities = new Set();
     for (const entry of manifest.runs) {
-      if (entry.role !== run.role || entry.suite !== run.suite || entry.model !== run.model ||
-          entry.driver !== run.driver || entry.variant !== run.variant ||
+      if (entry.model !== run.model || entry.driver !== run.driver || entry.variant !== run.variant ||
           toolkitIdentity(entry, label) !== toolkitIdentity(run, label) || entry.suiteSha !== run.suiteSha) {
         throw new Error(`${label}: mixed run identity or provenance within cell`);
       }
+      const role = requiredString(entry.role, `${label}: role`);
+      const suite = requiredString(entry.suite, `${label}: suite`);
+      const runId = requiredString(entry.runId, `${label}: runId`);
+      if (runById.has(runId)) throw new Error(`${label}: duplicate runId ${runId}`);
+      runById.set(runId, entry);
+      identities.add([role, suite, entry.model, entry.driver, entry.variant ?? 'default'].join('\n'));
     }
     const identity = toolkitIdentity(run, label);
     const sha = requiredString(run.suiteSha, `${label}: suiteSha`);
@@ -59,11 +67,10 @@ export function analyzeSnapshot(from) {
     suiteSha = sha;
     const model = requiredString(run.model, `${label}: model`);
     const driver = requiredString(run.driver, `${label}: driver`);
-    const role = requiredString(run.role, `${label}: role`);
-    const suite = requiredString(run.suite, `${label}: suite`);
-    const cellIdentity = [role, suite, model, driver, run.variant ?? 'default'].join('\n');
-    if (seen.has(cellIdentity)) throw new Error(`${label}: duplicate served model/driver/variant cell ${cellIdentity.replaceAll('\n', '/')}`);
-    seen.add(cellIdentity);
+    for (const cellIdentity of identities) {
+      if (seen.has(cellIdentity)) throw new Error(`${label}: duplicate served model/driver/variant cell ${cellIdentity.replaceAll('\n', '/')}`);
+      seen.add(cellIdentity);
+    }
     const lines = readFileSync(join(dir, 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean);
     if (lines.length === 0) {
       console.warn(`${label}: empty cell has no paired evidence; preserving its raw manifest without comparison`);
@@ -75,12 +82,13 @@ export function analyzeSnapshot(from) {
           typeof row.case !== 'string' || typeof row.outcome?.score !== 'number') {
         throw new Error(`${label}: row ${i + 1} is missing repeat or score evidence`);
       }
-      if (row.role !== role || row.suite !== suite || row.model !== model || row.driver !== driver ||
-          (row.variant ?? 'default') !== (run.variant ?? 'default')) {
+      const matchingRun = runById.get(row.runId);
+      if (matchingRun === undefined || row.role !== matchingRun.role || row.suite !== matchingRun.suite ||
+          row.model !== model || row.driver !== driver || (row.variant ?? 'default') !== (run.variant ?? 'default')) {
         throw new Error(`${label}: row ${i + 1} mismatches manifest served model version or cell identity`);
       }
       if (row.repeat === undefined) throw new Error(`${label}: row ${i + 1} lacks W6.5 repeat ordinal`);
-      if (!manifest.runs.some((entry) => entry.runId === row.runId && entry.repeat === row.repeat)) {
+      if (matchingRun.repeat !== row.repeat) {
         throw new Error(`${label}: row ${i + 1} has no matching runId/repeat manifest entry`);
       }
       rows.push(row);
@@ -106,7 +114,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
       const result = analyzeSnapshot(args[1]);
       mkdirSync(args[3], { recursive: true });
       for (const table of result.tables) {
-        writeFileSync(join(args[3], `${table.role}-${table.suite}.comparisons.json`), JSON.stringify(table, null, 2) + '\n');
+        const safeSuite = /^[A-Za-z0-9][A-Za-z0-9._-]{0,100}$/.test(table.suite)
+          ? table.suite : `hashed-${createHash('sha256').update(table.suite).digest('hex')}`;
+        writeFileSync(join(args[3], `${table.role}-${safeSuite}.comparisons.json`), JSON.stringify(table, null, 2) + '\n');
       }
       console.log(`analyzed ${result.cellCount} cells at toolkit ${result.toolkitVersion}, suite SHA ${result.suiteSha}`);
     } catch (error) {

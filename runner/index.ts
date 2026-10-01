@@ -920,7 +920,7 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         const sidecarProblem = sidecarDiagnostic(c.id, c.fixture, sidecarFlag);
         if (sidecarProblem !== undefined) caseDiagnostics.push(sidecarProblem);
       }
-      if (perCaseOverrun && stopCause === undefined) {
+      if (perCaseOverrun) {
         observedPerCaseOverrun = true;
         gatedByBudget = true;
         stopCause = 'budget';

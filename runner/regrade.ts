@@ -8,9 +8,9 @@
 // output is re-scored — so a judge or metric change can be applied to
 // already-recorded evidence without spending a token.
 
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, isAbsolute, join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
@@ -200,7 +200,7 @@ export function regrade(opts: RegradeOptions): RegradeResult {
   if (opts.rejudge === true) {
     const manifestEntries = readManifest(from);
     if (manifestEntries.some((entry) => entry.repeat !== undefined) &&
-      !/^repeat-[1-9]\d*$/.test(basename(from))) {
+      readdirSync(from, { withFileTypes: true }).some((entry) => entry.isDirectory() && /^repeat-[1-9]\d*$/.test(entry.name))) {
       throw new Error('regrade: combined repeat root has no prediction artifacts; rejudge each repeat-N directory, then rebuild the combined table from their rows');
     }
     // One loaded suite per (role, suite) — loadSuite is the same schema +

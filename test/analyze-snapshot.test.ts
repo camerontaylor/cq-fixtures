@@ -1,6 +1,7 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { analyzeSnapshot } from '../scripts/analyze-snapshot.mjs';
 
@@ -44,6 +45,46 @@ describe('snapshot comparison analysis', () => {
     for (const run of runs) run.toolkitLock = 'other';
     writeFileSync(path, JSON.stringify({ runs }));
     expect(() => analyzeSnapshot(dir)).toThrow(/mixed toolkit provenance/);
+  });
+
+  it('groups multiple suites in each matrix cell and matches rows to their own manifest run', () => {
+    const dir = fixture();
+    for (const model of ['baseline', 'candidate']) {
+      const cell = join(dir, model, 'ai-sdk');
+      const manifestPath = join(cell, 'run.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      const extraRuns = manifest.runs.map((run: Record<string, unknown>) => ({ ...run, role: 'fixer-worker', suite: 'fixer-micro', runId: `${run.runId}-fixer` }));
+      manifest.runs.push(...extraRuns);
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      const rowsPath = join(cell, 'rows.jsonl');
+      const rows = readFileSync(rowsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      const extraRows = rows.map((row) => ({ ...row, role: 'fixer-worker', suite: 'fixer-micro', runId: `${row.runId}-fixer` }));
+      writeFileSync(rowsPath, [...rows, ...extraRows].map((row) => JSON.stringify(row)).join('\n') + '\n');
+    }
+    const result = analyzeSnapshot(dir);
+    expect(result.tables.map((table: { role: string }) => table.role).sort()).toEqual(['fixer-worker', 'review-classifier']);
+    expect(result.tables.every((table: { comparisons?: unknown[] }) => table.comparisons?.length === 1)).toBe(true);
+  });
+
+  it('keeps a suite name containing path separators inside the analysis output', () => {
+    const dir = fixture();
+    for (const model of ['baseline', 'candidate']) {
+      const cell = join(dir, model, 'ai-sdk');
+      const manifestPath = join(cell, 'run.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      for (const run of manifest.runs) run.suite = '../escape';
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      const rowsPath = join(cell, 'rows.jsonl');
+      const rows = readFileSync(rowsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      for (const row of rows) row.suite = '../escape';
+      writeFileSync(rowsPath, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    }
+    const out = join(dir, 'analysis');
+    execFileSync(process.execPath, ['--experimental-strip-types', 'scripts/analyze-snapshot.mjs', '--from', dir, '--out', out]);
+    const files = readdirSync(out);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/^review-classifier-hashed-[0-9a-f]{64}\.comparisons\.json$/);
+    expect(JSON.parse(readFileSync(join(out, files[0]!), 'utf8')).suite).toBe('../escape');
   });
 
   it('preserves usable cells when another cell has no scored rows', () => {

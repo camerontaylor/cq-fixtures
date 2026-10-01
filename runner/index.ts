@@ -550,7 +550,14 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const materializationDiagnostics: string[] = [];
   let materializationFailures = 0;
   let gatedByBudget = false;
+  let observedPerCaseOverrun = false;
   for (const c of suite.cases) {
+    if (observedPerCaseOverrun) {
+      const cause = 'budget-stop: an earlier case exceeded its per-case USD ceiling; further dispatch stopped';
+      absences.push({ case: c.id, role: suite.role, cause });
+      console.error(`  case ${c.id}: not dispatched — ${cause}`);
+      continue;
+    }
     const admission = governor.admit(c.id);
     if (admission.decision === 'reject') {
       // Never dispatched: NO row (rows exist only for work actually
@@ -743,9 +750,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // total. Detect that case-grain overrun here and RECORD it: the case's
       // evidence is incomplete for a comparison (its cost is outside the
       // envelope), so it joins the budget-stop cause column and the absence
-      // list rather than passing silently as a covered case. The run is not
-      // aborted — the tail keeps running under the cumulative cap, exactly
-      // as a governor budget stop behaves.
+      // list rather than passing silently as a covered case. Stop the tail:
+      // a post-hoc overrun must not admit another paid request.
       const perCaseOverrun =
         opts.maxUsdPerCase !== undefined && cost !== undefined && cost > opts.maxUsdPerCase;
 
@@ -915,6 +921,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         if (sidecarProblem !== undefined) caseDiagnostics.push(sidecarProblem);
       }
       if (perCaseOverrun && stopCause === undefined) {
+        observedPerCaseOverrun = true;
+        gatedByBudget = true;
         stopCause = 'budget';
         const cause =
           `per-case budget exceeded: case ${c.id} spent $${cost!.toFixed(6)} against its ` +

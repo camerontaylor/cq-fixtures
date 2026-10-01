@@ -4,7 +4,7 @@
 // error or suite load/validation failure (the suite.yml workflow hard-fails
 // its rc>=2 branch). Invoked via runner/index.ts.
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -394,6 +394,7 @@ async function main(argv: readonly string[]): Promise<number> {
   const rows: ResultRow[] = [];
   const tables: ComparisonTable[] = [];
   let anyFailed = false;
+  let stoppedAfterPerCaseOverrun = false;
   let materializationFailures = 0;
   const materializationDiagnostics: string[] = [];
   // F6: the prediction artifacts + the run manifest published with the tables.
@@ -413,7 +414,7 @@ async function main(argv: readonly string[]): Promise<number> {
   // Run + score phase: a scored-zero or budget-gated result — or a failure
   // thrown here — is exit 1 (a benign eval outcome the workflow warns on).
   try {
-    for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
+    dispatch: for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
       for (let repeat = 1; repeat <= opts.repeats; repeat++) {
       const outputSchema = suite.role === 'review-classifier' ? VERDICT_OUTPUT_SCHEMA : FIXER_OUTPUT_SCHEMA;
       const driver: Driver =
@@ -454,7 +455,9 @@ async function main(argv: readonly string[]): Promise<number> {
             : opts.maxTokens,
         checkTimeoutMs: opts.checkTimeoutMs,
         journalPath: opts.repeats > 1 && opts.journal !== undefined
-          ? join(opts.journal, `repeat-${repeat}`)
+          ? opts.out !== undefined && resolve(opts.journal) === resolve(opts.out)
+            ? join(opts.journal, `repeat-${repeat}`, 'journal')
+            : join(opts.journal, `repeat-${repeat}`)
           : opts.journal,
         driverName: opts.driverName,
         preflightProbe,
@@ -530,6 +533,11 @@ async function main(argv: readonly string[]): Promise<number> {
       const runSuffix = `, run ${result.runId}`;
       const suiteName = result.rows[0]?.suite ?? suiteDir;
       console.log(`suite ${suiteName}${opts.repeats > 1 ? ` repeat ${repeat}/${opts.repeats}` : ''}: ${passed}/${total} probes passed across ${result.rows.length} case(s)${runSuffix}`);
+      if (result.absences.some((a) => a.cause.startsWith('per-case budget exceeded:'))) {
+        stoppedAfterPerCaseOverrun = true;
+        console.error('per-case USD ceiling exceeded; stopping remaining repeats and suites before another dispatch');
+        break dispatch;
+      }
       }
     }
   } catch (e) {
@@ -571,8 +579,16 @@ async function main(argv: readonly string[]): Promise<number> {
       mkdirSync(opts.out, { recursive: true });
       if (opts.repeats > 1) {
         for (const [index, repeatResult] of repeatResults.entries()) {
+          if (repeatResult.manifests.length === 0) continue;
           const repeatOut = join(opts.out, `repeat-${index + 1}`);
           mkdirSync(repeatOut, { recursive: true });
+          if (opts.journal !== undefined) {
+            const journalSource = resolve(opts.journal) === resolve(opts.out)
+              ? join(repeatOut, 'journal')
+              : join(opts.journal, `repeat-${index + 1}`);
+            const journalDest = join(repeatOut, 'journal');
+            if (journalSource !== journalDest) cpSync(journalSource, journalDest, { recursive: true });
+          }
           const repeatTables = aggregate(repeatResult.rows);
           for (const suite of suites) {
             if (!repeatTables.some((table) => table.role === suite.role)) {
@@ -599,7 +615,8 @@ async function main(argv: readonly string[]): Promise<number> {
       const published = opts.repeats === 1 ? publishArtifacts(opts.out, artifactList, repoRoot) : { published: [], diagnostics: [] };
       for (const d of published.diagnostics) console.error(`  ${d}`);
       writeRunManifest(opts.out, manifestEntries);
-      console.log(`wrote ${opts.out}/rows.jsonl, ${tables.length} table(s), ${published.published.length} root prediction artifact(s) and run.json${opts.repeats > 1 ? `, plus ${opts.repeats} complete repeat directories` : ''}`);
+      const completedRepeats = repeatResults.filter((result) => result.manifests.length > 0).length;
+      console.log(`wrote ${opts.out}/rows.jsonl, ${tables.length} table(s), ${published.published.length} root prediction artifact(s) and run.json${opts.repeats > 1 ? `, plus ${completedRepeats}/${opts.repeats} repeat directories` : ''}`);
     }
   } catch (e) {
     console.error(`report/emit failure: ${e instanceof Error ? e.message : String(e)}`);
@@ -613,6 +630,7 @@ async function main(argv: readonly string[]): Promise<number> {
     for (const c of contaminations) console.error(`  ${c}`);
     return 2;
   }
+  if (stoppedAfterPerCaseOverrun) return 1;
   return anyFailed ? 1 : 0;
 }
 

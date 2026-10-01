@@ -6,7 +6,7 @@
 //    BYTE-IDENTICALLY from that snapshot's rows.jsonl (the F6 acceptance).
 
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -94,6 +94,22 @@ describe('snapshot index (F6/WB-5.1)', () => {
       cells: [cell('workspace-unbound')],
     }));
     expect([...snapshotCells(snapshotDir).cells.values()][0]?.invalid).toBe('workspace-unbound');
+  });
+
+  it('uses the combined root table instead of a repeat table with the same cell identity', () => {
+    const snapshotDir = mkdtempSync(join(tmpdir(), 'cq-snapshot-index-repeats-'));
+    tempDirs.push(snapshotDir);
+    const repeatDir = join(snapshotDir, 'repeat-3');
+    mkdirSync(repeatDir);
+    const table = (passed: number, total: number) => JSON.stringify({
+      role: 'fixer-worker', suite: 'micro',
+      cells: [{ model: 'glm-5.3-flash', driver: 'ai-sdk', score: passed / total, passed, total }],
+    });
+    writeFileSync(join(snapshotDir, 'fixer-worker.table.json'), table(2, 3));
+    writeFileSync(join(repeatDir, 'fixer-worker.table.json'), table(0, 1));
+    const indexed = snapshotCells(snapshotDir);
+    expect(indexed.tables).toBe(1);
+    expect([...indexed.cells.values()][0]).toMatchObject({ passed: 2, total: 3, score: 2 / 3 });
   });
 
   it('the committed index is current and exposes historical cell validity', () => {

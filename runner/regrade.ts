@@ -142,7 +142,7 @@ function rejudgeFixer(
   repoRoot: string,
   timeoutMs: number,
   diagnostics: string[],
-): { passed: number; total: number } | undefined {
+): { passed: number; total: number; checkPassed: boolean } | undefined {
   if (!isSafeCaseSegment(caseId)) {
     diagnostics.push(`regrade: case ${caseId}: unsafe case id — recorded outcome kept`);
     return undefined;
@@ -177,7 +177,7 @@ function rejudgeFixer(
     const worker = { structuredOutput: out.found ? out.value : undefined } as WorkerResult;
     const check = scoreFixerWorker(suiteCase, worker, repoRoot, workspace, timeoutMs);
     const schema = scoreSchemaCompliance(worker);
-    return { passed: check.passed + schema.passed, total: FIXER_PROBE_COUNT };
+    return { passed: check.passed + schema.passed, total: FIXER_PROBE_COUNT, checkPassed: check.passed === 1 };
   } finally {
     rmSync(stem, { recursive: true, force: true });
   }
@@ -243,6 +243,7 @@ export function regrade(opts: RegradeOptions): RegradeResult {
           const outcome = { score: r.passed / r.total, passed: r.passed, total: r.total };
           if (outcome.passed !== recorded.passed || outcome.total !== recorded.total || outcome.score !== recorded.score) changed += 1;
           row.outcome = outcome;
+          row.probes = [{ kind: 'check-rerun', expected: 'pass', observed: r.checkPassed ? 'pass' : 'fail', passed: r.checkPassed }];
         } else {
           const r = rejudgeClassifier(from, suiteCase, row.case, diagnostics);
           if (r === undefined) continue;

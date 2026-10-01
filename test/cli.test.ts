@@ -20,6 +20,8 @@ const captured = vi.hoisted(() => ({
   // When set, the mocked ai-sdk driver throws this pre-dispatch (the
   // toolkit's requireKey missing-env shape).
   driverThrow: null as Error | null,
+  aiSdkRunCalls: 0,
+  aiSdkUsageOverride: null as { input: number; output: number; cacheRead: number; cacheWrite: number } | null,
 }));
 
 vi.mock('@camerontaylor/cq-toolkit', async (importOriginal) => {
@@ -29,11 +31,12 @@ vi.mock('@camerontaylor/cq-toolkit', async (importOriginal) => {
       captured.constructorOptions.push(options);
     }
     async run(invocation: OpInvocation): Promise<WorkerResult> {
+      captured.aiSdkRunCalls += 1;
       if (captured.driverThrow !== null) throw captured.driverThrow;
       return {
         model: invocation.modelSpec.model,
         structuredOutput: { verdict: 'resolved' },
-        usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+        usage: captured.aiSdkUsageOverride ?? { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
         denials: [],
         stopReason: 'complete',
       };
@@ -75,6 +78,8 @@ beforeEach(() => {
   captured.constructorOptions.length = 0;
   captured.laneOptions = {};
   captured.driverThrow = null;
+  captured.aiSdkRunCalls = 0;
+  captured.aiSdkUsageOverride = null;
 });
 
 afterEach(() => {
@@ -152,6 +157,7 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
       const runDir = join(out, `repeat-${repeat}`);
       expect(existsSync(join(runDir, 'outputs', 'rev-1.json'))).toBe(true);
       expect(readdirSync(join(journalRoot, `repeat-${repeat}`)).length).toBe(1);
+      expect(readdirSync(join(runDir, 'journal')).length).toBe(1);
       expect(JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')).runs[0].repeat).toBe(repeat);
       expect(readFileSync(join(runDir, 'rows.jsonl'), 'utf8')).toContain(`"repeat":${repeat}`);
     }
@@ -167,6 +173,25 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     });
     await expect(cliMain([...cliArgs(dir), '--repeats', '4'])).resolves.toBe(2);
     await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--max-usd', '1'])).resolves.toBe(2);
+  });
+
+  it('stops the remaining cases and repeats after an observed per-case USD overrun', async () => {
+    const dir = writeSuite('repeat-overrun', {
+      name: 'repeat-overrun', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')],
+    });
+    const out = join(root, 'repeat-overrun-out');
+    captured.aiSdkUsageOverride = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out])).resolves.toBe(1);
+    expect(captured.aiSdkRunCalls).toBe(1);
+    expect(existsSync(join(out, 'repeat-1', 'run.json'))).toBe(true);
+    expect(existsSync(join(out, 'repeat-2'))).toBe(false);
+    const runs = JSON.parse(readFileSync(join(out, 'run.json'), 'utf8')) as { runs: Array<{ absences: Array<{ cause: string }> }> };
+    expect(runs.runs).toHaveLength(1);
+    expect(runs.runs[0]?.absences.map((a) => a.cause)).toEqual([
+      expect.stringContaining('per-case budget exceeded'),
+      expect.stringContaining('further dispatch stopped'),
+    ]);
   });
 
   it('W6.5 retains both roles in every repeat of a multi-suite run', async () => {

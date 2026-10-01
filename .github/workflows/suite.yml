@@ -1006,7 +1006,13 @@ jobs:
           # evidence, but a paired comparison needs at least two cell roots.
           cell_count="$(find reports/eval -name rows.jsonl ! -path '*/repeat-*/*' -size +0c -print 2>/dev/null | wc -l | tr -d ' ')"
           if [ "${cell_count}" -ge 2 ]; then
-            node --experimental-strip-types scripts/analyze-snapshot.mjs --from reports/eval --out reports/eval/comparisons
+            if node --experimental-strip-types scripts/analyze-snapshot.mjs --from reports/eval --out reports/eval/comparisons; then
+              echo "paired snapshot analysis completed"
+            else
+              analysis_rc=$?
+              printf '%s\n' "${analysis_rc}" > "${RUNNER_TEMP}/paired-analysis-failed"
+              echo "::warning::paired snapshot analysis failed (exit ${analysis_rc}); raw evidence will still be published"
+            fi
           else
             echo "::warning::${cell_count} matrix cell(s) available; no paired comparison generated"
           fi
@@ -1159,4 +1165,12 @@ jobs:
           else
             git commit -m "report snapshots $(date -u +%F) [skip ci]"
             git push origin HEAD:snapshots
+          fi
+      - name: Report paired analysis failure after raw snapshot publication
+        if: github.event.inputs.profile == 'w65-pilot'
+        run: |
+          if [ -f "${RUNNER_TEMP}/paired-analysis-failed" ]; then
+            analysis_rc="$(cat "${RUNNER_TEMP}/paired-analysis-failed")"
+            echo "::error::paired snapshot analysis failed (exit ${analysis_rc}); raw reports were preserved"
+            exit 1
           fi

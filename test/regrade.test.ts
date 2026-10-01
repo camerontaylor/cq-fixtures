@@ -187,6 +187,7 @@ describe('regrade --rejudge re-runs the local judge over persisted predictions',
     ).resolves.toBe(0);
     const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ResultRow);
     expect(rows[0]!.outcome).toEqual({ score: 1, passed: 2, total: 2 });
+    expect(rows[0]!.probes).toEqual([{ kind: 'check-rerun', expected: 'pass', observed: 'pass', passed: true }]);
     const table = JSON.parse(readFileSync(join(outDir, 'fixer-worker.table.json'), 'utf8')) as { cells: Array<{ score: number; passed: number; total: number }> };
     expect(table.cells[0]).toMatchObject({ score: 1, passed: 2, total: 2 });
   });

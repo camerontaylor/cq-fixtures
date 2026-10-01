@@ -53,7 +53,7 @@ function tableFiles(snapshotDir) {
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
+      if (entry.isDirectory() && !/^repeat-[1-9]\d*$/.test(entry.name)) walk(full);
       else if (entry.isFile() && entry.name.endsWith('.table.json')) out.push(full);
     }
   };

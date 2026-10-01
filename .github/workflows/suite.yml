@@ -1091,6 +1091,10 @@ jobs:
             while IFS= read -r manifest; do
               rel_dir="${manifest#reports/eval/}"
               rel_dir="$(dirname "${rel_dir}")"
+              if [ "${rel_dir}" = "." ]; then
+                echo "::error::pilot cell manifest has no cell directory: ${manifest}"
+                exit 1
+              fi
               rm -rf "${snap_dir}/${rel_dir}"
             done < <(find reports/eval -type f -name run.json ! -path '*/repeat-*/*' 2>/dev/null | sort)
           fi

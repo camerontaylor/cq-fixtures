@@ -4,7 +4,7 @@
 // error or suite load/validation failure (the suite.yml workflow hard-fails
 // its rc>=2 branch). Invoked via runner/index.ts.
 
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -218,6 +218,17 @@ function parseArgs(argv: readonly string[]): CliOptions {
   }
   if (repeats > 3) throw new UsageError('--repeats is capped at 3 by the D9 eval envelope');
   if (repeats > 1 && out === undefined) throw new UsageError('--repeats requires --out so each paid repeat preserves its evidence');
+  if (repeats > 1) {
+    for (const [flag, path] of [['--out', out], ['--journal', journal]] as const) {
+      if (path === undefined || !existsSync(path)) continue;
+      try {
+        if (readdirSync(path).length > 0) throw new UsageError(`--repeats requires a fresh ${flag} directory so old repeat evidence cannot mix with this run`);
+      } catch (e) {
+        if (e instanceof UsageError) throw e;
+        throw new UsageError(`--repeats cannot use ${flag} '${path}': ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
   if (repeats > 1 && maxUsd !== undefined) throw new UsageError('--repeats requires a per-case USD ceiling, not legacy --max-usd');
   driverName = driverName === '' ? driver : driverName;
   if (!LANES.has(driverName)) {

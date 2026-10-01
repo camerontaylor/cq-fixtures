@@ -164,6 +164,9 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     const table = JSON.parse(readFileSync(join(out, 'review-classifier.table.json'), 'utf8')) as { cells: Array<{ runs: number }> };
     expect(table.cells[0]?.runs).toBe(3);
     expect(() => regrade({ from: out, rejudge: true })).toThrow(/combined repeat root has no prediction artifacts/);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out])).resolves.toBe(2);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--journal', journalRoot, '--out', join(root, 'fresh-out')])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(3);
   }, 30_000);
 
   it('W6.5 refuses repeat counts above D9 and a legacy run USD cap before dispatch', async () => {

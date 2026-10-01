@@ -145,6 +145,17 @@ function cliArgs(suiteDir: string): string[] {
 }
 
 describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite load failure)', () => {
+  it('defaults each repeated journal into its output directory', async () => {
+    const dir = writeSuite('default-repeat-journal', {
+      name: 'default-repeat-journal', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'default-repeat-journal-out');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '2', '--out', out])).resolves.toBe(0);
+    expect(readdirSync(join(out, 'repeat-1', 'journal')).length).toBe(1);
+    expect(readdirSync(join(out, 'repeat-2', 'journal')).length).toBe(1);
+  });
+
   it('W6.5 preserves each repeat and aggregates rows without overwriting prediction outputs', async () => {
     const dir = writeSuite('repeated-suite', {
       name: 'repeated-suite', role: 'review-classifier',

@@ -1052,10 +1052,15 @@ jobs:
           # Prepare the pilot header before switching away from this source
           # branch. The snapshots branch may not contain this helper yet.
           snapshot_date="$(date -u +%F)"
-          pilot_header_dir="${RUNNER_TEMP}/${snapshot_date}"
+          snapshot_key="${snapshot_date}"
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
+            snapshot_key="${snapshot_date}-w65-pilot"
+          fi
+          pilot_header_dir="${RUNNER_TEMP}/${snapshot_key}"
           if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
             mkdir -p "${pilot_header_dir}"
             node scripts/write-pilot-snapshot-header.mjs reports/eval "${pilot_header_dir}" "${GITHUB_RUN_ID}"
+            cp scripts/snapshot-index.mjs "${RUNNER_TEMP}/snapshot-index.mjs"
           fi
           # The branch setup happens BEFORE the copy: on a same-day
           # re-dispatch, `git switch` would otherwise overwrite freshly
@@ -1068,7 +1073,7 @@ jobs:
           else
             git switch -C snapshots
           fi
-          snap_dir="reports/snapshots/${snapshot_date}"
+          snap_dir="reports/snapshots/${snapshot_key}"
           # A same-day re-dispatch after a suite is removed or renamed must
           # not leave the old suite's stale tables behind: clear this run's
           # dated dir (tracked on the snapshots branch) before recopying —
@@ -1108,8 +1113,8 @@ jobs:
             echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}, landed tables: ${landed_tables:-none}) — merging into ${snap_dir} without clearing"
           fi
           mkdir -p "${snap_dir}"
-          # A bounded pilot preserves other lanes, but each incoming cell is
-          # a complete replacement. Clear its old subtree before copying so
+          # A bounded pilot uses its own dated directory. Each incoming cell
+          # is a complete replacement. Clear its old subtree before copying so
           # a same-day rerun with fewer repeats cannot mix two runs' evidence.
           if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
             # The analyzer can skip or fail on a degraded rerun. Its previous
@@ -1197,6 +1202,10 @@ jobs:
             # No current pilot manifest: remove a same-day pilot header so
             # it cannot label stale evidence as belonging to this run.
             rm -f "${snap_dir}/README.md"
+          fi
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
+            CQ_FIXTURES_REPO_ROOT="$PWD" node "${RUNNER_TEMP}/snapshot-index.mjs"
+            git add -f reports/snapshots/README.md
           fi
           # Add runs BEFORE any early exit, so removals publish too: on a
           # fully successful matrix the rm -rf above cleared the worktree, and

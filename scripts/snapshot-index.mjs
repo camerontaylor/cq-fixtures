@@ -6,10 +6,14 @@
 // fails when the committed page is stale.
 
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+// The snapshot publisher runs from a second branch: it executes the source
+// branch's generator from RUNNER_TEMP against that branch's current worktree.
+const REPO_ROOT = process.env.CQ_FIXTURES_REPO_ROOT
+  ? resolve(process.env.CQ_FIXTURES_REPO_ROOT)
+  : dirname(dirname(fileURLToPath(import.meta.url)));
 const SNAPSHOTS_ROOT = join(REPO_ROOT, 'reports', 'snapshots');
 const INDEX_PATH = join(SNAPSHOTS_ROOT, 'README.md');
 

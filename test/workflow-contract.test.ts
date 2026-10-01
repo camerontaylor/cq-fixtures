@@ -601,6 +601,9 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(stepChunk('Report paired analysis failure after raw snapshot publication')).toContain('exit 1');
     expect(stepChunk('Commit report snapshots')).toContain("-name '*.comparisons.json'");
     expect(stepChunk('Commit report snapshots')).toContain('node scripts/write-pilot-snapshot-header.mjs reports/eval');
+    expect(stepChunk('Commit report snapshots')).toContain('snapshot_key="${snapshot_date}-w65-pilot"');
+    expect(stepChunk('Commit report snapshots')).toContain('CQ_FIXTURES_REPO_ROOT="$PWD" node "${RUNNER_TEMP}/snapshot-index.mjs"');
+    expect(stepChunk('Commit report snapshots')).toContain('git add -f reports/snapshots/README.md');
     expect(stepChunk('Commit report snapshots')).toContain('"${SNAPSHOT_PROFILE}" != "w65-pilot"');
     expect(stepChunk('Commit report snapshots')).toContain('if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then');
     expect(stepChunk('Commit report snapshots')).toContain('rm -rf "${snap_dir}/comparisons"');

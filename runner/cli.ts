@@ -218,6 +218,9 @@ function parseArgs(argv: readonly string[]): CliOptions {
   }
   if (repeats > 3) throw new UsageError('--repeats is capped at 3 by the D9 eval envelope');
   if (repeats > 1 && out === undefined) throw new UsageError('--repeats requires --out so each paid repeat preserves its evidence');
+  // Repeated evidence always has an event log. With no explicit journal root,
+  // write it directly under each repeat's output directory.
+  if (repeats > 1 && journal === undefined) journal = out;
   if (repeats > 1) {
     for (const [flag, path] of [['--out', out], ['--journal', journal]] as const) {
       if (path === undefined || !existsSync(path)) continue;

@@ -4,8 +4,8 @@
 // error or suite load/validation failure (the suite.yml workflow hard-fails
 // its rc>=2 branch). Invoked via runner/index.ts.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { cpSync, existsSync, lstatSync, mkdirSync, readlinkSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   AcpDriver,
@@ -37,6 +37,23 @@ const LANES = new Set(['ai-sdk', 'claude-agent', 'subprocess', 'acp']);
 // (derived from the LANES set above so the two lists stay synchronized).
 type DriverKind = 'fake' | 'ai-sdk' | 'claude-agent' | 'subprocess' | 'acp';
 const DRIVERS = new Set<string>(['fake', ...LANES]);
+function canonicalPath(path: string, seen = new Set<string>()): string {
+  const absolute = resolve(path);
+  if (seen.has(absolute)) throw new UsageError(`symlink cycle in '${path}'`);
+  seen.add(absolute);
+  let exists = false;
+  let symlink = false;
+  try {
+    symlink = lstatSync(absolute).isSymbolicLink();
+    exists = true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  }
+  if (symlink) return canonicalPath(resolve(dirname(absolute), readlinkSync(absolute)), seen);
+  if (exists) return realpathSync(absolute);
+  const parent = dirname(absolute);
+  return parent === absolute ? absolute : join(canonicalPath(parent, seen), basename(absolute));
+}
 // ADR-0001 eval axes (the per-cell constraint in
 // schema/comparison-table.schema.json): axis 1 — models vary on the ai-sdk
 // driver; axis 2 — drivers vary on the fixed GLM served id. A paid ai-sdk
@@ -221,6 +238,15 @@ function parseArgs(argv: readonly string[]): CliOptions {
   // Repeated evidence always has an event log. With no explicit journal root,
   // write it directly under each repeat's output directory.
   if (repeats > 1 && journal === undefined) journal = out;
+  // A journal root can alias --out through a symlink. The emit phase must
+  // never try to copy a repeat directory into its own journal child.
+  if (repeats > 1 && out !== undefined && journal !== undefined && resolve(out) !== resolve(journal)) {
+    const canonicalOut = canonicalPath(out);
+    const canonicalJournal = canonicalPath(journal);
+    if (isInside(canonicalOut, canonicalJournal) || isInside(canonicalJournal, canonicalOut)) {
+      throw new UsageError('--journal and --out resolve to overlapping directories; use the same path or separate directories');
+    }
+  }
   if (repeats > 1) {
     for (const [flag, path] of [['--out', out], ['--journal', journal]] as const) {
       if (path === undefined || !existsSync(path)) continue;

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
@@ -145,6 +145,44 @@ function cliArgs(suiteDir: string): string[] {
 }
 
 describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite load failure)', () => {
+  it('refuses an aliased repeat journal root before paid dispatch', async () => {
+    const dir = writeSuite('aliased-journal-suite', {
+      name: 'aliased-journal-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'aliased-out');
+    mkdirSync(out);
+    const alias = join(root, 'journal-alias');
+    symlinkSync(out, alias, 'dir');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '2', '--out', out, '--journal', alias])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(0);
+    expect(readdirSync(out)).toEqual([]);
+  });
+
+  it('refuses a dangling journal symlink to a fresh output root before dispatch', async () => {
+    const dir = writeSuite('dangling-journal-suite', {
+      name: 'dangling-journal-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'fresh-aliased-out');
+    const alias = join(root, 'dangling-journal-alias');
+    symlinkSync(out, alias, 'dir');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '2', '--out', out, '--journal', alias])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(0);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('refuses overlapping repeat output and journal roots before dispatch', async () => {
+    const dir = writeSuite('nested-journal-suite', {
+      name: 'nested-journal-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'nested-out');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '2', '--out', out, '--journal', join(out, 'journals')])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(0);
+    expect(existsSync(out)).toBe(false);
+  });
+
   it('defaults each repeated journal into its output directory', async () => {
     const dir = writeSuite('default-repeat-journal', {
       name: 'default-repeat-journal', role: 'review-classifier',

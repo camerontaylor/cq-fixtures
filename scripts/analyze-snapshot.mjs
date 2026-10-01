@@ -96,7 +96,7 @@ export function analyzeSnapshot(from) {
       if (servedModel !== undefined && servedModel !== row.model) throw new Error(`${label}: mixed observed served models`);
       servedModel = row.model;
       if (row.repeat === undefined) throw new Error(`${label}: row ${i + 1} lacks W6.5 repeat ordinal`);
-      if (matchingRun.repeat !== row.repeat) {
+      if (matchingRun.repeat !== row.repeat || matchingRun.repeatCount !== row.repeatCount) {
         throw new Error(`${label}: row ${i + 1} has no matching runId/repeat manifest entry`);
       }
       rows.push(row);

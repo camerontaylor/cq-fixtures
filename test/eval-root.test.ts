@@ -27,6 +27,7 @@ import {
   EVAL_ROOT_MARKER,
   fixDiffText,
   promptProblems,
+  planEvalRoot,
   scanEvalRoot,
   sidecarStatus,
   stripSuite,
@@ -49,6 +50,14 @@ function temp(label: string): string {
 }
 afterEach(() => {
   for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+it('plans toolkit.lock from the selected repository', () => {
+  const repo = temp('selected-repo');
+  mkdirSync(join(repo, 'runner'));
+  expect(planEvalRoot(repo).files.has('toolkit.lock')).toBe(false);
+  writeFileSync(join(repo, 'toolkit.lock'), 'pinned-sha\n');
+  expect(planEvalRoot(repo).files.get('toolkit.lock')).toEqual({ src: join(repo, 'toolkit.lock') });
 });
 
 function readJson<T = unknown>(path: string): T {

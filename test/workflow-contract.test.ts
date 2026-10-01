@@ -170,7 +170,8 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(drivers.filter((d) => d === 'ai-sdk')).toHaveLength(2);
     expect(cells.filter((c) => c.includes('driver: ai-sdk') && c.includes('model: glm-5.3-flash'))).toHaveLength(1);
     // One cell's hard failure must not kill the others' evidence.
-    expect(text).toContain('fail-fast: false');
+    expect(text).toContain("fail-fast: ${{ github.event.inputs.profile == 'w65-pilot' }}");
+    expect(text).toContain("max-parallel: ${{ github.event.inputs.profile == 'w65-pilot' && 1 || 5 }}");
   });
 
   it('the unit-test tree is excised before any model-facing step (review-debt 11)', () => {
@@ -599,6 +600,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(stepChunk('Analyze paired matrix cells')).toContain('paired-analysis-failed');
     expect(stepChunk('Report paired analysis failure after raw snapshot publication')).toContain('exit 1');
     expect(stepChunk('Commit report snapshots')).toContain("-name '*.comparisons.json'");
+    expect(stepChunk('Commit report snapshots')).toContain('node scripts/write-pilot-snapshot-header.mjs reports/eval');
     expect(stepChunk('Commit report snapshots')).toContain('"${SNAPSHOT_PROFILE}" != "w65-pilot"');
     expect(stepChunk('Commit report snapshots')).toContain('if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then');
     expect(stepChunk('Commit report snapshots')).toContain('rm -rf "${snap_dir}/comparisons"');

@@ -184,8 +184,8 @@
     },
     "stopCause": {
       "type": "string",
-      "enum": ["budget"],
-      "description": "VERSIONED ADDITIVE change W6.2 (2026-09-25): the cause a dispatched case's row is incomplete evidence. 'budget' = the driver stopped the case on its budget (per-case USD/token cap): the row stays an honest incomplete outcome (score 0 over the configured probe ceiling, journal status budget-exhausted) — never a fabricated completion, never a silent absence — but it does not count toward a cell's coveredCases, because a budget stop breaks coverage parity (RS-9 §1.3). Absent = the row is the case's complete evidence. The vocabulary is closed so a future cause (e.g. a bounded-retry timeout class) must extend it deliberately."
+      "enum": ["budget", "aborted"],
+      "description": "A dispatched case's incomplete evidence cause. 'budget' means a budget stop or observed overrun; 'aborted' means the driver stopped without a gradeable completion. Both remain honest rows but are excluded from coverage and complete-repeat comparisons. Absent means complete evidence."
     }
   },
   "allOf": [

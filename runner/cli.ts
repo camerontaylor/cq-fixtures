@@ -572,6 +572,7 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     // Preserve completed paid repeats even when a later dispatch throws.
     if (manifestEntries.length === 0) return runPhaseExit;
+    runPhaseExit = 2;
   }
   // X2: materialization failures are infrastructure — the driver never ran
   // for those cases — so they hard-fail (exit 2) with the count and the
@@ -652,7 +653,7 @@ async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
   if (runPhaseExit !== undefined) return runPhaseExit;
-  if (stoppedAfterPerCaseOverrun) return 1;
+  if (stoppedAfterPerCaseOverrun) return opts.repeats > 1 ? 2 : 1;
   return anyFailed ? 1 : 0;
 }
 

@@ -78,6 +78,15 @@ describe('snapshot comparison analysis', () => {
     expect(() => analyzeSnapshot(dir)).toThrow(/mixed observed served models/);
   });
 
+  it('rejects row repeat counts that disagree with the matching manifest', () => {
+    const dir = fixture();
+    const path = join(dir, 'candidate', 'ai-sdk', 'rows.jsonl');
+    const rows = readFileSync(path, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    for (const row of rows) row.repeatCount = 2;
+    writeFileSync(path, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    expect(() => analyzeSnapshot(dir)).toThrow(/matching runId\/repeat manifest entry/);
+  });
+
   it('keeps a suite name containing path separators inside the analysis output', () => {
     const dir = fixture();
     for (const model of ['baseline', 'candidate']) {

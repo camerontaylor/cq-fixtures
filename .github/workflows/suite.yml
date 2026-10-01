@@ -181,8 +181,10 @@ jobs:
     strategy:
       # One cell's hard failure must not kill the other cell's eval: the
       # surviving cell's tables are still real evidence and still land in the
-      # artifacts/snapshots.
-      fail-fast: false
+      # artifacts/snapshots. The bounded pilot is different: its model cells
+      # run one at a time and a hard budget overrun cancels queued dispatch.
+      fail-fast: ${{ github.event.inputs.profile == 'w65-pilot' }}
+      max-parallel: ${{ github.event.inputs.profile == 'w65-pilot' && 1 || 5 }}
       matrix:
         # THE J5 AXES MATRIX (ADR-0001 as revised 2026-09-14): axis 1 —
         # models vary on the ai-sdk driver; axis 2 — drivers vary on the
@@ -1047,6 +1049,14 @@ jobs:
           # dedicated `snapshots` branch; an owner decision to mirror them
           # onto main can come later.
           #
+          # Prepare the pilot header before switching away from this source
+          # branch. The snapshots branch may not contain this helper yet.
+          snapshot_date="$(date -u +%F)"
+          pilot_header_dir="${RUNNER_TEMP}/${snapshot_date}"
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
+            mkdir -p "${pilot_header_dir}"
+            node scripts/write-pilot-snapshot-header.mjs reports/eval "${pilot_header_dir}" "${GITHUB_RUN_ID}"
+          fi
           # The branch setup happens BEFORE the copy: on a same-day
           # re-dispatch, `git switch` would otherwise overwrite freshly
           # copied (gitignored) files with the branch's old tracked content.
@@ -1058,7 +1068,7 @@ jobs:
           else
             git switch -C snapshots
           fi
-          snap_dir="reports/snapshots/$(date -u +%F)"
+          snap_dir="reports/snapshots/${snapshot_date}"
           # A same-day re-dispatch after a suite is removed or renamed must
           # not leave the old suite's stale tables behind: clear this run's
           # dated dir (tracked on the snapshots branch) before recopying —
@@ -1181,6 +1191,13 @@ jobs:
             mkdir -p "${snap_dir}/$(dirname "${rel}")"
             cp "${f}" "${snap_dir}/${rel}"
           done < <(find reports/eval -type f \( -name '*.table.json' -o -name '*.comparisons.json' -o -name 'rows.jsonl' -o -name 'run.json' -o -path '*/journal/*' -o -path '*/patches/*' -o -path '*/outputs/*' \) 2>/dev/null | sort)
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ] && [ -f "${pilot_header_dir}/README.md" ]; then
+            cp "${pilot_header_dir}/README.md" "${snap_dir}/README.md"
+          elif [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ] && [ -f "${snap_dir}/README.md" ] && grep -q '^toolkit-package-version:' "${snap_dir}/README.md"; then
+            # No current pilot manifest: remove a same-day pilot header so
+            # it cannot label stale evidence as belonging to this run.
+            rm -f "${snap_dir}/README.md"
+          fi
           # Add runs BEFORE any early exit, so removals publish too: on a
           # fully successful matrix the rm -rf above cleared the worktree, and
           # `git add` stages the removal of previously tracked tables as

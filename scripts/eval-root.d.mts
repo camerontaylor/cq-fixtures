@@ -15,6 +15,11 @@ export interface StrippedSuite {
 }
 
 export declare function discoverSuites(root: string): string[];
+export declare function planEvalRoot(repo: string): {
+  files: Map<string, { src: string } | { content: string }>;
+  keySuites: Record<string, unknown>;
+  suites: string[];
+};
 export declare function stripSuite(doc: unknown): StrippedSuite;
 export declare function sidecarStatus(repo: string, fixture: string): string;
 export declare function fixDiffText(repo: string, fixture: string): string | undefined;

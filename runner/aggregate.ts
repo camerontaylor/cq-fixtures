@@ -61,7 +61,7 @@ export interface ResultRow {
    * a budget stop breaks coverage parity (RS-9 §1.3). Absent = the row is
    * the case's complete evidence.
    */
-  stopCause?: 'budget';
+  stopCause?: 'budget' | 'aborted';
   costUSD: number | null;
   costBasis?: 'modeled' | 'billed';
   wallTimeMs: number;

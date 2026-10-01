@@ -791,7 +791,8 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     const result = await runSuite(opts(dir, { driver: stopDriver('aborted'), journalPath }));
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({ case: 'fix-aborted', outcome: { score: 0, passed: 0, total: 2 } });
-    expect(result.rows[0]).not.toHaveProperty('probes');
+    expect(result.rows[0]?.stopCause).toBe('aborted');
+    expect(result.rows[0]?.probes).toEqual([{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }]);
     expect(result.absences).toEqual([]);
     assertSchemaValid(result.rows, result.tables);
     const log = openRunLog(journalPath);

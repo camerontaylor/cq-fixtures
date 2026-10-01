@@ -208,7 +208,7 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     captured.onAiSdkRun = () => {
       if (captured.aiSdkRunCalls === 1) writeFileSync(join(journal, 'repeat-2'), 'block the next journal directory');
     };
-    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out, '--journal', journal])).resolves.toBe(1);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out, '--journal', journal])).resolves.toBe(2);
     expect(captured.aiSdkRunCalls).toBe(1);
     expect(existsSync(join(out, 'repeat-1', 'run.json'))).toBe(true);
     expect(existsSync(join(out, 'repeat-1', 'rows.jsonl'))).toBe(true);
@@ -223,7 +223,7 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     });
     const out = join(root, 'repeat-overrun-out');
     captured.aiSdkUsageOverride = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
-    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out])).resolves.toBe(1);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out])).resolves.toBe(2);
     expect(captured.aiSdkRunCalls).toBe(1);
     expect(existsSync(join(out, 'repeat-1', 'run.json'))).toBe(true);
     expect(existsSync(join(out, 'repeat-2'))).toBe(false);
@@ -244,7 +244,7 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     });
     const out = join(root, 'overrun-multi-out');
     captured.aiSdkUsageOverride = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
-    await expect(cliMain([...cliArgs(first), '--suite', later, '--repeats', '3', '--out', out])).resolves.toBe(1);
+    await expect(cliMain([...cliArgs(first), '--suite', later, '--repeats', '3', '--out', out])).resolves.toBe(2);
     expect(captured.aiSdkRunCalls).toBe(1);
     expect(existsSync(join(out, 'review-classifier.table.json'))).toBe(true);
     expect(existsSync(join(out, 'fixer-worker.table.json'))).toBe(false);

@@ -881,6 +881,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         outcome = zeroOutcome(probeCount);
       } else if (worker.stopReason === 'aborted') {
         outcome = zeroOutcome(probeCount);
+        stopCause = 'aborted';
+        if (isFixerCase(c)) rowProbes = [{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }];
         journalResult = { status: 'indeterminate', detail: 'driver stopReason: aborted' };
         diagnostics = 'driver stopReason: aborted';
       } else if (isFixerCase(c)) {

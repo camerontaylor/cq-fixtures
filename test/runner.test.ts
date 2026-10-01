@@ -212,7 +212,9 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     expect(result.rows.map((r) => [r.case, r.outcome.passed])).toEqual([['fix-pass', 1], ['fix-fail', 0]]);
     expect(result.rows.every((r) => r.outcome.total === 2)).toBe(true);
     assertSchemaValid(result.rows, result.tables);
-  }, 15_000);
+    // This exercises two full runSuite workspace materializations and child
+    // checks; allow time for that path beyond the checks' own 300/800ms.
+  }, 30_000);
 
   it('a missing check script scores 0 with diagnostics and never throws', () => {
     const outcome = scoreFixerWorker(
@@ -259,7 +261,9 @@ describe('fixer-worker scoring (re-run the seeded check)', () => {
     // under test here) while the fake's verdict-shaped structuredOutput
     // fails the schema-compliance probe.
     expect(uncapped.rows[0]).toMatchObject({ case: 'fix-slow', outcome: { score: 0.5 } });
-  }, 15_000);
+    // This exercises two full runSuite workspace materializations and child
+    // checks; allow time for that path beyond the check's own 300/800ms.
+  }, 30_000);
 
   it('a driver missing-credential throw aborts the run instead of scoring zeros', async () => {
     // The toolkit's requireKey throws pre-dispatch on a missing provider
@@ -679,6 +683,7 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(result.rows[0]).toMatchObject({ case: 'fix-miss', outcome: { score: 0, passed: 0, total: 2 } });
+    expect(result.rows[0]?.probes).toEqual([{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }]);
     expect(result.tables[0]?.cells).toEqual([expect.objectContaining({ runs: 1, passed: 0, total: 2, score: 0 })]);
     expect(result.absences).toEqual([]);
     assertSchemaValid(result.rows, result.tables);
@@ -768,6 +773,7 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     const result = await runSuite(opts(dir, { driver: stopDriver('budget'), journalPath }));
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({ case: 'fix-budget', outcome: { score: 0, passed: 0, total: 2 } });
+    expect(result.rows[0]).not.toHaveProperty('probes');
     expect(result.absences).toEqual([]);
     assertSchemaValid(result.rows, result.tables);
     const log = openRunLog(journalPath);
@@ -785,6 +791,8 @@ describe('driver-error cause mapping (cq-toolkit #206/#210/#212 -> F1b/WB-1)', (
     const result = await runSuite(opts(dir, { driver: stopDriver('aborted'), journalPath }));
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({ case: 'fix-aborted', outcome: { score: 0, passed: 0, total: 2 } });
+    expect(result.rows[0]?.stopCause).toBe('aborted');
+    expect(result.rows[0]?.probes).toEqual([{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }]);
     expect(result.absences).toEqual([]);
     assertSchemaValid(result.rows, result.tables);
     const log = openRunLog(journalPath);
@@ -1361,7 +1369,7 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     expect(cell.macroF1).toBe(0);
   });
 
-  it('fixer rows and cells carry none of the F4 fields (pre-F4 shape preserved)', async () => {
+  it('fixer rows carry the W6.5 check estimand without classifier metrics', async () => {
     mkdirSync(join(root, 'fixture'), { recursive: true });
     writeFileSync(join(root, 'fixture', 'check.js'), 'process.exit(0);\n');
     const dir = writeSuite('fixer-shape', {
@@ -1372,7 +1380,9 @@ describe('F4 per-verdict metrics (probes[] + byVerdict/macroF1/fpRate)', () => {
     });
     const result = await runSuite(opts(dir));
     expect(result.rows).toHaveLength(1);
-    expect('probes' in result.rows[0]!).toBe(false);
+    expect(result.rows[0]!.probes).toEqual([
+      { kind: 'check-rerun', expected: 'pass', observed: 'pass', passed: true },
+    ]);
     expect('suspiciousBenign' in result.rows[0]!).toBe(false);
     const cell = result.tables[0]!.cells[0]!;
     for (const k of ['byVerdict', 'macroF1', 'fpRate', 'fpN', 'variant', 'scoreCI']) expect(cell).not.toHaveProperty(k);

@@ -33,6 +33,15 @@
       "minLength": 1,
       "description": "id of the cases[] entry this row scored (links to suite.schema.json case.id). suites/README.md promises one row per case, so rows carry the case id for traceability; optional at schema grain, always emitted by the J2 runner."
     },
+    "repeat": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "W6.5: one-based repeat ordinal within a k-repeat matrix; absent on historical rows."
+    },
+    "repeatCount": {
+      "type": "integer", "minimum": 2,
+      "description": "W6.5: requested matrix repeat count, retained on every repeated row so missing full repeats are detectable."
+    },
     "model": {
       "type": "string",
       "minLength": 1,
@@ -121,20 +130,20 @@
     },
     "probes": {
       "type": "array",
-      "description": "VERSIONED ADDITIVE change F4 (2026-09-21): per-probe observed outcomes, so a confusion matrix is computable from rows.jsonl. The runner captures one expected-verdict entry per review-classifier row (expected: the suite's expected verdict, observed: the classifier's verdict or null when missing/unparseable, passed: whether they matched); absent on old rows by design — every committed snapshot still validates. kind/expected are vocabulary-constrained (CodeRabbit bot thread T3) so a typo cannot silently drop a probe from the metrics; observed stays open because out-of-vocabulary observations are intentionally preserved.",
+      "description": "Per-probe outcomes. F4 review-classifier rows carry an expected-verdict entry for confusion metrics; W6.5 fixer rows carry a check-rerun pass/fail entry for repeated repair comparisons. Historical rows omit probes, so committed snapshots retain their prior shape. kind/expected are vocabulary-constrained (CodeRabbit bot thread T3) so a typo cannot silently drop a probe from metrics; observed stays open because out-of-vocabulary observations are intentionally preserved.",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["kind", "expected", "observed", "passed"],
         "properties": {
           "kind": {
-            "const": "expected-verdict",
-            "description": "Which scoring probe this entry records — the review-classifier probe. Constrained to the literal (CodeRabbit bot thread T3): a typo'd kind would otherwise vanish from every classifier metric."
+            "enum": ["expected-verdict", "check-rerun"],
+            "description": "Which scoring probe this entry records. Constrained to the literal (CodeRabbit bot thread T3): a typo'd kind would otherwise vanish from its classifier metric or fixer estimand."
           },
           "expected": {
             "type": "string",
-            "enum": ["actionable", "responded", "resolved", "blocked", "skip"],
-            "description": "The suite's expected verdict, in the classifyThreads vocabulary mirrored by schema/suite.schema.json. Constrained to the enum (CodeRabbit bot thread T3): a typo'd expected would otherwise be silently skipped by the confusion builder."
+            "enum": ["actionable", "responded", "resolved", "blocked", "skip", "pass"],
+            "description": "The expected classifier verdict or fixer check outcome. Constrained to the vocabulary (CodeRabbit bot thread T3): a typo'd expected value would otherwise be silently skipped by the metric builder."
           },
           "observed": {
             "type": ["string", "null"],
@@ -144,7 +153,13 @@
             "type": "boolean",
             "description": "Whether observed matched expected for this probe."
           }
-        }
+        },
+        "allOf": [
+          { "if": { "properties": { "kind": { "const": "check-rerun" } } },
+            "then": { "properties": { "expected": { "const": "pass" }, "observed": { "enum": ["pass", "fail"] } } } },
+          { "if": { "properties": { "kind": { "const": "expected-verdict" } } },
+            "then": { "properties": { "expected": { "enum": ["actionable", "responded", "resolved", "blocked", "skip"] } } } }
+        ]
       }
     },
     "suspiciousBenign": {
@@ -169,8 +184,8 @@
     },
     "stopCause": {
       "type": "string",
-      "enum": ["budget"],
-      "description": "VERSIONED ADDITIVE change W6.2 (2026-09-25): the cause a dispatched case's row is incomplete evidence. 'budget' = the driver stopped the case on its budget (per-case USD/token cap): the row stays an honest incomplete outcome (score 0 over the configured probe ceiling, journal status budget-exhausted) — never a fabricated completion, never a silent absence — but it does not count toward a cell's coveredCases, because a budget stop breaks coverage parity (RS-9 §1.3). Absent = the row is the case's complete evidence. The vocabulary is closed so a future cause (e.g. a bounded-retry timeout class) must extend it deliberately."
+      "enum": ["budget", "aborted"],
+      "description": "A dispatched case's incomplete evidence cause. 'budget' means a budget stop or observed overrun; 'aborted' means the driver stopped without a gradeable completion. Both remain honest rows but are excluded from coverage and complete-repeat comparisons. Absent means complete evidence."
     }
   },
   "allOf": [

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { OpInvocation, WorkerResult } from '@camerontaylor/cq-toolkit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cliMain } from '../runner/cli.ts';
+import { regrade } from '../runner/regrade.ts';
 
 // CLI-path tests: exit codes (F4) and per-lane driver construction (F3).
 // The toolkit barrel is mocked with the REAL module spread back in — only
@@ -19,6 +20,9 @@ const captured = vi.hoisted(() => ({
   // When set, the mocked ai-sdk driver throws this pre-dispatch (the
   // toolkit's requireKey missing-env shape).
   driverThrow: null as Error | null,
+  aiSdkRunCalls: 0,
+  onAiSdkRun: null as (() => void) | null,
+  aiSdkUsageOverride: null as { input: number; output: number; cacheRead: number; cacheWrite: number } | null,
 }));
 
 vi.mock('@camerontaylor/cq-toolkit', async (importOriginal) => {
@@ -28,11 +32,13 @@ vi.mock('@camerontaylor/cq-toolkit', async (importOriginal) => {
       captured.constructorOptions.push(options);
     }
     async run(invocation: OpInvocation): Promise<WorkerResult> {
+      captured.aiSdkRunCalls += 1;
+      captured.onAiSdkRun?.();
       if (captured.driverThrow !== null) throw captured.driverThrow;
       return {
         model: invocation.modelSpec.model,
         structuredOutput: { verdict: 'resolved' },
-        usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+        usage: captured.aiSdkUsageOverride ?? { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
         denials: [],
         stopReason: 'complete',
       };
@@ -74,6 +80,9 @@ beforeEach(() => {
   captured.constructorOptions.length = 0;
   captured.laneOptions = {};
   captured.driverThrow = null;
+  captured.aiSdkRunCalls = 0;
+  captured.onAiSdkRun = null;
+  captured.aiSdkUsageOverride = null;
 });
 
 afterEach(() => {
@@ -132,10 +141,150 @@ function fixerCase(id: string): object {
 }
 
 function cliArgs(suiteDir: string): string[] {
-  return ['--suite', suiteDir, '--driver', 'ai-sdk', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai'];
+  return ['--suite', suiteDir, '--driver', 'ai-sdk', '--driver-name', 'ai-sdk', '--model', 'glm-5.3-flash', '--provider', 'zai', '--suite-sha', 'abcdef0'];
 }
 
 describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite load failure)', () => {
+  it('defaults each repeated journal into its output directory', async () => {
+    const dir = writeSuite('default-repeat-journal', {
+      name: 'default-repeat-journal', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'default-repeat-journal-out');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '2', '--out', out])).resolves.toBe(0);
+    expect(readdirSync(join(out, 'repeat-1', 'journal')).length).toBe(1);
+    expect(readdirSync(join(out, 'repeat-2', 'journal')).length).toBe(1);
+  });
+
+  it('W6.5 preserves each repeat and aggregates rows without overwriting prediction outputs', async () => {
+    const dir = writeSuite('repeated-suite', {
+      name: 'repeated-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'repeated-out');
+    const journalRoot = join(root, 'repeated-journals');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--journal', journalRoot, '--out', out])).resolves.toBe(0);
+    const combined = readFileSync(join(out, 'rows.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { repeat: number; runId: string });
+    expect(combined.map((row) => row.repeat)).toEqual([1, 2, 3]);
+    expect(new Set(combined.map((row) => row.runId)).size).toBe(3);
+    for (let repeat = 1; repeat <= 3; repeat++) {
+      const runDir = join(out, `repeat-${repeat}`);
+      expect(existsSync(join(runDir, 'outputs', 'rev-1.json'))).toBe(true);
+      expect(readdirSync(join(journalRoot, `repeat-${repeat}`)).length).toBe(1);
+      expect(readdirSync(join(runDir, 'journal')).length).toBe(1);
+      expect(JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')).runs[0].repeat).toBe(repeat);
+      expect(readFileSync(join(runDir, 'rows.jsonl'), 'utf8')).toContain(`"repeat":${repeat}`);
+    }
+    const table = JSON.parse(readFileSync(join(out, 'review-classifier.table.json'), 'utf8')) as { cells: Array<{ runs: number }> };
+    expect(table.cells[0]?.runs).toBe(3);
+    expect(() => regrade({ from: out, rejudge: true })).toThrow(/combined repeat root has no prediction artifacts/);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out])).resolves.toBe(2);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--journal', journalRoot, '--out', join(root, 'fresh-out')])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(3);
+  }, 30_000);
+
+  it('W6.5 refuses repeat counts above D9 and a legacy run USD cap before dispatch', async () => {
+    const dir = writeSuite('repeat-cap-suite', {
+      name: 'repeat-cap-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    await expect(cliMain([...cliArgs(dir), '--repeats', '4'])).resolves.toBe(2);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3'])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(0);
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--max-usd', '1', '--out', join(root, 'out')])).resolves.toBe(2);
+  });
+
+  it('requires a suite SHA before repeated paid work', async () => {
+    const dir = writeSuite('sha-required', {
+      name: 'sha-required', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const previous = process.env.GITHUB_SHA;
+    delete process.env.GITHUB_SHA;
+    try {
+      const args = cliArgs(dir);
+      args.splice(args.indexOf('--suite-sha'), 2);
+      await expect(cliMain([...args, '--repeats', '2', '--out', join(root, 'sha-required-out')])).resolves.toBe(2);
+      expect(captured.aiSdkRunCalls).toBe(0);
+    } finally {
+      if (previous !== undefined) process.env.GITHUB_SHA = previous;
+    }
+  });
+
+  it('publishes completed repeat evidence when the next repeat fails before dispatch', async () => {
+    const dir = writeSuite('repeat-throw', {
+      name: 'repeat-throw', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'throw-out');
+    const journal = join(root, 'throw-journal');
+    captured.onAiSdkRun = () => {
+      if (captured.aiSdkRunCalls === 1) writeFileSync(join(journal, 'repeat-2'), 'block the next journal directory');
+    };
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out, '--journal', journal])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(1);
+    expect(existsSync(join(out, 'repeat-1', 'run.json'))).toBe(true);
+    expect(existsSync(join(out, 'repeat-1', 'rows.jsonl'))).toBe(true);
+    expect(existsSync(join(out, 'repeat-2'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(out, 'run.json'), 'utf8')).runs).toHaveLength(1);
+  });
+
+  it('stops the remaining cases and repeats after an observed per-case USD overrun', async () => {
+    const dir = writeSuite('repeat-overrun', {
+      name: 'repeat-overrun', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved'), reviewCase('rev-2', 'resolved')],
+    });
+    const out = join(root, 'repeat-overrun-out');
+    captured.aiSdkUsageOverride = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
+    await expect(cliMain([...cliArgs(dir), '--repeats', '3', '--out', out])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(1);
+    expect(existsSync(join(out, 'repeat-1', 'run.json'))).toBe(true);
+    expect(existsSync(join(out, 'repeat-2'))).toBe(false);
+    const runs = JSON.parse(readFileSync(join(out, 'run.json'), 'utf8')) as { runs: Array<{ absences: Array<{ cause: string }> }> };
+    expect(runs.runs).toHaveLength(1);
+    expect(runs.runs[0]?.absences.map((a) => a.cause)).toEqual([
+      expect.stringContaining('per-case budget exceeded'),
+      expect.stringContaining('further dispatch stopped'),
+    ]);
+  });
+
+  it('does not emit tables for a later suite never dispatched after a repeat overrun', async () => {
+    const first = writeSuite('overrun-first', {
+      name: 'overrun-first', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const later = writeSuite('undispatched-later', {
+      name: 'undispatched-later', role: 'fixer-worker', cases: [fixerCase('fix-1')],
+    });
+    const out = join(root, 'overrun-multi-out');
+    captured.aiSdkUsageOverride = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
+    await expect(cliMain([...cliArgs(first), '--suite', later, '--repeats', '3', '--out', out])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(1);
+    expect(existsSync(join(out, 'review-classifier.table.json'))).toBe(true);
+    expect(existsSync(join(out, 'fixer-worker.table.json'))).toBe(false);
+    expect(existsSync(join(out, 'repeat-1', 'fixer-worker.table.json'))).toBe(false);
+    const manifest = JSON.parse(readFileSync(join(out, 'run.json'), 'utf8')) as { runs: Array<{ role: string }> };
+    expect(manifest.runs.map((run) => run.role)).toEqual(['review-classifier']);
+  });
+
+  it('W6.5 retains both roles in every repeat of a multi-suite run', async () => {
+    const classifier = writeSuite('repeat-classifier', {
+      name: 'repeat-classifier', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const fixer = writeSuite('repeat-fixer', {
+      name: 'repeat-fixer', role: 'fixer-worker', cases: [fixerCase('fix-1')],
+    });
+    const out = join(root, 'multi-repeat-out');
+    await expect(cliMain([...cliArgs(classifier), '--suite', fixer, '--repeats', '2', '--out', out])).resolves.toBe(1);
+    for (let repeat = 1; repeat <= 2; repeat++) {
+      const runDir = join(out, `repeat-${repeat}`);
+      const manifest = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as { runs: Array<{ role: string }> };
+      expect(manifest.runs.map((run) => run.role)).toEqual(['review-classifier', 'fixer-worker']);
+      expect(readFileSync(join(runDir, 'rows.jsonl'), 'utf8').trim().split('\n')).toHaveLength(2);
+      expect(existsSync(join(runDir, 'review-classifier.table.json'))).toBe(true);
+      expect(existsSync(join(runDir, 'fixer-worker.table.json'))).toBe(true);
+      expect(existsSync(join(runDir, 'outputs', 'rev-1.json'))).toBe(true);
+      expect(existsSync(join(runDir, 'outputs', 'fix-1.json'))).toBe(true);
+    }
+  }, 30_000);
+
   it('a clean run exits 0', async () => {
     const dir = writeSuite('ok-suite', { name: 'ok-suite', role: 'review-classifier', cases: [reviewCase('rev-1', 'resolved')] });
     await expect(cliMain(cliArgs(dir))).resolves.toBe(0);

@@ -64,7 +64,7 @@ const MARKER_DOC = { kind: 'cq-eval-root', version: 1 };
 /** Runner and judge support files, copied byte-for-byte (none carries an answer). */
 export const CODE_FILES = [
   'package.json',
-  'toolkit.lock',
+  'package-lock.json',
   'policy/denylist/patterns.yml',
   'schema/suite.schema.json',
   'schema/result-row.schema.json',
@@ -194,6 +194,7 @@ export function sidecarStatus(repo, fixture) {
 export function planEvalRoot(repo) {
   const files = new Map();
   for (const rel of CODE_FILES) files.set(rel, { src: join(repo, rel) });
+  if (existsSync(join(repo, 'toolkit.lock'))) files.set('toolkit.lock', { src: join(repo, 'toolkit.lock') });
   for (const rel of walk(join(repo, 'runner')).files) {
     if (rel.endsWith('.ts')) files.set(`runner/${rel}`, { src: join(repo, 'runner', rel) });
   }

@@ -25,8 +25,8 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Pack cq-toolkit at the toolkit.lock pin
-        run: ./scripts/pack-toolkit.sh
+      - name: Prepare pinned or published cq-toolkit
+        run: ./scripts/prepare-toolkit.sh
       - name: Install dependencies
         run: npm ci
       - name: Eval-root leakage scan (W6.3)

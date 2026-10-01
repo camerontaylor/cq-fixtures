@@ -129,11 +129,17 @@ export interface RunManifestEntry {
   model: string;
   driver: string;
   variant: string;
-  /** the pinned toolkit.lock value at run time (null when the file is absent). */
+  /** The interim toolkit.lock pin, null after the published-version flip. */
   toolkitLock: string | null;
+  /** Exact registry package installed after W7.1, including its integrity. */
+  toolkitPackage?: { version: string; integrity: string };
   /** the suite checkout's git SHA (null when unknown). */
   suiteSha: string | null;
   runId: string;
+  /** W6.5: 1-based repeat number when a suite is run more than once. */
+  repeat?: number;
+  /** W6.5: declared number of repeats, used to detect missing whole rounds. */
+  repeatCount?: number;
   generatedAt: string;
   /**
    * W6.2: the suite's declared case count — the coverage denominator,

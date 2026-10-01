@@ -6,7 +6,7 @@
 //    classifier structured output re-scored) and matches the recorded outcome.
 // Hermetic: temp dirs only, no network, no toolkit driver construction.
 
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -180,6 +180,26 @@ function buildTinyFixerRepo(): TinyRepo {
 }
 
 describe('regrade --rejudge re-runs the local judge over persisted predictions', () => {
+  it('rejects a combined root even when only the first repeat completed', async () => {
+    const { repoRoot, outDir } = buildTinyFixerRepo();
+    const manifest = JSON.parse(readFileSync(join(outDir, 'run.json'), 'utf8')) as { runs: Array<Record<string, unknown>> };
+    manifest.runs[0]!.repeat = 1;
+    manifest.runs[0]!.repeatCount = 3;
+    writeFileSync(join(outDir, 'run.json'), JSON.stringify(manifest) + '\n');
+    const repeatDir = join(root, 'repeat-1');
+    cpSync(outDir, repeatDir, { recursive: true });
+    cpSync(repeatDir, join(outDir, 'repeat-1'), { recursive: true });
+
+    await expect(cliMain(['regrade', '--from', outDir, '--rejudge', '--repo-root', repoRoot])).resolves.toBe(2);
+    await expect(cliMain(['regrade', '--from', repeatDir, '--rejudge', '--repo-root', repoRoot])).resolves.toBe(0);
+    const misleadingName = join(root, 'repeat-2');
+    cpSync(outDir, misleadingName, { recursive: true });
+    await expect(cliMain(['regrade', '--from', misleadingName, '--rejudge', '--repo-root', repoRoot])).resolves.toBe(2);
+    const renamedRepeat = join(root, 'renamed-repeat');
+    cpSync(repeatDir, renamedRepeat, { recursive: true });
+    await expect(cliMain(['regrade', '--from', renamedRepeat, '--rejudge', '--repo-root', repoRoot])).resolves.toBe(0);
+  });
+
   it('a persisted fixer patch re-judged offline matches the recorded outcome', async () => {
     const { repoRoot, outDir } = buildTinyFixerRepo();
     await expect(
@@ -187,6 +207,7 @@ describe('regrade --rejudge re-runs the local judge over persisted predictions',
     ).resolves.toBe(0);
     const rows = readFileSync(join(outDir, 'rows.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ResultRow);
     expect(rows[0]!.outcome).toEqual({ score: 1, passed: 2, total: 2 });
+    expect(rows[0]!.probes).toEqual([{ kind: 'check-rerun', expected: 'pass', observed: 'pass', passed: true }]);
     const table = JSON.parse(readFileSync(join(outDir, 'fixer-worker.table.json'), 'utf8')) as { cells: Array<{ score: number; passed: number; total: number }> };
     expect(table.cells[0]).toMatchObject({ score: 1, passed: 2, total: 2 });
   });

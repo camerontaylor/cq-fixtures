@@ -550,7 +550,14 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
   const materializationDiagnostics: string[] = [];
   let materializationFailures = 0;
   let gatedByBudget = false;
+  let observedPerCaseOverrun = false;
   for (const c of suite.cases) {
+    if (observedPerCaseOverrun) {
+      const cause = 'budget-stop: an earlier case exceeded its per-case USD ceiling; further dispatch stopped';
+      absences.push({ case: c.id, role: suite.role, cause });
+      console.error(`  case ${c.id}: not dispatched — ${cause}`);
+      continue;
+    }
     const admission = governor.admit(c.id);
     if (admission.decision === 'reject') {
       // Never dispatched: NO row (rows exist only for work actually
@@ -743,9 +750,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
       // total. Detect that case-grain overrun here and RECORD it: the case's
       // evidence is incomplete for a comparison (its cost is outside the
       // envelope), so it joins the budget-stop cause column and the absence
-      // list rather than passing silently as a covered case. The run is not
-      // aborted — the tail keeps running under the cumulative cap, exactly
-      // as a governor budget stop behaves.
+      // list rather than passing silently as a covered case. Stop the tail:
+      // a post-hoc overrun must not admit another paid request.
       const perCaseOverrun =
         opts.maxUsdPerCase !== undefined && cost !== undefined && cost > opts.maxUsdPerCase;
 
@@ -858,6 +864,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         if (!isStructuredOutputMissCause(cause)) {
           emitRow = false;
           absences.push({ case: c.id, role: suite.role, cause });
+        } else if (isFixerCase(c)) {
+          rowProbes = [{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }];
         } else if (!isFixerCase(c)) {
           // A scored-miss classifier row is still a scored row: retain the
           // expected verdict and represent the unparseable observation as a
@@ -873,6 +881,8 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         outcome = zeroOutcome(probeCount);
       } else if (worker.stopReason === 'aborted') {
         outcome = zeroOutcome(probeCount);
+        stopCause = 'aborted';
+        if (isFixerCase(c)) rowProbes = [{ kind: 'check-rerun', expected: 'pass', observed: 'fail', passed: false }];
         journalResult = { status: 'indeterminate', detail: 'driver stopReason: aborted' };
         diagnostics = 'driver stopReason: aborted';
       } else if (isFixerCase(c)) {
@@ -884,6 +894,10 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         // what the probe grades. The probe ceiling is checkTimeoutMs, an
         // independent knob from the run's budget caps.
         const check = scoreFixerWorker(c, worker, repoRoot, workspace as string, opts.checkTimeoutMs);
+        // W6.5: the fixing estimand is this check alone. Persist it
+        // separately from the schema-compliance probe so repeated runs can
+        // compare actual repairs without counting JSON fidelity as a fix.
+        rowProbes = [{ kind: 'check-rerun', expected: 'pass', observed: check.passed === 1 ? 'pass' : 'fail', passed: check.passed === 1 }];
         // Probe 2 — schema compliance (runner/dimensions/schemaCompliance.ts):
         // grades ONLY the structuredOutput's shape discipline, never the
         // fix's content, so the check's sweep-agnostic contract is intact.
@@ -910,7 +924,9 @@ export async function runSuite(opts: RunSuiteOptions): Promise<RunSuiteResult> {
         const sidecarProblem = sidecarDiagnostic(c.id, c.fixture, sidecarFlag);
         if (sidecarProblem !== undefined) caseDiagnostics.push(sidecarProblem);
       }
-      if (perCaseOverrun && stopCause === undefined) {
+      if (perCaseOverrun) {
+        observedPerCaseOverrun = true;
+        gatedByBudget = true;
         stopCause = 'budget';
         const cause =
           `per-case budget exceeded: case ${c.id} spent $${cost!.toFixed(6)} against its ` +

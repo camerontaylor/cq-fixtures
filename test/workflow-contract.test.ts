@@ -170,7 +170,8 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(drivers.filter((d) => d === 'ai-sdk')).toHaveLength(2);
     expect(cells.filter((c) => c.includes('driver: ai-sdk') && c.includes('model: glm-5.3-flash'))).toHaveLength(1);
     // One cell's hard failure must not kill the others' evidence.
-    expect(text).toContain('fail-fast: false');
+    expect(text).toContain("fail-fast: ${{ github.event.inputs.profile == 'w65-pilot' }}");
+    expect(text).toContain("max-parallel: ${{ github.event.inputs.profile == 'w65-pilot' && 1 || 5 }}");
   });
 
   it('the unit-test tree is excised before any model-facing step (review-debt 11)', () => {
@@ -183,7 +184,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     const excision = stepChunk('Excise the unit-test tree');
     expect(excision).toContain('rm -rf test/ .git');
     expect(excision).toContain('review-debt #11');
-    expect(excision, 'the excision runs in every cell (no if:)').not.toContain('if:');
+    expect(excision).toContain("if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'");
     // Cycle-2 review: the worktree copy alone is not enough — the shallow
     // clone's object store holds the HEAD tree's blobs, so .git must go too.
     expect(excision).toContain('.git');
@@ -203,7 +204,11 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
       const chunk = stepChunk(build);
       expect(chunk).toContain(`node scripts/eval-root.mjs build --out "\${RUNNER_TEMP}/cq-eval-root" --key ${KEY} --node-modules move`);
       expect(chunk).toContain(`node scripts/eval-root.mjs scan --root "\${RUNNER_TEMP}/cq-eval-root" --key ${KEY}`);
-      expect(chunk, `${build} runs unconditionally`).not.toContain('if:');
+      if (build === 'Build and scan the matrix eval root (W6.3)') {
+        expect(chunk).toContain("if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'");
+      } else {
+        expect(chunk, `${build} runs unconditionally`).not.toContain('if:');
+      }
       expect(stepLine(build)).toBeLessThan(stepLine(dispatch));
       const run = stepChunk(dispatch);
       expect(run).toContain('EVAL_ROOT="${RUNNER_TEMP}/cq-eval-root"');
@@ -243,7 +248,7 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(preflight).toContain('GITHUB_STEP_SUMMARY');
     expect(preflight, 'the skip flag drives the eval gate').toContain('echo "skip=true" >> "${GITHUB_OUTPUT}"');
     expect(stepChunk('Eval cell —')).toContain(
-      "if: (matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true') && (github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver)",
+      "(matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true')",
     );
     // Cycle-2 review, exit-status discipline: ONLY the confirmed
     // no-agent-output class (3, with the timeout's 124 mapped in) skips —
@@ -417,7 +422,12 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     // reports landed — a download that yielded no table merges instead of
     // deleting an earlier complete run's tables and republishing nothing.
     expect(snapshotStep).toContain("landed_tables=\"$(find reports/eval -name '*.table.json' -print -quit");
-    expect(snapshotStep, 'the clear guard requires a landed table').toMatch(/if \[ "\$\{\{ needs\.matrix\.result \}\}" = "success" \].*\[ -n "\$\{landed_tables\}" \]; then/s);
+    expect(snapshotStep, 'the clear guard requires a landed table through conjunction').toContain('&& [ -n "${landed_tables}" ]; then');
+    const clearGuard = snapshotStep.split('\n').find((line) => line.includes('if [ "${{ needs.matrix.result }}" = "success" ]'));
+    expect(clearGuard).toBeDefined();
+    expect(clearGuard).toContain('&& [ "${SNAPSHOT_PROFILE}" != "w65-pilot" ]');
+    expect(clearGuard).toContain('&& [ -n "${landed_tables}" ]; then');
+    expect(clearGuard).not.toContain('||');
   });
 
   it('W6.3/RS-9 A.6: the run out-dir lives OUTSIDE the checkout and is copied in only after the eval cell', () => {
@@ -566,6 +576,43 @@ describe('suite.yml workflow contract (text tripwire, not a parser)', () => {
     expect(text).toContain("SNAPSHOT_PROFILE: ${{ github.event.inputs.profile || 'full' }}");
     expect(text).toContain('"${SNAPSHOT_PROFILE}" != "cli-fixer-proof"');
     expect(evalCell, 'unknown profiles fail loud').toContain('unknown profile');
+  });
+
+  it('W6.5 pilot bounds its two model cells and publishes paired evidence', () => {
+    const profile = text.slice(text.indexOf('\n      profile:\n'), text.indexOf('\npermissions:'));
+    expect(profile).toContain('- w65-pilot');
+    const evalCell = stepChunk('Eval cell —');
+    expect(evalCell).toContain("matrix.cell.axis == 'model'");
+    for (const name of ['Check out the repo', 'Set up Node', 'Prepare pinned or published cq-toolkit', 'Install dependencies', 'Build and scan the matrix eval root (W6.3)', 'Excise the unit-test tree']) {
+      const matrix = text.slice(text.indexOf('\n  matrix:\n'), text.indexOf('\n  snapshot:\n'));
+      expect(matrix.slice(matrix.indexOf(`- name: ${name}`), matrix.indexOf(`- name: ${name}`) + 220)).toContain("if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'");
+    }
+    expect(evalCell).toContain('w65-pilot) roots="suites/fixer-worker/micro"');
+    expect(evalCell).toContain('repeat_extra=(--repeats 3)');
+    const publishedGate = stepChunk('Require published 0.2 toolkit before W6.5 pilot dispatch');
+    expect(publishedGate).toContain("if: github.event.inputs.profile == 'w65-pilot' && matrix.cell.axis == 'model'");
+    expect(publishedGate).toContain('readToolkitProvenance(process.cwd())');
+    expect(publishedGate).toContain('provenance.toolkitPackage?.version !== "0.2.0"');
+    expect(evalCell).toContain('--max-usd-per-case "${MATRIX_USD_PER_CASE}"');
+    expect(stepChunk('ACP headless auth preflight')).toContain("github.event.inputs.profile != 'w65-pilot'");
+    expect(stepChunk('Analyze paired matrix cells')).toContain("if: github.event.inputs.profile == 'w65-pilot'");
+    expect(stepChunk('Analyze paired matrix cells')).toContain('scripts/analyze-snapshot.mjs');
+    expect(stepChunk('Analyze paired matrix cells')).toContain('paired-analysis-failed');
+    expect(stepChunk('Report paired analysis failure after raw snapshot publication')).toContain('exit 1');
+    expect(stepChunk('Commit report snapshots')).toContain("-name '*.comparisons.json'");
+    expect(stepChunk('Commit report snapshots')).toContain('node scripts/write-pilot-snapshot-header.mjs reports/eval');
+    expect(stepChunk('Commit report snapshots')).toContain('snapshot_key="${snapshot_date}-w65-pilot"');
+    expect(stepChunk('Commit report snapshots')).toContain('CQ_FIXTURES_REPO_ROOT="$PWD" node "${RUNNER_TEMP}/snapshot-index.mjs"');
+    expect(stepChunk('Commit report snapshots')).toContain('git add -f reports/snapshots/README.md');
+    expect(stepChunk('Commit report snapshots')).toContain('"${SNAPSHOT_PROFILE}" != "w65-pilot"');
+    expect(stepChunk('Commit report snapshots')).toContain('if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then');
+    expect(stepChunk('Commit report snapshots')).toContain('rm -rf "${snap_dir}/comparisons"');
+    expect(stepChunk('Commit report snapshots')).toContain('"${snap_dir}/glm-5.3-flash/ai-sdk/fixer-worker/micro"');
+    expect(stepChunk('Commit report snapshots')).toContain('"${snap_dir}/deepseek-flash/ai-sdk/fixer-worker/micro"');
+    expect(stepChunk('Commit report snapshots')).toContain("-name run.json ! -path '*/repeat-*/*'");
+    expect(stepChunk('Commit report snapshots')).toContain('rm -rf "${snap_dir}/${rel_dir}"');
+    // 2 ai-sdk cells × 5 fixture cases × 3 repeats × D9 $0.05/case.
+    expect(2 * 5 * 3 * d9PerCaseUsd('ai-sdk', 'glm-5.3-flash')!).toBe(1.5);
   });
 
   it('zero suite discovery hard-fails the matrix cell (F3)', () => {

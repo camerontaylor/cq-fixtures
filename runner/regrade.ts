@@ -8,7 +8,7 @@
 // output is re-scored — so a judge or metric change can be applied to
 // already-recorded evidence without spending a token.
 
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -142,7 +142,7 @@ function rejudgeFixer(
   repoRoot: string,
   timeoutMs: number,
   diagnostics: string[],
-): { passed: number; total: number } | undefined {
+): { passed: number; total: number; checkPassed: boolean } | undefined {
   if (!isSafeCaseSegment(caseId)) {
     diagnostics.push(`regrade: case ${caseId}: unsafe case id — recorded outcome kept`);
     return undefined;
@@ -177,7 +177,7 @@ function rejudgeFixer(
     const worker = { structuredOutput: out.found ? out.value : undefined } as WorkerResult;
     const check = scoreFixerWorker(suiteCase, worker, repoRoot, workspace, timeoutMs);
     const schema = scoreSchemaCompliance(worker);
-    return { passed: check.passed + schema.passed, total: FIXER_PROBE_COUNT };
+    return { passed: check.passed + schema.passed, total: FIXER_PROBE_COUNT, checkPassed: check.passed === 1 };
   } finally {
     rmSync(stem, { recursive: true, force: true });
   }
@@ -198,11 +198,16 @@ export function regrade(opts: RegradeOptions): RegradeResult {
   let changed = 0;
 
   if (opts.rejudge === true) {
+    const manifestEntries = readManifest(from);
+    if (manifestEntries.some((entry) => entry.repeat !== undefined) &&
+      readdirSync(from, { withFileTypes: true }).some((entry) => entry.isDirectory() && /^repeat-[1-9]\d*$/.test(entry.name))) {
+      throw new Error('regrade: combined repeat root has no prediction artifacts; rejudge each repeat-N directory, then rebuild the combined table from their rows');
+    }
     // One loaded suite per (role, suite) — loadSuite is the same schema +
     // semantic validation the live run used, so re-judging cannot drift from
     // what was dispatched.
     const suites = new Map<string, Suite>();
-    for (const entry of readManifest(from)) {
+    for (const entry of manifestEntries) {
       const key = `${entry.role}\n${entry.suite}`;
       // A manifest suiteDir is normally repo-root-relative (run mode records
       // it that way), but tolerate an absolute one from a hand-written
@@ -238,6 +243,7 @@ export function regrade(opts: RegradeOptions): RegradeResult {
           const outcome = { score: r.passed / r.total, passed: r.passed, total: r.total };
           if (outcome.passed !== recorded.passed || outcome.total !== recorded.total || outcome.score !== recorded.score) changed += 1;
           row.outcome = outcome;
+          row.probes = [{ kind: 'check-rerun', expected: 'pass', observed: r.checkPassed ? 'pass' : 'fail', passed: r.checkPassed }];
         } else {
           const r = rejudgeClassifier(from, suiteCase, row.case, diagnostics);
           if (r === undefined) continue;

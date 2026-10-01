@@ -15,12 +15,13 @@ on:
   workflow_dispatch:
     inputs:
       profile:
-        description: 'Eval profile: full, verified, or one CLI fixer proof lane'
+        description: 'Eval profile: full, verified, one CLI fixer proof lane, or W6.5 pilot'
         type: choice
         options:
           - full
           - verified
           - cli-fixer-proof
+          - w65-pilot
         default: full
       proof_driver:
         description: 'Driver for cli-fixer-proof (ignored by other profiles)'
@@ -44,8 +45,8 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Pack cq-toolkit at the toolkit.lock pin
-        run: ./scripts/pack-toolkit.sh
+      - name: Prepare pinned or published cq-toolkit
+        run: ./scripts/prepare-toolkit.sh
       - name: Install dependencies
         run: npm ci
       - name: Build and scan the smoke eval root (W6.3)
@@ -180,8 +181,10 @@ jobs:
     strategy:
       # One cell's hard failure must not kill the other cell's eval: the
       # surviving cell's tables are still real evidence and still land in the
-      # artifacts/snapshots.
-      fail-fast: false
+      # artifacts/snapshots. The bounded pilot is different: its model cells
+      # run one at a time and a hard budget overrun cancels queued dispatch.
+      fail-fast: ${{ github.event.inputs.profile == 'w65-pilot' }}
+      max-parallel: ${{ github.event.inputs.profile == 'w65-pilot' && 1 || 5 }}
       matrix:
         # THE J5 AXES MATRIX (ADR-0001 as revised 2026-09-14): axis 1 —
         # models vary on the ai-sdk driver; axis 2 — drivers vary on the
@@ -288,6 +291,7 @@ jobs:
             # role list.
     steps:
       - name: Check out the repo
+        if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Model-driven code runs in this job (fixer cells get read/edit/run
@@ -296,15 +300,29 @@ jobs:
           # dedicated `snapshot` job below.
           persist-credentials: false
       - name: Set up Node
+        if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
-      - name: Pack cq-toolkit at the toolkit.lock pin
-        run: ./scripts/pack-toolkit.sh
+      - name: Prepare pinned or published cq-toolkit
+        if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
+        run: ./scripts/prepare-toolkit.sh
       - name: Install dependencies
+        if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
         run: npm ci
+      - name: Require published 0.2 toolkit before W6.5 pilot dispatch
+        if: github.event.inputs.profile == 'w65-pilot' && matrix.cell.axis == 'model'
+        run: |
+          node --experimental-strip-types --input-type=module -e '
+            import { readToolkitProvenance } from "./runner/provenance.ts";
+            const provenance = readToolkitProvenance(process.cwd());
+            if (provenance.toolkitLock !== null || provenance.toolkitPackage?.version !== "0.2.0") {
+              throw new Error("W6.5 pilot requires published cq-toolkit 0.2.0 with registry integrity");
+            }
+          '
       - name: Build and scan the matrix eval root (W6.3)
+        if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
         # W6.3 (RS-9 §4.3 D): runs dispatch from an eval root built from an
         # ALLOWLIST (scripts/eval-root.mjs) — runner code, the judge, each
         # suite's fixtures, and every suite.json stripped to its dispatch
@@ -323,6 +341,7 @@ jobs:
           node scripts/eval-root.mjs build --out "${RUNNER_TEMP}/cq-eval-root" --key "${RUNNER_TEMP}/cq-eval-key/answer-key.json" --node-modules move --plant-dir "${GITHUB_WORKSPACE}"
           node scripts/eval-root.mjs scan --root "${RUNNER_TEMP}/cq-eval-root" --key "${RUNNER_TEMP}/cq-eval-key/answer-key.json"
       - name: Excise the unit-test tree, git objects and the rest of the checkout (review-debt 11, W6.3)
+        if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
         # The matrix job never runs vitest, but test/micro.test.ts carries the
         # micro suites' REFERENCE FIXES: a model-driven worker with
         # host-privileged tools must not be able to read them out of the
@@ -341,7 +360,8 @@ jobs:
         # needs, so the REST of the checkout goes as well — FAULT records,
         # label sidecars, catalog/, docs and READMEs, and reports/ (the
         # committed snapshot rows carry probes[].expected). Only the planted
-        # sentinel stays. Later steps write reports/eval afresh.
+        # sentinel stays. Later steps write reports/eval afresh. The W6.5
+        # pilot skips this entire preparation on excluded driver-axis legs.
         run: |
           set -euo pipefail
           echo "excising test/ and .git — the micro suites' reference fixes (test/micro.test.ts) must not be readable by model-driven workers from the worktree OR the object store (review-debt #11)"
@@ -354,7 +374,7 @@ jobs:
       # optional peer @anthropic-ai/claude-agent-sdk ships as a devDependency
       # (npm ci provides it), so `--driver claude-agent` works out of the box.
       - name: Install the subprocess lane CLI
-        if: matrix.cell.driver == 'subprocess'
+        if: matrix.cell.driver == 'subprocess' && github.event.inputs.profile != 'w65-pilot'
         # The subprocess lane spawns `claude` (the toolkit SubprocessDriver's
         # binary default) pointed at Z.AI's anthropic-compat endpoint — the
         # headless CLI is the claude-code package, PINNED to the exact 2.x
@@ -373,14 +393,14 @@ jobs:
         # policy tight.
         run: npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.276
       - name: Verify the subprocess lane CLI is installed
-        if: matrix.cell.driver == 'subprocess'
+        if: matrix.cell.driver == 'subprocess' && github.event.inputs.profile != 'w65-pilot'
         # The postinstall (install.cjs) copies the real platform binary over
         # the 500-byte placeholder. If it silently did not run, every spawn
         # exits 1 with no result event and the cell publishes driver-error
         # zeros — fail HERE, loudly, instead (F0 triage Lane 3).
         run: claude --version
       - name: Install the acp lane harness
-        if: matrix.cell.driver == 'acp'
+        if: matrix.cell.driver == 'acp' && github.event.inputs.profile != 'w65-pilot'
         # PINNED to the probed version (2026-09-19, 0.43.3): >=0.43 moved the
         # editor-facing stdio ACP bridge into the `server` subcommand (the
         # bare bin opens its interactive TUI), and the runner passes the
@@ -402,7 +422,7 @@ jobs:
           }
       - name: ACP headless auth preflight
         id: acp_preflight
-        if: matrix.cell.driver == 'acp' && github.event.inputs.profile != 'cli-fixer-proof'
+        if: matrix.cell.driver == 'acp' && github.event.inputs.profile != 'cli-fixer-proof' && github.event.inputs.profile != 'w65-pilot'
         # CREDENTIAL ASYMMETRY: the OTHER four cells' keys are repo secrets —
         # their absence is a misconfiguration and hard-fails pre-dispatch in
         # the runner (exit 2). The acp lane's credentials are AGENT-SIDE (the
@@ -591,11 +611,10 @@ jobs:
       # credential split already keeps repo write access out of this job
       # (persist-credentials: false).
       - name: Eval cell — ${{ matrix.cell.model }} @ ${{ matrix.cell.provider }} on ${{ matrix.cell.driver }}
-        # The acp cell runs only after its auth preflight. The manual
-        # cli-fixer-proof profile runs only the selected CLI driver; other
-        # profiles keep every matrix cell. Missing credentials in a selected
-        # cell hard-fail in the runner.
-        if: (matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true') && (github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver)
+        # The acp cell runs only after its auth preflight. The CLI proof
+        # selects one requested driver; W6.5 selects the two model cells.
+        # Missing credentials in a selected cell hard-fail in the runner.
+        if: (matrix.cell.driver != 'acp' || steps.acp_preflight.outputs.skip != 'true') && (github.event.inputs.profile != 'cli-fixer-proof' || matrix.cell.driver == github.event.inputs.proof_driver) && (github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model')
         env:
           # The cell names BOTH sides of the credential seam: env_key is the
           # toolkit requireKey name for the cell's provider (ZAI_API_KEY /
@@ -655,9 +674,16 @@ jobs:
           case "${MATRIX_PROFILE}" in
             verified) roots="suites/fixer-worker/breadth-verified suites/review-classifier/breadth-verified" ;;
             cli-fixer-proof) roots="suites/fixer-worker/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail" ;;
+            # D9: 2 model cells x 5 fixer micro cases x 3 repeats x
+            # $0.05/case = $1.50 maximum admitted by the per-case ceilings.
+            # This is the RS-9 k=3 fixer pilot; five cases keep its inference
+            # descriptive unless the measured MDE supports a claim.
+            w65-pilot) roots="suites/fixer-worker/micro" ;;
             full) roots="suites/fixer-worker/micro suites/review-classifier/micro suites/fixer-worker/breadth-verified suites/fixer-worker/breadth-tail suites/review-classifier/breadth-verified suites/review-classifier/breadth-tail" ;;
-            *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full|cli-fixer-proof)"; exit 2 ;;
+            *) echo "::error::unknown profile '${MATRIX_PROFILE}' (expected verified|full|cli-fixer-proof|w65-pilot)"; exit 2 ;;
           esac
+          repeat_extra=()
+          if [ "${MATRIX_PROFILE}" = "w65-pilot" ]; then repeat_extra=(--repeats 3); fi
           # Review-debt #14: the acp preflight probe spent real inference
           # before this step — its record rides into the runner so the probe
           # is admitted through the same governor and journaled with the run
@@ -740,6 +766,7 @@ jobs:
               --provider "${MATRIX_PROVIDER}" \
               --max-tokens-per-case "${token_cap_per_case}" \
               --max-usd-per-case "${MATRIX_USD_PER_CASE}" \
+              "${repeat_extra[@]}" \
               --journal "${out_dir}/journal" \
               "${probe_extra[@]}" \
               --out "${out_dir}" < /dev/null || rc=$?
@@ -842,6 +869,7 @@ jobs:
           expected_count=6
           if [ "${MATRIX_PROFILE}" = "verified" ]; then expected_count=2; fi
           if [ "${MATRIX_PROFILE}" = "cli-fixer-proof" ]; then expected_count=3; fi
+          if [ "${MATRIX_PROFILE}" = "w65-pilot" ]; then expected_count=1; fi
           if [ "${suite_count}" -eq 0 ]; then
             hard_fail=1
             echo "::error::matrix discovery found no suites for profile ${MATRIX_PROFILE} — an accidental removal or a broken root; failing the cell so the snapshot cannot publish an empty day"
@@ -880,7 +908,7 @@ jobs:
         # ACP-SKIPPED marker file). A succeeded or skipped leg records
         # nothing here: a skip has its own honest marker, and a clean pass
         # must not read as a failure.
-        if: always() && matrix.cell.driver == 'acp'
+        if: always() && matrix.cell.driver == 'acp' && github.event.inputs.profile != 'w65-pilot'
         run: |
           set -euo pipefail
           if [ "${{ job.status }}" = "failure" ]; then
@@ -963,6 +991,10 @@ jobs:
           # Persist the checkout token: this job's only write is the snapshot
           # commit/push, and no model code runs here.
           persist-credentials: true
+      - name: Set up Node for paired snapshot analysis
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
       - name: Download eval reports
         # No continue-on-error: every cell that REACHED its eval step touches
         # reports/eval/EMPTY on every path, so an eval-reports-<model>-<driver>
@@ -985,6 +1017,24 @@ jobs:
           pattern: eval-reports-*
           merge-multiple: true
           path: reports/
+      - name: Analyze paired matrix cells
+        if: github.event.inputs.profile == 'w65-pilot'
+        run: |
+          set -euo pipefail
+          # A degraded dispatch can leave one usable cell. Keep its raw
+          # evidence, but a paired comparison needs at least two cell roots.
+          cell_count="$(find reports/eval -name rows.jsonl ! -path '*/repeat-*/*' -size +0c -print 2>/dev/null | wc -l | tr -d ' ')"
+          if [ "${cell_count}" -ge 2 ]; then
+            if node --experimental-strip-types scripts/analyze-snapshot.mjs --from reports/eval --out reports/eval/comparisons; then
+              echo "paired snapshot analysis completed"
+            else
+              analysis_rc=$?
+              printf '%s\n' "${analysis_rc}" > "${RUNNER_TEMP}/paired-analysis-failed"
+              echo "::warning::paired snapshot analysis failed (exit ${analysis_rc}); raw evidence will still be published"
+            fi
+          else
+            echo "::warning::${cell_count} matrix cell(s) available; no paired comparison generated"
+          fi
       - name: Commit report snapshots
         # Plan §9: report snapshots are committed as reviewable data.
         # `[skip ci]` keeps the push from re-triggering the gate workflows
@@ -999,6 +1049,19 @@ jobs:
           # dedicated `snapshots` branch; an owner decision to mirror them
           # onto main can come later.
           #
+          # Prepare the pilot header before switching away from this source
+          # branch. The snapshots branch may not contain this helper yet.
+          snapshot_date="$(date -u +%F)"
+          snapshot_key="${snapshot_date}"
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
+            snapshot_key="${snapshot_date}-w65-pilot"
+          fi
+          pilot_header_dir="${RUNNER_TEMP}/${snapshot_key}"
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
+            mkdir -p "${pilot_header_dir}"
+            node scripts/write-pilot-snapshot-header.mjs reports/eval "${pilot_header_dir}" "${GITHUB_RUN_ID}"
+            cp scripts/snapshot-index.mjs "${RUNNER_TEMP}/snapshot-index.mjs"
+          fi
           # The branch setup happens BEFORE the copy: on a same-day
           # re-dispatch, `git switch` would otherwise overwrite freshly
           # copied (gitignored) files with the branch's old tracked content.
@@ -1010,7 +1073,7 @@ jobs:
           else
             git switch -C snapshots
           fi
-          snap_dir="reports/snapshots/$(date -u +%F)"
+          snap_dir="reports/snapshots/${snapshot_key}"
           # A same-day re-dispatch after a suite is removed or renamed must
           # not leave the old suite's stale tables behind: clear this run's
           # dated dir (tracked on the snapshots branch) before recopying —
@@ -1042,12 +1105,35 @@ jobs:
           # otherwise clear an earlier complete run's tables and republish
           # nothing. No tables => merge-only, never clear.
           landed_tables="$(find reports/eval -name '*.table.json' -print -quit 2>/dev/null)"
-          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${SNAPSHOT_PROFILE}" != "cli-fixer-proof" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
+          # The bounded W6.5 pilot contains only the model-axis fixer micro
+          # cells; preserve other same-day suite/lane evidence on snapshots.
+          if [ "${{ needs.matrix.result }}" = "success" ] && [ "${SNAPSHOT_PROFILE}" != "cli-fixer-proof" ] && [ "${SNAPSHOT_PROFILE}" != "w65-pilot" ] && [ ! -e reports/eval/ACP-SKIPPED ] && [ ! -e reports/eval/ACP-FAILED ] && [ -z "${dispatch_only_marker}" ] && [ -n "${landed_tables}" ]; then
             rm -rf "${snap_dir}"
           else
             echo "matrix degraded or partially succeeded (result ${{ needs.matrix.result }}, acp skip marker: $([ -e reports/eval/ACP-SKIPPED ] && echo present || echo absent), acp failure marker: $([ -e reports/eval/ACP-FAILED ] && echo present || echo absent), dispatch-only marker: ${dispatch_only_marker:-none}, landed tables: ${landed_tables:-none}) — merging into ${snap_dir} without clearing"
           fi
           mkdir -p "${snap_dir}"
+          # A bounded pilot uses its own dated directory. Each incoming cell
+          # is a complete replacement. Clear its old subtree before copying so
+          # a same-day rerun with fewer repeats cannot mix two runs' evidence.
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
+            # The analyzer can skip or fail on a degraded rerun. Its previous
+            # result must not be presented beside the new raw cell evidence.
+            rm -rf "${snap_dir}/comparisons"
+            # Clear both bounded pilot cells even when a leg failed before
+            # producing run.json, so no prior run can pair with fresh rows.
+            rm -rf "${snap_dir}/glm-5.3-flash/ai-sdk/fixer-worker/micro" \
+                   "${snap_dir}/deepseek-flash/ai-sdk/fixer-worker/micro"
+            while IFS= read -r manifest; do
+              rel_dir="${manifest#reports/eval/}"
+              rel_dir="$(dirname "${rel_dir}")"
+              if [ "${rel_dir}" = "." ]; then
+                echo "::error::pilot cell manifest has no cell directory: ${manifest}"
+                exit 1
+              fi
+              rm -rf "${snap_dir}/${rel_dir}"
+            done < <(find reports/eval -type f -name run.json ! -path '*/repeat-*/*' 2>/dev/null | sort)
+          fi
           # Snapshot IDENTITY preserves the suite dir (the copy loop is
           # identity-agnostic — it replicates whatever sits below
           # reports/eval/): eval writes
@@ -1109,7 +1195,18 @@ jobs:
             rel="${f#reports/eval/}"
             mkdir -p "${snap_dir}/$(dirname "${rel}")"
             cp "${f}" "${snap_dir}/${rel}"
-          done < <(find reports/eval -type f \( -name '*.table.json' -o -name 'rows.jsonl' -o -name 'run.json' -o -path '*/journal/*' -o -path '*/patches/*' -o -path '*/outputs/*' \) 2>/dev/null | sort)
+          done < <(find reports/eval -type f \( -name '*.table.json' -o -name '*.comparisons.json' -o -name 'rows.jsonl' -o -name 'run.json' -o -path '*/journal/*' -o -path '*/patches/*' -o -path '*/outputs/*' \) 2>/dev/null | sort)
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ] && [ -f "${pilot_header_dir}/README.md" ]; then
+            cp "${pilot_header_dir}/README.md" "${snap_dir}/README.md"
+          elif [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ] && [ -f "${snap_dir}/README.md" ] && grep -q '^toolkit-package-version:' "${snap_dir}/README.md"; then
+            # No current pilot manifest: remove a same-day pilot header so
+            # it cannot label stale evidence as belonging to this run.
+            rm -f "${snap_dir}/README.md"
+          fi
+          if [ "${SNAPSHOT_PROFILE}" = "w65-pilot" ]; then
+            CQ_FIXTURES_REPO_ROOT="$PWD" node "${RUNNER_TEMP}/snapshot-index.mjs"
+            git add -f reports/snapshots/README.md
+          fi
           # Add runs BEFORE any early exit, so removals publish too: on a
           # fully successful matrix the rm -rf above cleared the worktree, and
           # `git add` stages the removal of previously tracked tables as
@@ -1132,4 +1229,12 @@ jobs:
           else
             git commit -m "report snapshots $(date -u +%F) [skip ci]"
             git push origin HEAD:snapshots
+          fi
+      - name: Report paired analysis failure after raw snapshot publication
+        if: github.event.inputs.profile == 'w65-pilot'
+        run: |
+          if [ -f "${RUNNER_TEMP}/paired-analysis-failed" ]; then
+            analysis_rc="$(cat "${RUNNER_TEMP}/paired-analysis-failed")"
+            echo "::error::paired snapshot analysis failed (exit ${analysis_rc}); raw reports were preserved"
+            exit 1
           fi

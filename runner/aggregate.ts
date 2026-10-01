@@ -21,14 +21,17 @@ export interface ResultRow {
   role: SuiteRole;
   suite: string;
   case?: string;
+  /** W6.5: one-based repeat ordinal within a k-repeat matrix. */
+  repeat?: number;
+  /** W6.5: requested repeat count, needed to detect an entirely missing repeat. */
+  repeatCount?: number;
   model: string;
   driver: string;
   outcome: { score: number; passed: number; total: number };
   /**
-   * F4: per-probe observed outcomes — review-classifier rows carry one
-   * entry per scoring probe ({kind: 'expected-verdict', expected, observed,
-   * passed}) so the confusion matrix is computable from rows.jsonl. Fixer
-   * rows and all pre-F4 rows omit it.
+   * Per-probe outcomes: review-classifier rows carry an expected-verdict
+   * entry for confusion metrics (F4); W6.5 fixer rows carry the check-rerun
+   * pass/fail estimand for repeated repair comparisons. Historical rows omit it.
    */
   probes?: Array<{ kind: string; expected: string; observed: string | null; passed: boolean }>;
   /**
@@ -58,7 +61,7 @@ export interface ResultRow {
    * a budget stop breaks coverage parity (RS-9 §1.3). Absent = the row is
    * the case's complete evidence.
    */
-  stopCause?: 'budget';
+  stopCause?: 'budget' | 'aborted';
   costUSD: number | null;
   costBasis?: 'modeled' | 'billed';
   wallTimeMs: number;
@@ -133,6 +136,8 @@ export interface ComparisonTableCell {
    * Absent on old tables and on small-n cells.
    */
   scoreCI?: { lower: number; upper: number; confidence: number };
+  /** W6.5: case-clustered t interval over complete k-repeat case means. */
+  caseScoreCI?: { lower: number; upper: number; confidence: 0.95; cases: number };
   costUSD: number | null;
   costBasis?: 'billed' | 'modeled';
   wallTimeMs: number;
@@ -145,6 +150,26 @@ export interface ComparisonTable {
   suite: string;
   generatedAt: string;
   cells: ComparisonTableCell[];
+  /** W6.5: paired case-level comparisons, present only for repeated runs. */
+  comparisons?: PairedComparison[];
+}
+
+export interface PairedComparison {
+  baseline: { model: string; driver: string; variant?: string };
+  candidate: { model: string; driver: string; variant?: string };
+  cases: number;
+  repeatsPerCase: number;
+  /** Mean of paired case score differences, candidate minus baseline. */
+  delta: number;
+  /** Case-clustered standard error; repeats never inflate the case count. */
+  standardError: number;
+  confidenceInterval: { lower: number; upper: number; confidence: 0.95 };
+  /** Two-sided 95% confidence, 80% power normal-approximation MDE. */
+  minimumDetectableEffect: number;
+  /** Deltas within this absolute band are labelled noise. */
+  noiseBand: number;
+  interpretation: 'within-noise' | 'not-distinguishable' | 'signal' | 'descriptive';
+  coverageParity: boolean;
 }
 
 interface CellAccumulator {
@@ -176,6 +201,8 @@ interface CellAccumulator {
   covered: Set<string>;
   /** W6.2: contributing rows stopped on the case budget. */
   budgetStops: number;
+  /** W6.5: at least one row in this cell belongs to a repeated run. */
+  hasRepeatedRows: boolean;
 }
 
 /** Cost sums are rounded to 6 decimals — finer precision is price-map noise. */
@@ -187,6 +214,52 @@ function round6(n: number): number {
 export const WILSON_MIN_N = 30;
 /** 95% two-sided normal quantile for the Wilson score interval. */
 export const WILSON_Z_95 = 1.959963984540054;
+
+// Student-t quantiles are computed numerically so the case count, rather than
+// the much larger probe count, sets the degrees of freedom. The fixed Simpson
+// grid is ample at the small n of fixture suites (checked against t tables).
+function logGamma(z: number): number {
+  const p = [0.9999999999998099, 676.5203681218851, -1259.1392167224028,
+    771.3234287776531, -176.6150291621406, 12.507343278686905,
+    -0.13857109526572012, 9.984369578019572e-6, 1.5056327351493116e-7];
+  if (z < 0.5) return Math.log(Math.PI) - Math.log(Math.sin(Math.PI * z)) - logGamma(1 - z);
+  z -= 1;
+  let x = p[0]!;
+  for (let i = 1; i < p.length; i++) x += p[i]! / (z + i);
+  const t = z + 7.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
+
+export function studentTQuantile(probability: number, degrees: number): number {
+  if (!(probability > 0.5 && probability < 1) || degrees < 1) throw new Error('invalid Student-t quantile');
+  const norm = Math.exp(logGamma((degrees + 1) / 2) - logGamma(degrees / 2)) /
+    Math.sqrt(degrees * Math.PI);
+  const pdf = (x: number) => norm * (1 + x * x / degrees) ** (-(degrees + 1) / 2);
+  const cdf = (x: number) => {
+    const intervals = 512;
+    const h = x / intervals;
+    let sum = pdf(0) + pdf(x);
+    for (let i = 1; i < intervals; i++) sum += (i % 2 ? 4 : 2) * pdf(i * h);
+    return 0.5 + sum * h / 3;
+  };
+  let low = 0;
+  let high = 1;
+  while (cdf(high) < probability) high *= 2;
+  for (let i = 0; i < 40; i++) {
+    const middle = (low + high) / 2;
+    if (cdf(middle) < probability) low = middle;
+    else high = middle;
+  }
+  return (low + high) / 2;
+}
+
+function estimand(row: ResultRow): number | undefined {
+  if (row.role === 'review-classifier') return row.outcome.score;
+  // The legacy two-probe outcome mixes fixing and schema fidelity. W6.5
+  // fixes are measured by the check rerun only; older rows lack that probe.
+  return row.probes?.find((probe) => probe.kind === 'check-rerun')?.passed ? 1 :
+    row.probes?.some((probe) => probe.kind === 'check-rerun') ? 0 : undefined;
+}
 
 /**
  * F6 (WB-5.2c): Wilson score interval for passed/total at the given z,
@@ -322,10 +395,12 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         fpWrong: 0,
         covered: new Set<string>(),
         budgetStops: 0,
+        hasRepeatedRows: false,
       };
       cells.set(key, acc);
     }
     acc.runs += 1;
+    if (row.repeatCount !== undefined) acc.hasRepeatedRows = true;
     if (row.invalid !== undefined) acc.invalid = row.invalid;
     acc.passed += row.outcome.passed;
     acc.total += row.outcome.total;
@@ -446,7 +521,7 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
         : {}),
       ...(acc.budgetStops > 0 ? { budgetStops: acc.budgetStops } : {}),
       ...(acc.fpTotal > 0 ? { fpRate: acc.fpWrong / acc.fpTotal, fpN: acc.fpTotal } : {}),
-      ...(acc.total >= WILSON_MIN_N
+      ...(acc.total >= WILSON_MIN_N && !acc.hasRepeatedRows
         ? { scoreCI: { ...wilsonInterval(acc.passed, acc.total), confidence: 0.95 } }
         : {}),
       wallTimeMs: acc.wallTimeMs,
@@ -459,5 +534,130 @@ function aggregateRole(role: SuiteRole, rows: readonly ResultRow[]): ComparisonT
       },
     });
   }
-  return { role, suite, generatedAt: new Date().toISOString(), cells: out };
+  for (const cell of out) {
+    const cellRows = rows.filter((r) => r.model === cell.model && r.driver === cell.driver &&
+      (r.variant ?? 'default') === (cell.variant ?? 'default'));
+    const means = completeCaseMeans(cellRows);
+    if (means && means.size >= 2 && means.size === cell.expectedCases) {
+      const values = [...means.values()];
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1);
+      const half = studentTQuantile(0.975, values.length - 1) * Math.sqrt(variance / values.length);
+      cell.caseScoreCI = { lower: Math.max(0, mean - half), upper: Math.min(1, mean + half),
+        confidence: 0.95, cases: values.length };
+    }
+  }
+  const comparisons = pairedComparisons(rows, out);
+  return { role, suite, generatedAt: new Date().toISOString(), cells: out,
+    ...(comparisons.length ? { comparisons } : {}) };
+}
+
+function completeCaseMeans(rows: readonly ResultRow[]): Map<string, number> | undefined {
+  const k = rows[0]?.repeatCount;
+  if (k === undefined || k < 2 || rows.some((r) => r.repeatCount !== k)) return undefined;
+  const cases = new Map<string, ResultRow[]>();
+  for (const row of rows) {
+    if (row.case === undefined || row.stopCause !== undefined || row.invalid !== undefined) continue;
+    const bucket = cases.get(row.case) ?? [];
+    bucket.push(row);
+    cases.set(row.case, bucket);
+  }
+  const means = new Map<string, number>();
+  for (const [id, bucket] of cases) {
+    if (bucket.length !== k || bucket.some((r) => estimand(r) === undefined)) continue;
+    const actual = bucket.map((r) => r.repeat).sort((a, b) => (a ?? 0) - (b ?? 0));
+    if (!actual.every((repeat, i) => repeat === i + 1)) continue;
+    means.set(id, bucket.reduce((sum, r) => sum + estimand(r)!, 0) / k);
+  }
+  return means;
+}
+
+function observedCaseMeans(rows: readonly ResultRow[]): Map<string, number> {
+  const grouped = new Map<string, ResultRow[]>();
+  for (const row of rows) if (row.case !== undefined && row.stopCause === undefined &&
+    row.invalid === undefined && estimand(row) !== undefined) {
+    const bucket = grouped.get(row.case) ?? [];
+    bucket.push(row);
+    grouped.set(row.case, bucket);
+  }
+  const means = new Map<string, number>();
+  for (const [id, bucket] of grouped) if (bucket.length >= 2) {
+    means.set(id, bucket.reduce((sum, row) => sum + estimand(row)!, 0) / bucket.length);
+  }
+  return means;
+}
+
+/** Pair case means, then estimate uncertainty across cases rather than rows. */
+export function pairedComparisons(rows: readonly ResultRow[], cells: readonly ComparisonTableCell[]): PairedComparison[] {
+  const key = (r: Pick<ResultRow, 'model' | 'driver' | 'variant'>) =>
+    `${r.model}\n${r.driver}\n${r.variant ?? 'default'}`;
+  const byCell = new Map<string, ResultRow[]>();
+  for (const row of rows) {
+    const bucket = byCell.get(key(row)) ?? [];
+    bucket.push(row);
+    byCell.set(key(row), bucket);
+  }
+  const result: PairedComparison[] = [];
+  for (let i = 0; i < cells.length; i++) for (let j = i + 1; j < cells.length; j++) {
+    const a = cells[i]!;
+    const b = cells[j]!;
+    const ar = byCell.get(key(a));
+    const br = byCell.get(key(b));
+    if (!ar || !br) continue;
+    const repeatCount = ar[0]?.repeatCount;
+    if (repeatCount === undefined || repeatCount < 2 ||
+      ar.some((row) => row.repeatCount !== repeatCount) ||
+      br.some((row) => row.repeatCount !== repeatCount)) continue;
+    const completeA = completeCaseMeans(ar);
+    const completeB = completeCaseMeans(br);
+    const ac = completeA && completeA.size >= 2 ? completeA : observedCaseMeans(ar);
+    const bc = completeB && completeB.size >= 2 ? completeB : observedCaseMeans(br);
+    const shared = [...ac.keys()].filter((id) => bc.has(id)).sort();
+    if (shared.length < 2) continue;
+    const eligibleRepeatCount = (cellRows: readonly ResultRow[], id: string) => cellRows.filter((r) =>
+      r.case === id && r.stopCause === undefined && r.invalid === undefined && estimand(r) !== undefined).length;
+    const repeatsPerCase = Math.min(...shared.flatMap((id) => [
+      eligibleRepeatCount(ar, id),
+      eligibleRepeatCount(br, id),
+    ]));
+    const differences = shared.map((id) => bc.get(id)! - ac.get(id)!);
+    const delta = differences.reduce((sum, d) => sum + d, 0) / differences.length;
+    const variance = differences.reduce((sum, d) => sum + (d - delta) ** 2, 0) / (differences.length - 1);
+    const standardError = Math.sqrt(variance / differences.length);
+    const t95 = studentTQuantile(0.975, shared.length - 1);
+    const t80 = studentTQuantile(0.8, shared.length - 1);
+    const confidenceHalf = t95 * standardError;
+    const withinVariance = (cellRows: ResultRow[]) => {
+      const grouped = new Map<string, number[]>();
+      for (const r of cellRows) if (r.case !== undefined && shared.includes(r.case) &&
+        r.stopCause === undefined && r.invalid === undefined && estimand(r) !== undefined) {
+        const values = grouped.get(r.case) ?? [];
+        values.push(estimand(r)!);
+        grouped.set(r.case, values);
+      }
+      let sum = 0;
+      for (const values of grouped.values()) {
+        const mean = values.reduce((x, y) => x + y, 0) / values.length;
+        sum += values.reduce((x, y) => x + (y - mean) ** 2, 0) / (values.length - 1);
+      }
+      return sum / grouped.size;
+    };
+    const noiseBand = 2 * Math.sqrt((withinVariance(ar) + withinVariance(br)) / (repeatsPerCase * shared.length));
+    const coverageParity = isAtCoverageParity(a, b) &&
+      completeA?.size === a.expectedCases && completeB?.size === b.expectedCases &&
+      shared.length === a.expectedCases && shared.length === b.expectedCases;
+    result.push({
+      baseline: { model: a.model, driver: a.driver, ...(a.variant ? { variant: a.variant } : {}) },
+      candidate: { model: b.model, driver: b.driver, ...(b.variant ? { variant: b.variant } : {}) },
+      cases: shared.length, repeatsPerCase, delta, standardError,
+      confidenceInterval: { lower: delta - confidenceHalf, upper: delta + confidenceHalf, confidence: 0.95 },
+      minimumDetectableEffect: (t95 + t80) * standardError,
+      noiseBand, coverageParity,
+      interpretation: !coverageParity ? 'descriptive' :
+        Math.abs(delta) <= noiseBand ? 'within-noise' :
+        Math.abs(delta) < (t95 + t80) * standardError
+            ? 'not-distinguishable' : 'signal',
+    });
+  }
+  return result;
 }

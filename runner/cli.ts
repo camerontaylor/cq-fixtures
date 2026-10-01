@@ -4,7 +4,7 @@
 // error or suite load/validation failure (the suite.yml workflow hard-fails
 // its rc>=2 branch). Invoked via runner/index.ts.
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -18,11 +18,12 @@ import {
 import { z } from 'zod';
 import { PREFLIGHT_PROBE_RESERVE_TOKENS, runSuite, type PreflightProbe } from './index.ts';
 import { d9PerCaseUsd, D9_PER_CASE_USD, perSuiteTokenCap } from './budget.ts';
-import type { ComparisonTable, ResultRow, SuiteRole } from './aggregate.ts';
+import { aggregate, type ComparisonTable, type ResultRow, type SuiteRole } from './aggregate.ts';
 import { loadSuite, suiteVariant, type Suite } from './suite.ts';
 import { EVAL_ROOT_MARKER, loadAnswerKey, sentinelNeedles, type AnswerKey } from './answerKey.ts';
 import { publishArtifacts, writeRunManifest, type CaseArtifact, type RunManifestEntry } from './persist.ts';
 import { regrade } from './regrade.ts';
+import { readToolkitProvenance } from './provenance.ts';
 import { DEFAULT_CHECK_TIMEOUT_MS } from './score/fixerWorker.ts';
 import { FakeDriver } from './fake-driver.ts';
 // DD-4: the fixer-worker's structured-output shape — the classifier's
@@ -47,7 +48,7 @@ const USAGE =
   'usage: node --experimental-strip-types runner/index.ts --suite <dir> [--suite <dir> …] ' +
   '--driver fake|ai-sdk|claude-agent|subprocess|acp --model <served-id> --provider <handle> [--driver-name <ai-sdk|claude-agent|subprocess|acp>] ' +
   '(--driver-name is required with --driver fake — a fake run must name the lane it stands in for) ' +
-  '[--max-usd <n>] [--max-usd-per-case <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>] [--answer-key <path>]\n' +
+  '[--max-usd <n>] [--max-usd-per-case <n>] [--max-tokens <n>] [--max-tokens-per-case <n>] [--repeats <1..3>] [--check-timeout-ms <n>] [--journal <dir>] [--out <dir>] [--probe-record <path>] [--suite-sha <sha>] [--answer-key <path>]\n' +
   `axes: --model ${FIXED_GLM_SERVED_ID} unless --driver-name ai-sdk (ADR-0001)\n` +
   'eval root (W6.3): a runner inside a built eval root requires an answer key outside the root — --answer-key <path> or CQ_ANSWER_KEY (the env form keeps the key path out of the process argv a host-reach lane can read); a sentinel hit exits 2\n' +
   "caps: --max-tokens caps ONE suite run (each runSuite owns its governor); --max-tokens-per-case is multiplied by that suite's case count (WB-1.6) — pass one, never both\n" +
@@ -121,15 +122,6 @@ function nextValue(argv: readonly string[], i: number, flag: string): string {
   return v;
 }
 
-/** F6: the pinned toolkit.lock value, recorded in the run manifest (null when absent). */
-function readToolkitLock(repoRoot: string): string | null {
-  try {
-    return readFileSync(join(repoRoot, 'toolkit.lock'), 'utf8').trim();
-  } catch {
-    return null;
-  }
-}
-
 interface CliOptions {
   suites: string[];
   driver: DriverKind;
@@ -144,6 +136,7 @@ interface CliOptions {
   maxUsdPerCaseBasis?: 'd9-default' | 'explicit';
   maxTokens?: number;
   maxTokensPerCase?: number;
+  repeats: number;
   checkTimeoutMs: number;
   journal?: string;
   out?: string;
@@ -169,6 +162,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   let maxUsdPerCase: number | undefined;
   let maxTokens: number | undefined;
   let maxTokensPerCase: number | undefined;
+  let repeats = 1;
   let checkTimeoutMs = 60_000;
   let journal: string | undefined;
   let out: string | undefined;
@@ -194,7 +188,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--probe-record': probeRecord = nextValue(argv, i, flag); i++; break;
       case '--suite-sha': suiteSha = nextValue(argv, i, flag); i++; break;
       case '--answer-key': answerKey = nextValue(argv, i, flag); i++; break;
-      case '--max-usd': case '--max-usd-per-case': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': {
+      case '--max-usd': case '--max-usd-per-case': case '--max-tokens': case '--max-tokens-per-case': case '--check-timeout-ms': case '--repeats': {
         const n = Number(nextValue(argv, i, flag));
         if (!Number.isFinite(n) || n <= 0) throw new UsageError(`${flag} must be a positive number`);
         // Token/time budgets are whole units: a fractional value would
@@ -209,7 +203,8 @@ function parseArgs(argv: readonly string[]): CliOptions {
         else if (flag === '--max-usd-per-case') maxUsdPerCase = n;
         else if (flag === '--max-tokens') maxTokens = n;
         else if (flag === '--max-tokens-per-case') maxTokensPerCase = n;
-        else checkTimeoutMs = n;
+        else if (flag === '--check-timeout-ms') checkTimeoutMs = n;
+        else repeats = n;
         i++; break;
       }
       default: throw new UsageError(`unknown flag '${flag}'\n${USAGE}`);
@@ -221,6 +216,23 @@ function parseArgs(argv: readonly string[]): CliOptions {
   if (suites.length === 0 || model === '' || provider === '') {
     throw new UsageError(`--suite, --model and --provider are required\n${USAGE}`);
   }
+  if (repeats > 3) throw new UsageError('--repeats is capped at 3 by the D9 eval envelope');
+  if (repeats > 1 && out === undefined) throw new UsageError('--repeats requires --out so each paid repeat preserves its evidence');
+  // Repeated evidence always has an event log. With no explicit journal root,
+  // write it directly under each repeat's output directory.
+  if (repeats > 1 && journal === undefined) journal = out;
+  if (repeats > 1) {
+    for (const [flag, path] of [['--out', out], ['--journal', journal]] as const) {
+      if (path === undefined || !existsSync(path)) continue;
+      try {
+        if (readdirSync(path).length > 0) throw new UsageError(`--repeats requires a fresh ${flag} directory so old repeat evidence cannot mix with this run`);
+      } catch (e) {
+        if (e instanceof UsageError) throw e;
+        throw new UsageError(`--repeats cannot use ${flag} '${path}': ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+  if (repeats > 1 && maxUsd !== undefined) throw new UsageError('--repeats requires a per-case USD ceiling, not legacy --max-usd');
   driverName = driverName === '' ? driver : driverName;
   if (!LANES.has(driverName)) {
     throw new UsageError(`--driver-name '${driverName}' is not a toolkit lane (${[...LANES].join('|')}) — pass one so rows validate`);
@@ -307,7 +319,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     // the dynamic check — this only removes the free pointer.
     answerKey = process.env.CQ_ANSWER_KEY;
   }
-  return { suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey };
+  return { suites, driver, model, provider, maxUsd, maxUsdPerCase, maxUsdPerCaseBasis, maxTokens, maxTokensPerCase, repeats, checkTimeoutMs, journal, out, probeRecord, driverName, suiteSha, answerKey };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -320,6 +332,13 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   // repoRoot mirrors runner/index.ts's default (this file lives in runner/).
   const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  let toolkitProvenance: ReturnType<typeof readToolkitProvenance>;
+  try {
+    toolkitProvenance = readToolkitProvenance(repoRoot);
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : e);
+    return 2;
+  }
   // W6.3: resolve the answer key before any suite loads — a stripped
   // eval-root suite cannot even validate without it. Every defect is exit 2.
   let answerKey: AnswerKey | undefined;
@@ -390,21 +409,33 @@ async function main(argv: readonly string[]): Promise<number> {
   const rows: ResultRow[] = [];
   const tables: ComparisonTable[] = [];
   let anyFailed = false;
+  let stoppedAfterPerCaseOverrun = false;
   let materializationFailures = 0;
   const materializationDiagnostics: string[] = [];
   // F6: the prediction artifacts + the run manifest published with the tables.
   const artifactList: CaseArtifact[] = [];
   const manifestEntries: RunManifestEntry[] = [];
+  const repeatResults = Array.from({ length: opts.repeats }, () => ({
+    rows: [] as ResultRow[],
+    artifacts: [] as CaseArtifact[],
+    manifests: [] as RunManifestEntry[],
+  }));
   // W6.3: sentinel hits across every suite run of this invocation.
   const contaminations: string[] = [];
   // F6: the suite checkout's git SHA rides into the manifest (the snapshot's
   // README header records it for CQ-5 attribution). $GITHUB_SHA is set for
   // every CI step; --suite-sha overrides it for local runs.
   const suiteSha = opts.suiteSha ?? process.env.GITHUB_SHA ?? null;
+  if (opts.repeats > 1 && (suiteSha === null || suiteSha.trim() === '')) {
+    console.error('--repeats requires --suite-sha or GITHUB_SHA so paid evidence can be paired');
+    return 2;
+  }
+  let runPhaseExit: 1 | 2 | undefined;
   // Run + score phase: a scored-zero or budget-gated result — or a failure
   // thrown here — is exit 1 (a benign eval outcome the workflow warns on).
   try {
-    for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
+    dispatch: for (const [suiteDir, suite] of opts.suites.map((d, i) => [d, suites[i]!] as const)) {
+      for (let repeat = 1; repeat <= opts.repeats; repeat++) {
       const outputSchema = suite.role === 'review-classifier' ? VERDICT_OUTPUT_SCHEMA : FIXER_OUTPUT_SCHEMA;
       const driver: Driver =
         opts.driver === 'ai-sdk' ? new AiSdkDriver({ outputSchema })
@@ -443,20 +474,28 @@ async function main(argv: readonly string[]): Promise<number> {
               )
             : opts.maxTokens,
         checkTimeoutMs: opts.checkTimeoutMs,
-        journalPath: opts.journal, driverName: opts.driverName,
+        journalPath: opts.repeats > 1 && opts.journal !== undefined
+          ? opts.out !== undefined && resolve(opts.journal) === resolve(opts.out)
+            ? join(opts.journal, `repeat-${repeat}`, 'journal')
+            : join(opts.journal, `repeat-${repeat}`)
+          : opts.journal,
+        driverName: opts.driverName,
         preflightProbe,
         ...(answerKey !== undefined ? { answerKey, sentinelNeedles: needles } : {}),
       });
       for (const hit of result.contaminations) {
         contaminations.push(`${suite.role}/${suite.name} case ${hit.case}: ${hit.where}`);
       }
-      rows.push(...result.rows);
-      tables.push(...result.tables);
+      const repeatRows = opts.repeats > 1 ? result.rows.map((row) => ({ ...row, repeat, repeatCount: opts.repeats })) : result.rows;
+      rows.push(...repeatRows);
+      repeatResults[repeat - 1]!.rows.push(...repeatRows);
+      repeatResults[repeat - 1]!.artifacts.push(...result.artifacts);
+      if (opts.repeats === 1) tables.push(...result.tables);
       // F6 (WB-5.2a/5.1): carry the predictions and the run identity forward
       // for the emit phase, where they are bounded, denylist-scanned, and
       // written beside the tables.
-      artifactList.push(...result.artifacts);
-      manifestEntries.push({
+      if (opts.repeats === 1) artifactList.push(...result.artifacts);
+      const manifestEntry: RunManifestEntry = {
         role: suite.role,
         suite: suite.name,
         // F6: the manifest records a repo-root-relative suiteDir so regrade
@@ -466,7 +505,7 @@ async function main(argv: readonly string[]): Promise<number> {
         model: opts.model,
         driver: opts.driverName,
         variant: suiteVariant(suite),
-        toolkitLock: readToolkitLock(repoRoot),
+        ...toolkitProvenance,
         suiteSha,
         // F1b: the run identity the runner generated — used verbatim, so a
         // suite whose every case was a dispatch-only absence (zero rows)
@@ -477,6 +516,7 @@ async function main(argv: readonly string[]): Promise<number> {
         // suite, which publishes no rows to carry it) and the per-case USD
         // budget + its basis, so a snapshot states the cap that bound it.
         expectedCases: suite.cases.length,
+        ...(opts.repeats > 1 ? { repeat, repeatCount: opts.repeats } : {}),
         ...(opts.maxUsdPerCase !== undefined
           ? { maxUsdPerCase: opts.maxUsdPerCase, maxUsdPerCaseBasis: opts.maxUsdPerCaseBasis }
           : {}),
@@ -487,7 +527,9 @@ async function main(argv: readonly string[]): Promise<number> {
         ...(result.absences.length > 0
           ? { absences: result.absences.map((a) => ({ case: a.case, cause: a.cause })) }
           : {}),
-      });
+      };
+      manifestEntries.push(manifestEntry);
+      repeatResults[repeat - 1]!.manifests.push(manifestEntry);
       // X2 inputs arrive STRUCTURED from the runner (round 3): the runner
       // classifies its own infrastructure refusals, so the CLI prints them
       // without re-matching diagnostics prose.
@@ -510,7 +552,13 @@ async function main(argv: readonly string[]): Promise<number> {
       // an all-absence suite has no rows but still has a run to name.
       const runSuffix = `, run ${result.runId}`;
       const suiteName = result.rows[0]?.suite ?? suiteDir;
-      console.log(`suite ${suiteName}: ${passed}/${total} probes passed across ${result.rows.length} case(s)${runSuffix}`);
+      console.log(`suite ${suiteName}${opts.repeats > 1 ? ` repeat ${repeat}/${opts.repeats}` : ''}: ${passed}/${total} probes passed across ${result.rows.length} case(s)${runSuffix}`);
+      if (result.absences.some((a) => a.cause.startsWith('per-case budget exceeded:'))) {
+        stoppedAfterPerCaseOverrun = true;
+        console.error('per-case USD ceiling exceeded; stopping remaining repeats and suites before another dispatch');
+        break dispatch;
+      }
+      }
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -520,11 +568,14 @@ async function main(argv: readonly string[]): Promise<number> {
     const envVar = message.match(/requires ([A-Z0-9_]+_API_KEY) in the environment/)?.[1];
     if (envVar !== undefined) {
       console.error(`required env ${envVar} missing (add this repo's Actions secret and map it onto the toolkit's ${envVar} env): ${message}`);
-      return 2;
+      runPhaseExit = 2;
+    } else {
+      console.error(message);
+      runPhaseExit = 1;
     }
-    // Run-phase failures (row/table validation of a scored run) stay exit 1.
-    console.error(message);
-    return 1;
+    // Preserve completed paid repeats even when a later dispatch throws.
+    if (manifestEntries.length === 0) return runPhaseExit;
+    runPhaseExit = 2;
   }
   // X2: materialization failures are infrastructure — the driver never ran
   // for those cases — so they hard-fail (exit 2) with the count and the
@@ -533,14 +584,51 @@ async function main(argv: readonly string[]): Promise<number> {
   if (materializationFailures > 0) {
     console.error(`${materializationFailures} case(s) failed fixture materialization (the driver never ran):`);
     for (const d of materializationDiagnostics) console.error(`  ${d}`);
-    return 2;
+    runPhaseExit = 2;
   }
   // X1: report/emit phase — row/table validation of our own output, journal
   // I/O, out-dir creation, writeFileSync. Infrastructure errors here are
   // exit 2, never a benign scored-zero warning.
   try {
     if (opts.out !== undefined) {
+      if (opts.repeats > 1) {
+        tables.push(...aggregate(rows));
+        for (const suite of suites) {
+          if (manifestEntries.some((entry) => entry.role === suite.role && entry.suite === suite.name) &&
+              !tables.some((table) => table.role === suite.role)) {
+            tables.push({ role: suite.role, suite: suite.name, generatedAt: new Date().toISOString(), cells: [] });
+          }
+        }
+      }
       mkdirSync(opts.out, { recursive: true });
+      if (opts.repeats > 1) {
+        for (const [index, repeatResult] of repeatResults.entries()) {
+          if (repeatResult.manifests.length === 0) continue;
+          const repeatOut = join(opts.out, `repeat-${index + 1}`);
+          mkdirSync(repeatOut, { recursive: true });
+          if (opts.journal !== undefined) {
+            const journalSource = resolve(opts.journal) === resolve(opts.out)
+              ? join(repeatOut, 'journal')
+              : join(opts.journal, `repeat-${index + 1}`);
+            const journalDest = join(repeatOut, 'journal');
+            if (journalSource !== journalDest) cpSync(journalSource, journalDest, { recursive: true });
+          }
+          const repeatTables = aggregate(repeatResult.rows);
+          for (const suite of suites) {
+            if (repeatResult.manifests.some((entry) => entry.role === suite.role && entry.suite === suite.name) &&
+                !repeatTables.some((table) => table.role === suite.role)) {
+              repeatTables.push({ role: suite.role, suite: suite.name, generatedAt: new Date().toISOString(), cells: [] });
+            }
+          }
+          for (const table of repeatTables) {
+            writeFileSync(join(repeatOut, `${table.role}.table.json`), JSON.stringify(table, null, 2) + '\n');
+          }
+          writeFileSync(join(repeatOut, 'rows.jsonl'), repeatResult.rows.map((row) => JSON.stringify(row)).join('\n') + (repeatResult.rows.length > 0 ? '\n' : ''));
+          const published = publishArtifacts(repeatOut, repeatResult.artifacts, repoRoot);
+          for (const diagnostic of published.diagnostics) console.error(`  repeat ${index + 1}: ${diagnostic}`);
+          writeRunManifest(repeatOut, repeatResult.manifests);
+        }
+      }
       // Same-role collisions were refused before any dispatch (see above).
       for (const t of tables) {
         writeFileSync(join(opts.out, `${t.role}.table.json`), JSON.stringify(t, null, 2) + '\n');
@@ -549,10 +637,11 @@ async function main(argv: readonly string[]): Promise<number> {
       // F6 (WB-5.2a): persist the prediction + the run manifest. Each artifact
       // is size-bounded and denylist-scanned before it is written; a withheld
       // artifact is diagnosed, never silently dropped.
-      const published = publishArtifacts(opts.out, artifactList, repoRoot);
+      const published = opts.repeats === 1 ? publishArtifacts(opts.out, artifactList, repoRoot) : { published: [], diagnostics: [] };
       for (const d of published.diagnostics) console.error(`  ${d}`);
       writeRunManifest(opts.out, manifestEntries);
-      console.log(`wrote ${opts.out}/rows.jsonl, ${tables.length} table(s), ${published.published.length} prediction artifact(s) and run.json`);
+      const completedRepeats = repeatResults.filter((result) => result.manifests.length > 0).length;
+      console.log(`wrote ${opts.out}/rows.jsonl, ${tables.length} table(s), ${published.published.length} root prediction artifact(s) and run.json${opts.repeats > 1 ? `, plus ${completedRepeats}/${opts.repeats} repeat directories` : ''}`);
     }
   } catch (e) {
     console.error(`report/emit failure: ${e instanceof Error ? e.message : String(e)}`);
@@ -566,6 +655,8 @@ async function main(argv: readonly string[]): Promise<number> {
     for (const c of contaminations) console.error(`  ${c}`);
     return 2;
   }
+  if (runPhaseExit !== undefined) return runPhaseExit;
+  if (stoppedAfterPerCaseOverrun) return opts.repeats > 1 ? 2 : 1;
   return anyFailed ? 1 : 0;
 }
 

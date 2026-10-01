@@ -274,6 +274,25 @@ describe('a dispatched case stopped on its per-case budget keeps an honest row w
 });
 
 describe('W6.4: a case that blows its per-case ceiling is recorded, never silently covered', () => {
+  it('records a per-case overrun even when the driver already reported a budget stop', async () => {
+    const dir = reviewSuite('budget-and-overrun', 'budget-and-overrun', [
+      reviewCase('o-1', 'resolved'), reviewCase('o-2', 'resolved'),
+    ]);
+    let calls = 0;
+    const driver: Driver = {
+      async run(): Promise<WorkerResult> {
+        calls++;
+        return { model: 'glm-5.3-flash', usage: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, denials: [], stopReason: 'budget' };
+      },
+    };
+    const result = await runSuite(opts(dir, { driver, maxUsdPerCase: 0.05 }));
+    expect(calls).toBe(1);
+    expect(result.gatedByBudget).toBe(true);
+    expect(result.rows.map((row) => row.case)).toEqual(['o-1']);
+    expect(result.rows[0]?.stopCause).toBe('budget');
+    expect(result.absences).toEqual(expect.arrayContaining([expect.objectContaining({ case: 'o-1', cause: expect.stringMatching(/per-case budget exceeded/) })]));
+  });
+
   it('marks the row with the budget-stop cause, records the absence, and excludes it from coverage', async () => {
     // The ai-sdk/acp drivers ignore Budget.maxUsd, so only the run
     // governor's cumulative cap binds them; this driver stands in for that

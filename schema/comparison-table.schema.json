@@ -16,7 +16,8 @@
       "then": {
         "properties": {
           "cells": {
-            "items": { "not": { "required": ["invalid"] } }
+            "type": "array",
+            "items": { "not": { "type": "object", "required": ["invalid"] } }
           }
         }
       }
@@ -37,6 +38,36 @@
       "type": "string",
       "format": "date-time",
       "description": "When the table was generated (RFC 3339 date-time)."
+    },
+    "comparisons": {
+      "type": "array",
+      "description": "W6.5: paired case-clustered comparisons over repeated rows. Absent on single-run historical tables.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["baseline", "candidate", "cases", "repeatsPerCase", "delta", "standardError", "confidenceInterval", "minimumDetectableEffect", "noiseBand", "interpretation", "coverageParity"],
+        "properties": {
+          "baseline": { "$ref": "#/$defs/cellIdentity" },
+          "candidate": { "$ref": "#/$defs/cellIdentity" },
+          "cases": { "type": "integer", "minimum": 2 },
+          "repeatsPerCase": { "type": "integer", "minimum": 2 },
+          "delta": { "type": "number", "minimum": -1, "maximum": 1 },
+          "standardError": { "type": "number", "minimum": 0 },
+          "confidenceInterval": {
+            "type": "object", "additionalProperties": false,
+            "required": ["lower", "upper", "confidence"],
+            "properties": {
+              "lower": { "type": "number" },
+              "upper": { "type": "number" },
+              "confidence": { "const": 0.95 }
+            }
+          },
+          "minimumDetectableEffect": { "type": "number", "minimum": 0 },
+          "noiseBand": { "type": "number", "minimum": 0 },
+          "interpretation": { "enum": ["within-noise", "not-distinguishable", "signal", "descriptive"] },
+          "coverageParity": { "type": "boolean" }
+        }
+      }
     },
     "cells": {
       "type": "array",
@@ -207,6 +238,17 @@
               "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
             }
           },
+          "caseScoreCI": {
+            "type": "object", "additionalProperties": false,
+            "required": ["lower", "upper", "confidence", "cases"],
+            "description": "W6.5 case-clustered Student-t interval over complete repeated case means; absent for historical rows and incomplete repeats.",
+            "properties": {
+              "lower": { "type": "number", "minimum": 0, "maximum": 1 },
+              "upper": { "type": "number", "minimum": 0, "maximum": 1 },
+              "confidence": { "const": 0.95 },
+              "cases": { "type": "integer", "minimum": 2 }
+            }
+          },
           "expectedCases": {
             "type": "integer",
             "minimum": 1,
@@ -258,6 +300,17 @@
             }
           }
         ]
+      }
+    }
+  },
+  "$defs": {
+    "cellIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model", "driver"],
+      "properties": {
+        "model": { "type": "string", "minLength": 1 },
+        "driver": { "enum": ["ai-sdk", "claude-agent", "subprocess", "acp"] },
+        "variant": { "type": "string", "minLength": 1 }
       }
     }
   }

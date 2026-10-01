@@ -4,7 +4,7 @@
 // error or suite load/validation failure (the suite.yml workflow hard-fails
 // its rc>=2 branch). Invoked via runner/index.ts.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readlinkSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -37,11 +37,22 @@ const LANES = new Set(['ai-sdk', 'claude-agent', 'subprocess', 'acp']);
 // (derived from the LANES set above so the two lists stay synchronized).
 type DriverKind = 'fake' | 'ai-sdk' | 'claude-agent' | 'subprocess' | 'acp';
 const DRIVERS = new Set<string>(['fake', ...LANES]);
-function canonicalPath(path: string): string {
+function canonicalPath(path: string, seen = new Set<string>()): string {
   const absolute = resolve(path);
-  if (existsSync(absolute)) return realpathSync(absolute);
+  if (seen.has(absolute)) throw new UsageError(`symlink cycle in '${path}'`);
+  seen.add(absolute);
+  let exists = false;
+  let symlink = false;
+  try {
+    symlink = lstatSync(absolute).isSymbolicLink();
+    exists = true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  }
+  if (symlink) return canonicalPath(resolve(dirname(absolute), readlinkSync(absolute)), seen);
+  if (exists) return realpathSync(absolute);
   const parent = dirname(absolute);
-  return parent === absolute ? absolute : join(canonicalPath(parent), basename(absolute));
+  return parent === absolute ? absolute : join(canonicalPath(parent, seen), basename(absolute));
 }
 // ADR-0001 eval axes (the per-cell constraint in
 // schema/comparison-table.schema.json): axis 1 — models vary on the ai-sdk

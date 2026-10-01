@@ -159,6 +159,19 @@ describe('cliMain exit codes (I1: 0 clean, 1 eval/run failure, 2 usage or suite 
     expect(readdirSync(out)).toEqual([]);
   });
 
+  it('refuses a dangling journal symlink to a fresh output root before dispatch', async () => {
+    const dir = writeSuite('dangling-journal-suite', {
+      name: 'dangling-journal-suite', role: 'review-classifier',
+      cases: [reviewCase('rev-1', 'resolved')],
+    });
+    const out = join(root, 'fresh-aliased-out');
+    const alias = join(root, 'dangling-journal-alias');
+    symlinkSync(out, alias, 'dir');
+    await expect(cliMain([...cliArgs(dir), '--repeats', '2', '--out', out, '--journal', alias])).resolves.toBe(2);
+    expect(captured.aiSdkRunCalls).toBe(0);
+    expect(existsSync(out)).toBe(false);
+  });
+
   it('defaults each repeated journal into its output directory', async () => {
     const dir = writeSuite('default-repeat-journal', {
       name: 'default-repeat-journal', role: 'review-classifier',

@@ -217,6 +217,19 @@ assert.throws(() => validateAccountingRecord({
   ...historical,
   coverage: { ...historical.coverage, observedRows: Number.MAX_VALUE },
 }), /coverage requires integer rows and probes/);
+// Each count may be a safe integer while their sum is not.
+assert.throws(() => aggregateAccounting([
+  {
+    ...historical,
+    runId: 'coverage-a',
+    coverage: { observedRows: Number.MAX_SAFE_INTEGER, expectedRows: Number.MAX_SAFE_INTEGER, observedProbes: 0, expectedProbes: 0 },
+  },
+  {
+    ...historical,
+    runId: 'coverage-b',
+    coverage: { observedRows: 2, expectedRows: 2, observedProbes: 0, expectedProbes: 0 },
+  },
+]), /coverage totals exceed safe-integer precision/);
 
 // Scaling multiplies by a power of ten, which can land one ULP off an integral
 // value; that must not drop the record to plain addition and reintroduce drift.

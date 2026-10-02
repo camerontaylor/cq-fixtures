@@ -4,7 +4,28 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import { aggregateAccounting, formatAccountingReport, validateAccountingRecord } from '../runner/accounting.ts';
 
-const schema = JSON.parse(readFileSync(new URL('../schema/run-accounting.schema.json', import.meta.url), 'utf8'));
+/** Read and parse the published schema, failing loudly with the offending path. */
+function readSchema() {
+  let schemaUrl;
+  try {
+    schemaUrl = new URL('../schema/run-accounting.schema.json', import.meta.url);
+  } catch (cause) {
+    throw new Error('accounting schema path could not be resolved', { cause });
+  }
+  let source;
+  try {
+    source = readFileSync(schemaUrl, 'utf8');
+  } catch (cause) {
+    throw new Error(`accounting schema is unreadable at ${schemaUrl.pathname}`, { cause });
+  }
+  try {
+    return JSON.parse(source);
+  } catch (cause) {
+    throw new Error(`accounting schema is not valid JSON at ${schemaUrl.pathname}`, { cause });
+  }
+}
+
+const schema = readSchema();
 const ajv = new Ajv2020({ allErrors: true });
 addFormats(ajv);
 const validateSchema = ajv.compile(schema);
@@ -88,6 +109,23 @@ const decimalTotals = aggregateAccounting([
   { ...observed, runId: 'decimal-b', billedUsd: { status: 'observed', value: 0.2, source: 'test source', window } },
 ]);
 assert.match(formatAccountingReport(decimalTotals), /Billed USD: 0\.3 USD known subtotal/);
+// The numeric report field must be drift-free too, not only the rendered text:
+// callers serialize it or compare it against an exact budget threshold.
+assert.equal(decimalTotals.billedUsd.knownSubtotal, 0.3);
+assert.equal(decimalTotals.modeledUsd.knownSubtotal, 0.2860752);
+
+const mixedScaleTotals = aggregateAccounting([
+  { ...observed, runId: 'scale-a', billedUsd: { status: 'observed', value: 0.1, source: 'test source', window } },
+  { ...observed, runId: 'scale-b', billedUsd: { status: 'observed', value: 0.25, source: 'test source', window } },
+]);
+assert.equal(mixedScaleTotals.billedUsd.knownSubtotal, 0.35);
+
+const driftTotals = aggregateAccounting([
+  { ...observed, runId: 'drift-a', billedUsd: { status: 'observed', value: 0.7, source: 'test source', window } },
+  { ...observed, runId: 'drift-b', billedUsd: { status: 'observed', value: 0.1, source: 'test source', window } },
+]);
+assert.equal(driftTotals.billedUsd.knownSubtotal, 0.8);
+assert.match(formatAccountingReport(driftTotals), /Billed USD: 0\.8 USD known subtotal/);
 
 assert.throws(() => validateAccountingRecord({ ...historical, modeledUsd: { status: 'unknown', reason: 'missing' } }), /modeledUsd must be observed/);
 assert.throws(() => validateAccountingRecord({ ...observed, billedUsd: { status: 'observed', value: 0, window } }), /source/);

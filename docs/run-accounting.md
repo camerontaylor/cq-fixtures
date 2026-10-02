@@ -37,6 +37,8 @@ The window above identifies the evidence being summarized. It does not claim a
 provider billing ledger was observed.
 
 Use `aggregateAccounting(records)` for the numeric report model and
-`formatAccountingReport(report)` for a concise text report. This slice is
+`formatAccountingReport(report)` for a concise text report. Known subtotals are
+accumulated in exact decimal units, so the numeric `knownSubtotal` and the
+rendered text agree and neither carries binary floating-point drift. This slice is
 intended for manually entered or locally readback metadata after a run has
 completed; it adds no provider integration.

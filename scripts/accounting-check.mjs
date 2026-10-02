@@ -197,4 +197,19 @@ assert.equal(
 );
 assert.doesNotMatch(forgedReport, /^Billed USD: 0 USD known subtotal$/m);
 
+// Counts must be safe integers, not merely integers: Number.MAX_VALUE is an
+// integer, and two such counts sum to an Infinity coverage total.
+assert.throws(() => validateAccountingRecord({
+  ...historical,
+  coverage: { ...historical.coverage, observedRows: Number.MAX_VALUE },
+}), /coverage requires integer rows and probes/);
+
+// Scaling multiplies by a power of ten, which can land one ULP off an integral
+// value; that must not drop the record to plain addition and reintroduce drift.
+const twoDecimalTotals = aggregateAccounting([
+  { ...observed, runId: 'two-a', billedUsd: { status: 'observed', value: 0.14, source: 'test source', window } },
+  { ...observed, runId: 'two-b', billedUsd: { status: 'observed', value: 0.17, source: 'test source', window } },
+]);
+assert.equal(twoDecimalTotals.billedUsd.knownSubtotal, 0.31);
+
 console.log('accounting runtime and published-schema checks passed');

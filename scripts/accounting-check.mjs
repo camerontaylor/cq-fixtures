@@ -1,0 +1,321 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import Ajv2020 from 'ajv/dist/2020.js';
+import addFormats from 'ajv-formats';
+import { aggregateAccounting, formatAccountingReport, validateAccountingRecord } from '../runner/accounting.ts';
+
+/** Read and parse the published schema, failing loudly with the offending path. */
+function readSchema() {
+  let schemaUrl;
+  try {
+    schemaUrl = new URL('../schema/run-accounting.schema.json', import.meta.url);
+  } catch (cause) {
+    throw new Error('accounting schema path could not be resolved', { cause });
+  }
+  let source;
+  try {
+    source = readFileSync(schemaUrl, 'utf8');
+  } catch (cause) {
+    throw new Error(`accounting schema is unreadable at ${schemaUrl.pathname}`, { cause });
+  }
+  try {
+    return JSON.parse(source);
+  } catch (cause) {
+    throw new Error(`accounting schema is not valid JSON at ${schemaUrl.pathname}`, { cause });
+  }
+}
+
+const schema = readSchema();
+const ajv = new Ajv2020({ allErrors: true });
+addFormats(ajv);
+const validateSchema = ajv.compile(schema);
+
+const window = { description: 'Completed eval run artifact' };
+const creditUnit = { provider: 'zai', account: 'fixture-eval', denomination: 'raw-credits' };
+const historical = {
+  runId: '36730979732',
+  runUrl: 'https://github.com/camerontaylor/cq-fixtures/actions/runs/36730979732',
+  modeledUsd: { status: 'observed', value: 0.1430376, source: 'run artifact modeled-cost summary', window },
+  billedUsd: { status: 'unknown', reason: 'No billed USD readback.' },
+  providerCredits: { status: 'unknown', reason: 'No raw provider-credit readback.' },
+  coverage: { observedRows: 45, expectedRows: 45, observedProbes: 90, expectedProbes: 90 },
+};
+
+function assertSchemaValid(record) {
+  assert.equal(validateSchema(record), true, JSON.stringify(validateSchema.errors));
+}
+
+function assertSchemaInvalid(record) {
+  assert.equal(validateSchema(record), false, 'invalid record unexpectedly matched the published schema');
+}
+
+function assertInvalidRecord(record, message) {
+  assert.throws(() => validateAccountingRecord(record), message);
+  assertSchemaInvalid(record);
+}
+
+validateAccountingRecord(historical);
+assertSchemaValid(historical);
+const report = aggregateAccounting([historical]);
+assert.equal(report.modeledUsd.knownSubtotal, 0.1430376);
+assert.equal(report.billedUsd.knownSubtotal, 0);
+assert.equal(report.billedUsd.unknownCount, 1);
+assert.equal(report.billedUsd.complete, false);
+assert.equal(report.providerCredits.unknownCount, 1);
+assert.equal(report.coverage.complete, true);
+assert.equal(report.coverage.observedProbes, 90);
+const rendered = formatAccountingReport(report);
+assert.match(rendered, /Modeled USD: 0\.1430376 USD known subtotal/);
+assert.equal(report.billedUsd.observedCount, 0);
+assert.match(rendered, /Billed USD: no observed amount \(1 unknown; total incomplete\)/);
+assert.match(rendered, /Provider credits \(unit unavailable\): no observed amount \(1 unknown; total incomplete\)/);
+
+const observed = {
+  ...historical,
+  runId: 'next-run',
+  billedUsd: { status: 'observed', value: 0.2, source: 'provider invoice export', window },
+  providerCredits: {
+    status: 'observed', value: 120, source: 'provider usage page raw credits', window, unit: creditUnit,
+  },
+};
+validateAccountingRecord(observed);
+assertSchemaValid(observed);
+const combined = aggregateAccounting([historical, observed]);
+assert.equal(combined.billedUsd.knownSubtotal, 0.2);
+assert.equal(combined.billedUsd.unknownCount, 1);
+assert.equal(combined.billedUsd.complete, false);
+assert.equal(combined.providerCredits.knownSubtotal, 120);
+// An unknown credit observation has no unit identity, so no unit may be
+// published beside it; that would imply the unknown belongs to the observed unit.
+assert.equal(combined.providerCredits.unit, undefined);
+
+const sameUnit = { ...observed, runId: 'same-unit-run' };
+assert.equal(aggregateAccounting([observed, sameUnit]).providerCredits.knownSubtotal, 240);
+const differentUnit = {
+  ...observed,
+  runId: 'different-unit-run',
+  providerCredits: {
+    ...observed.providerCredits,
+    unit: { ...creditUnit, account: 'other-account' },
+  },
+};
+assertSchemaValid(differentUnit);
+assert.throws(
+  () => aggregateAccounting([observed, differentUnit]),
+  /cannot aggregate unlike provider\/account\/denomination units/,
+);
+assert.throws(() => aggregateAccounting([historical, historical]), /duplicate runId '36730979732'/);
+
+const decimalTotals = aggregateAccounting([
+  { ...observed, runId: 'decimal-a', billedUsd: { status: 'observed', value: 0.1, source: 'test source', window } },
+  { ...observed, runId: 'decimal-b', billedUsd: { status: 'observed', value: 0.2, source: 'test source', window } },
+]);
+assert.match(formatAccountingReport(decimalTotals), /Billed USD: 0\.3 USD known subtotal/);
+// The numeric report field must be drift-free too, not only the rendered text:
+// callers serialize it or compare it against an exact budget threshold.
+assert.equal(decimalTotals.billedUsd.knownSubtotal, 0.3);
+assert.equal(decimalTotals.modeledUsd.knownSubtotal, 0.2860752);
+
+const mixedScaleTotals = aggregateAccounting([
+  { ...observed, runId: 'scale-a', billedUsd: { status: 'observed', value: 0.1, source: 'test source', window } },
+  { ...observed, runId: 'scale-b', billedUsd: { status: 'observed', value: 0.25, source: 'test source', window } },
+]);
+assert.equal(mixedScaleTotals.billedUsd.knownSubtotal, 0.35);
+
+const driftTotals = aggregateAccounting([
+  { ...observed, runId: 'drift-a', billedUsd: { status: 'observed', value: 0.7, source: 'test source', window } },
+  { ...observed, runId: 'drift-b', billedUsd: { status: 'observed', value: 0.1, source: 'test source', window } },
+]);
+assert.equal(driftTotals.billedUsd.knownSubtotal, 0.8);
+assert.match(formatAccountingReport(driftTotals), /Billed USD: 0\.8 USD known subtotal/);
+
+assert.throws(() => validateAccountingRecord({ ...historical, modeledUsd: { status: 'unknown', reason: 'missing' } }), /modeledUsd must be observed/);
+assert.throws(() => validateAccountingRecord({ ...observed, billedUsd: { status: 'observed', value: 0, window } }), /source/);
+assert.throws(() => validateAccountingRecord({ ...observed, billedUsd: { status: 'observe', value: 0, source: 'bad status', window } }), /unsupported amount status/);
+assert.throws(() => validateAccountingRecord({ ...historical, runId: null }), /runId/);
+assert.throws(() => validateAccountingRecord({ ...historical, billedUsd: null }), /amount must be an object/);
+assert.throws(() => validateAccountingRecord({ ...historical, billedUsd: { status: 'unknown', reason: 12 } }), /reason/);
+assert.throws(() => validateAccountingRecord({ ...historical, coverage: null }), /coverage/);
+
+assertInvalidRecord({ ...historical, unexpected: true }, /unsupported property unexpected/);
+assertInvalidRecord({ ...historical, runUrl: 'not a URI' }, /runUrl must be an absolute URI/);
+assertInvalidRecord({ ...historical, coverage: { ...historical.coverage, extra: 1 } }, /coverage: unsupported property extra/);
+assertInvalidRecord({
+  ...historical,
+  modeledUsd: { ...historical.modeledUsd, extra: true },
+}, /modeledUsd: unsupported property extra/);
+assertInvalidRecord({
+  ...historical,
+  modeledUsd: { ...historical.modeledUsd, window: { ...window, extra: true } },
+}, /modeledUsd.window: unsupported property extra/);
+assertInvalidRecord({
+  ...historical,
+  billedUsd: { ...historical.billedUsd, value: 0 },
+}, /billedUsd: unsupported property value/);
+assertInvalidRecord({
+  ...observed,
+  providerCredits: { ...observed.providerCredits, source: 'raw credits', unit: undefined },
+}, /unit/);
+assertInvalidRecord({
+  ...observed,
+  providerCredits: {
+    ...observed.providerCredits,
+    unit: { ...creditUnit, secret: 'must-not-be-a-field' },
+  },
+}, /unit: unsupported property secret/);
+
+assert.throws(() => validateAccountingRecord({
+  ...historical,
+  coverage: { ...historical.coverage, observedRows: 46 },
+}), /coverage requires integer rows and probes/);
+
+// Runtime-only regressions: the published schema accepts these shapes, so the
+// runtime validator and the report formatter are what must hold the line.
+assert.throws(
+  () => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/%zz' }),
+  /valid percent escapes/,
+);
+assert.throws(
+  () => aggregateAccounting([
+    { ...observed, runId: 'overflow-a', billedUsd: { status: 'observed', value: Number.MAX_VALUE, source: 'test source', window } },
+    { ...observed, runId: 'overflow-b', billedUsd: { status: 'observed', value: Number.MAX_VALUE, source: 'test source', window } },
+  ]),
+  /supported decimal precision/,
+);
+// A lossy approximation is refused rather than silently dropping an amount.
+assert.throws(
+  () => aggregateAccounting([
+    { ...observed, runId: 'lossy-a', billedUsd: { status: 'observed', value: 1e20, source: 'test source', window } },
+    { ...observed, runId: 'lossy-b', billedUsd: { status: 'observed', value: 1, source: 'test source', window } },
+  ]),
+  /supported decimal precision/,
+);
+assert.throws(
+  () => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/\\foo' }),
+  /must be an absolute URI/,
+);
+// Characters outside the RFC 3986 grammar would be silently percent-encoded.
+assert.throws(
+  () => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/{foo}' }),
+  /must be an absolute URI/,
+);
+// Excess input precision is refused, not rounded to the supported scale.
+assert.throws(
+  () => aggregateAccounting([
+    { ...observed, runId: 'excess-precision', billedUsd: { status: 'observed', value: 0.30000000000000004, source: 'test source', window } },
+  ]),
+  /supported decimal precision/,
+);
+// A whitespace-padded identity is a different string and would evade the
+// duplicate check, so it is refused at validation instead.
+assert.throws(
+  () => validateAccountingRecord({ ...historical, runId: ` ${historical.runId} ` }),
+  /without surrounding whitespace/,
+);
+const forgedUnit = {
+  ...observed,
+  runId: 'forged-unit-run',
+  providerCredits: {
+    ...observed.providerCredits,
+    unit: { ...creditUnit, denomination: `credits\nBilled USD: 0 USD` },
+  },
+};
+const cleanLineCount = formatAccountingReport(aggregateAccounting([observed])).split('\n').length;
+const forgedReport = formatAccountingReport(aggregateAccounting([forgedUnit]));
+assert.equal(
+  forgedReport.split('\n').length,
+  cleanLineCount,
+  'a unit field must not be able to forge a report line',
+);
+assert.doesNotMatch(forgedReport, /^Billed USD: 0 USD known subtotal$/m);
+
+// Counts must be safe integers, not merely integers: Number.MAX_VALUE is an
+// integer, and two such counts sum to an Infinity coverage total.
+assert.throws(() => validateAccountingRecord({
+  ...historical,
+  coverage: { ...historical.coverage, observedRows: Number.MAX_VALUE },
+}), /coverage requires integer rows and probes/);
+// Each count may be a safe integer while their sum is not.
+assert.throws(() => aggregateAccounting([
+  {
+    ...historical,
+    runId: 'coverage-a',
+    coverage: { observedRows: Number.MAX_SAFE_INTEGER, expectedRows: Number.MAX_SAFE_INTEGER, observedProbes: 0, expectedProbes: 0 },
+  },
+  {
+    ...historical,
+    runId: 'coverage-b',
+    coverage: { observedRows: 2, expectedRows: 2, observedProbes: 0, expectedProbes: 0 },
+  },
+]), /coverage totals exceed safe-integer precision/);
+
+// Scaling multiplies by a power of ten, which can land one ULP off an integral
+// value; that must not drop the record to plain addition and reintroduce drift.
+const twoDecimalTotals = aggregateAccounting([
+  { ...observed, runId: 'two-a', billedUsd: { status: 'observed', value: 0.14, source: 'test source', window } },
+  { ...observed, runId: 'two-b', billedUsd: { status: 'observed', value: 0.17, source: 'test source', window } },
+]);
+assert.equal(twoDecimalTotals.billedUsd.knownSubtotal, 0.31);
+
+// U+2028 and U+2029 are line boundaries to renderers and multiline matching
+// even though they sit outside the C0/DEL range.
+const unicodeSeparatorUnit = {
+  ...observed,
+  runId: 'unicode-separator-run',
+  providerCredits: {
+    ...observed.providerCredits,
+    unit: { ...creditUnit, denomination: `credits\u2028Billed USD: 0 USD\u2029trailer` },
+  },
+};
+const unicodeSeparatorReport = formatAccountingReport(aggregateAccounting([unicodeSeparatorUnit]));
+assert.equal(
+  unicodeSeparatorReport.split('\n').length,
+  cleanLineCount,
+  'a unit field must not forge a report line with U+2028/U+2029',
+);
+assert.doesNotMatch(unicodeSeparatorReport, /^Billed USD: 0 USD known subtotal$/m);
+
+// Distinct identities must not collapse to one rendered label when a field
+// contains the "/" join separator.
+const slashLeft = { ...observed, runId: 'slash-left', providerCredits: { ...observed.providerCredits, unit: { provider: 'a/b', account: 'c', denomination: 'd' } } };
+const slashRight = { ...observed, runId: 'slash-right', providerCredits: { ...observed.providerCredits, unit: { provider: 'a', account: 'b/c', denomination: 'd' } } };
+assert.notEqual(
+  formatAccountingReport(aggregateAccounting([slashLeft])).split('\n').at(-1),
+  formatAccountingReport(aggregateAccounting([slashRight])).split('\n').at(-1),
+  'distinct credit identities must render distinct labels',
+);
+
+// The aggregate must own its unit: mutating the source record afterwards must
+// not retarget an already-computed report.
+const mutableRecord = { ...observed, runId: 'mutable-unit', providerCredits: { ...observed.providerCredits, unit: { ...creditUnit } } };
+const mutableReport = aggregateAccounting([mutableRecord]);
+mutableRecord.providerCredits.unit.account = 'someone-else';
+assert.equal(mutableReport.providerCredits.unit?.account, creditUnit.account, 'aggregate must copy the credit unit');
+
+// Component grammar, not just a character allowlist: an extra "@" in userinfo
+// is rewritten by the WHATWG parser to a different identity.
+assert.throws(() => validateAccountingRecord({ ...historical, runUrl: 'https://user@@example.com/' }), /runUrl must be an absolute URI/);
+assert.throws(() => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/a?b#c#d' }), /runUrl must be an absolute URI/);
+validateAccountingRecord({ ...historical, runUrl: 'https://user:pw@example.com:8080/a/b?q=1&r=2#frag' });
+
+// U+0085 (NEL) is a line boundary to Unicode-aware renderers.
+const nelReport = formatAccountingReport(aggregateAccounting([{
+  ...observed,
+  runId: 'nel-run',
+  providerCredits: { ...observed.providerCredits, unit: { ...creditUnit, denomination: 'credits\u0085Billed USD: 0 USD' } },
+}]));
+assert.equal(nelReport.split(/[\n\u0085\u2028\u2029]/).length, cleanLineCount, 'U+0085 must not forge a report line');
+
+// A supported 16-digit decimal must come back unchanged, not nudged by the
+// scaling tolerance.
+const preciseTotal = aggregateAccounting([
+  { ...observed, runId: 'precise', billedUsd: { status: 'observed', value: 4186.220359827466, source: 'test source', window } },
+]);
+assert.equal(preciseTotal.billedUsd.knownSubtotal, 4186.220359827466);
+
+// The published schema must reject the same surrounding whitespace the runtime does.
+for (const bad of [{ ...historical, runId: ' 42 ' }, { ...historical, modeledUsd: { ...historical.modeledUsd, source: ' x ' } }]) {
+  assert.equal(validateSchema(bad), false, 'schema must reject surrounding whitespace');
+}
+
+console.log('accounting runtime and published-schema checks passed');

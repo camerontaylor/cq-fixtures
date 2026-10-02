@@ -40,7 +40,11 @@ export interface RunAccountingRecord {
 }
 
 export interface AmountAggregate {
-  /** Sum of observed values only; not a total when complete is false. */
+  /**
+   * Sum of observed values only; not a total when complete is false. The sum is
+   * accumulated in exact decimal units, so it carries no binary floating-point
+   * drift and is safe to serialize or compare against a budget threshold.
+   */
   knownSubtotal: number;
   observedCount: number;
   unknownCount: number;
@@ -162,6 +166,8 @@ export function validateAccountingRecord(record: RunAccountingRecord): void {
     'coverage',
     ['observedRows', 'expectedRows', 'observedProbes', 'expectedProbes'],
   );
+  // SAFETY: assertShape above guarantees the four required keys exist and no
+  // others are present, so the value already has the coverage field's shape.
   const { observedRows, expectedRows, observedProbes, expectedProbes } = coverage as unknown as RunAccountingRecord['coverage'];
   if (![observedRows, expectedRows, observedProbes, expectedProbes].every(Number.isInteger)
     || observedRows < 0 || expectedRows < observedRows
@@ -170,17 +176,44 @@ export function validateAccountingRecord(record: RunAccountingRecord): void {
   }
 }
 
+/** Upper bound on decimal places summed exactly; keeps the scaled total a safe integer. */
+const MAX_SUM_SCALE = 12;
+
+function decimalPlaces(value: number): number {
+  const text = String(value);
+  const dot = text.indexOf('.');
+  return dot === -1 ? 0 : Math.min(text.length - dot - 1, MAX_SUM_SCALE);
+}
+
+/**
+ * Sum by way of scaled integers so the caller sees the decimal total it expects
+ * (0.1 + 0.2 === 0.3) rather than the binary artifact 0.30000000000000004.
+ * Magnitudes too large to scale exactly fall back to the ordinary sum.
+ */
+function sumObserved(values: readonly number[]): number {
+  const scale = values.reduce((widest, value) => Math.max(widest, decimalPlaces(value)), 0);
+  const factor = 10 ** scale;
+  let scaled = 0;
+  for (const value of values) scaled += Math.round(value * factor);
+  if (!Number.isSafeInteger(scaled)) {
+    return values.reduce((total, value) => total + value, 0);
+  }
+  return scaled / factor;
+}
+
 function aggregate(values: readonly AccountingAmount[]): AmountAggregate {
-  let knownSubtotal = 0;
-  let observedCount = 0;
+  const observed: number[] = [];
   let unknownCount = 0;
   for (const item of values) {
-    if (item.status === 'observed') {
-      knownSubtotal += item.value;
-      observedCount += 1;
-    } else unknownCount += 1;
+    if (item.status === 'observed') observed.push(item.value);
+    else unknownCount += 1;
   }
-  return { knownSubtotal, observedCount, unknownCount, complete: unknownCount === 0 };
+  return {
+    knownSubtotal: sumObserved(observed),
+    observedCount: observed.length,
+    unknownCount,
+    complete: unknownCount === 0,
+  };
 }
 
 function sameCreditUnit(left: ProviderCreditUnit, right: ProviderCreditUnit): boolean {
@@ -231,9 +264,9 @@ function amountLabel(amount: AmountAggregate, unit: string): string {
       ? `no observed amount`
       : `no observed amount (${amount.unknownCount} unknown; total incomplete)`;
   }
-  const subtotal = Number.isFinite(amount.knownSubtotal)
-    ? Number(amount.knownSubtotal.toPrecision(12)).toString()
-    : String(amount.knownSubtotal);
+  // knownSubtotal is already exact-decimal, so the rendered text and the numeric
+  // report field always agree.
+  const subtotal = String(amount.knownSubtotal);
   return `${subtotal} ${unit} known subtotal${amount.complete ? '' : ` (${amount.unknownCount} unknown; total incomplete)`}`;
 }
 

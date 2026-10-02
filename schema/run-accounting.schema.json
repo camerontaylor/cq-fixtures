@@ -6,11 +6,11 @@
   "additionalProperties": false,
   "required": ["runId", "modeledUsd", "billedUsd", "providerCredits", "coverage"],
   "properties": {
-    "runId": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string", "minLength": 1, "pattern": "\\S" },
     "runUrl": { "type": "string", "format": "uri" },
     "modeledUsd": { "$ref": "#/$defs/observed" },
     "billedUsd": { "$ref": "#/$defs/amount" },
-    "providerCredits": { "$ref": "#/$defs/amount" },
+    "providerCredits": { "$ref": "#/$defs/providerCreditsAmount" },
     "coverage": {
       "type": "object", "additionalProperties": false,
       "description": "Observed row and probe counts must not exceed their expected counts; this cross-field relationship is enforced by runtime validation.",
@@ -27,7 +27,7 @@
     "window": {
       "type": "object", "additionalProperties": false,
       "required": ["description"],
-      "properties": { "description": { "type": "string", "minLength": 1 } }
+      "properties": { "description": { "type": "string", "minLength": 1, "pattern": "\\S" } }
     },
     "observed": {
       "type": "object", "additionalProperties": false,
@@ -35,8 +35,29 @@
       "properties": {
         "status": { "const": "observed" },
         "value": { "type": "number", "minimum": 0 },
-        "source": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1, "pattern": "\\S" },
         "window": { "$ref": "#/$defs/window" }
+      }
+    },
+    "providerCreditUnit": {
+      "type": "object", "additionalProperties": false,
+      "description": "Non-secret identity for a provider/account-specific credit denomination; account is an operator label, never a credential.",
+      "required": ["provider", "account", "denomination"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "account": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "denomination": { "type": "string", "minLength": 1, "pattern": "\\S" }
+      }
+    },
+    "observedProviderCredits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "value", "source", "window", "unit"],
+      "properties": {
+        "status": { "const": "observed" },
+        "value": { "type": "number", "minimum": 0 },
+        "source": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "window": { "$ref": "#/$defs/window" },
+        "unit": { "$ref": "#/$defs/providerCreditUnit" }
       }
     },
     "unknown": {
@@ -44,9 +65,12 @@
       "required": ["status", "reason"],
       "properties": {
         "status": { "const": "unknown" },
-        "reason": { "type": "string", "minLength": 1 }
+        "reason": { "type": "string", "minLength": 1, "pattern": "\\S" }
       }
     },
-    "amount": { "oneOf": [{ "$ref": "#/$defs/observed" }, { "$ref": "#/$defs/unknown" }] }
+    "amount": { "oneOf": [{ "$ref": "#/$defs/observed" }, { "$ref": "#/$defs/unknown" }] },
+    "providerCreditsAmount": {
+      "oneOf": [{ "$ref": "#/$defs/observedProviderCredits" }, { "$ref": "#/$defs/unknown" }]
+    }
   }
 }

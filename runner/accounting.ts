@@ -103,16 +103,44 @@ function nonEmptyString(value: unknown, label: string): asserts value is string 
 }
 
 /**
- * RFC 3986 URI grammar, restricted to the characters a URI may contain raw. The
- * WHATWG parser silently percent-encodes anything else — `https://example.com/
- * {foo}` becomes `https://example.com/%7Bfoo%7D`, and a backslash becomes a path
- * separator — so a record could otherwise keep provenance that parses to a
- * different URL than it reads as.
+ * RFC 3986 component grammar. The WHATWG parser silently rewrites what it does
+ * not like — `{foo}` becomes `%7Bfoo%7D`, a backslash becomes a path separator,
+ * `user@@host` becomes `user%40@host` — so a record could keep provenance that
+ * parses to a different URL than it reads as. Each component is therefore
+ * checked against the characters RFC 3986 allows in that component.
  */
-const RFC3986_URI = /^[A-Za-z][A-Za-z0-9+.-]*:[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]*$/;
+const URI_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/;
+const URI_USERINFO = "[A-Za-z0-9\\-._~!$&'()*+,;=:%]*";
+const URI_REG_NAME = "[A-Za-z0-9\\-._~!$&'()*+,;=%]*";
+const URI_AUTHORITY = new RegExp(`^(?:${URI_USERINFO}@)?(?:\\[[0-9A-Za-z:.]+\\]|${URI_REG_NAME})(?::[0-9]*)?$`);
+const URI_PATH = /^[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*$/;
+const URI_QUERY_OR_FRAGMENT = /^[A-Za-z0-9\-._~!$&'()*+,;=:@%/?]*$/;
+
+function isRfc3986Uri(value: string): boolean {
+  const schemeEnd = value.indexOf(':');
+  if (schemeEnd === -1 || !URI_SCHEME.test(value.slice(0, schemeEnd))) return false;
+  let rest = value.slice(schemeEnd + 1);
+  const hashAt = rest.indexOf('#');
+  if (hashAt !== -1) {
+    if (!URI_QUERY_OR_FRAGMENT.test(rest.slice(hashAt + 1))) return false;
+    rest = rest.slice(0, hashAt);
+  }
+  const queryAt = rest.indexOf('?');
+  if (queryAt !== -1) {
+    if (!URI_QUERY_OR_FRAGMENT.test(rest.slice(queryAt + 1))) return false;
+    rest = rest.slice(0, queryAt);
+  }
+  if (rest.startsWith('//')) {
+    const pathAt = rest.indexOf('/', 2);
+    const authority = pathAt === -1 ? rest.slice(2) : rest.slice(2, pathAt);
+    if (!URI_AUTHORITY.test(authority)) return false;
+    rest = pathAt === -1 ? '' : rest.slice(pathAt);
+  }
+  return URI_PATH.test(rest);
+}
 
 function validateUri(value: unknown, label: string): void {
-  if (typeof value !== 'string' || !RFC3986_URI.test(value)) {
+  if (typeof value !== 'string' || !isRfc3986Uri(value)) {
     throw new Error(`${label} must be an absolute URI`);
   }
   // The grammar admits `%`, but not a malformed escape such as `%zz`, which the
@@ -218,40 +246,46 @@ function decimalPlaces(value: number): number {
 }
 
 /**
- * Sum by way of scaled integers so the caller sees the decimal total it expects
+ * The value as an integer count of 10^-scale units, read from its shortest
+ * round-trip decimal text rather than computed by floating-point multiplication.
+ * Multiplying can land off the true integer by more than half a unit once the
+ * magnitude is large (4186.220359827466 * 1e12 rounds up to ...467), silently
+ * changing a supported observation.
+ */
+function scaledInteger(value: number, scale: number): bigint {
+  const text = String(value);
+  const exponentIndex = text.indexOf('e');
+  const mantissa = exponentIndex === -1 ? text : text.slice(0, exponentIndex);
+  const exponent = exponentIndex === -1 ? 0 : Number(text.slice(exponentIndex + 1));
+  const dot = mantissa.indexOf('.');
+  const mantissaDecimals = dot === -1 ? 0 : mantissa.length - dot - 1;
+  const digits = BigInt(mantissa.replace('.', ''));
+  return digits * 10n ** BigInt(scale - mantissaDecimals + exponent);
+}
+
+/**
+ * Sum exact decimal values so the caller sees the total they expect
  * (0.1 + 0.2 === 0.3) rather than the binary artifact 0.30000000000000004.
  * Anything this cannot represent exactly is refused rather than approximated:
  * an ordinary-addition fallback silently drops an observed amount (1e20 + 1
  * returns 1e20), which is a worse accounting defect than float drift.
  */
 function sumObserved(values: readonly number[]): number {
-  // Precision beyond the supported scale is refused before any tolerance is
-  // applied, so an imported 0.30000000000000004 is not quietly reported as 0.3.
+  // Precision beyond the supported scale is refused, so an imported
+  // 0.30000000000000004 is not quietly reported as 0.3.
   for (const value of values) {
     if (decimalPlaces(value) > MAX_SUM_SCALE) {
       throw new Error('observed amounts exceed the supported decimal precision');
     }
   }
   const scale = values.reduce((widest, value) => Math.max(widest, decimalPlaces(value)), 0);
-  const factor = 10 ** scale;
-  let scaled = 0;
-  for (const value of values) {
-    const exact = value * factor;
-    const rounded = Math.round(exact);
-    // Scaling multiplies by a power of ten and can land one ULP off an already
-    // integral value (0.14 * 100 is 14.000000000000002), which is ordinary
-    // binary rounding and not lost input precision.
-    if (Math.abs(exact - rounded) > Number.EPSILON * Math.max(Math.abs(exact), 1)) {
-      throw new Error('observed amounts exceed the supported decimal precision');
-    }
-    scaled += rounded;
-  }
+  const scaled = values.reduce((total, value) => total + scaledInteger(value, scale), 0n);
   // A total past safe-integer range would be silently rounded on the way back,
   // dropping an observed amount rather than merely drifting.
-  if (!Number.isSafeInteger(scaled)) {
+  if (scaled > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error('observed amounts exceed the supported decimal precision');
   }
-  return scaled / factor;
+  return Number(scaled) / 10 ** scale;
 }
 
 function aggregate(values: readonly AccountingAmount[]): AmountAggregate {
@@ -344,12 +378,12 @@ function amountLabel(amount: AmountAggregate, unit: string): string {
 
 /**
  * Replace characters that renderers treat as line boundaries so an identity
- * field cannot forge a report line. Covers the C0 range, DEL, and the Unicode
- * line and paragraph separators U+2028 and U+2029.
+ * field cannot forge a report line. Covers the C0 range, DEL, the C1 next-line
+ * control U+0085, and the Unicode line and paragraph separators U+2028/U+2029.
  */
 function escapeControlCharacters(value: string): string {
   return value.replace(
-    /[\u0000-\u001f\u007f\u2028\u2029]/g,
+    /[\u0000-\u001f\u007f\u0085\u2028\u2029]/g,
     (char) => `\\u${char.codePointAt(0)?.toString(16).padStart(4, '0')}`,
   );
 }

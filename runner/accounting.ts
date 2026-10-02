@@ -179,25 +179,45 @@ export function validateAccountingRecord(record: RunAccountingRecord): void {
 /** Upper bound on decimal places summed exactly; keeps the scaled total a safe integer. */
 const MAX_SUM_SCALE = 12;
 
+/**
+ * Fractional digits in a number's shortest round-trip form. Exponent forms such
+ * as `1e-7` or `1.5e-7` carry their decimals in the mantissa, shifted by the
+ * exponent; reading only up to the decimal point would report zero places and
+ * silently round the amount away.
+ */
 function decimalPlaces(value: number): number {
   const text = String(value);
-  const dot = text.indexOf('.');
-  return dot === -1 ? 0 : Math.min(text.length - dot - 1, MAX_SUM_SCALE);
+  const exponentIndex = text.indexOf('e');
+  if (exponentIndex === -1) {
+    const dot = text.indexOf('.');
+    return dot === -1 ? 0 : Math.min(text.length - dot - 1, MAX_SUM_SCALE);
+  }
+  const mantissa = text.slice(0, exponentIndex);
+  const exponent = Number(text.slice(exponentIndex + 1));
+  const dot = mantissa.indexOf('.');
+  const mantissaDecimals = dot === -1 ? 0 : mantissa.length - dot - 1;
+  return Math.min(Math.max(mantissaDecimals - exponent, 0), MAX_SUM_SCALE);
 }
 
 /**
  * Sum by way of scaled integers so the caller sees the decimal total it expects
  * (0.1 + 0.2 === 0.3) rather than the binary artifact 0.30000000000000004.
- * Magnitudes too large to scale exactly fall back to the ordinary sum.
+ * An amount the chosen scale cannot hold exactly is never rounded away: the sum
+ * falls back to ordinary addition, because a silently dropped amount is worse
+ * than float drift. The same fallback covers magnitudes too large to scale.
  */
 function sumObserved(values: readonly number[]): number {
+  const plain = (): number => values.reduce((total, value) => total + value, 0);
   const scale = values.reduce((widest, value) => Math.max(widest, decimalPlaces(value)), 0);
   const factor = 10 ** scale;
   let scaled = 0;
-  for (const value of values) scaled += Math.round(value * factor);
-  if (!Number.isSafeInteger(scaled)) {
-    return values.reduce((total, value) => total + value, 0);
+  for (const value of values) {
+    const exact = value * factor;
+    const rounded = Math.round(exact);
+    if (rounded !== exact) return plain();
+    scaled += rounded;
   }
+  if (!Number.isSafeInteger(scaled)) return plain();
   return scaled / factor;
 }
 

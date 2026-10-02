@@ -29,6 +29,10 @@ jobs:
         run: ./scripts/prepare-toolkit.sh
       - name: Install dependencies
         run: npm ci
+      - name: Run offline accounting contract checks
+        # Keyless schema/runtime reconciliation for completed-run metadata;
+        # this reads no provider credentials and dispatches no model work.
+        run: node --experimental-strip-types scripts/accounting-check.mjs
       - name: Eval-root leakage scan (W6.3)
         # RS-9 §4.3 D, static half: build the allowlist eval root every run
         # dispatches from (node_modules skipped — the scan never reads

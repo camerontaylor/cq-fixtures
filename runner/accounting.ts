@@ -175,7 +175,10 @@ export function validateAccountingRecord(record: RunAccountingRecord): void {
   // SAFETY: assertShape above guarantees the four required keys exist and no
   // others are present, so the value already has the coverage field's shape.
   const { observedRows, expectedRows, observedProbes, expectedProbes } = coverage as unknown as RunAccountingRecord['coverage'];
-  if (![observedRows, expectedRows, observedProbes, expectedProbes].every(Number.isInteger)
+  // Safe integers, not merely integers: Number.isInteger(Number.MAX_VALUE) is
+  // true, and two such counts would sum to an Infinity coverage total reported
+  // as complete.
+  if (![observedRows, expectedRows, observedProbes, expectedProbes].every(Number.isSafeInteger)
     || observedRows < 0 || expectedRows < observedRows
     || observedProbes < 0 || expectedProbes < observedProbes) {
     throw new Error('coverage requires integer rows and probes with 0 <= observed <= expected');
@@ -220,7 +223,11 @@ function sumObserved(values: readonly number[]): number {
   for (const value of values) {
     const exact = value * factor;
     const rounded = Math.round(exact);
-    if (rounded !== exact) return plain();
+    // Scaling can land one ULP off an already-integral value (0.14 * 100 is
+    // 14.000000000000002), which is ordinary binary rounding and not lost input
+    // precision. Only a rounding that moves the value by more than an ULP means
+    // this scale genuinely cannot hold the amount exactly.
+    if (Math.abs(exact - rounded) > Number.EPSILON * Math.max(Math.abs(exact), 1)) return plain();
     scaled += rounded;
   }
   if (!Number.isSafeInteger(scaled)) return plain();

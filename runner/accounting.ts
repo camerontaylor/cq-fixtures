@@ -288,7 +288,8 @@ function aggregateCredits(values: readonly ProviderCreditsAmount[]): ProviderCre
     if (unit !== undefined && !sameCreditUnit(unit, value.unit)) {
       throw new Error('providerCredits: cannot aggregate unlike provider/account/denomination units');
     }
-    unit = value.unit;
+    // Copy so later mutation of the source record cannot retarget this report.
+    unit = { provider: value.unit.provider, account: value.unit.account, denomination: value.unit.denomination };
   }
   const totals = aggregate(values);
   // An unknown credit observation carries no unit identity, so publishing the
@@ -353,13 +354,18 @@ function escapeControlCharacters(value: string): string {
   );
 }
 
+/** Escape separators so distinct identities never render to the same label. */
+function escapeIdentityComponent(value: string): string {
+  return escapeControlCharacters(value.replace(/\\/g, '\\\\').replace(/\//g, '\\/'));
+}
+
 export function formatAccountingReport(report: AccountingReport): string {
   const unit = report.providerCredits.unit;
   // The denomination is rendered twice — in the identity and in the amount
   // label — so both uses must be escaped or a newline in it forges a line.
   const creditUnit = unit === undefined
     ? 'unit unavailable'
-    : [unit.provider, unit.account, unit.denomination].map(escapeControlCharacters).join('/');
+    : [unit.provider, unit.account, unit.denomination].map(escapeIdentityComponent).join('/');
   const creditAmountUnit = unit === undefined
     ? 'raw credits'
     : escapeControlCharacters(unit.denomination);

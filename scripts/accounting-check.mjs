@@ -275,4 +275,21 @@ assert.equal(
 );
 assert.doesNotMatch(unicodeSeparatorReport, /^Billed USD: 0 USD known subtotal$/m);
 
+// Distinct identities must not collapse to one rendered label when a field
+// contains the "/" join separator.
+const slashLeft = { ...observed, runId: 'slash-left', providerCredits: { ...observed.providerCredits, unit: { provider: 'a/b', account: 'c', denomination: 'd' } } };
+const slashRight = { ...observed, runId: 'slash-right', providerCredits: { ...observed.providerCredits, unit: { provider: 'a', account: 'b/c', denomination: 'd' } } };
+assert.notEqual(
+  formatAccountingReport(aggregateAccounting([slashLeft])).split('\n').at(-1),
+  formatAccountingReport(aggregateAccounting([slashRight])).split('\n').at(-1),
+  'distinct credit identities must render distinct labels',
+);
+
+// The aggregate must own its unit: mutating the source record afterwards must
+// not retarget an already-computed report.
+const mutableRecord = { ...observed, runId: 'mutable-unit', providerCredits: { ...observed.providerCredits, unit: { ...creditUnit } } };
+const mutableReport = aggregateAccounting([mutableRecord]);
+mutableRecord.providerCredits.unit.account = 'someone-else';
+assert.equal(mutableReport.providerCredits.unit?.account, creditUnit.account, 'aggregate must copy the credit unit');
+
 console.log('accounting runtime and published-schema checks passed');

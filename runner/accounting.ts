@@ -105,6 +105,12 @@ function validateUri(value: unknown, label: string): void {
     || !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) {
     throw new Error(`${label} must be an absolute URI`);
   }
+  // The WHATWG URL constructor accepts malformed escapes such as `%zz`, but the
+  // published schema's `format: uri` does not, so runtime validation rejects them
+  // rather than letting malformed provenance through into a report.
+  if (/%(?![0-9A-Fa-f]{2})/.test(value)) {
+    throw new Error(`${label} must be an absolute URI with valid percent escapes`);
+  }
   try {
     new URL(value);
   } catch {
@@ -228,8 +234,14 @@ function aggregate(values: readonly AccountingAmount[]): AmountAggregate {
     if (item.status === 'observed') observed.push(item.value);
     else unknownCount += 1;
   }
+  const knownSubtotal = sumObserved(observed);
+  // Individually finite values can still overflow when added. An infinite
+  // subtotal must not be reported as a complete monetary amount.
+  if (!Number.isFinite(knownSubtotal)) {
+    throw new Error('observed values overflow: the known subtotal is not a finite amount');
+  }
   return {
-    knownSubtotal: sumObserved(observed),
+    knownSubtotal,
     observedCount: observed.length,
     unknownCount,
     complete: unknownCount === 0,
@@ -290,10 +302,22 @@ function amountLabel(amount: AmountAggregate, unit: string): string {
   return `${subtotal} ${unit} known subtotal${amount.complete ? '' : ` (${amount.unknownCount} unknown; total incomplete)`}`;
 }
 
+/** Replace control characters so an identity field cannot forge a report line. */
+function escapeControlCharacters(value: string): string {
+  return value.replace(
+    /[\u0000-\u001f\u007f]/g,
+    (char) => `\\u${char.codePointAt(0)?.toString(16).padStart(4, '0')}`,
+  );
+}
+
 export function formatAccountingReport(report: AccountingReport): string {
   const creditUnit = report.providerCredits.unit === undefined
     ? 'unit unavailable'
-    : `${report.providerCredits.unit.provider}/${report.providerCredits.unit.account}/${report.providerCredits.unit.denomination}`;
+    : [
+      report.providerCredits.unit.provider,
+      report.providerCredits.unit.account,
+      report.providerCredits.unit.denomination,
+    ].map(escapeControlCharacters).join('/');
   return [
     `Runs: ${report.runs}`,
     `Coverage: ${report.coverage.observedRows}/${report.coverage.expectedRows} rows, ${report.coverage.observedProbes}/${report.coverage.expectedProbes} probes${report.coverage.complete ? '' : ' (incomplete)'}`,

@@ -194,6 +194,24 @@ assert.throws(
   () => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/\\foo' }),
   /must be an absolute URI/,
 );
+// Characters outside the RFC 3986 grammar would be silently percent-encoded.
+assert.throws(
+  () => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/{foo}' }),
+  /must be an absolute URI/,
+);
+// Excess input precision is refused, not rounded to the supported scale.
+assert.throws(
+  () => aggregateAccounting([
+    { ...observed, runId: 'excess-precision', billedUsd: { status: 'observed', value: 0.30000000000000004, source: 'test source', window } },
+  ]),
+  /supported decimal precision/,
+);
+// A whitespace-padded identity is a different string and would evade the
+// duplicate check, so it is refused at validation instead.
+assert.throws(
+  () => validateAccountingRecord({ ...historical, runId: ` ${historical.runId} ` }),
+  /without surrounding whitespace/,
+);
 const forgedUnit = {
   ...observed,
   runId: 'forged-unit-run',

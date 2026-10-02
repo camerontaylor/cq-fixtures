@@ -292,4 +292,30 @@ const mutableReport = aggregateAccounting([mutableRecord]);
 mutableRecord.providerCredits.unit.account = 'someone-else';
 assert.equal(mutableReport.providerCredits.unit?.account, creditUnit.account, 'aggregate must copy the credit unit');
 
+// Component grammar, not just a character allowlist: an extra "@" in userinfo
+// is rewritten by the WHATWG parser to a different identity.
+assert.throws(() => validateAccountingRecord({ ...historical, runUrl: 'https://user@@example.com/' }), /runUrl must be an absolute URI/);
+assert.throws(() => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/a?b#c#d' }), /runUrl must be an absolute URI/);
+validateAccountingRecord({ ...historical, runUrl: 'https://user:pw@example.com:8080/a/b?q=1&r=2#frag' });
+
+// U+0085 (NEL) is a line boundary to Unicode-aware renderers.
+const nelReport = formatAccountingReport(aggregateAccounting([{
+  ...observed,
+  runId: 'nel-run',
+  providerCredits: { ...observed.providerCredits, unit: { ...creditUnit, denomination: 'credits\u0085Billed USD: 0 USD' } },
+}]));
+assert.equal(nelReport.split(/[\n\u0085\u2028\u2029]/).length, cleanLineCount, 'U+0085 must not forge a report line');
+
+// A supported 16-digit decimal must come back unchanged, not nudged by the
+// scaling tolerance.
+const preciseTotal = aggregateAccounting([
+  { ...observed, runId: 'precise', billedUsd: { status: 'observed', value: 4186.220359827466, source: 'test source', window } },
+]);
+assert.equal(preciseTotal.billedUsd.knownSubtotal, 4186.220359827466);
+
+// The published schema must reject the same surrounding whitespace the runtime does.
+for (const bad of [{ ...historical, runId: ' 42 ' }, { ...historical, modeledUsd: { ...historical.modeledUsd, source: ' x ' } }]) {
+  assert.equal(validateSchema(bad), false, 'schema must reject surrounding whitespace');
+}
+
 console.log('accounting runtime and published-schema checks passed');

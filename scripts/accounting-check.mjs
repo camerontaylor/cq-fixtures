@@ -166,4 +166,30 @@ assert.throws(() => validateAccountingRecord({
   ...historical,
   coverage: { ...historical.coverage, observedRows: 46 },
 }), /coverage requires integer rows and probes/);
+
+// Runtime-only regressions: the published schema accepts these shapes, so the
+// runtime validator and the report formatter are what must hold the line.
+assert.throws(
+  () => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/%zz' }),
+  /valid percent escapes/,
+);
+assert.throws(
+  () => aggregateAccounting([
+    { ...observed, runId: 'overflow-a', billedUsd: { status: 'observed', value: Number.MAX_VALUE, source: 'test source', window } },
+    { ...observed, runId: 'overflow-b', billedUsd: { status: 'observed', value: Number.MAX_VALUE, source: 'test source', window } },
+  ]),
+  /overflow/,
+);
+const forgedUnit = {
+  ...observed,
+  runId: 'forged-unit-run',
+  providerCredits: {
+    ...observed.providerCredits,
+    unit: { ...creditUnit, denomination: `credits\nBilled USD: 0 USD` },
+  },
+};
+const forgedReport = formatAccountingReport(aggregateAccounting([forgedUnit]));
+assert.equal(forgedReport.split('\n').length, 6, 'a unit field must not be able to forge a report line');
+assert.doesNotMatch(forgedReport, /^Billed USD: 0 USD known subtotal$/m);
+
 console.log('accounting runtime and published-schema checks passed');

@@ -95,23 +95,28 @@ function assertShape(
 }
 
 function nonEmptyString(value: unknown, label: string): asserts value is string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`${label} must be a non-empty string`);
+  // Surrounding whitespace would let two spellings of one identity compare
+  // unequal, which duplicate detection would then miss, so it is refused.
+  if (typeof value !== 'string' || !value.trim() || value !== value.trim()) {
+    throw new Error(`${label} must be a non-empty string without surrounding whitespace`);
   }
 }
 
+/**
+ * RFC 3986 URI grammar, restricted to the characters a URI may contain raw. The
+ * WHATWG parser silently percent-encodes anything else — `https://example.com/
+ * {foo}` becomes `https://example.com/%7Bfoo%7D`, and a backslash becomes a path
+ * separator — so a record could otherwise keep provenance that parses to a
+ * different URL than it reads as.
+ */
+const RFC3986_URI = /^[A-Za-z][A-Za-z0-9+.-]*:[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]*$/;
+
 function validateUri(value: unknown, label: string): void {
-  // Backslashes are not RFC URI characters; the WHATWG parser silently rewrites
-  // them as path separators, so `https://example.com/\foo` would validate while
-  // identifying a different path once parsed.
-  if (typeof value !== 'string' || value !== value.trim() || /\s/.test(value)
-    || value.includes('\\')
-    || !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) {
+  if (typeof value !== 'string' || !RFC3986_URI.test(value)) {
     throw new Error(`${label} must be an absolute URI`);
   }
-  // The WHATWG URL constructor accepts malformed escapes such as `%zz`, but the
-  // published schema's `format: uri` does not, so runtime validation rejects them
-  // rather than letting malformed provenance through into a report.
+  // The grammar admits `%`, but not a malformed escape such as `%zz`, which the
+  // published schema's `format: uri` rejects.
   if (/%(?![0-9A-Fa-f]{2})/.test(value)) {
     throw new Error(`${label} must be an absolute URI with valid percent escapes`);
   }
@@ -203,13 +208,13 @@ function decimalPlaces(value: number): number {
   const exponentIndex = text.indexOf('e');
   if (exponentIndex === -1) {
     const dot = text.indexOf('.');
-    return dot === -1 ? 0 : Math.min(text.length - dot - 1, MAX_SUM_SCALE);
+    return dot === -1 ? 0 : text.length - dot - 1;
   }
   const mantissa = text.slice(0, exponentIndex);
   const exponent = Number(text.slice(exponentIndex + 1));
   const dot = mantissa.indexOf('.');
   const mantissaDecimals = dot === -1 ? 0 : mantissa.length - dot - 1;
-  return Math.min(Math.max(mantissaDecimals - exponent, 0), MAX_SUM_SCALE);
+  return Math.max(mantissaDecimals - exponent, 0);
 }
 
 /**
@@ -220,6 +225,13 @@ function decimalPlaces(value: number): number {
  * returns 1e20), which is a worse accounting defect than float drift.
  */
 function sumObserved(values: readonly number[]): number {
+  // Precision beyond the supported scale is refused before any tolerance is
+  // applied, so an imported 0.30000000000000004 is not quietly reported as 0.3.
+  for (const value of values) {
+    if (decimalPlaces(value) > MAX_SUM_SCALE) {
+      throw new Error('observed amounts exceed the supported decimal precision');
+    }
+  }
   const scale = values.reduce((widest, value) => Math.max(widest, decimalPlaces(value)), 0);
   const factor = 10 ** scale;
   let scaled = 0;

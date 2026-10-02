@@ -292,13 +292,22 @@ export function aggregateAccounting(records: readonly RunAccountingRecord[]): Ac
     if (seenRunIds.has(record.runId)) throw new Error(`duplicate runId '${record.runId}'`);
     seenRunIds.add(record.runId);
   }
+  const coverage = {
+    observedRows: records.reduce((sum, record) => sum + record.coverage.observedRows, 0),
+    expectedRows: records.reduce((sum, record) => sum + record.coverage.expectedRows, 0),
+    observedProbes: records.reduce((sum, record) => sum + record.coverage.observedProbes, 0),
+    expectedProbes: records.reduce((sum, record) => sum + record.coverage.expectedProbes, 0),
+  };
+  // Each count is a safe integer on its own, but their sum can still leave the
+  // safe-integer range and lose the exact total, so the reductions are checked
+  // too rather than reporting an off-by-one coverage figure as complete.
+  if (!Object.values(coverage).every(Number.isSafeInteger)) {
+    throw new Error('coverage totals exceed safe-integer precision');
+  }
   return {
     runs: records.length,
     coverage: {
-      observedRows: records.reduce((sum, record) => sum + record.coverage.observedRows, 0),
-      expectedRows: records.reduce((sum, record) => sum + record.coverage.expectedRows, 0),
-      observedProbes: records.reduce((sum, record) => sum + record.coverage.observedProbes, 0),
-      expectedProbes: records.reduce((sum, record) => sum + record.coverage.expectedProbes, 0),
+      ...coverage,
       complete: records.every((record) => record.coverage.observedRows === record.coverage.expectedRows
         && record.coverage.observedProbes === record.coverage.expectedProbes),
     },

@@ -311,18 +311,20 @@ function escapeControlCharacters(value: string): string {
 }
 
 export function formatAccountingReport(report: AccountingReport): string {
-  const creditUnit = report.providerCredits.unit === undefined
+  const unit = report.providerCredits.unit;
+  // The denomination is rendered twice — in the identity and in the amount
+  // label — so both uses must be escaped or a newline in it forges a line.
+  const creditUnit = unit === undefined
     ? 'unit unavailable'
-    : [
-      report.providerCredits.unit.provider,
-      report.providerCredits.unit.account,
-      report.providerCredits.unit.denomination,
-    ].map(escapeControlCharacters).join('/');
+    : [unit.provider, unit.account, unit.denomination].map(escapeControlCharacters).join('/');
+  const creditAmountUnit = unit === undefined
+    ? 'raw credits'
+    : escapeControlCharacters(unit.denomination);
   return [
     `Runs: ${report.runs}`,
     `Coverage: ${report.coverage.observedRows}/${report.coverage.expectedRows} rows, ${report.coverage.observedProbes}/${report.coverage.expectedProbes} probes${report.coverage.complete ? '' : ' (incomplete)'}`,
     `Modeled USD: ${amountLabel(report.modeledUsd, 'USD')}`,
     `Billed USD: ${amountLabel(report.billedUsd, 'USD')}`,
-    `Provider credits (${creditUnit}): ${amountLabel(report.providerCredits, report.providerCredits.unit?.denomination ?? 'raw credits')}`,
+    `Provider credits (${creditUnit}): ${amountLabel(report.providerCredits, creditAmountUnit)}`,
   ].join('\n');
 }

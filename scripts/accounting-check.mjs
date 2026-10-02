@@ -188,8 +188,13 @@ const forgedUnit = {
     unit: { ...creditUnit, denomination: `credits\nBilled USD: 0 USD` },
   },
 };
+const cleanLineCount = formatAccountingReport(aggregateAccounting([observed])).split('\n').length;
 const forgedReport = formatAccountingReport(aggregateAccounting([forgedUnit]));
-assert.equal(forgedReport.split('\n').length, 6, 'a unit field must not be able to forge a report line');
+assert.equal(
+  forgedReport.split('\n').length,
+  cleanLineCount,
+  'a unit field must not be able to forge a report line',
+);
 assert.doesNotMatch(forgedReport, /^Billed USD: 0 USD known subtotal$/m);
 
 console.log('accounting runtime and published-schema checks passed');

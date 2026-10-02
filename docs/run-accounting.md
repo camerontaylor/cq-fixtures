@@ -39,6 +39,14 @@ provider billing ledger was observed.
 Use `aggregateAccounting(records)` for the numeric report model and
 `formatAccountingReport(report)` for a concise text report. Known subtotals are
 accumulated in exact decimal units, so the numeric `knownSubtotal` and the
-rendered text agree and neither carries binary floating-point drift. This slice is
-intended for manually entered or locally readback metadata after a run has
-completed; it adds no provider integration.
+rendered text agree and neither carries binary floating-point drift. An amount set
+that cannot be represented exactly at that precision — or a total past
+safe-integer range — is refused rather than approximated, because an ordinary
+addition fallback would silently drop an observed amount. Provider credit
+totals publish a `unit` only when every contributing record is observed: an
+unknown observation carries no unit identity, so presenting one beside it would
+imply the unknown amount belongs to it. Identity fields are validated against
+the published schema and escaped for control characters, Unicode line
+separators included, when rendered. This slice is intended for manually entered
+or locally readback metadata after a run has completed; it adds no provider
+integration.

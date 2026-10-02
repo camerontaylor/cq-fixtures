@@ -85,7 +85,9 @@ assert.equal(combined.billedUsd.knownSubtotal, 0.2);
 assert.equal(combined.billedUsd.unknownCount, 1);
 assert.equal(combined.billedUsd.complete, false);
 assert.equal(combined.providerCredits.knownSubtotal, 120);
-assert.deepEqual(combined.providerCredits.unit, creditUnit);
+// An unknown credit observation has no unit identity, so no unit may be
+// published beside it; that would imply the unknown belongs to the observed unit.
+assert.equal(combined.providerCredits.unit, undefined);
 
 const sameUnit = { ...observed, runId: 'same-unit-run' };
 assert.equal(aggregateAccounting([observed, sameUnit]).providerCredits.knownSubtotal, 240);
@@ -178,7 +180,19 @@ assert.throws(
     { ...observed, runId: 'overflow-a', billedUsd: { status: 'observed', value: Number.MAX_VALUE, source: 'test source', window } },
     { ...observed, runId: 'overflow-b', billedUsd: { status: 'observed', value: Number.MAX_VALUE, source: 'test source', window } },
   ]),
-  /overflow/,
+  /supported decimal precision/,
+);
+// A lossy approximation is refused rather than silently dropping an amount.
+assert.throws(
+  () => aggregateAccounting([
+    { ...observed, runId: 'lossy-a', billedUsd: { status: 'observed', value: 1e20, source: 'test source', window } },
+    { ...observed, runId: 'lossy-b', billedUsd: { status: 'observed', value: 1, source: 'test source', window } },
+  ]),
+  /supported decimal precision/,
+);
+assert.throws(
+  () => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/\\foo' }),
+  /must be an absolute URI/,
 );
 const forgedUnit = {
   ...observed,
@@ -211,5 +225,23 @@ const twoDecimalTotals = aggregateAccounting([
   { ...observed, runId: 'two-b', billedUsd: { status: 'observed', value: 0.17, source: 'test source', window } },
 ]);
 assert.equal(twoDecimalTotals.billedUsd.knownSubtotal, 0.31);
+
+// U+2028 and U+2029 are line boundaries to renderers and multiline matching
+// even though they sit outside the C0/DEL range.
+const unicodeSeparatorUnit = {
+  ...observed,
+  runId: 'unicode-separator-run',
+  providerCredits: {
+    ...observed.providerCredits,
+    unit: { ...creditUnit, denomination: `credits\u2028Billed USD: 0 USD\u2029trailer` },
+  },
+};
+const unicodeSeparatorReport = formatAccountingReport(aggregateAccounting([unicodeSeparatorUnit]));
+assert.equal(
+  unicodeSeparatorReport.split('\n').length,
+  cleanLineCount,
+  'a unit field must not forge a report line with U+2028/U+2029',
+);
+assert.doesNotMatch(unicodeSeparatorReport, /^Billed USD: 0 USD known subtotal$/m);
 
 console.log('accounting runtime and published-schema checks passed');

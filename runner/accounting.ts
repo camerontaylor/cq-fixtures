@@ -101,7 +101,11 @@ function nonEmptyString(value: unknown, label: string): asserts value is string 
 }
 
 function validateUri(value: unknown, label: string): void {
+  // Backslashes are not RFC URI characters; the WHATWG parser silently rewrites
+  // them as path separators, so `https://example.com/\foo` would validate while
+  // identifying a different path once parsed.
   if (typeof value !== 'string' || value !== value.trim() || /\s/.test(value)
+    || value.includes('\\')
     || !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) {
     throw new Error(`${label} must be an absolute URI`);
   }
@@ -211,26 +215,30 @@ function decimalPlaces(value: number): number {
 /**
  * Sum by way of scaled integers so the caller sees the decimal total it expects
  * (0.1 + 0.2 === 0.3) rather than the binary artifact 0.30000000000000004.
- * An amount the chosen scale cannot hold exactly is never rounded away: the sum
- * falls back to ordinary addition, because a silently dropped amount is worse
- * than float drift. The same fallback covers magnitudes too large to scale.
+ * Anything this cannot represent exactly is refused rather than approximated:
+ * an ordinary-addition fallback silently drops an observed amount (1e20 + 1
+ * returns 1e20), which is a worse accounting defect than float drift.
  */
 function sumObserved(values: readonly number[]): number {
-  const plain = (): number => values.reduce((total, value) => total + value, 0);
   const scale = values.reduce((widest, value) => Math.max(widest, decimalPlaces(value)), 0);
   const factor = 10 ** scale;
   let scaled = 0;
   for (const value of values) {
     const exact = value * factor;
     const rounded = Math.round(exact);
-    // Scaling can land one ULP off an already-integral value (0.14 * 100 is
-    // 14.000000000000002), which is ordinary binary rounding and not lost input
-    // precision. Only a rounding that moves the value by more than an ULP means
-    // this scale genuinely cannot hold the amount exactly.
-    if (Math.abs(exact - rounded) > Number.EPSILON * Math.max(Math.abs(exact), 1)) return plain();
+    // Scaling multiplies by a power of ten and can land one ULP off an already
+    // integral value (0.14 * 100 is 14.000000000000002), which is ordinary
+    // binary rounding and not lost input precision.
+    if (Math.abs(exact - rounded) > Number.EPSILON * Math.max(Math.abs(exact), 1)) {
+      throw new Error('observed amounts exceed the supported decimal precision');
+    }
     scaled += rounded;
   }
-  if (!Number.isSafeInteger(scaled)) return plain();
+  // A total past safe-integer range would be silently rounded on the way back,
+  // dropping an observed amount rather than merely drifting.
+  if (!Number.isSafeInteger(scaled)) {
+    throw new Error('observed amounts exceed the supported decimal precision');
+  }
   return scaled / factor;
 }
 
@@ -270,7 +278,10 @@ function aggregateCredits(values: readonly ProviderCreditsAmount[]): ProviderCre
     }
     unit = value.unit;
   }
-  return { ...aggregate(values), ...(unit === undefined ? {} : { unit }) };
+  const totals = aggregate(values);
+  // An unknown credit observation carries no unit identity, so publishing the
+  // observed unit beside it would imply the unknown amount belongs to that unit.
+  return totals.unknownCount > 0 ? { ...totals } : { ...totals, ...(unit === undefined ? {} : { unit }) };
 }
 
 /** Summarize records without treating missing provider observations as zero. */
@@ -309,10 +320,14 @@ function amountLabel(amount: AmountAggregate, unit: string): string {
   return `${subtotal} ${unit} known subtotal${amount.complete ? '' : ` (${amount.unknownCount} unknown; total incomplete)`}`;
 }
 
-/** Replace control characters so an identity field cannot forge a report line. */
+/**
+ * Replace characters that renderers treat as line boundaries so an identity
+ * field cannot forge a report line. Covers the C0 range, DEL, and the Unicode
+ * line and paragraph separators U+2028 and U+2029.
+ */
 function escapeControlCharacters(value: string): string {
   return value.replace(
-    /[\u0000-\u001f\u007f]/g,
+    /[\u0000-\u001f\u007f\u2028\u2029]/g,
     (char) => `\\u${char.codePointAt(0)?.toString(16).padStart(4, '0')}`,
   );
 }

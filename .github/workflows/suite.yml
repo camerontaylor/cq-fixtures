@@ -45,6 +45,16 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Set up pnpm (for the pinned-toolkit pack step)
+        # pack-toolkit.sh branches on the toolkit checkout's lockfile: a
+        # re-pin past cq-toolkit's pnpm migration (6dd2337) installs with
+        # pnpm even though this repo itself stays on npm. version tracks
+        # cq-toolkit's packageManager (pnpm@12.8.1) — move the two together
+        # with the toolkit pin, like PACKED/EXPECTED in pack-toolkit.sh.
+        # pnpm/action-setup v6.1.0, immutable commit pin.
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          version: 12.8.1
       - name: Prepare pinned or published cq-toolkit
         run: ./scripts/prepare-toolkit.sh
       - name: Install dependencies
@@ -305,6 +315,17 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Set up pnpm (for the pinned-toolkit pack step)
+        if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
+        # pack-toolkit.sh branches on the toolkit checkout's lockfile: a
+        # re-pin past cq-toolkit's pnpm migration (6dd2337) installs with
+        # pnpm even though this repo itself stays on npm. version tracks
+        # cq-toolkit's packageManager (pnpm@12.8.1) — move the two together
+        # with the toolkit pin, like PACKED/EXPECTED in pack-toolkit.sh.
+        # pnpm/action-setup v6.1.0, immutable commit pin.
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          version: 12.8.1
       - name: Prepare pinned or published cq-toolkit
         if: github.event.inputs.profile != 'w65-pilot' || matrix.cell.axis == 'model'
         run: ./scripts/prepare-toolkit.sh

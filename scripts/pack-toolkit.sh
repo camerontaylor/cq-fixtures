@@ -3,8 +3,8 @@
 #
 # WHY: cq-fixtures consumes the toolkit only via its public npm package
 # surface. Until it is published, the toolkit is pinned by git tag or full
-# commit SHA in toolkit.lock (exactly one line), built here, and `npm pack`ed
-# into vendor/.
+# commit SHA in toolkit.lock (exactly one line), built here, and packed
+# (npm or pnpm — chosen by the checkout's lockfile) into vendor/.
 # The tarball is a build artifact — never committed (vendor/ is gitignored);
 # re-run this script to reproduce it.
 #
@@ -103,8 +103,30 @@ if [ "$PIN_KIND" = commit ]; then
     exit 1
   fi
 fi
-npm ci            # dist/ must be built before packing or the export map dangles
-npm run build
+# dist/ must be built before packing or the export map dangles (both paths).
+# Which installer may run follows the lockfile the pinned checkout actually
+# ships: cq-toolkit migrated to pnpm at 6dd2337 (ships pnpm-lock.yaml and no
+# package-lock.json), so a re-pin past that commit can no longer `npm ci` —
+# npm has no lockfile there to install from. The current pin (5e52707)
+# predates the migration and keeps the unchanged npm path.
+if [ -f pnpm-lock.yaml ]; then
+  # Fail HERE with the remediation, not three lines deep in a bare
+  # "command not found" (CI supplies pnpm via pnpm/action-setup).
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "error: the pinned toolkit is pnpm-based (pnpm-lock.yaml present) but pnpm is not on PATH — install pnpm (cq-toolkit pins pnpm@12.8.1) and re-run" >&2
+    exit 1
+  fi
+  pnpm install --frozen-lockfile
+  pnpm run build
+  PM=pnpm
+elif [ -f package-lock.json ]; then
+  npm ci
+  npm run build
+  PM=npm
+else
+  echo "error: the pinned toolkit checkout ships neither pnpm-lock.yaml nor package-lock.json — cannot pick a package manager" >&2
+  exit 1
+fi
 
 mkdir -p "$REPO_ROOT/vendor"
 # A previous run's tarball must never satisfy the verification below: a stale
@@ -112,10 +134,13 @@ mkdir -p "$REPO_ROOT/vendor"
 # package's tarballs (both npm's scoped name and our flat expected name)
 # before packing, so existence checks can only pass on a fresh pack.
 rm -f "$REPO_ROOT"/vendor/camerontaylor-cq-toolkit-*.tgz "$REPO_ROOT"/vendor/cq-toolkit-*.tgz
-npm pack --pack-destination "$REPO_ROOT/vendor/"
+# pnpm pack emits the same npm-style flattened name (<scope>-<name>-<version>.tgz)
+# into --pack-destination, so PACKED/EXPECTED below stay package-manager
+# agnostic: a version change riding a re-pin still fails loud on $PACKED.
+"$PM" pack --pack-destination "$REPO_ROOT/vendor/"
 
 if [ ! -f "$REPO_ROOT/vendor/$PACKED" ]; then
-  echo "error: npm pack produced no $PACKED — the toolkit version likely changed." >&2
+  echo "error: $PM pack produced no $PACKED — the toolkit version likely changed." >&2
   echo "Update package.json's file: spec and this script's PACKED/EXPECTED names, then re-run." >&2
   exit 1
 fi

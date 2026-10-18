@@ -296,7 +296,24 @@ function sumObserved(values: readonly number[]): number {
   if (scaled > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error('observed amounts exceed the supported decimal precision');
   }
-  return Number(scaled) / 10 ** scale;
+  return fromScaledInteger(scaled, scale);
+}
+
+/**
+ * The number for an exact scaled total. Dividing Number(scaled) by 10 ** scale
+ * can land on a neighbouring double (4351.781019825416 + 4082.768424461836 is
+ * exactly ...287252, and no double reads back as that), so the decimal text is
+ * parsed directly and round-tripped: a total whose nearest double reads back as
+ * a different decimal is refused rather than reported as if it were exact.
+ */
+function fromScaledInteger(scaled: bigint, scale: number): number {
+  const digits = scaled.toString().padStart(scale + 1, '0');
+  const split = digits.length - scale;
+  const result = Number(scale === 0 ? digits : `${digits.slice(0, split)}.${digits.slice(split)}`);
+  if (decimalPlaces(result) > scale || scaledInteger(result, scale) !== scaled) {
+    throw new Error('observed amounts exceed the supported decimal precision');
+  }
+  return result;
 }
 
 function aggregate(values: readonly AccountingAmount[]): AmountAggregate {

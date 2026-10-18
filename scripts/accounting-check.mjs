@@ -257,6 +257,14 @@ const twoDecimalTotals = aggregateAccounting([
 ]);
 assert.equal(twoDecimalTotals.billedUsd.knownSubtotal, 0.31);
 
+// The exact sum of this pair is 8434.549444287252, but no double reads back as
+// that decimal (the nearest is ...251), so the total is refused rather than
+// returned as if it were exact.
+assert.throws(() => aggregateAccounting([
+  { ...observed, runId: 'large-a', billedUsd: { status: 'observed', value: 4351.781019825416, source: 'test source', window } },
+  { ...observed, runId: 'large-b', billedUsd: { status: 'observed', value: 4082.768424461836, source: 'test source', window } },
+]), /supported decimal precision/);
+
 // U+2028 and U+2029 are line boundaries to renderers and multiline matching
 // even though they sit outside the C0/DEL range.
 const unicodeSeparatorUnit = {

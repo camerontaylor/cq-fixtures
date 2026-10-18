@@ -177,9 +177,12 @@ function validateUri(value: unknown, label: string): void {
   // WHATWG normalises special-scheme hosts beyond case (`0127.0.0.1` becomes
   // `87.0.0.1`, `127.1` becomes `127.0.0.1`, `%41` decodes), so the stored URL
   // would resolve to a different host than the authority it visibly records.
+  // A bracketed IPv6 literal is exempt: the parser only re-spells it
+  // (`[0:0:0:0:0:0:0:1]` becomes `[::1]`), which names the same host.
   const authority = /^[^:/?#]+:\/\/([^/?#]*)/.exec(value)?.[1];
-  if (SPECIAL_SCHEMES.has(parsed.protocol.slice(0, -1)) && authority !== undefined
-    && parsed.hostname !== authorityHost(authority).toLowerCase()) {
+  const host = authority === undefined ? '' : authorityHost(authority);
+  if (SPECIAL_SCHEMES.has(parsed.protocol.slice(0, -1)) && host !== '' && !host.startsWith('[')
+    && parsed.hostname !== host.toLowerCase()) {
     throw new Error(`${label} must be an absolute URI whose host is not rewritten on parsing`);
   }
 }

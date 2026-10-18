@@ -315,6 +315,11 @@ validateAccountingRecord({ ...historical, runUrl: 'urn:example:run:1' });
 for (const runUrl of ['https://0127.0.0.1/run', 'https://127.1/run', 'https://%41.example/run', 'https://0x7f.0.0.1/run']) {
   assert.throws(() => validateAccountingRecord({ ...historical, runUrl }), /runUrl must be an absolute URI/, runUrl);
 }
+// Re-spelling an IPv6 literal names the same host, so it stays valid.
+for (const runUrl of ['https://[0:0:0:0:0:0:0:1]/', 'https://[::ffff:192.0.2.128]/']) {
+  assert.equal(validateSchema({ ...historical, runUrl }), true, `schema must accept ${runUrl}`);
+  validateAccountingRecord({ ...historical, runUrl });
+}
 // Case alone is not a rewrite of identity.
 validateAccountingRecord({ ...historical, runUrl: 'https://GitHub.com/camerontaylor/cq-fixtures/actions/runs/1' });
 // RFC 3986 IPvFuture and IPv6 literal hosts stay valid at runtime, matching the schema's `format: uri`.

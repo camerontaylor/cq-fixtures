@@ -116,9 +116,15 @@ const URI_AUTHORITY = new RegExp(`^(?:${URI_USERINFO}@)?(?:\\[[0-9A-Za-z:.]+\\]|
 const URI_PATH = /^[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*$/;
 const URI_QUERY_OR_FRAGMENT = /^[A-Za-z0-9\-._~!$&'()*+,;=:@%/?]*$/;
 
+// The WHATWG parser rewrites a special-scheme URL with a missing or empty
+// authority (`https:///path` becomes `https://path/`, `https:/path` likewise),
+// so the host the record reads as differs from the host a consumer resolves.
+const SPECIAL_SCHEMES = new Set(['ftp', 'http', 'https', 'ws', 'wss']);
+
 function isRfc3986Uri(value: string): boolean {
   const schemeEnd = value.indexOf(':');
   if (schemeEnd === -1 || !URI_SCHEME.test(value.slice(0, schemeEnd))) return false;
+  const special = SPECIAL_SCHEMES.has(value.slice(0, schemeEnd).toLowerCase());
   let rest = value.slice(schemeEnd + 1);
   const hashAt = rest.indexOf('#');
   if (hashAt !== -1) {
@@ -134,7 +140,12 @@ function isRfc3986Uri(value: string): boolean {
     const pathAt = rest.indexOf('/', 2);
     const authority = pathAt === -1 ? rest.slice(2) : rest.slice(2, pathAt);
     if (!URI_AUTHORITY.test(authority)) return false;
+    // Host is what remains after userinfo and before any port.
+    const host = authority.slice(authority.lastIndexOf('@') + 1).replace(/:[0-9]*$/, '');
+    if (special && host === '') return false;
     rest = pathAt === -1 ? '' : rest.slice(pathAt);
+  } else if (special) {
+    return false;
   }
   return URI_PATH.test(rest);
 }

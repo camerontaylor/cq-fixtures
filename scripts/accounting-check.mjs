@@ -297,6 +297,17 @@ assert.equal(mutableReport.providerCredits.unit?.account, creditUnit.account, 'a
 assert.throws(() => validateAccountingRecord({ ...historical, runUrl: 'https://user@@example.com/' }), /runUrl must be an absolute URI/);
 assert.throws(() => validateAccountingRecord({ ...historical, runUrl: 'https://example.com/a?b#c#d' }), /runUrl must be an absolute URI/);
 validateAccountingRecord({ ...historical, runUrl: 'https://user:pw@example.com:8080/a/b?q=1&r=2#frag' });
+// A special scheme with a missing or empty authority is reparsed by `new URL`
+// into a different host, so the record must refuse it.
+for (const runUrl of ['https:///path', 'https:/path', 'https://:8080/path', 'https://user@/path']) {
+  assert.throws(() => validateAccountingRecord({ ...historical, runUrl }), /runUrl must be an absolute URI/, runUrl);
+}
+validateAccountingRecord({ ...historical, runUrl: 'urn:example:run:1' });
+// The published schema must cap coverage integers at the runtime safe-integer limit.
+for (const key of ['observedRows', 'expectedRows', 'observedProbes', 'expectedProbes']) {
+  const coverage = { observedRows: 0, expectedRows: 0, observedProbes: 0, expectedProbes: 0, [key]: Number.MAX_SAFE_INTEGER + 1 };
+  assert.equal(validateSchema({ ...historical, coverage }), false, `schema must cap ${key} at the safe-integer limit`);
+}
 
 // U+0085 (NEL) is a line boundary to Unicode-aware renderers.
 const nelReport = formatAccountingReport(aggregateAccounting([{

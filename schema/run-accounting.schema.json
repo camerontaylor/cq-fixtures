@@ -16,10 +16,10 @@
       "description": "Observed row and probe counts must not exceed their expected counts; this cross-field relationship is enforced by runtime validation.",
       "required": ["observedRows", "expectedRows", "observedProbes", "expectedProbes"],
       "properties": {
-        "observedRows": { "type": "integer", "minimum": 0 },
-        "expectedRows": { "type": "integer", "minimum": 0 },
-        "observedProbes": { "type": "integer", "minimum": 0 },
-        "expectedProbes": { "type": "integer", "minimum": 0 }
+        "observedRows": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "expectedRows": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "observedProbes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "expectedProbes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
       }
     }
   },

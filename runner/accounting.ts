@@ -412,12 +412,14 @@ function amountLabel(amount: AmountAggregate, unit: string): string {
 
 /**
  * Replace characters that renderers treat as line boundaries so an identity
- * field cannot forge a report line. Covers the C0 range, DEL, the C1 next-line
- * control U+0085, and the Unicode line and paragraph separators U+2028/U+2029.
+ * field cannot forge a report line or drive a terminal. Covers the C0 range,
+ * DEL, the whole C1 range U+0080-U+009F (which includes the 8-bit CSI U+009B,
+ * OSC U+009D and ST U+009C introducers and the next-line control U+0085), and
+ * the Unicode line and paragraph separators U+2028/U+2029.
  */
 function escapeControlCharacters(value: string): string {
   return value.replace(
-    /[\u0000-\u001f\u007f\u0085\u2028\u2029]/g,
+    /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g,
     (char) => `\\u${char.codePointAt(0)?.toString(16).padStart(4, '0')}`,
   );
 }

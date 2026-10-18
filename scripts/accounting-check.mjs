@@ -335,6 +335,18 @@ const nelReport = formatAccountingReport(aggregateAccounting([{
 }]));
 assert.equal(nelReport.split(/[\n\u0085\u2028\u2029]/).length, cleanLineCount, 'U+0085 must not forge a report line');
 
+// The rest of C1 (8-bit CSI, ST, OSC, ...) can drive a terminal that honours it,
+// so every U+0080-U+009F control must be escaped in the rendered report.
+for (let code = 0x80; code <= 0x9f; code += 1) {
+  const char = String.fromCodePoint(code);
+  const c1Report = formatAccountingReport(aggregateAccounting([{
+    ...observed,
+    runId: 'c1-run',
+    providerCredits: { ...observed.providerCredits, unit: { ...creditUnit, denomination: `credits${char}Billed USD: 0 USD` } },
+  }]));
+  assert.equal(/[\u0080-\u009f]/.test(c1Report), false, `U+${code.toString(16).padStart(4, '0')} must be escaped in the report`);
+}
+
 // A supported 16-digit decimal must come back unchanged, not nudged by the
 // scaling tolerance.
 const preciseTotal = aggregateAccounting([

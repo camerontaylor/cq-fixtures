@@ -311,6 +311,16 @@ for (const runUrl of ['https:///path', 'https:/path', 'https://:8080/path', 'htt
   assert.throws(() => validateAccountingRecord({ ...historical, runUrl }), /runUrl must be an absolute URI/, runUrl);
 }
 validateAccountingRecord({ ...historical, runUrl: 'urn:example:run:1' });
+// RFC 3986 IPvFuture and IPv6 literal hosts stay valid at runtime, matching the schema's `format: uri`.
+for (const runUrl of ['https://[v1.example]/', 'https://[::1]:8080/a', 'https://user@[v7.a:b]/']) {
+  assert.equal(validateSchema({ ...historical, runUrl }), true, `schema must accept ${runUrl}`);
+  validateAccountingRecord({ ...historical, runUrl });
+}
+assert.throws(() => validateAccountingRecord({ ...historical, runUrl: 'https://[vz.x]/' }), /runUrl must be an absolute URI/);
+// ECMAScript `$` matches only at end of input, so a trailing newline is rejected by the schema's trim pattern too.
+for (const bad of [{ runId: '42\n' }, { runId: '\n42' }]) {
+  assert.equal(validateSchema({ ...historical, ...bad }), false, 'schema must reject a line terminator at the edge');
+}
 // The published schema must cap coverage integers at the runtime safe-integer limit.
 for (const key of ['observedRows', 'expectedRows', 'observedProbes', 'expectedProbes']) {
   const coverage = { observedRows: 0, expectedRows: 0, observedProbes: 0, expectedProbes: 0, [key]: Number.MAX_SAFE_INTEGER + 1 };

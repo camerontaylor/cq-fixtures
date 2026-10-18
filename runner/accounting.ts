@@ -112,7 +112,10 @@ function nonEmptyString(value: unknown, label: string): asserts value is string 
 const URI_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/;
 const URI_USERINFO = "[A-Za-z0-9\\-._~!$&'()*+,;=:%]*";
 const URI_REG_NAME = "[A-Za-z0-9\\-._~!$&'()*+,;=%]*";
-const URI_AUTHORITY = new RegExp(`^(?:${URI_USERINFO}@)?(?:\\[[0-9A-Za-z:.]+\\]|${URI_REG_NAME})(?::[0-9]*)?$`);
+// RFC 3986 bracketed hosts: an IPv6 literal, or an IPvFuture literal (`[v1.x]`).
+const URI_IPV_FUTURE = "\\[[vV][0-9A-Fa-f]+\\.[A-Za-z0-9\\-._~!$&'()*+,;=:]+\\]";
+const URI_AUTHORITY = new RegExp(`^(?:${URI_USERINFO}@)?(?:\\[[0-9A-Fa-f:.]+\\]|${URI_IPV_FUTURE}|${URI_REG_NAME})(?::[0-9]*)?$`);
+const URI_HAS_IPV_FUTURE_HOST = /^[^:/?#]+:\/\/(?:[^/?#@]*@)?\[[vV]/;
 const URI_PATH = /^[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*$/;
 const URI_QUERY_OR_FRAGMENT = /^[A-Za-z0-9\-._~!$&'()*+,;=:@%/?]*$/;
 
@@ -159,6 +162,9 @@ function validateUri(value: unknown, label: string): void {
   if (/%(?![0-9A-Fa-f]{2})/.test(value)) {
     throw new Error(`${label} must be an absolute URI with valid percent escapes`);
   }
+  // The WHATWG parser rejects IPvFuture hosts that RFC 3986 and the published
+  // `format: uri` accept, and the grammar above has already checked this one.
+  if (URI_HAS_IPV_FUTURE_HOST.test(value)) return;
   try {
     new URL(value);
   } catch {

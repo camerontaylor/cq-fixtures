@@ -311,6 +311,12 @@ for (const runUrl of ['https:///path', 'https:/path', 'https://:8080/path', 'htt
   assert.throws(() => validateAccountingRecord({ ...historical, runUrl }), /runUrl must be an absolute URI/, runUrl);
 }
 validateAccountingRecord({ ...historical, runUrl: 'urn:example:run:1' });
+// WHATWG rewrites these special-scheme hosts, so the record would resolve elsewhere than it reads.
+for (const runUrl of ['https://0127.0.0.1/run', 'https://127.1/run', 'https://%41.example/run', 'https://0x7f.0.0.1/run']) {
+  assert.throws(() => validateAccountingRecord({ ...historical, runUrl }), /runUrl must be an absolute URI/, runUrl);
+}
+// Case alone is not a rewrite of identity.
+validateAccountingRecord({ ...historical, runUrl: 'https://GitHub.com/camerontaylor/cq-fixtures/actions/runs/1' });
 // RFC 3986 IPvFuture and IPv6 literal hosts stay valid at runtime, matching the schema's `format: uri`.
 for (const runUrl of ['https://[v1.example]/', 'https://[::1]:8080/a', 'https://user@[v7.a:b]/']) {
   assert.equal(validateSchema({ ...historical, runUrl }), true, `schema must accept ${runUrl}`);
@@ -334,6 +340,16 @@ const nelReport = formatAccountingReport(aggregateAccounting([{
   providerCredits: { ...observed.providerCredits, unit: { ...creditUnit, denomination: 'credits\u0085Billed USD: 0 USD' } },
 }]));
 assert.equal(nelReport.split(/[\n\u0085\u2028\u2029]/).length, cleanLineCount, 'U+0085 must not forge a report line');
+
+// Bidirectional formatting controls reorder the rest of a line in Unicode-aware viewers.
+for (const code of [0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069]) {
+  const bidiReport = formatAccountingReport(aggregateAccounting([{
+    ...observed,
+    runId: 'bidi-run',
+    providerCredits: { ...observed.providerCredits, unit: { ...creditUnit, denomination: `credits${String.fromCodePoint(code)}123` } },
+  }]));
+  assert.equal(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(bidiReport), false, `U+${code.toString(16)} must be escaped in the report`);
+}
 
 // The rest of C1 (8-bit CSI, ST, OSC, ...) can drive a terminal that honours it,
 // so every U+0080-U+009F control must be escaped in the rendered report.

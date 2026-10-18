@@ -124,6 +124,11 @@ const URI_QUERY_OR_FRAGMENT = /^[A-Za-z0-9\-._~!$&'()*+,;=:@%/?]*$/;
 // so the host the record reads as differs from the host a consumer resolves.
 const SPECIAL_SCHEMES = new Set(['ftp', 'http', 'https', 'ws', 'wss']);
 
+/** The host of an authority: what remains after userinfo and before any port. */
+function authorityHost(authority: string): string {
+  return authority.slice(authority.lastIndexOf('@') + 1).replace(/:[0-9]*$/, '');
+}
+
 function isRfc3986Uri(value: string): boolean {
   const schemeEnd = value.indexOf(':');
   if (schemeEnd === -1 || !URI_SCHEME.test(value.slice(0, schemeEnd))) return false;
@@ -143,9 +148,7 @@ function isRfc3986Uri(value: string): boolean {
     const pathAt = rest.indexOf('/', 2);
     const authority = pathAt === -1 ? rest.slice(2) : rest.slice(2, pathAt);
     if (!URI_AUTHORITY.test(authority)) return false;
-    // Host is what remains after userinfo and before any port.
-    const host = authority.slice(authority.lastIndexOf('@') + 1).replace(/:[0-9]*$/, '');
-    if (special && host === '') return false;
+    if (special && authorityHost(authority) === '') return false;
     rest = pathAt === -1 ? '' : rest.slice(pathAt);
   } else if (special) {
     return false;
@@ -165,10 +168,19 @@ function validateUri(value: unknown, label: string): void {
   // The WHATWG parser rejects IPvFuture hosts that RFC 3986 and the published
   // `format: uri` accept, and the grammar above has already checked this one.
   if (URI_HAS_IPV_FUTURE_HOST.test(value)) return;
+  let parsed: URL;
   try {
-    new URL(value);
+    parsed = new URL(value);
   } catch {
     throw new Error(`${label} must be an absolute URI`);
+  }
+  // WHATWG normalises special-scheme hosts beyond case (`0127.0.0.1` becomes
+  // `87.0.0.1`, `127.1` becomes `127.0.0.1`, `%41` decodes), so the stored URL
+  // would resolve to a different host than the authority it visibly records.
+  const authority = /^[^:/?#]+:\/\/([^/?#]*)/.exec(value)?.[1];
+  if (SPECIAL_SCHEMES.has(parsed.protocol.slice(0, -1)) && authority !== undefined
+    && parsed.hostname !== authorityHost(authority).toLowerCase()) {
+    throw new Error(`${label} must be an absolute URI whose host is not rewritten on parsing`);
   }
 }
 
@@ -415,11 +427,13 @@ function amountLabel(amount: AmountAggregate, unit: string): string {
  * field cannot forge a report line or drive a terminal. Covers the C0 range,
  * DEL, the whole C1 range U+0080-U+009F (which includes the 8-bit CSI U+009B,
  * OSC U+009D and ST U+009C introducers and the next-line control U+0085), and
- * the Unicode line and paragraph separators U+2028/U+2029.
+ * the Unicode line and paragraph separators U+2028/U+2029, and the bidirectional
+ * formatting controls (U+061C, U+200E/U+200F, U+202A-U+202E, U+2066-U+2069),
+ * which reorder the rest of a line in Unicode-aware viewers.
  */
 function escapeControlCharacters(value: string): string {
   return value.replace(
-    /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g,
+    /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
     (char) => `\\u${char.codePointAt(0)?.toString(16).padStart(4, '0')}`,
   );
 }
